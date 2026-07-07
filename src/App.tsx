@@ -9,10 +9,11 @@ import type {
 } from './types';
 import { scan, fetchSummary, fetchTrend, fetchBreakdown } from './api';
 import { rangeToBounds } from './lib/dateRange';
-import { formatTokens, formatCost } from './lib/format';
 import FilterBar from './components/FilterBar';
 import HeroCard from './components/HeroCard';
 import StatCards from './components/StatCards';
+import TrendChart from './components/TrendChart';
+import BreakdownTables from './components/BreakdownTables';
 
 export default function App() {
   const [tool, setTool] = useState<Tool | 'all'>('all');
@@ -95,6 +96,7 @@ export default function App() {
   }, [refreshSec, runScan]);
 
   const modelOptions = modelRows.map((r) => r.key);
+  const trendBucket: 'day' | 'hour' = range === 'today' ? 'hour' : 'day';
 
   return (
     <div className="app">
@@ -119,35 +121,8 @@ export default function App() {
       <HeroCard summary={summary} />
       <StatCards summary={summary} />
 
-      <div>trend points: {trend.length}</div>
-
-      <h2>By model</h2>
-      <table>
-        <tbody>
-          {modelRows.map((r) => (
-            <tr key={r.key}>
-              <td>{r.key}</td>
-              <td>{formatTokens(r.totalTokens)}</td>
-              <td>{r.requests}</td>
-              <td>{formatCost(r.cost, false)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <h2>By project</h2>
-      <table>
-        <tbody>
-          {projectRows.map((r) => (
-            <tr key={r.key}>
-              <td>{r.key}</td>
-              <td>{formatTokens(r.totalTokens)}</td>
-              <td>{r.requests}</td>
-              <td>{formatCost(r.cost, false)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <TrendChart points={trend} bucket={trendBucket} />
+      <BreakdownTables modelRows={modelRows} projectRows={projectRows} />
 
       <div style={{ marginTop: 16, color: '#8b8b96' }}>
         {scanning ? 'scanning…' : 'idle'}
