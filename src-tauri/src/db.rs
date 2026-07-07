@@ -88,6 +88,42 @@ pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
     Ok(inserted)
 }
 
+/// Like insert_events but, on dedup_key conflict, keeps the row with the greater
+/// output_tokens. Needed for Claude: one turn is logged as several content-block
+/// lines sharing (message.id, requestId) with a growing output_tokens snapshot;
+/// the final (largest) line carries the true count. Other fields are stable across
+/// those lines, so overwriting them from the winning row is a no-op in practice.
+pub fn insert_events_keep_max_output(
+    conn: &mut Connection,
+    events: &[UsageEvent],
+) -> rusqlite::Result<u64> {
+    let tx = conn.transaction()?;
+    let mut n = 0u64;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+             input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) \
+             ON CONFLICT(dedup_key) DO UPDATE SET \
+               input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, \
+               cache_read_tokens=excluded.cache_read_tokens, cache_write_5m_tokens=excluded.cache_write_5m_tokens, \
+               cache_write_1h_tokens=excluded.cache_write_1h_tokens, project=excluded.project, \
+               timestamp=excluded.timestamp, model=excluded.model, api_calls=excluded.api_calls, \
+               source_file=excluded.source_file \
+             WHERE excluded.output_tokens > events.output_tokens",
+        )?;
+        for e in events {
+            n += stmt.execute(params![
+                e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
+                e.input_tokens, e.output_tokens, e.cache_read_tokens,
+                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file
+            ])? as u64;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
+}
+
 pub fn upsert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     {

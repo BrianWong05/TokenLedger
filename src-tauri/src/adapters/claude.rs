@@ -1,4 +1,4 @@
-use crate::db::{get_file_state, insert_events, set_file_state};
+use crate::db::{get_file_state, insert_events_keep_max_output, set_file_state};
 use crate::types::{FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
@@ -100,7 +100,7 @@ fn scan_file(
         }
     }
 
-    let inserted = insert_events(conn, &events)?;
+    let inserted = insert_events_keep_max_output(conn, &events)?;
     result.events_inserted += inserted;
 
     let new_offset = start + consumed as i64;
@@ -328,5 +328,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(project, "-Users-dev-projects-gamma");
+    }
+
+    #[test]
+    fn keeps_max_output_tokens_across_content_block_lines() {
+        // One turn is logged as several assistant lines sharing message.id+requestId,
+        // with a growing output_tokens snapshot; the final (largest) is the true count.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let logp = proj.join("s.jsonl");
+
+        // identical id/requestId/input/cache; only output_tokens grows: 2 -> 4626
+        let text_block = r#"{"type":"assistant","requestId":"req_z","timestamp":"2026-06-04T09:00:00.000Z","cwd":"/Users/dev/projects/x","message":{"id":"msg_zzz","model":"claude-opus-4-8","usage":{"input_tokens":30,"output_tokens":2,"cache_read_input_tokens":5,"cache_creation_input_tokens":0}}}"#;
+        let tool_block = r#"{"type":"assistant","requestId":"req_z","timestamp":"2026-06-04T09:00:00.000Z","cwd":"/Users/dev/projects/x","message":{"id":"msg_zzz","model":"claude-opus-4-8","usage":{"input_tokens":30,"output_tokens":4626,"cache_read_input_tokens":5,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(&logp, format!("{text_block}\n{tool_block}\n")).unwrap();
+
+        scan_claude(&mut conn, &root);
+
+        // exactly one row for the key, carrying the MAX output (4626, not 2, not 4628)
+        let (rows, out): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(output_tokens) FROM events WHERE dedup_key = 'claude:msg_zzz:req_z'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(out, 4626);
+
+        // idempotent: a second scan of the same file leaves it at 4626
+        scan_claude(&mut conn, &root);
+        let out2: i64 = conn
+            .query_row(
+                "SELECT output_tokens FROM events WHERE dedup_key = 'claude:msg_zzz:req_z'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(out2, 4626);
     }
 }
