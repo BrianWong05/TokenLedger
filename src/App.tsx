@@ -6,14 +6,25 @@ import type {
   Summary,
   TrendPoint,
   BreakdownRow,
+  ScanStatus,
+  OverrideRates,
 } from './types';
-import { scan, fetchSummary, fetchTrend, fetchBreakdown } from './api';
+import {
+  scan,
+  fetchSummary,
+  fetchTrend,
+  fetchBreakdown,
+  setPriceOverride,
+  deletePriceOverride,
+} from './api';
 import { rangeToBounds } from './lib/dateRange';
 import FilterBar from './components/FilterBar';
 import HeroCard from './components/HeroCard';
 import StatCards from './components/StatCards';
 import TrendChart from './components/TrendChart';
 import BreakdownTables from './components/BreakdownTables';
+import StatusFooter from './components/StatusFooter';
+import PriceOverrideDialog from './components/PriceOverrideDialog';
 
 export default function App() {
   const [tool, setTool] = useState<Tool | 'all'>('all');
@@ -28,7 +39,9 @@ export default function App() {
 
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
+  const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dialogModel, setDialogModel] = useState<string | null>(null);
 
   const filters: Filters = useMemo(() => {
     const { startTs, endTs } = rangeToBounds(range);
@@ -66,7 +79,8 @@ export default function App() {
   const runScan = useCallback(async () => {
     setScanning(true);
     try {
-      await scan();
+      const status = await scan();
+      setScanStatus(status);
       await loadData();
     } catch (e) {
       setError(String(e));
@@ -74,6 +88,18 @@ export default function App() {
       setScanning(false);
     }
   }, [loadData]);
+
+  const handleSaveOverride = async (model: string, rates: OverrideRates) => {
+    await setPriceOverride(model, rates);
+    setDialogModel(null);
+    loadData();
+  };
+
+  const handleDeleteOverride = async (model: string) => {
+    await deletePriceOverride(model);
+    setDialogModel(null);
+    loadData();
+  };
 
   // Scan once on mount.
   useEffect(() => {
@@ -124,9 +150,20 @@ export default function App() {
       <TrendChart points={trend} bucket={trendBucket} />
       <BreakdownTables modelRows={modelRows} projectRows={projectRows} />
 
-      <div style={{ marginTop: 16, color: '#8b8b96' }}>
-        {scanning ? 'scanning…' : 'idle'}
-      </div>
+      <StatusFooter
+        scanStatus={scanStatus}
+        scanning={scanning}
+        unpricedModels={summary?.unpricedModels ?? []}
+        onSetPrice={setDialogModel}
+      />
+      {dialogModel && (
+        <PriceOverrideDialog
+          model={dialogModel}
+          onSave={handleSaveOverride}
+          onDelete={handleDeleteOverride}
+          onClose={() => setDialogModel(null)}
+        />
+      )}
     </div>
   );
 }
