@@ -1,5 +1,7 @@
 pub mod types;
 pub mod db;
+pub mod time;
+pub mod adapters;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
