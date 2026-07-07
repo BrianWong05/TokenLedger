@@ -1,1 +1,389 @@
-/* TokenLedger global styles — dark theme lands in Task 15 */
+/* TokenLedger — dark theme (single screen, dark-only) */
+
+:root {
+  /* surface + text */
+  --bg: #0a0a0c;
+  --card: #131318;
+  --border: #26262e;
+  --text: #e8e8ee;
+  --muted: #8b8b96;
+
+  /* brand */
+  --accent: #7c5cff;
+  --green: #2fbf71;
+  --cost: #ff5c7a;
+
+  /* chart palette — documentation only; TrendChart.tsx hardcodes these same
+     hex values because WebKit (Tauri's macOS webview) does not resolve
+     var() in SVG presentation attributes. Keep in sync with CHART there. */
+  --chart-input: #7c5cff;
+  --chart-output: #2fbf71;
+  --chart-cache-read: #3aa0ff;
+  --chart-cache-write: #f0a03c;
+  --chart-cost: #ff5c7a;
+
+  --radius: 10px;
+  --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.45;
+  /* every number in the app aligns in columns */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ---- layout ---- */
+
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---- filter bar ---- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.segmented {
+  display: inline-flex;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 3px;
+}
+
+.segmented button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.segmented button.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* the two date inputs + arrow have no separator in the JSX, so they need
+   their own row layout and gap */
+.custom-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.range-sep {
+  color: var(--muted);
+}
+
+/* form controls (element selectors — no class needed) */
+
+button,
+select,
+input {
+  font: inherit;
+  color: var(--text);
+}
+
+select,
+input {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+}
+
+select:focus,
+input:focus,
+.segmented button:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- hero card ---- */
+
+.hero-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hero-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 28px;
+}
+
+.hero-number {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.hero-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hero-cost {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--green);
+}
+
+.hero-cost-label {
+  color: var(--muted);
+  font-size: 13px;
+  margin-right: 6px;
+}
+
+.hero-cost-sub {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---- stat cards ---- */
+
+.stat-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.progress {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--green);
+}
+
+/* ---- breakdown tables ---- */
+
+.breakdown-tables {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.breakdown-table {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+/* right-aligned numeric cells */
+.bt-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- status footer ---- */
+
+.status-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 12px 18px;
+}
+
+.source-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.source-stat.error {
+  color: var(--cost);
+}
+
+/* multiple .source-stat spans render adjacent in the JSX with no
+   separator, same for the unpriced-model list */
+.footer-sources,
+.footer-unpriced {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.unpriced-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-price {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.set-price:hover {
+  text-decoration: underline;
+}
+
+/* ---- price override dialog ---- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.dialog {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.dialog-actions button {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.dialog-actions button.dialog-save {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ---- Recharts theming (axes/grid) ---- */
+
+.recharts-cartesian-axis-tick text {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.recharts-cartesian-grid line {
+  stroke: var(--border);
+}
+
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background: var(--card) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 8px;
+}
