@@ -99,12 +99,15 @@ pub fn run() {
                 scan_lock: Mutex::new(()),
             });
             // Refresh LiteLLM prices off the main thread; any fetch failure falls
-            // back to the cached/bundled snapshot inside refresh_prices.
+            // back to the cached/bundled snapshot inside load_prices_json. The
+            // blocking network fetch runs BEFORE the DB lock so scan/summary/etc.
+            // never block behind it on cold start.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
+                let json = pricing::load_prices_json(&data_dir); // no lock, network here
                 let state = handle.state::<AppState>();
                 if let Ok(mut db) = state.db.lock() {
-                    let _ = pricing::refresh_prices(&mut db, &data_dir);
+                    let _ = pricing::rebuild_prices(&mut db, &json);
                 };
             });
             Ok(())

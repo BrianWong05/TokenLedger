@@ -13,16 +13,20 @@ const LITELLM_URL: &str =
 pub fn normalize_model(raw: &str) -> String {
     let lower = raw.to_lowercase();
     let after_slash = match lower.rfind('/') {
-        Some(i) => lower[i + 1..].to_string(),
-        None => lower,
+        Some(i) => &lower[i + 1..],
+        None => &lower[..],
     };
-    if after_slash.len() >= 9 {
-        let (head, tail) = after_slash.split_at(after_slash.len() - 9);
-        if tail.starts_with('-') && tail[1..].chars().all(|c| c.is_ascii_digit()) {
-            return head.to_string();
+    // Inspect bytes so a multibyte char near the end can never make split panic:
+    // only truncate when the last 9 bytes are exactly `-` + 8 ASCII digits, which
+    // guarantees len-9 is a char boundary (the tail is pure ASCII).
+    let b = after_slash.as_bytes();
+    if b.len() >= 9 {
+        let tail = &b[b.len() - 9..];
+        if tail[0] == b'-' && tail[1..].iter().all(|c| c.is_ascii_digit()) {
+            return after_slash[..after_slash.len() - 9].to_string();
         }
     }
-    after_slash
+    after_slash.to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -147,9 +151,10 @@ pub fn rebuild_prices(conn: &mut Connection, litellm_json: &str) -> Result<u64, 
     Ok(count)
 }
 
-/// Fetch the latest LiteLLM snapshot (10s timeout), cache it, and rebuild.
-/// On any fetch/parse failure, fall back to the cached file, then the bundled snapshot.
-pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, String> {
+/// Fetch the latest LiteLLM snapshot (10s timeout) and return its JSON. Does NO DB
+/// work so callers can run the blocking network fetch outside the DB lock. On fetch
+/// failure falls back to the cached file, then the bundled snapshot.
+pub fn load_prices_json(cache_dir: &Path) -> String {
     let cache_file = cache_dir.join("model_prices.json");
     let fetched = ureq::get(LITELLM_URL)
         .timeout(std::time::Duration::from_secs(10))
@@ -157,17 +162,23 @@ pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, St
         .ok()
         .and_then(|resp| resp.into_string().ok());
     if let Some(body) = fetched {
-        if let Ok(n) = rebuild_prices(conn, &body) {
-            let _ = std::fs::create_dir_all(cache_dir);
-            let _ = std::fs::write(&cache_file, &body);
-            return Ok(n);
-        }
+        let _ = std::fs::create_dir_all(cache_dir);
+        let _ = std::fs::write(&cache_file, &body);
+        return body;
     }
     if let Ok(body) = std::fs::read_to_string(&cache_file) {
-        return rebuild_prices(conn, &body);
+        return body;
     }
-    let bundled = include_str!("../resources/model_prices.json");
-    rebuild_prices(conn, bundled)
+    include_str!("../resources/model_prices.json").to_string()
+}
+
+/// Fetch the latest LiteLLM snapshot and rebuild the prices table.
+/// Production splits these two steps (fetch outside the DB lock); this convenience
+/// wrapper is retained for the e2e test, hence test-only in non-test builds.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, String> {
+    let json = load_prices_json(cache_dir);
+    rebuild_prices(conn, &json)
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -329,6 +340,16 @@ mod tests {
         assert_eq!(normalize_model("anthropic/claude-3-5-sonnet-20241022"), "claude-3-5-sonnet");
         assert_eq!(normalize_model("claude-sonnet-4-5"), "claude-sonnet-4-5"); // -4-5 is not -\d{8}
         assert_eq!(normalize_model("replicate/meta/gemini-2.5-flash"), "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn normalize_is_byte_safe_on_multibyte_input() {
+        // len()-9 lands mid-UTF-8-char for these; the byte inspection must not
+        // panic and must leave the (non-date-suffixed) name intact once lowercased.
+        assert_eq!(normalize_model("café-modeléxyz"), "café-modeléxyz");
+        assert_eq!(normalize_model("模型-2.5-flashé"), "模型-2.5-flashé");
+        // A real -YYYYMMDD suffix (pure ASCII tail) still strips correctly.
+        assert_eq!(normalize_model("claude-haiku-4-5-20251001"), "claude-haiku-4-5");
     }
 
     #[test]
