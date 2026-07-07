@@ -346,7 +346,9 @@ mod tests {
         let tool_block = r#"{"type":"assistant","requestId":"req_z","timestamp":"2026-06-04T09:00:00.000Z","cwd":"/Users/dev/projects/x","message":{"id":"msg_zzz","model":"claude-opus-4-8","usage":{"input_tokens":30,"output_tokens":4626,"cache_read_input_tokens":5,"cache_creation_input_tokens":0}}}"#;
         std::fs::write(&logp, format!("{text_block}\n{tool_block}\n")).unwrap();
 
-        scan_claude(&mut conn, &root);
+        // two content-block lines for one turn count as ONE distinct new event
+        let r1 = scan_claude(&mut conn, &root);
+        assert_eq!(r1.events_inserted, 1);
 
         // exactly one row for the key, carrying the MAX output (4626, not 2, not 4628)
         let (rows, out): (i64, i64) = conn
@@ -359,8 +361,9 @@ mod tests {
         assert_eq!(rows, 1);
         assert_eq!(out, 4626);
 
-        // idempotent: a second scan of the same file leaves it at 4626
-        scan_claude(&mut conn, &root);
+        // idempotent: a second scan of the same file inserts nothing and stays at 4626
+        let r2 = scan_claude(&mut conn, &root);
+        assert_eq!(r2.events_inserted, 0);
         let out2: i64 = conn
             .query_row(
                 "SELECT output_tokens FROM events WHERE dedup_key = 'claude:msg_zzz:req_z'",
