@@ -61,11 +61,16 @@ SQL; the frontend only renders.
 ### Scan execution model
 
 `scan()` is a Tauri async command. Concurrent calls (timer tick or manual
-refresh while a scan runs) coalesce into the in-flight scan rather than
-starting a second one. The dashboard renders immediately from existing data
-and shows a "scanning…" state in the status footer, re-querying when `scan()`
-resolves. The app database is opened in WAL mode with a busy timeout so
-summary/trend/breakdown reads proceed during ingestion.
+refresh while a scan runs) coalesce via a scan lock rather than starting a
+second scan. The dashboard renders immediately from existing data and shows a
+"scanning…" state in the status footer, re-querying when `scan()` resolves. The
+app database is opened in WAL mode with a busy timeout. v1 uses a single
+serialized connection, so a `summary`/`trend`/`breakdown` read briefly waits
+behind an in-flight scan — acceptable because incremental scans are cheap
+(milliseconds; a `stat()` sweep plus a few appended lines) and the only slow
+scan is the first full ingest, when there is no prior data to display anyway.
+(A dedicated read connection would let reads run fully concurrently under WAL;
+deferred until a scan is ever slow enough to matter.)
 
 ### Refresh model
 

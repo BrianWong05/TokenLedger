@@ -37,6 +37,7 @@ write in this task; the deliverable is the working scaffold and the green gates
   `index.html`, `vite.config.ts`, `tsconfig.json`, `tsconfig.node.json`,
   `.gitignore`, `.vscode/extensions.json`, `public/*`, `src/main.tsx`,
   `src/App.tsx`, `src/App.css`, `src/assets/*`, `src/vite-env.d.ts`,
+  and (authored below) `src/index.css`,
   `src-tauri/Cargo.toml`, `src-tauri/build.rs`, `src-tauri/tauri.conf.json`,
   `src-tauri/.gitignore`, `src-tauri/capabilities/default.json`,
   `src-tauri/icons/*`, `src-tauri/src/main.rs`, `src-tauri/src/lib.rs`
@@ -60,6 +61,9 @@ write in this task; the deliverable is the working scaffold and the green gates
     exits 0 until Task 11 adds real tests.
   - App identity: `productName` `TokenLedger`, `identifier`
     `com.brianwong.tokenledger`.
+  - `src/index.css` exists and `src/main.tsx` imports it
+    (`import "./index.css";`), so the global stylesheet Task 15 fills in is
+    already wired into the bundle.
 
 ---
 
@@ -229,7 +233,32 @@ write in this task; the deliverable is the working scaffold and the green gates
   }
   ```
 
-- [ ] **Step 6: Create `README.md` stub**
+- [ ] **Step 6: Create the global stylesheet and wire its import**
+
+  The `react-ts` Tauri template ships `src/App.css` but no `src/index.css`, and
+  its `src/main.tsx` imports no global stylesheet. Task 15 delivers the full
+  dark theme by modifying `src/index.css`, so create it now (empty) and wire the
+  import — that way every later task's `npm run build` gate resolves the import
+  regardless of the order tasks run in.
+
+  Create `/Users/brianwong/Project/usage/src/index.css` with a single line:
+
+  ```css
+  /* TokenLedger global styles — dark theme lands in Task 15 */
+  ```
+
+  Then add this import at the top of `/Users/brianwong/Project/usage/src/main.tsx`
+  (below the existing React imports, above the `ReactDOM.createRoot(...)` call):
+
+  ```tsx
+  import "./index.css";
+  ```
+
+  Expected: `src/index.css` exists and `src/main.tsx` contains the
+  `import "./index.css";` line. The scaffold's `src/App.css` is left as-is;
+  Task 11 replaces `src/App.tsx` and does not rely on it.
+
+- [ ] **Step 7: Create `README.md` stub**
 
   Create `/Users/brianwong/Project/usage/README.md` with exactly:
 
@@ -254,7 +283,7 @@ write in this task; the deliverable is the working scaffold and the green gates
   ```
   ```
 
-- [ ] **Step 7: Install dependencies and verify all three gates are green**
+- [ ] **Step 8: Install dependencies and verify all three gates are green**
 
   ```bash
   cd /Users/brianwong/Project/usage
@@ -274,7 +303,7 @@ write in this task; the deliverable is the working scaffold and the green gates
     build) and prints three `test result: ok. 0 passed; 0 failed; ...`
     blocks (lib, bin, doc-tests). Exit code 0.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
   ```bash
   cd /Users/brianwong/Project/usage
@@ -4504,7 +4533,7 @@ export default function App() {
   const modelOptions = modelRows.map((r) => r.key);
 
   return (
-    <div style={{ padding: 16, fontFamily: 'system-ui, sans-serif' }}>
+    <div className="app">
       <h1>TokenLedger</h1>
 
       <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
@@ -4673,8 +4702,9 @@ git commit -m "feat: frontend foundation — types, api wrappers, date/format ut
 - Consumes (from Task 11 `src/App.tsx`): App holds the state shape
   `{ tool: Tool | 'all', model: string | 'all', range: DateRange, refreshSec: 0 | 30 | 60 }`
   with setters `setTool`/`setModel`/`setRange`/`setRefreshSec`, plus fetched data
-  `summary: Summary | null` and `modelBreakdown: BreakdownRow[]` (the
-  `breakdown('model', …)` result).
+  `summary: Summary | null` and `modelRows: BreakdownRow[]` (the
+  `breakdown('model', …)` result), from which Task 11 already derives
+  `const modelOptions = modelRows.map((r) => r.key);`.
 - Produces (later tasks + App consume these default exports and prop types):
   ```ts
   // FilterBar.tsx
@@ -4950,12 +4980,10 @@ import HeroCard from './components/HeroCard';
 import StatCards from './components/StatCards';
 ```
 
-Then, inside the App component body, derive the model dropdown options from the
-`breakdown('model', …)` result (Task 11 stores it as `modelBreakdown`):
-
-```tsx
-const modelOptions = modelBreakdown.map((r) => r.key);
-```
+Task 11's `App.tsx` already computes the model dropdown options as
+`const modelOptions = modelRows.map((r) => r.key);` — reuse that identifier
+directly; do **not** redeclare it (a second `const modelOptions` in the same
+scope is a TS2451 "Cannot redeclare block-scoped variable" error).
 
 Replace the Task-11 placeholder filter/hero/stat `<div>`s in the returned JSX
 with the wired components (keep any surrounding loading/error markup from Task
@@ -4980,7 +5008,7 @@ with the wired components (keep any surrounding loading/error markup from Task
 > If Task 11 named a setter/state variable differently, keep its name and pass
 > it in the matching prop slot above — the prop names on the components are
 > fixed, the App-side identifiers are whatever Task 11 declared for the state
-> shape `{ tool, model, range, refreshSec }` + `summary` + `modelBreakdown`.
+> shape `{ tool, model, range, refreshSec }` + `summary` + `modelRows`.
 
 - [ ] **Step 5: Typecheck + build**
 
@@ -4989,7 +5017,7 @@ npm run build
 ```
 
 Expected: `tsc` reports no type errors and `vite build` completes (`✓ built in …`).
-If `tsc` errors with e.g. `Cannot find name 'modelBreakdown'`, the Task-11 App
+If `tsc` errors with e.g. `Cannot find name 'modelRows'`, the Task-11 App
 state name differs — reconcile per the note in Step 4, then re-run.
 
 - [ ] **Step 6: Visual check**
@@ -5052,8 +5080,8 @@ git commit -m "feat: add FilterBar, HeroCard, and StatCards components"
   ```
 - Consumes (from Task 11 `src/App.tsx`): App fetches data via `Promise.all` and
   holds `trend: TrendPoint[]` (the `trend(filters, bucket)` result),
-  `modelBreakdown: BreakdownRow[]` (`breakdown('model', …)`), and
-  `projectBreakdown: BreakdownRow[]` (`breakdown('project', …)`), plus the filter
+  `modelRows: BreakdownRow[]` (`breakdown('model', …)`), and
+  `projectRows: BreakdownRow[]` (`breakdown('project', …)`), plus the filter
   state `range: DateRange` (bucketing is `'hour'` when `range === 'today'`, else
   `'day'`).
 - Produces (App consumes these default exports and prop types):
@@ -5327,13 +5355,13 @@ surrounding loading/error markup from Task 11 unchanged):
 
 ```tsx
 <TrendChart points={trend} bucket={trendBucket} />
-<BreakdownTables modelRows={modelBreakdown} projectRows={projectBreakdown} />
+<BreakdownTables modelRows={modelRows} projectRows={projectRows} />
 ```
 
 > If Task 11 named the fetched-data state differently, keep its names and pass
 > them into the matching prop slots above — the component prop names are fixed,
 > the App-side identifiers are whatever Task 11 declared for `trend`,
-> `modelBreakdown`, `projectBreakdown`, and the `range` filter state.
+> `modelRows`, `projectRows`, and the `range` filter state.
 
 - [ ] **Step 4: Typecheck + build**
 
@@ -5343,7 +5371,7 @@ npm run build
 
 Expected: `tsc` reports no type errors and `vite build` completes
 (`✓ built in …`). `recharts` resolves (installed in Task 1). If `tsc` errors
-with e.g. `Cannot find name 'projectBreakdown'`, the Task-11 App state name
+with e.g. `Cannot find name 'projectRows'`, the Task-11 App state name
 differs — reconcile per the note in Step 3, then re-run.
 
 - [ ] **Step 5: Visual check**
@@ -5761,13 +5789,15 @@ font stack, the card grid, tabular numerals, and the chart color palette that
 the Recharts series in `TrendChart.tsx` (Task 13) read via CSS variables.
 
 Theming is done primarily with **element selectors** (`body`, `button`,
-`select`, `input`, `table`, `th`, `td`) plus a small documented **class
-contract** the Task 12–14 components use (`.app`, `.card`, `.filter-bar`,
-`.segmented`, `.hero`, `.stat-grid`, `.stat-card`, `.progress`,
-`.breakdown-grid`, `.num`, `.status-footer`, `.dialog-backdrop`, `.dialog`).
-This keeps the theme robust and self-contained: numbers get `tabular-nums`
-from `body`, form controls and tables are styled by tag, and cards are the one
-class every panel carries.
+`select`, `input`, `table`, `th`, `td`) plus a documented **class contract**
+that exactly matches the class names the Task 11–14 components emit (`.app`,
+`.filter-bar`, `.segmented`, `.hero-card`, `.stat-cards`, `.stat-card`,
+`.progress`, `.breakdown-tables`, `.breakdown-table`, `.bt-num`,
+`.status-footer`, `.source-stat`, `.set-price`, `.dialog-backdrop`, `.dialog`,
+`.dialog-save`). This keeps the theme robust and self-contained: numbers get
+`tabular-nums` from `body`, form controls and tables are styled by tag, and the
+panel classes (`.hero-card`, `.stat-card`, `.breakdown-table`) each carry the
+card surface.
 
 **Files:**
 - Modify: `src/index.css`
@@ -5848,13 +5878,6 @@ body {
   gap: 16px;
 }
 
-.card {
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-}
-
 /* ---- filter bar ---- */
 
 .filter-bar {
@@ -5915,7 +5938,17 @@ button:focus-visible {
 
 /* ---- hero card ---- */
 
-.hero {
+.hero-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hero-meta {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
@@ -5940,14 +5973,20 @@ button:focus-visible {
   color: var(--green);
 }
 
-.hero-sub {
+.hero-cost-label {
+  color: var(--muted);
+  font-size: 13px;
+  margin-right: 6px;
+}
+
+.hero-cost-sub {
   color: var(--muted);
   font-size: 12px;
 }
 
 /* ---- stat cards ---- */
 
-.stat-grid {
+.stat-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
@@ -5989,13 +6028,17 @@ button:focus-visible {
 
 /* ---- breakdown tables ---- */
 
-.breakdown-grid {
+.breakdown-tables {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 16px;
 }
 
-.breakdown-grid .card {
+.breakdown-table {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
   overflow-x: auto;
 }
 
@@ -6025,7 +6068,7 @@ tr:last-child td {
 }
 
 /* right-aligned numeric cells */
-.num {
+.bt-num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -6042,17 +6085,17 @@ tr:last-child td {
   padding: 12px 18px;
 }
 
-.source-status {
+.source-stat {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.source-status.error {
+.source-stat.error {
   color: var(--cost);
 }
 
-.link-button {
+.set-price {
   background: none;
   border: none;
   color: var(--accent);
@@ -6061,7 +6104,7 @@ tr:last-child td {
   font: inherit;
 }
 
-.link-button:hover {
+.set-price:hover {
   text-decoration: underline;
 }
 
@@ -6111,7 +6154,7 @@ tr:last-child td {
   cursor: pointer;
 }
 
-.dialog-actions button.primary {
+.dialog-actions button.dialog-save {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
