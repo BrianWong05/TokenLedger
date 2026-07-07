@@ -10,6 +10,9 @@ import type {
 import { scan, fetchSummary, fetchTrend, fetchBreakdown } from './api';
 import { rangeToBounds } from './lib/dateRange';
 import { formatTokens, formatCost } from './lib/format';
+import FilterBar from './components/FilterBar';
+import HeroCard from './components/HeroCard';
+import StatCards from './components/StatCards';
 
 export default function App() {
   const [tool, setTool] = useState<Tool | 'all'>('all');
@@ -97,72 +100,24 @@ export default function App() {
     <div className="app">
       <h1>TokenLedger</h1>
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
-        <select
-          value={tool}
-          onChange={(e) => setTool(e.target.value as Tool | 'all')}
-        >
-          <option value="all">All tools</option>
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="gemini">Gemini</option>
-          <option value="hermes">Hermes</option>
-        </select>
-
-        <select value={model} onChange={(e) => setModel(e.target.value)}>
-          <option value="all">All models</option>
-          {modelOptions.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={typeof range === 'string' ? range : 'custom'}
-          onChange={(e) => setRange(e.target.value as DateRange)}
-        >
-          <option value="today">Today</option>
-          <option value="7d">7d</option>
-          <option value="30d">30d</option>
-          <option value="all">All</option>
-        </select>
-
-        <select
-          value={refreshSec}
-          onChange={(e) =>
-            setRefreshSec(Number(e.target.value) as 0 | 30 | 60)
-          }
-        >
-          <option value={0}>Off</option>
-          <option value={30}>30s</option>
-          <option value={60}>60s</option>
-        </select>
-
-        <button onClick={runScan}>Rescan</button>
-      </div>
+      <FilterBar
+        tool={tool}
+        model={model}
+        range={range}
+        refreshSec={refreshSec}
+        modelOptions={modelOptions}
+        onToolChange={setTool}
+        onModelChange={setModel}
+        onRangeChange={setRange}
+        onRefreshChange={setRefreshSec}
+      />
+      <button onClick={runScan}>Rescan</button>
 
       {error && <div style={{ color: '#ff5c7a' }}>Error: {error}</div>}
       {loading && <div>Loading…</div>}
 
-      {summary && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 40, fontWeight: 700 }}>
-            {formatTokens(summary.totalTokens)}
-          </div>
-          <div>total tokens</div>
-          <div>{summary.requests.toLocaleString('en-US')} requests</div>
-          <div>{formatCost(summary.cost, summary.hasUnpriced)}</div>
-          <div>at API list prices — not billed</div>
-          <div>input {formatTokens(summary.inputTokens)}</div>
-          <div>output {formatTokens(summary.outputTokens)}</div>
-          <div>cache write {formatTokens(summary.cacheWriteTokens)}</div>
-          <div>cache read {formatTokens(summary.cacheReadTokens)}</div>
-          <div>
-            cache hit rate {(summary.cacheHitRate * 100).toFixed(1)}%
-          </div>
-        </div>
-      )}
+      <HeroCard summary={summary} />
+      <StatCards summary={summary} />
 
       <div>trend points: {trend.length}</div>
 
