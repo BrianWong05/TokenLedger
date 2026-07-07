@@ -123,13 +123,20 @@ one never blocks the others.
 ### Gemini CLI
 
 - **Files:** `~/.gemini/tmp/*/chats/session-*.json` (whole-file JSON, rewritten
-  as the session grows).
-- **Extract:** per-message token fields; exact field names confirmed against
-  real files during implementation (fixtures exist on this machine).
-- **Project:** the `tmp/` subdirectory name; hash-named dirs resolved to real
-  paths via `~/.gemini/projects.json` where possible, else the hash is shown.
-- **Dedup/incremental:** on mtime/size change, `DELETE WHERE source_file = ?`
-  then re-insert — replace-per-file, no offsets.
+  as the session grows). Verified on this machine: 30/39 files carry token
+  data; the rest are trivial sessions and simply contribute no events.
+- **Extract:** messages carry `tokens: {input, output, cached, thoughts, tool,
+  total}` and a per-message `model`. Mapping: `input` → input, `output` +
+  `thoughts` → output (matching how Codex/Hermes reasoning is treated),
+  `cached` → cache_read, cache_write = 0 (not reported). Messages without a
+  `tokens` field contribute no event.
+- **Project:** the `tmp/` subdirectory name. Recent sessions use friendly
+  names that appear as values in `~/.gemini/projects.json` (real path →
+  friendly name), so reverse-map to the real path when possible; older
+  hash-named dirs are shown as a shortened hash.
+- **Dedup key:** `gemini:{sessionId}:{message.id}`.
+- **Incremental:** on mtime/size change, `DELETE WHERE source_file = ?` then
+  re-insert — replace-per-file, no offsets.
 
 ### Hermes
 
