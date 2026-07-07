@@ -1,11 +1,12 @@
-# AI Usage Tracker — Design
+# TokenLedger — AI Usage Tracker Design
 
 **Date:** 2026-07-07
 **Status:** Approved by user (brainstorming session)
+**Repo:** git@github.com:BrianWong05/TokenLedger.git
 
 ## Overview
 
-A macOS desktop app (Tauri v2) that tracks token usage and estimated cost across
+TokenLedger is a macOS desktop app (Tauri v2) that tracks token usage and estimated cost across
 the AI coding tools on this machine: Claude Code, Codex CLI, Gemini CLI, and
 Hermes. It parses each tool's local logs into a normalized SQLite cache and
 shows a dark-themed dashboard: totals, estimated cost, cache hit rate, a daily
