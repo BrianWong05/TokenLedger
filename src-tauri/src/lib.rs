@@ -6,6 +6,15 @@ mod scan;
 mod time;
 mod types;
 
+// Task 16 end-to-end verification against the real logs on this machine.
+// ponytail: lives inside the crate (not src-tauri/tests/) because db, scan,
+// pricing, and queries are private (`mod`, not `pub mod`) above — an
+// external integration-test crate can't see them, and widening that
+// visibility is out of scope for a verification-only task. An internal
+// #[cfg(test)] module gets full crate access for free instead.
+#[cfg(test)]
+mod e2e_real_logs;
+
 use std::sync::Mutex;
 
 use rusqlite::Connection;

@@ -221,6 +221,15 @@ button:focus-visible {
   background: var(--green);
 }
 
+/* ---- trend chart ---- */
+
+.trend-chart {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
 /* ---- breakdown tables ---- */
 
 .breakdown-tables {
