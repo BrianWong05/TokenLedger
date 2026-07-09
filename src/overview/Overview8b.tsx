@@ -20,6 +20,7 @@ import {
   FIRST_ISO,
   LAST_ISO,
   costOf,
+  mockModelBars,
   fmtTok,
   fmtUSD,
   fmtPct,
@@ -155,7 +156,7 @@ export default function Overview8b() {
                 <ContextBreakdown tool={tool} toolTokens={view.toolTotals[sel]} showBars />
               </div>
               <div>
-                <ModelsList tool={tool} toolTokens={view.toolTotals[sel]} />
+                <ModelsList tool={tool} toolTokens={view.toolTotals[sel]} models={mockModelBars(sel, view.toolTotals[sel])} />
               </div>
             </div>
           </div>

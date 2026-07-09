@@ -958,3 +958,17 @@
   color: var(--tt-fg);
   font-weight: 700;
 }
+
+/* Small inline marker: model is Cache-Estimated (cache tokens unpriced). */
+.tt-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: #e2a63b;
+  background: rgba(226, 166, 59, 0.12);
+  border: 1px solid rgba(226, 166, 59, 0.3);
+  vertical-align: 1px;
+}
