@@ -7,6 +7,7 @@ import BreakdownTable from './BreakdownTable';
 import {
   TOOLS,
   MODELS,
+  DAYS,
   RANGES_8B,
   sliceDays,
   daysBetween,
@@ -144,7 +145,7 @@ export default function Overview8b() {
 
           <div className="tt-b8-grid">
             <div className="tt-b8-col">
-              <Heatmap compact />
+              <Heatmap days={DAYS} compact />
               <AggTrend data={view.trend} per={per} rangeLabel={rangeLabel} />
               <SmallMultiples items={view.sparks} rangeLabel={rangeLabel} />
             </div>
