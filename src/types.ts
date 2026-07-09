@@ -29,6 +29,7 @@ export interface Summary {
   cost: number | null;      // null when zero priced tokens in range
   hasUnpriced: boolean;
   unpricedModels: string[];
+  cacheEstimatedModels: string[];
   cacheHitRate: number;     // 0..1
 }
 
@@ -42,6 +43,20 @@ export interface TrendPoint {
   cost: number;
 }
 
+export interface SeriesPoint {
+  bucket: string;                 // 'YYYY-MM-DD' (day) or 'YYYY-MM-DD HH:00' (hour)
+  source: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  reasoningTokens: number | null;
+  cost: number;
+  requests: number;
+  convs: number;
+}
+
 export interface BreakdownRow {
   key: string;
   inputTokens: number;
@@ -51,6 +66,10 @@ export interface BreakdownRow {
   totalTokens: number;
   requests: number;
   cost: number | null;
+  source: string | null;          // set only for by='model'
+  reasoningTokens: number | null; // null = not reported by the source(s)
+  convs: number;
+  cacheEstimated: boolean;
 }
 
 export interface SourceStatus {

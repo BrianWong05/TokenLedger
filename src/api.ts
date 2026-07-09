@@ -3,6 +3,7 @@ import type {
   ScanStatus,
   Summary,
   TrendPoint,
+  SeriesPoint,
   BreakdownRow,
   Filters,
   OverrideRates,
@@ -21,6 +22,13 @@ export function fetchTrend(
   bucket: 'day' | 'hour',
 ): Promise<TrendPoint[]> {
   return invoke('trend', { filters, bucket });
+}
+
+export function fetchSeries(
+  filters: Filters,
+  bucket: 'day' | 'hour',
+): Promise<SeriesPoint[]> {
+  return invoke('series', { filters, bucket });
 }
 
 export function fetchBreakdown(

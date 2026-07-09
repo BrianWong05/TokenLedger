@@ -21,7 +21,7 @@ use rusqlite::Connection;
 use tauri::{Manager, State};
 
 use pricing::OverrideRates;
-use queries::{BreakdownRow, Filters, Summary, TrendPoint};
+use queries::{BreakdownRow, Filters, SeriesPoint, Summary, TrendPoint};
 use scan::{run_scan, SourceRoots};
 use types::ScanStatus;
 
@@ -57,6 +57,16 @@ fn trend(
 ) -> Result<Vec<TrendPoint>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::trend(&db, &filters, &bucket).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn series(
+    state: State<'_, AppState>,
+    filters: Filters,
+    bucket: String,
+) -> Result<Vec<SeriesPoint>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::series(&db, &filters, &bucket).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -116,6 +126,7 @@ pub fn run() {
             scan,
             summary,
             trend,
+            series,
             breakdown,
             set_price_override,
             delete_price_override
