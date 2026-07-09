@@ -161,7 +161,7 @@ export default function Overview8b() {
             </div>
           </div>
 
-          <BreakdownTable days={view.days} total={view.total} />
+          <BreakdownTable dailyRows={[]} projectRows={[]} />
         </div>
       </div>
     </div>
