@@ -120,3 +120,10 @@ The Cost of a set of Usage Records that mixes priced and Unpriced Models: a sum
 over only the priced tokens, shown with a "≥" marker and a count of the Unpriced
 Models, so the figure is never mistaken for a complete total.
 _Avoid_: Partial total, incomplete cost
+
+**Cache-Estimated**:
+The state of a Model that is priced for input and output but whose Cache tokens
+have no rate, so its Cost is real yet excludes those counted-but-unpriced cache
+tokens. A weaker gap than Unpriced: it is flagged per-Model (a cost marker) but,
+unlike an Unpriced Model, does not turn the view's total into a "≥" Partial Cost.
+_Avoid_: Cache-free, partial price
