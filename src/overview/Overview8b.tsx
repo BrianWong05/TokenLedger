@@ -1,68 +1,126 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import './overview.css';
 import Heatmap from './Heatmap';
-import ContextBreakdown from './ContextBreakdown';
+import TokenBreakdown from './TokenBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
+import { scan, fetchSeries, fetchSummary, fetchBreakdown } from '../api';
+import type { BreakdownRow, SeriesPoint, Summary } from '../types';
 import {
   TOOLS,
-  MODELS,
-  DAYS,
   RANGES_8B,
-  sliceDays,
-  daysBetween,
-  sumTokens,
-  toolTotalsOf,
-  bucketsOf,
+  seriesToDays,
+  windowOf,
+  pointsIn,
+  granularityOf,
+  bucketsFromPoints,
   smallMultiples,
-  perOf,
-  fmtIsoDate,
-  FIRST_ISO,
-  LAST_ISO,
-  costOf,
-  mockModelBars,
-  fmtTok,
-  fmtUSD,
-  fmtPct,
+  toolTotalsOfPoints,
+  sumPoints,
+  catTotals,
+  dailyTableRows,
+  projectTableRows,
+  modelBars,
+  rangeToFilters,
   type Range8b,
   type ToolKey,
   type Bucket,
-} from './mock';
+} from './data';
+import { fmtTok, fmtPct, fmtIsoDate, formatCost } from '../lib/format';
 
 const NAV = ['Overview', 'Insights', 'Models', 'Settings'];
+const EMPTY_FILTERS = { tools: [], models: [], project: null };
 
-// Design 8b — "App · Overview": totals + tool cards + heatmap + aggregate trend
-// + per-tool small multiples + context/models, all scoped to a global range.
+function isoToday(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// Design 8b — "App · Overview", wired to the real Ledger. One unbounded daily
+// series powers heatmap/trends/tables via client-side slicing; summary and
+// breakdowns re-fetch per range; an hourly series serves the Day view.
 export default function Overview8b() {
   const [nav, setNav] = useState('Overview');
   const [range, setRange] = useState<Range8b>('total');
   const [sel, setSel] = useState<ToolKey>('claude');
-  const [customFrom, setCustomFrom] = useState(sliceDays('month')[0].iso);
-  const [customTo, setCustomTo] = useState(LAST_ISO);
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+
+  const [allPoints, setAllPoints] = useState<SeriesPoint[] | null>(null);
+  const [hourPoints, setHourPoints] = useState<SeriesPoint[]>([]);
+  const [sum, setSum] = useState<Summary | null>(null);
+  const [modelRows, setModelRows] = useState<BreakdownRow[]>([]);
+  const [projRows, setProjRows] = useState<BreakdownRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  // Mount: scan the logs, then load the whole ledger's daily series once.
+  useEffect(() => {
+    (async () => {
+      try {
+        const status = await scan();
+        const errs = status.sources.filter((s) => s.error).map((s) => `${s.source}: ${s.error}`);
+        if (errs.length) setError(errs.join(' · '));
+      } catch (e) {
+        setError(String(e));
+      }
+      try {
+        setAllPoints(await fetchSeries(EMPTY_FILTERS, 'day'));
+      } catch (e) {
+        setError(String(e));
+        setAllPoints([]);
+      }
+    })();
+  }, []);
+
+  const firstIso = allPoints?.length ? allPoints.reduce((a, p) => (p.bucket < a ? p.bucket : a), allPoints[0].bucket) : isoToday();
+  const lastIso = isoToday();
+  const cf = customFrom || firstIso;
+  const ct = customTo || lastIso;
+
+  // Per-range data: authoritative cost + right column + project table (+ hourly on Day).
+  useEffect(() => {
+    if (allPoints === null) return;
+    const filters = rangeToFilters(range, cf, ct);
+    fetchSummary(filters).then(setSum).catch((e) => setError(String(e)));
+    fetchBreakdown('model', filters).then(setModelRows).catch((e) => setError(String(e)));
+    fetchBreakdown('project', filters).then(setProjRows).catch((e) => setError(String(e)));
+    if (range === 'day') {
+      fetchSeries(filters, 'hour').then(setHourPoints).catch((e) => setError(String(e)));
+    }
+  }, [allPoints, range, cf, ct]);
 
   const view = useMemo(() => {
-    const days = range === 'custom' ? daysBetween(customFrom, customTo) : sliceDays(range);
-    const total = sumTokens(days);
+    const pts = allPoints ?? [];
+    const days = seriesToDays(pts);
+    const win = windowOf(range, cf, ct);
+    const rpts = pointsIn(pts, win);
+    const spanDays = new Set(rpts.map((p) => p.bucket.slice(0, 10))).size || 1;
+    const per = granularityOf(range, spanDays);
+    const trend = per === 'hour' ? bucketsFromPoints(hourPoints, 'hour') : bucketsFromPoints(rpts, per);
     return {
       days,
-      count: days.length,
-      total,
-      cost: costOf(total),
-      toolTotals: toolTotalsOf(days),
-      trend: bucketsOf(days, range),
-      sparks: smallMultiples(days, range),
+      rpts,
+      total: sumPoints(rpts),
+      toolTotals: toolTotalsOfPoints(rpts),
+      per,
+      trend,
+      sparks: smallMultiples(trend),
+      cats: catTotals(rpts, sel),
+      dailyRows: dailyTableRows(rpts),
     };
-  }, [range, customFrom, customTo]);
+  }, [allPoints, hourPoints, range, cf, ct, sel]);
 
   const rangeLabel =
-    range === 'custom' ? `${fmtIsoDate(customFrom)} – ${fmtIsoDate(customTo)}` : RANGES_8B.find((r) => r.key === range)!.long;
-  const per = perOf(range, view.count);
+    range === 'custom' ? `${fmtIsoDate(cf)} – ${fmtIsoDate(ct)}` : RANGES_8B.find((r) => r.key === range)!.long;
   const grand = view.total || 1;
   const tool = TOOLS.find((t) => t.key === sel)!;
+  const loading = allPoints === null;
 
   return (
     <div className="tt">
-      <div className="tt-app">
+      <div className={'tt-app' + (loading ? ' tt-loading' : '')}>
         <div className="tt-top">
           <div className="tt-brand">
             <div className="tt-logo">
@@ -85,26 +143,28 @@ export default function Overview8b() {
                 </button>
               ))}
             </div>
-            <span className="tt-avatar">MK</span>
+            <span className="tt-avatar">BW</span>
           </div>
         </div>
+
+        {error && <div className="tt-error">{error}</div>}
 
         {range === 'custom' && (
           <div className="tt-custom-row">
             <span className="lbl">Custom range</span>
             <input
               type="date"
-              value={customFrom}
-              min={FIRST_ISO}
-              max={customTo}
+              value={cf}
+              min={firstIso}
+              max={ct}
               onChange={(e) => e.target.value && setCustomFrom(e.target.value)}
             />
             <span className="to">to</span>
             <input
               type="date"
-              value={customTo}
-              min={customFrom}
-              max={LAST_ISO}
+              value={ct}
+              min={cf}
+              max={lastIso}
               onChange={(e) => e.target.value && setCustomTo(e.target.value)}
             />
           </div>
@@ -113,8 +173,13 @@ export default function Overview8b() {
         <div className="tt-b8-body">
           <div className="tt-b8-head">
             <div className="tt-eyebrow">Total tokens · {rangeLabel}</div>
-            <div className="tt-b8-total">{fmtTok(view.total)}</div>
-            <div className="tt-b8-cost">{fmtUSD(view.cost)} est.</div>
+            <div className="tt-b8-total">{fmtTok(sum?.totalTokens ?? view.total)}</div>
+            <div className="tt-b8-cost">
+              {sum ? formatCost(sum.cost, sum.hasUnpriced) : '…'} est.
+              {sum?.hasUnpriced && (
+                <span title={sum.unpricedModels.join(', ')}> · {sum.unpricedModels.length} unpriced</span>
+              )}
+            </div>
           </div>
 
           <div className="tt-split">
@@ -126,6 +191,7 @@ export default function Overview8b() {
           <div className="tt-toolcards">
             {TOOLS.map((t) => {
               const active = t.key === sel;
+              const nModels = modelRows.filter((r) => r.source === t.key).length;
               return (
                 <button
                   key={t.key}
@@ -138,7 +204,7 @@ export default function Overview8b() {
                     {t.label}
                   </div>
                   <div className="num">{fmtPct(view.toolTotals[t.key] / grand)}</div>
-                  <div className="sub">{MODELS[t.key].length} models</div>
+                  <div className="sub">{nModels} model{nModels === 1 ? '' : 's'}</div>
                 </button>
               );
             })}
@@ -146,22 +212,26 @@ export default function Overview8b() {
 
           <div className="tt-b8-grid">
             <div className="tt-b8-col">
-              <Heatmap days={DAYS} compact />
-              <AggTrend data={view.trend} per={per} rangeLabel={rangeLabel} />
+              <Heatmap days={view.days} compact />
+              <AggTrend data={view.trend} per={view.per} rangeLabel={rangeLabel} />
               <SmallMultiples items={view.sparks} rangeLabel={rangeLabel} />
             </div>
 
             <div className="tt-b8-col">
               <div>
-                <ContextBreakdown tool={tool} toolTokens={view.toolTotals[sel]} showBars />
+                <TokenBreakdown tool={tool} cats={view.cats} />
               </div>
               <div>
-                <ModelsList tool={tool} toolTokens={view.toolTotals[sel]} models={mockModelBars(sel, view.toolTotals[sel])} />
+                <ModelsList
+                  tool={tool}
+                  toolTokens={view.toolTotals[sel]}
+                  models={modelBars(modelRows, sel, view.toolTotals[sel])}
+                />
               </div>
             </div>
           </div>
 
-          <BreakdownTable dailyRows={[]} projectRows={[]} />
+          <BreakdownTable dailyRows={view.dailyRows} projectRows={projectTableRows(projRows)} />
         </div>
       </div>
     </div>
@@ -181,7 +251,7 @@ function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rang
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
   const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
-  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0]);
+  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { label: '—', byTool: { claude: 0, codex: 0, gemini: 0, hermes: 0 }, total: 0 });
   const plotW = VW - PL - PR;
   const slot = plotW / (data.length || 1);
   const barW = Math.min(38, slot * 0.62);

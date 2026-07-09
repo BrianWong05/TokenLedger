@@ -972,3 +972,19 @@
   border: 1px solid rgba(226, 166, 59, 0.3);
   vertical-align: 1px;
 }
+
+/* Scan/query failure line under the top bar. */
+.tt-error {
+  margin: 8px 22px 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #f0876f;
+  background: rgba(240, 135, 111, 0.08);
+  border: 1px solid rgba(240, 135, 111, 0.25);
+}
+/* First-load state: dim until the initial series arrives. */
+.tt-loading {
+  opacity: 0.55;
+  pointer-events: none;
+}
