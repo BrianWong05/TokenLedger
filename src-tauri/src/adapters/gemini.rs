@@ -129,6 +129,8 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
             cache_write_5m_tokens: 0,
             cache_write_1h_tokens: 0,
             source_file: path_str.clone(),
+            session_id: None,
+            reasoning_tokens: None,
         });
     }
 

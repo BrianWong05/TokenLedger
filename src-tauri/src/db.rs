@@ -43,20 +43,39 @@ CREATE TABLE IF NOT EXISTS price_overrides (
 PRAGMA user_version = 1;
 COMMIT;";
 
-const INSERT_SQL: &str = "INSERT OR IGNORE INTO events \
+// After the SCHEMA const. Clearing scanned_files forces the next scan to
+// re-parse every log so existing rows get session_id/reasoning backfilled
+// via the ON CONFLICT clauses below. Events are never deleted (Ledger rule).
+const SCHEMA_V2: &str = "\
+BEGIN;
+ALTER TABLE events ADD COLUMN session_id TEXT;
+ALTER TABLE events ADD COLUMN reasoning_tokens INTEGER;
+DELETE FROM scanned_files;
+PRAGMA user_version = 2;
+COMMIT;";
+
+// On dedup conflict, refresh only the v2 columns: token counts are immutable
+// (Ledger), but a backfill re-scan must fill session_id/reasoning on old rows.
+const INSERT_SQL: &str = "INSERT INTO events \
 (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, \
-cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file) \
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
+cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+ON CONFLICT(dedup_key) DO UPDATE SET \
+  session_id = COALESCE(excluded.session_id, events.session_id), \
+  reasoning_tokens = COALESCE(excluded.reasoning_tokens, events.reasoning_tokens)";
 
 const REPLACE_SQL: &str = "INSERT OR REPLACE INTO events \
 (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, \
-cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file) \
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
+cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
+VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)";
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if version < 1 {
         conn.execute_batch(SCHEMA)?;
+    }
+    if version < 2 {
+        conn.execute_batch(SCHEMA_V2)?;
     }
     Ok(())
 }
@@ -72,20 +91,21 @@ pub fn open_db(path: &std::path::Path) -> rusqlite::Result<Connection> {
 
 pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<u64> {
     let tx = conn.transaction()?;
-    let mut inserted = 0u64;
+    let before: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
     {
         let mut stmt = tx.prepare(INSERT_SQL)?;
         for e in events {
-            // execute() returns changes(): 1 when inserted, 0 when the key already exists.
-            inserted += stmt.execute(params![
+            stmt.execute(params![
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file
-            ])? as u64;
+                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
+                e.session_id, e.reasoning_tokens
+            ])?;
         }
     }
+    let after: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
     tx.commit()?;
-    Ok(inserted)
+    Ok((after - before).max(0) as u64)
 }
 
 /// Like insert_events but, on dedup_key conflict, keeps the row with the greater
@@ -104,21 +124,24 @@ pub fn insert_events_keep_max_output(
     {
         let mut stmt = tx.prepare(
             "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
-             input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) \
+             input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) \
              ON CONFLICT(dedup_key) DO UPDATE SET \
                source=excluded.source, input_tokens=excluded.input_tokens, output_tokens=excluded.output_tokens, \
                cache_read_tokens=excluded.cache_read_tokens, cache_write_5m_tokens=excluded.cache_write_5m_tokens, \
                cache_write_1h_tokens=excluded.cache_write_1h_tokens, project=excluded.project, \
                timestamp=excluded.timestamp, model=excluded.model, api_calls=excluded.api_calls, \
-               source_file=excluded.source_file \
-             WHERE excluded.output_tokens > events.output_tokens",
+               source_file=excluded.source_file, \
+               session_id=COALESCE(excluded.session_id, events.session_id), \
+               reasoning_tokens=COALESCE(excluded.reasoning_tokens, events.reasoning_tokens) \
+             WHERE excluded.output_tokens >= events.output_tokens",
         )?;
         for e in events {
             stmt.execute(params![
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file
+                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
+                e.session_id, e.reasoning_tokens
             ])?;
         }
     }
@@ -135,7 +158,8 @@ pub fn upsert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
             stmt.execute(params![
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file
+                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
+                e.session_id, e.reasoning_tokens
             ])?;
         }
     }
@@ -156,7 +180,8 @@ pub fn replace_file_events(
             stmt.execute(params![
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file
+                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
+                e.session_id, e.reasoning_tokens
             ])?;
         }
     }
@@ -222,6 +247,8 @@ mod tests {
             cache_write_5m_tokens: 5,
             cache_write_1h_tokens: 2,
             source_file: source_file.to_string(),
+            session_id: None,
+            reasoning_tokens: None,
         }
     }
 
@@ -237,7 +264,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
         for table in ["events", "scanned_files", "prices", "price_overrides"] {
             let count: i64 = conn
                 .query_row(
@@ -267,7 +294,98 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn v1_db_migrates_to_v2_preserving_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // Build a genuine v1 database by hand (SCHEMA still writes user_version 1).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                 cache_write_1h_tokens, source_file) \
+                 VALUES ('claude:old:1','claude',1,'m',NULL,1,10,20,0,0,0,'f')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 2);
+        // Old row intact, new columns NULL.
+        let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT input_tokens, session_id, reasoning_tokens FROM events \
+                 WHERE dedup_key='claude:old:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(input, 10);
+        assert_eq!(sid, None);
+        assert_eq!(rt, None);
+        // Scan state cleared so the next scan re-parses every log (backfill).
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 0);
+    }
+
+    #[test]
+    fn insert_backfills_new_columns_on_existing_rows() {
+        let (_dir, mut conn) = temp_db();
+        let mut old = sample_event("claude:a:1", "f1.jsonl");
+        old.session_id = None;
+        old.reasoning_tokens = None;
+        insert_events(&mut conn, &[old]).unwrap();
+        // A re-scan delivers the same event, now carrying the new fields.
+        let mut new = sample_event("claude:a:1", "f1.jsonl");
+        new.session_id = Some("sess-1".to_string());
+        new.reasoning_tokens = Some(7);
+        let inserted = insert_events(&mut conn, &[new]).unwrap();
+        assert_eq!(inserted, 0, "backfill update is not a new event");
+        let (sid, rt, out): (Option<String>, Option<i64>, i64) = conn
+            .query_row(
+                "SELECT session_id, reasoning_tokens, output_tokens FROM events \
+                 WHERE dedup_key='claude:a:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(sid, Some("sess-1".to_string()));
+        assert_eq!(rt, Some(7));
+        assert_eq!(out, 50, "token counts unchanged by backfill");
+    }
+
+    #[test]
+    fn keep_max_backfills_session_on_equal_output() {
+        let (_dir, mut conn) = temp_db();
+        let mut old = sample_event("claude:x:1", "f1.jsonl");
+        old.session_id = None;
+        insert_events_keep_max_output(&mut conn, &[old]).unwrap();
+        // Same output_tokens (50): the >= conflict clause must still backfill.
+        let mut new = sample_event("claude:x:1", "f1.jsonl");
+        new.session_id = Some("sess-x".to_string());
+        let n = insert_events_keep_max_output(&mut conn, &[new]).unwrap();
+        assert_eq!(n, 0);
+        let sid: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM events WHERE dedup_key='claude:x:1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sid, Some("sess-x".to_string()));
     }
 
     #[test]

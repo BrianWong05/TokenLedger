@@ -167,6 +167,8 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
         cache_write_5m_tokens: cw5m,
         cache_write_1h_tokens: cw1h,
         source_file: source_file.to_string(),
+        session_id: None,
+        reasoning_tokens: None,
     }))
 }
 

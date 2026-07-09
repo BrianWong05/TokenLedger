@@ -331,6 +331,8 @@ mod tests {
             cache_write_5m_tokens: w5,
             cache_write_1h_tokens: w1,
             source_file: "fixture.jsonl".to_string(),
+            session_id: None,
+            reasoning_tokens: None,
         }
     }
 

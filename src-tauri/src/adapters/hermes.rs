@@ -102,6 +102,8 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
             cache_write_5m_tokens: cache_write,     // single Hermes bucket -> 5m
             cache_write_1h_tokens: 0,
             source_file: hermes_db.display().to_string(),
+            session_id: None,
+            reasoning_tokens: None,
         });
     }
 
