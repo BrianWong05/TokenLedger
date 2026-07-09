@@ -221,6 +221,108 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     Ok(points)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesPoint {
+    pub bucket: String,
+    pub source: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_tokens: Option<i64>,
+    pub cost: f64,
+    pub requests: i64,
+    pub convs: i64,
+}
+
+// Per-(bucket, source) series — the real-data twin of the frontend mock's DAYS.
+pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<SeriesPoint>> {
+    let fmt = if bucket == "hour" { "%Y-%m-%d %H:00" } else { "%Y-%m-%d" };
+    let rates = RateMap::load(conn)?;
+    let (where_sql, params) = build_where(f);
+
+    // Tokens/cost need per-model rows for rate resolution.
+    let sql = format!(
+        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, model, \
+         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
+         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
+         FROM events {where_sql} GROUP BY bucket, source, model ORDER BY bucket, source"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
+            r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
+            r.get::<_, Option<i64>>(9)?,
+        ))
+    })?;
+
+    let mut idx: HashMap<(String, String), usize> = HashMap::new();
+    let mut points: Vec<SeriesPoint> = Vec::new();
+    for row in rows {
+        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
+        let c = match rates.resolve(&model) {
+            Some(rt) => {
+                in_ as f64 * rt.input
+                    + out as f64 * rt.output
+                    + cr as f64 * rt.cache_read
+                    + w5 as f64 * rt.cache_write_5m
+                    + w1 as f64 * rt.cache_write_1h
+            }
+            None => 0.0,
+        };
+        // Clone into the map key like trend(); avoid moving (bucket, source) before push.
+        let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
+            points.push(SeriesPoint {
+                bucket: bucket.clone(),
+                source: source.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                total_tokens: 0,
+                reasoning_tokens: None,
+                cost: 0.0,
+                requests: 0,
+                convs: 0,
+            });
+            points.len() - 1
+        });
+        let p = &mut points[i];
+        p.input_tokens += in_;
+        p.output_tokens += out;
+        p.cache_read_tokens += cr;
+        p.cache_write_tokens += w5 + w1;
+        p.total_tokens += in_ + out + cr + w5 + w1;
+        p.requests += calls;
+        p.cost += c;
+        if let Some(r) = reasoning {
+            p.reasoning_tokens = Some(p.reasoning_tokens.unwrap_or(0) + r);
+        }
+    }
+
+    // Convs need distinct-count at (bucket, source) — a session can span
+    // models, so distinct-per-model counts cannot be summed.
+    let sql2 = format!(
+        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, \
+         COUNT(DISTINCT session_id) FROM events {where_sql} GROUP BY bucket, source"
+    );
+    let mut stmt2 = conn.prepare(&sql2)?;
+    let crows = stmt2.query_map(params_from_iter(params.iter()), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    })?;
+    for row in crows {
+        let (bucket, source, convs) = row?;
+        if let Some(&i) = idx.get(&(bucket, source)) {
+            points[i].convs = convs;
+        }
+    }
+    Ok(points)
+}
+
 #[derive(Default)]
 struct Agg {
     input: i64,
@@ -446,5 +548,79 @@ mod tests {
         assert_eq!(pts[1].bucket, "2026-07-02");
         assert_eq!(pts[1].total_tokens, 3000); // B
         approx(pts[1].cost, 0.014);
+    }
+
+    // Events with v2 fields for series tests.
+    fn ev_s(
+        key: &str, source: &str, ts: i64, model: &str,
+        session: Option<&str>, reasoning: Option<i64>,
+    ) -> UsageEvent {
+        let mut e = ev(key, source, ts, model, None, 1, 100, 50, 0, 0, 0);
+        e.session_id = session.map(|s| s.to_string());
+        e.reasoning_tokens = reasoning;
+        e
+    }
+
+    #[test]
+    fn series_groups_by_day_and_source() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let events = vec![
+            ev_s("c1", "codex", DAY1_TS, "gpt-5.4", Some("sa"), Some(5)),
+            ev_s("c2", "codex", DAY1_TS, "gpt-5.4", Some("sa"), Some(3)),
+            ev_s("c3", "codex", DAY1_TS, "gpt-5.4-mini", Some("sb"), None),
+            ev_s("h1", "hermes", DAY1_TS, "hermes-local", Some("hs"), Some(0)),
+            ev_s("c4", "codex", DAY2_TS, "gpt-5.4", None, None),
+        ];
+        db::insert_events(&mut conn, &events).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('gpt-5.4', 0.000002, 0.000010, 0.0000005, 0.0000025, 0.000004)",
+            [],
+        ).unwrap();
+
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(pts.len(), 3); // (day1,codex), (day1,hermes), (day2,codex)
+
+        let d1c = pts.iter().find(|p| p.bucket == "2026-07-01" && p.source == "codex").unwrap();
+        assert_eq!(d1c.total_tokens, 450); // 3 events × (100 input + 50 output)
+        assert_eq!(d1c.requests, 3);
+        assert_eq!(d1c.convs, 2, "sa + sb, distinct across models within the source");
+        assert_eq!(d1c.reasoning_tokens, Some(8), "5 + 3; the NULL event does not zero it");
+        // Only the two gpt-5.4 events price: 200×2e-6 + 100×1e-5.
+        approx(d1c.cost, 0.0014);
+
+        let d1h = pts.iter().find(|p| p.bucket == "2026-07-01" && p.source == "hermes").unwrap();
+        assert_eq!(d1h.reasoning_tokens, Some(0), "reported zero ≠ not reported");
+        approx(d1h.cost, 0.0);
+
+        let d2c = pts.iter().find(|p| p.bucket == "2026-07-02").unwrap();
+        assert_eq!(d2c.convs, 0, "NULL session ids count zero distinct");
+        assert_eq!(d2c.reasoning_tokens, None, "nothing reported that day");
+    }
+
+    #[test]
+    fn series_hour_buckets_local_time() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_events(&mut conn, &[ev_s("a", "codex", DAY1_TS, "gpt-5.4", None, None)]).unwrap();
+        let pts = series(&conn, &Filters::default(), "hour").unwrap();
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].bucket, "2026-07-01 12:00");
+    }
+
+    #[test]
+    fn series_day_sums_match_summary() {
+        let (_dir, conn) = seed();
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        let s = summary(&conn, &Filters::default()).unwrap();
+        let total: i64 = pts.iter().map(|p| p.total_tokens).sum();
+        assert_eq!(total, s.total_tokens);
+        let cost: f64 = pts.iter().map(|p| p.cost).sum();
+        approx(cost, s.cost.unwrap());
+        let reqs: i64 = pts.iter().map(|p| p.requests).sum();
+        assert_eq!(reqs, s.requests);
     }
 }
