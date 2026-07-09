@@ -78,7 +78,7 @@ export default function BreakdownTable({ days, total }: { days: Day[]; total: nu
             <span>{fmtInt(r.input)}</span>
             <span>{fmtInt(r.output)}</span>
             <span>{fmtInt(r.cached)}</span>
-            <span>{fmtInt(r.reasoning)}</span>
+            <span>{r.reasoning == null ? '—' : fmtInt(r.reasoning)}</span>
             <span>{fmtInt(r.convs)}</span>
           </div>
         ))}
