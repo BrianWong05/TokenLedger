@@ -14,6 +14,8 @@ pub struct UsageEvent {
     pub cache_write_5m_tokens: i64,
     pub cache_write_1h_tokens: i64,
     pub source_file: String,
+    pub session_id: Option<String>,
+    pub reasoning_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -22,6 +22,7 @@ pub struct Summary {
     pub cost: Option<f64>,
     pub has_unpriced: bool,
     pub unpriced_models: Vec<String>,
+    pub cache_estimated_models: Vec<String>,
     pub cache_hit_rate: f64,
 }
 
@@ -41,6 +42,7 @@ pub struct TrendPoint {
 #[serde(rename_all = "camelCase")]
 pub struct BreakdownRow {
     pub key: String,
+    pub source: Option<String>,
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
@@ -48,6 +50,9 @@ pub struct BreakdownRow {
     pub total_tokens: i64,
     pub requests: i64,
     pub cost: Option<f64>,
+    pub reasoning_tokens: Option<i64>,
+    pub convs: i64,
+    pub cache_estimated: bool,
 }
 
 use std::collections::HashMap;
@@ -115,6 +120,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     let mut cost = 0.0f64;
     let mut priced_tokens = 0i64;
     let mut unpriced_models: Vec<String> = Vec::new();
+    let mut cache_estimated_models: Vec<String> = Vec::new();
 
     for row in rows {
         let (model, in_, out, cr, w5, w1, calls) = row?;
@@ -127,12 +133,11 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         let tokens = in_ + out + cr + w5 + w1;
         match rates.resolve(&model) {
             Some(rt) => {
-                cost += in_ as f64 * rt.input
-                    + out as f64 * rt.output
-                    + cr as f64 * rt.cache_read
-                    + w5 as f64 * rt.cache_write_5m
-                    + w1 as f64 * rt.cache_write_1h;
+                cost += rt.cost(in_, out, cr, w5, w1);
                 priced_tokens += tokens;
+                if rt.cache_gap(cr, w5, w1) {
+                    cache_estimated_models.push(model);
+                }
             }
             None => {
                 if tokens > 0 {
@@ -161,6 +166,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         cost: if priced_tokens > 0 { Some(cost) } else { None },
         has_unpriced: !unpriced_models.is_empty(),
         unpriced_models,
+        cache_estimated_models,
         cache_hit_rate,
     })
 }
@@ -189,13 +195,7 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     for row in rows {
         let (bucket, model, in_, out, cr, w5, w1) = row?;
         let c = match rates.resolve(&model) {
-            Some(rt) => {
-                in_ as f64 * rt.input
-                    + out as f64 * rt.output
-                    + cr as f64 * rt.cache_read
-                    + w5 as f64 * rt.cache_write_5m
-                    + w1 as f64 * rt.cache_write_1h
-            }
+            Some(rt) => rt.cost(in_, out, cr, w5, w1),
             None => 0.0,
         };
         let i = *idx.entry(bucket.clone()).or_insert_with(|| {
@@ -221,6 +221,102 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     Ok(points)
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesPoint {
+    pub bucket: String,
+    pub source: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_tokens: i64,
+    pub total_tokens: i64,
+    pub reasoning_tokens: Option<i64>,
+    pub cost: f64,
+    pub requests: i64,
+    pub convs: i64,
+}
+
+// Per-(bucket, source) series — the real-data twin of the frontend mock's DAYS.
+pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<SeriesPoint>> {
+    let fmt = if bucket == "hour" { "%Y-%m-%d %H:00" } else { "%Y-%m-%d" };
+    let rates = RateMap::load(conn)?;
+    let (where_sql, params) = build_where(f);
+
+    // Tokens/cost need per-model rows for rate resolution.
+    let sql = format!(
+        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, model, \
+         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
+         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
+         FROM events {where_sql} GROUP BY bucket, source, model ORDER BY bucket, source"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok((
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
+            r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
+            r.get::<_, Option<i64>>(9)?,
+        ))
+    })?;
+
+    let mut idx: HashMap<(String, String), usize> = HashMap::new();
+    let mut points: Vec<SeriesPoint> = Vec::new();
+    for row in rows {
+        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
+        let c = match rates.resolve(&model) {
+            Some(rt) => rt.cost(in_, out, cr, w5, w1),
+            None => 0.0,
+        };
+        // Clone into the map key like trend(); avoid moving (bucket, source) before push.
+        let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
+            points.push(SeriesPoint {
+                bucket: bucket.clone(),
+                source: source.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                total_tokens: 0,
+                reasoning_tokens: None,
+                cost: 0.0,
+                requests: 0,
+                convs: 0,
+            });
+            points.len() - 1
+        });
+        let p = &mut points[i];
+        p.input_tokens += in_;
+        p.output_tokens += out;
+        p.cache_read_tokens += cr;
+        p.cache_write_tokens += w5 + w1;
+        p.total_tokens += in_ + out + cr + w5 + w1;
+        p.requests += calls;
+        p.cost += c;
+        if let Some(r) = reasoning {
+            p.reasoning_tokens = Some(p.reasoning_tokens.unwrap_or(0) + r);
+        }
+    }
+
+    // Convs need distinct-count at (bucket, source) — a session can span
+    // models, so distinct-per-model counts cannot be summed.
+    let sql2 = format!(
+        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, \
+         COUNT(DISTINCT session_id) FROM events {where_sql} GROUP BY bucket, source"
+    );
+    let mut stmt2 = conn.prepare(&sql2)?;
+    let crows = stmt2.query_map(params_from_iter(params.iter()), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+    })?;
+    for row in crows {
+        let (bucket, source, convs) = row?;
+        if let Some(&i) = idx.get(&(bucket, source)) {
+            points[i].convs = convs;
+        }
+    }
+    Ok(points)
+}
+
 #[derive(Default)]
 struct Agg {
     input: i64,
@@ -231,6 +327,9 @@ struct Agg {
     requests: i64,
     cost: f64,
     priced: i64,
+    reasoning: Option<i64>,
+    convs: i64,
+    cache_estimated: bool,
 }
 
 pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<Vec<BreakdownRow>> {
@@ -239,27 +338,31 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         "project" => "project",
         _ => "model",
     };
+    // Model rows additionally split by source so the UI can scope models to a
+    // tool; a constant NULL leaves other modes' grouping untouched.
+    let src_expr = if group_col == "model" { "source" } else { "NULL" };
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
     let sql = format!(
-        "SELECT {group_col} AS grp, model, \
+        "SELECT {group_col} AS grp, {src_expr} AS src, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls) \
-         FROM events {where_sql} GROUP BY grp, model"
+         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
+         FROM events {where_sql} GROUP BY grp, src, model"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?,
-            r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?,
-            r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
+            r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
+            r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
+            r.get::<_, Option<i64>>(9)?,
         ))
     })?;
 
-    let mut map: HashMap<String, Agg> = HashMap::new();
+    let mut map: HashMap<(String, Option<String>), Agg> = HashMap::new();
     for row in rows {
-        let (grp, model, in_, out, cr, w5, w1, calls) = row?;
-        let key = grp.unwrap_or_else(|| "unknown".to_string());
+        let (grp, src, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
+        let key = (grp.unwrap_or_else(|| "unknown".to_string()), src);
         let a = map.entry(key).or_default();
         a.input += in_;
         a.output += out;
@@ -267,20 +370,38 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         a.cache_write += w5 + w1;
         a.total += in_ + out + cr + w5 + w1;
         a.requests += calls;
+        if let Some(r) = reasoning {
+            a.reasoning = Some(a.reasoning.unwrap_or(0) + r);
+        }
         if let Some(rt) = rates.resolve(&model) {
-            a.cost += in_ as f64 * rt.input
-                + out as f64 * rt.output
-                + cr as f64 * rt.cache_read
-                + w5 as f64 * rt.cache_write_5m
-                + w1 as f64 * rt.cache_write_1h;
+            a.cost += rt.cost(in_, out, cr, w5, w1);
             a.priced += in_ + out + cr + w5 + w1;
+            a.cache_estimated |= rt.cache_gap(cr, w5, w1);
+        }
+    }
+
+    // Convs at the row's own grain (distinct sessions can span models).
+    let sql2 = format!(
+        "SELECT {group_col} AS grp, {src_expr} AS src, COUNT(DISTINCT session_id) \
+         FROM events {where_sql} GROUP BY grp, src"
+    );
+    let mut stmt2 = conn.prepare(&sql2)?;
+    let crows = stmt2.query_map(params_from_iter(params.iter()), |r| {
+        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?))
+    })?;
+    for row in crows {
+        let (grp, src, convs) = row?;
+        let key = (grp.unwrap_or_else(|| "unknown".to_string()), src);
+        if let Some(a) = map.get_mut(&key) {
+            a.convs = convs;
         }
     }
 
     let mut out: Vec<BreakdownRow> = map
         .into_iter()
-        .map(|(key, a)| BreakdownRow {
+        .map(|((key, source), a)| BreakdownRow {
             key,
+            source,
             input_tokens: a.input,
             output_tokens: a.output,
             cache_read_tokens: a.cache_read,
@@ -288,6 +409,9 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             total_tokens: a.total,
             requests: a.requests,
             cost: if a.priced > 0 { Some(a.cost) } else { None },
+            reasoning_tokens: a.reasoning,
+            convs: a.convs,
+            cache_estimated: a.cache_estimated,
         })
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));
@@ -331,6 +455,8 @@ mod tests {
             cache_write_5m_tokens: w5,
             cache_write_1h_tokens: w1,
             source_file: "fixture.jsonl".to_string(),
+            session_id: None,
+            reasoning_tokens: None,
         }
     }
 
@@ -420,6 +546,97 @@ mod tests {
         assert_eq!(rows[1].total_tokens, 400);
         assert_eq!(rows[1].requests, 3);
         assert!(rows[1].cost.is_none());
+        assert_eq!(rows[0].source, Some("codex".to_string()));
+        assert_eq!(rows[1].source, Some("hermes".to_string()));
+    }
+
+    #[test]
+    fn summary_flags_cache_estimated_models() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // Absent catalog cache rates are stored as 0.0 (see pricing::write_price_row).
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('half-priced', 0.000001, 0.000002, 0, 0, 0)",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('full-priced', 0.000001, 0.000002, 0.0000001, 0.000001, 0.000001)",
+            [],
+        ).unwrap();
+        let events = vec![
+            ev("a", "codex", DAY1_TS, "half-priced", None, 1, 100, 50, 40, 10, 0),
+            ev("b", "codex", DAY1_TS, "full-priced", None, 1, 100, 50, 40, 10, 0),
+        ];
+        db::insert_events(&mut conn, &events).unwrap();
+        let s = summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(s.cache_estimated_models, vec!["half-priced".to_string()]);
+        assert!(!s.has_unpriced);
+        assert!(s.cost.is_some());
+    }
+
+    #[test]
+    fn cache_estimated_requires_cache_tokens() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('half-priced', 0.000001, 0.000002, 0, 0, 0)",
+            [],
+        ).unwrap();
+        // No cache tokens at all -> nothing is missing from the estimate.
+        db::insert_events(&mut conn, &[ev("a", "codex", DAY1_TS, "half-priced", None, 1, 100, 50, 0, 0, 0)]).unwrap();
+        let s = summary(&conn, &Filters::default()).unwrap();
+        assert!(s.cache_estimated_models.is_empty());
+    }
+
+    #[test]
+    fn breakdown_model_rows_carry_source_convs_reasoning_and_flag() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('half-priced', 0.000001, 0.000002, 0, 0, 0)",
+            [],
+        ).unwrap();
+        let mut e1 = ev("a", "codex", DAY1_TS, "half-priced", None, 1, 100, 50, 40, 0, 0);
+        e1.session_id = Some("sa".to_string());
+        e1.reasoning_tokens = Some(5);
+        let mut e2 = ev("b", "codex", DAY1_TS, "half-priced", None, 1, 100, 50, 0, 0, 0);
+        e2.session_id = Some("sa".to_string());
+        e2.reasoning_tokens = Some(3);
+        // Same model name from a different source -> its own row.
+        let mut e3 = ev("c", "hermes", DAY1_TS, "half-priced", None, 1, 100, 50, 0, 0, 0);
+        e3.session_id = Some("hs".to_string());
+        db::insert_events(&mut conn, &[e1, e2, e3]).unwrap();
+
+        let rows = breakdown(&conn, "model", &Filters::default()).unwrap();
+        assert_eq!(rows.len(), 2, "model rows split by source");
+        let codex = rows.iter().find(|r| r.source == Some("codex".to_string())).unwrap();
+        assert_eq!(codex.key, "half-priced");
+        assert_eq!(codex.convs, 1, "one distinct session");
+        assert_eq!(codex.reasoning_tokens, Some(8));
+        assert!(codex.cache_estimated, "cache tokens present but cache rate is 0");
+        let hermes = rows.iter().find(|r| r.source == Some("hermes".to_string())).unwrap();
+        assert_eq!(hermes.convs, 1);
+        assert_eq!(hermes.reasoning_tokens, None);
+        assert!(!hermes.cache_estimated, "no cache tokens used");
+    }
+
+    #[test]
+    fn breakdown_project_carries_convs_and_null_source() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut e1 = ev("a", "codex", DAY1_TS, "gpt-5.4", Some("/p/alpha"), 1, 100, 50, 0, 0, 0);
+        e1.session_id = Some("sa".to_string());
+        let mut e2 = ev("b", "codex", DAY1_TS, "gpt-5.4-mini", Some("/p/alpha"), 1, 100, 50, 0, 0, 0);
+        e2.session_id = Some("sa".to_string());
+        db::insert_events(&mut conn, &[e1, e2]).unwrap();
+        let rows = breakdown(&conn, "project", &Filters::default()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, None, "source only set for model mode");
+        assert_eq!(rows[0].convs, 1, "distinct across models within the project");
     }
 
     #[test]
@@ -444,5 +661,79 @@ mod tests {
         assert_eq!(pts[1].bucket, "2026-07-02");
         assert_eq!(pts[1].total_tokens, 3000); // B
         approx(pts[1].cost, 0.014);
+    }
+
+    // Events with v2 fields for series tests.
+    fn ev_s(
+        key: &str, source: &str, ts: i64, model: &str,
+        session: Option<&str>, reasoning: Option<i64>,
+    ) -> UsageEvent {
+        let mut e = ev(key, source, ts, model, None, 1, 100, 50, 0, 0, 0);
+        e.session_id = session.map(|s| s.to_string());
+        e.reasoning_tokens = reasoning;
+        e
+    }
+
+    #[test]
+    fn series_groups_by_day_and_source() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let events = vec![
+            ev_s("c1", "codex", DAY1_TS, "gpt-5.4", Some("sa"), Some(5)),
+            ev_s("c2", "codex", DAY1_TS, "gpt-5.4", Some("sa"), Some(3)),
+            ev_s("c3", "codex", DAY1_TS, "gpt-5.4-mini", Some("sb"), None),
+            ev_s("h1", "hermes", DAY1_TS, "hermes-local", Some("hs"), Some(0)),
+            ev_s("c4", "codex", DAY2_TS, "gpt-5.4", None, None),
+        ];
+        db::insert_events(&mut conn, &events).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('gpt-5.4', 0.000002, 0.000010, 0.0000005, 0.0000025, 0.000004)",
+            [],
+        ).unwrap();
+
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(pts.len(), 3); // (day1,codex), (day1,hermes), (day2,codex)
+
+        let d1c = pts.iter().find(|p| p.bucket == "2026-07-01" && p.source == "codex").unwrap();
+        assert_eq!(d1c.total_tokens, 450); // 3 events × (100 input + 50 output)
+        assert_eq!(d1c.requests, 3);
+        assert_eq!(d1c.convs, 2, "sa + sb, distinct across models within the source");
+        assert_eq!(d1c.reasoning_tokens, Some(8), "5 + 3; the NULL event does not zero it");
+        // Only the two gpt-5.4 events price: 200×2e-6 + 100×1e-5.
+        approx(d1c.cost, 0.0014);
+
+        let d1h = pts.iter().find(|p| p.bucket == "2026-07-01" && p.source == "hermes").unwrap();
+        assert_eq!(d1h.reasoning_tokens, Some(0), "reported zero ≠ not reported");
+        approx(d1h.cost, 0.0);
+
+        let d2c = pts.iter().find(|p| p.bucket == "2026-07-02").unwrap();
+        assert_eq!(d2c.convs, 0, "NULL session ids count zero distinct");
+        assert_eq!(d2c.reasoning_tokens, None, "nothing reported that day");
+    }
+
+    #[test]
+    fn series_hour_buckets_local_time() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_events(&mut conn, &[ev_s("a", "codex", DAY1_TS, "gpt-5.4", None, None)]).unwrap();
+        let pts = series(&conn, &Filters::default(), "hour").unwrap();
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].bucket, "2026-07-01 12:00");
+    }
+
+    #[test]
+    fn series_day_sums_match_summary() {
+        let (_dir, conn) = seed();
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        let s = summary(&conn, &Filters::default()).unwrap();
+        let total: i64 = pts.iter().map(|p| p.total_tokens).sum();
+        assert_eq!(total, s.total_tokens);
+        let cost: f64 = pts.iter().map(|p| p.cost).sum();
+        approx(cost, s.cost.unwrap());
+        let reqs: i64 = pts.iter().map(|p| p.requests).sum();
+        assert_eq!(reqs, s.requests);
     }
 }

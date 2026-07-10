@@ -1,20 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  DAYS,
-  COLS,
-  TOOLS,
-  ACTIVE_DAYS,
-  LONGEST_STREAK,
-  BEST_DAY,
-  TOTAL_TOKENS,
-  THEMES,
-  THEME_OPTIONS,
-  fmtTok,
-  fmtUSD,
-  fmtDate,
-  costOf,
-  type Day,
-} from './mock';
+import { TOOLS, THEMES, THEME_OPTIONS, MONTHS, type Day } from './data';
+import { fmtTok, fmtDate } from '../lib/format';
 
 type Mode = '2d' | '3d';
 
@@ -22,7 +8,6 @@ type Mode = '2d' | '3d';
 const S = 13; // cell size
 const STEP = 16; // cell + gap
 const TOP = 16; // room for month labels
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // ---- 3D isometric geometry ----
 const TILE = 0.86;
@@ -40,7 +25,7 @@ function shade(hex: string, f: number): string {
 const poly = (pts: [number, number][]) =>
   'M' + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join('L') + 'Z';
 
-export default function Heatmap({ compact = false }: { compact?: boolean } = {}) {
+export default function Heatmap({ days, compact = false }: { days: Day[]; compact?: boolean }) {
   const [mode, setMode] = useState<Mode>('2d');
   const [theme, setTheme] = useState('ocean');
   const [yaw, setYaw] = useState(-0.14);
@@ -51,11 +36,23 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
   const ramp = THEMES[theme];
   const accent = ramp[3];
 
+  const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
+  const stats = useMemo(() => {
+    const totalTokens = days.reduce((a, d) => a + d.tokens, 0);
+    const activeDays = days.filter((d) => d.tokens > 0).length;
+    let streak = 0, run = 0;
+    for (const d of days) {
+      if (d.tokens > 0) { run += 1; streak = Math.max(streak, run); } else run = 0;
+    }
+    const bestDay = days.reduce((a, d) => (d.tokens > a.tokens ? d : a), days[0]);
+    return { totalTokens, activeDays, streak, bestDay };
+  }, [days]);
+
   // month label columns for 2D
   const monthLabels = useMemo(() => {
     const out: { x: number; label: string }[] = [];
     let last = -1;
-    for (const d of DAYS) {
+    for (const d of days) {
       const m = d.date.getMonth();
       if (d.date.getDate() <= 7 && m !== last) {
         out.push({ x: d.col * STEP, label: MONTHS[m] });
@@ -63,15 +60,15 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
       }
     }
     return out;
-  }, []);
+  }, [days]);
 
-  const view2d = `0 0 ${COLS * STEP} ${TOP + 7 * STEP}`;
+  const view2d = `0 0 ${cols * STEP} ${TOP + 7 * STEP}`;
 
   // 3D faces, depth-sorted back-to-front, plus a fitted viewBox
   const three = useMemo(() => {
     const cos = Math.cos(yaw);
     const sin = Math.sin(yaw);
-    const cx = COLS / 2;
+    const cx = cols / 2;
     const cy = 3.5;
     const proj = (gx: number, gy: number, z: number): [number, number] => {
       const x = gx - cx;
@@ -97,7 +94,7 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
       maxY = Math.max(maxY, p[1]);
     };
 
-    const cells = DAYS.map((d) => {
+    const cells = days.map((d) => {
       const c = d.col;
       const r = d.row;
       const z = d.level * ZUNIT;
@@ -120,7 +117,7 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
     const pad = 10;
     const viewBox = `${(minX - pad).toFixed(1)} ${(minY - pad).toFixed(1)} ${(maxX - minX + pad * 2).toFixed(1)} ${(maxY - minY + pad * 2).toFixed(1)}`;
     return { cells, viewBox };
-  }, [yaw, ramp]);
+  }, [yaw, ramp, days, cols]);
 
   // drag-to-rotate (3D only)
   useEffect(() => {
@@ -181,7 +178,7 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
               mode === '3d' ? 'drag to rotate' : 'hover a day'
             ) : (
               <>
-                <span style={{ color: accent, fontWeight: 650 }}>{fmtTok(TOTAL_TOKENS)}</span> tokens ·
+                <span style={{ color: accent, fontWeight: 650 }}>{fmtTok(stats.totalTokens)}</span> tokens ·
                 {mode === '3d' ? ' drag to rotate' : ' hover a day'}
               </>
             )}
@@ -225,7 +222,7 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
                 {m.label}
               </text>
             ))}
-            {DAYS.map((d) => (
+            {days.map((d) => (
               <rect
                 key={d.index}
                 x={d.col * STEP}
@@ -295,17 +292,17 @@ export default function Heatmap({ compact = false }: { compact?: boolean } = {})
       <div className="tt-foot">
         <div className="tt-stats">
           <div className="tt-stat">
-            <b>{ACTIVE_DAYS}</b>
+            <b>{stats.activeDays}</b>
             <span>active days</span>
           </div>
           <div className="tt-stat">
-            <b style={{ color: accent }}>{LONGEST_STREAK}</b>
+            <b style={{ color: accent }}>{stats.streak}</b>
             <span>day streak</span>
           </div>
           {!compact && (
             <div className="tt-stat">
-              <b>{fmtUSD(costOf(BEST_DAY.tokens))}</b>
-              <span>best · {fmtDate(BEST_DAY.date)}</span>
+              <b>{fmtTok(stats.bestDay.tokens)}</b>
+              <span>best · {fmtDate(stats.bestDay.date)}</span>
             </div>
           )}
         </div>

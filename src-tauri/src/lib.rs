@@ -18,10 +18,10 @@ mod e2e_real_logs;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use pricing::OverrideRates;
-use queries::{BreakdownRow, Filters, Summary, TrendPoint};
+use queries::{BreakdownRow, Filters, SeriesPoint, Summary, TrendPoint};
 use scan::{run_scan, SourceRoots};
 use types::ScanStatus;
 
@@ -57,6 +57,16 @@ fn trend(
 ) -> Result<Vec<TrendPoint>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::trend(&db, &filters, &bucket).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn series(
+    state: State<'_, AppState>,
+    filters: Filters,
+    bucket: String,
+) -> Result<Vec<SeriesPoint>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::series(&db, &filters, &bucket).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -109,6 +119,9 @@ pub fn run() {
                 if let Ok(mut db) = state.db.lock() {
                     let _ = pricing::rebuild_prices(&mut db, &json);
                 };
+                // Tell the frontend so it re-fetches costs: without this, a
+                // fresh install renders 'unpriced' until the next range change.
+                let _ = handle.emit("prices-rebuilt", ());
             });
             Ok(())
         })
@@ -116,6 +129,7 @@ pub fn run() {
             scan,
             summary,
             trend,
+            series,
             breakdown,
             set_price_override,
             delete_price_override

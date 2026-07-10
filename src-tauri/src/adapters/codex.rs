@@ -73,6 +73,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     let mut prev_input: i64 = 0;
     let mut prev_cached: i64 = 0;
     let mut prev_output: i64 = 0;
+    let mut prev_reasoning: i64 = 0;
 
     let mut offset: usize = 0;
     for line in content.split_inclusive('\n') {
@@ -137,9 +138,23 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                 let cache_read = d_cached;
                 let output = d_output;
                 // Duplicate snapshots and degenerate rows produce an all-zero delta.
+                // prev_reasoning is intentionally NOT advanced before this skip: a
+                // reasoning-only advance on a skipped line rides along with the
+                // next token-bearing event instead of being lost.
                 if input == 0 && cache_read == 0 && output == 0 {
                     continue;
                 }
+
+                // reasoning_output_tokens is cumulative like the other fields.
+                // Absent field => this source/build doesn't report reasoning => None.
+                let reasoning = usage
+                    .get("reasoning_output_tokens")
+                    .and_then(|x| x.as_i64())
+                    .map(|cur| {
+                        let d = (cur - prev_reasoning).max(0);
+                        prev_reasoning = cur;
+                        d
+                    });
 
                 let ts = v
                     .get("timestamp")
@@ -160,6 +175,8 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                     cache_write_5m_tokens: 0,
                     cache_write_1h_tokens: 0,
                     source_file: path_str.clone(),
+                    session_id: Some(file_stem.clone()),
+                    reasoning_tokens: reasoning,
                 });
             }
             _ => {}
@@ -238,5 +255,81 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events WHERE source='codex'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n2, 2);
+    }
+
+    fn write_rollout(dir: &std::path::Path, name: &str, lines: &[&str]) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let p = dir.join(name);
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        p
+    }
+
+    #[test]
+    fn codex_reasoning_deltas_and_session_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-04-23-abc.jsonl", &[
+            r#"{"type":"session_meta","timestamp":"2026-04-23T12:23:20.000Z","payload":{"id":"sess-1","cwd":"/Users/dev/projects/alpha"}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-04-23T12:23:25.000Z","payload":{"model":"gpt-5.4"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-23T12:23:28.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-23T12:23:35.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":60,"output_tokens":90,"reasoning_output_tokens":25,"total_tokens":290}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, &root);
+        assert_eq!(r.events_inserted, 2);
+
+        let rows: Vec<(Option<String>, Option<i64>)> = {
+            let mut stmt = conn
+                .prepare("SELECT session_id, reasoning_tokens FROM events WHERE source='codex' ORDER BY timestamp")
+                .unwrap();
+            let it = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap();
+            it.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(rows[0], (Some("rollout-2026-04-23-abc".to_string()), Some(10)));
+        assert_eq!(rows[1], (Some("rollout-2026-04-23-abc".to_string()), Some(15)));
+    }
+
+    #[test]
+    fn codex_reasoning_only_snapshot_rides_along() {
+        // A snapshot whose input/cached/output are unchanged but whose
+        // reasoning advanced must not lose those reasoning tokens: the line is
+        // skipped, prev_reasoning stays put, and the next token-bearing event
+        // books the accumulated delta.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-04-25-ghi.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":25,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:10.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":30,"total_tokens":230}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, &root);
+        assert_eq!(r.events_inserted, 2, "reasoning-only line still skipped as an event");
+        let total: i64 = conn
+            .query_row(
+                "SELECT SUM(reasoning_tokens) FROM events WHERE source='codex'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 30, "sum of reasoning deltas equals the final cumulative value");
+    }
+
+    #[test]
+    fn codex_missing_reasoning_field_is_null() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-04-24-def.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-04-24T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, &root);
+        assert_eq!(r.events_inserted, 1);
+        let rt: Option<i64> = conn
+            .query_row("SELECT reasoning_tokens FROM events WHERE source='codex'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rt, None, "absent field means not-reported, never 0");
     }
 }

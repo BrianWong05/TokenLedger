@@ -1,66 +1,164 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import './overview.css';
 import Heatmap from './Heatmap';
-import ContextBreakdown from './ContextBreakdown';
+import TokenBreakdown from './TokenBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
+import { scan, fetchSeries, fetchSummary, fetchBreakdown } from '../api';
+import type { BreakdownRow, SeriesPoint, Summary } from '../types';
 import {
   TOOLS,
-  MODELS,
   RANGES_8B,
-  sliceDays,
-  daysBetween,
-  sumTokens,
-  toolTotalsOf,
-  bucketsOf,
+  isoOf,
+  calendarSpan,
+  emptyByTool,
+  seriesToDays,
+  windowOf,
+  pointsIn,
+  granularityOf,
+  bucketsFromPoints,
   smallMultiples,
-  perOf,
-  fmtIsoDate,
-  FIRST_ISO,
-  LAST_ISO,
-  costOf,
-  fmtTok,
-  fmtUSD,
-  fmtPct,
+  toolTotalsOfPoints,
+  sumPoints,
+  catTotals,
+  dailyTableRows,
+  projectTableRows,
+  modelBars,
+  rangeToFilters,
   type Range8b,
   type ToolKey,
   type Bucket,
-} from './mock';
+} from './data';
+import { fmtTok, fmtPct, fmtIsoDate, formatCost } from '../lib/format';
 
 const NAV = ['Overview', 'Insights', 'Models', 'Settings'];
+const EMPTY_FILTERS = { tools: [], models: [], project: null };
 
-// Design 8b — "App · Overview": totals + tool cards + heatmap + aggregate trend
-// + per-tool small multiples + context/models, all scoped to a global range.
+// Design 8b — "App · Overview", wired to the real Ledger. One unbounded daily
+// series powers heatmap/trends/tables via client-side slicing; summary and
+// breakdowns re-fetch per range; an hourly series serves the Day view.
 export default function Overview8b() {
   const [nav, setNav] = useState('Overview');
   const [range, setRange] = useState<Range8b>('total');
   const [sel, setSel] = useState<ToolKey>('claude');
-  const [customFrom, setCustomFrom] = useState(sliceDays('month')[0].iso);
-  const [customTo, setCustomTo] = useState(LAST_ISO);
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+
+  const [allPoints, setAllPoints] = useState<SeriesPoint[] | null>(null);
+  const [hourPoints, setHourPoints] = useState<SeriesPoint[]>([]);
+  const [sum, setSum] = useState<Summary | null>(null);
+  const [modelRows, setModelRows] = useState<BreakdownRow[]>([]);
+  const [projRows, setProjRows] = useState<BreakdownRow[]>([]);
+  // Scan problems persist until the next scan; fetch problems clear on the
+  // next successful fetch cycle — one transient failure must not stick.
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pricesVersion, setPricesVersion] = useState(0);
+
+  // Mount: scan the logs, then load the whole ledger's daily series once.
+  useEffect(() => {
+    (async () => {
+      try {
+        const status = await scan();
+        const errs = status.sources.filter((s) => s.error).map((s) => `${s.source}: ${s.error}`);
+        setScanError(errs.length ? errs.join(' · ') : null);
+      } catch (e) {
+        setScanError(String(e));
+      }
+      try {
+        setAllPoints(await fetchSeries(EMPTY_FILTERS, 'day'));
+      } catch (e) {
+        setError(String(e));
+        setAllPoints([]);
+      }
+    })();
+  }, []);
+
+  // The backend rebuilds prices off-thread at startup; when they land, re-run
+  // the per-range fetches so a fresh install doesn't render 'unpriced' until
+  // the user happens to change range.
+  useEffect(() => {
+    const un = listen('prices-rebuilt', () => setPricesVersion((v) => v + 1));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  const firstIso = allPoints?.length
+    ? allPoints.reduce((a, p) => (p.bucket < a ? p.bucket : a), allPoints[0].bucket)
+    : isoOf(new Date());
+  const lastIso = isoOf(new Date());
+  const cf = customFrom || firstIso;
+  const ct = customTo || lastIso;
+
+  // Per-range data: authoritative cost + right column + project table (+ hourly
+  // on Day). The cleanup marks in-flight responses stale so a slow previous
+  // range can never overwrite a newer one; custom-range keystrokes debounce.
+  useEffect(() => {
+    if (allPoints === null) return;
+    let stale = false;
+    const run = () => {
+      const filters = rangeToFilters(range, cf, ct);
+      const jobs: Promise<unknown>[] = [
+        fetchSummary(filters).then((v) => { if (!stale) setSum(v); }),
+        fetchBreakdown('model', filters).then((v) => { if (!stale) setModelRows(v); }),
+        fetchBreakdown('project', filters).then((v) => { if (!stale) setProjRows(v); }),
+      ];
+      if (range === 'day') {
+        jobs.push(fetchSeries(filters, 'hour').then((v) => { if (!stale) setHourPoints(v); }));
+      } else {
+        setHourPoints((prev) => (prev.length ? [] : prev));
+      }
+      Promise.all(jobs)
+        .then(() => { if (!stale) setError(null); })
+        .catch((e) => { if (!stale) setError(String(e)); });
+    };
+    const t = window.setTimeout(run, range === 'custom' ? 250 : 0);
+    return () => {
+      stale = true;
+      window.clearTimeout(t);
+    };
+  }, [allPoints, range, cf, ct, pricesVersion]);
+
+  // The 365-day heatmap grid only depends on the full series — not on
+  // range/tool selection — so it gets its own memo.
+  const days = useMemo(() => seriesToDays(allPoints ?? []), [allPoints]);
 
   const view = useMemo(() => {
-    const days = range === 'custom' ? daysBetween(customFrom, customTo) : sliceDays(range);
-    const total = sumTokens(days);
+    const pts = allPoints ?? [];
+    const win = windowOf(range, cf, ct);
+    const rpts = pointsIn(pts, win);
+    // Calendar span of the window (not active-day count) drives granularity;
+    // 'total' spans the whole ledger.
+    const from = win.fromIso ?? firstIso;
+    const to = win.toIso ?? lastIso;
+    const per = granularityOf(range, calendarSpan(from, to));
+    const trend =
+      per === 'hour'
+        ? bucketsFromPoints(hourPoints, 'hour', from, to)
+        : bucketsFromPoints(rpts, per, from, to);
     return {
-      days,
-      count: days.length,
-      total,
-      cost: costOf(total),
-      toolTotals: toolTotalsOf(days),
-      trend: bucketsOf(days, range),
-      sparks: smallMultiples(days, range),
+      rpts,
+      total: sumPoints(rpts),
+      toolTotals: toolTotalsOfPoints(rpts),
+      per,
+      trend,
+      sparks: smallMultiples(trend),
+      cats: catTotals(rpts, sel),
+      dailyRows: dailyTableRows(rpts),
     };
-  }, [range, customFrom, customTo]);
+  }, [allPoints, hourPoints, range, cf, ct, sel, firstIso, lastIso]);
 
   const rangeLabel =
-    range === 'custom' ? `${fmtIsoDate(customFrom)} – ${fmtIsoDate(customTo)}` : RANGES_8B.find((r) => r.key === range)!.long;
-  const per = perOf(range, view.count);
+    range === 'custom' ? `${fmtIsoDate(cf)} – ${fmtIsoDate(ct)}` : RANGES_8B.find((r) => r.key === range)!.long;
   const grand = view.total || 1;
   const tool = TOOLS.find((t) => t.key === sel)!;
+  const loading = allPoints === null;
 
   return (
     <div className="tt">
-      <div className="tt-app">
+      <div className={'tt-app' + (loading ? ' tt-loading' : '')}>
         <div className="tt-top">
           <div className="tt-brand">
             <div className="tt-logo">
@@ -83,26 +181,30 @@ export default function Overview8b() {
                 </button>
               ))}
             </div>
-            <span className="tt-avatar">MK</span>
+            <span className="tt-avatar">BW</span>
           </div>
         </div>
+
+        {(scanError || error) && (
+          <div className="tt-error">{[scanError, error].filter(Boolean).join(' · ')}</div>
+        )}
 
         {range === 'custom' && (
           <div className="tt-custom-row">
             <span className="lbl">Custom range</span>
             <input
               type="date"
-              value={customFrom}
-              min={FIRST_ISO}
-              max={customTo}
+              value={cf}
+              min={firstIso}
+              max={ct}
               onChange={(e) => e.target.value && setCustomFrom(e.target.value)}
             />
             <span className="to">to</span>
             <input
               type="date"
-              value={customTo}
-              min={customFrom}
-              max={LAST_ISO}
+              value={ct}
+              min={cf}
+              max={lastIso}
               onChange={(e) => e.target.value && setCustomTo(e.target.value)}
             />
           </div>
@@ -111,8 +213,18 @@ export default function Overview8b() {
         <div className="tt-b8-body">
           <div className="tt-b8-head">
             <div className="tt-eyebrow">Total tokens · {rangeLabel}</div>
-            <div className="tt-b8-total">{fmtTok(view.total)}</div>
-            <div className="tt-b8-cost">{fmtUSD(view.cost)} est.</div>
+            <div className="tt-b8-total">{fmtTok(sum?.totalTokens ?? view.total)}</div>
+            <div className="tt-b8-cost">
+              {sum ? formatCost(sum.cost, sum.hasUnpriced) : '…'} est.
+              {sum?.hasUnpriced && (
+                <span title={sum.unpricedModels.join(', ')}> · {sum.unpricedModels.length} unpriced</span>
+              )}
+              {sum && sum.cacheEstimatedModels.length > 0 && (
+                <span title={sum.cacheEstimatedModels.join(', ')}>
+                  {' '}· {sum.cacheEstimatedModels.length} cache est.
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="tt-split">
@@ -124,6 +236,7 @@ export default function Overview8b() {
           <div className="tt-toolcards">
             {TOOLS.map((t) => {
               const active = t.key === sel;
+              const nModels = modelRows.filter((r) => r.source === t.key).length;
               return (
                 <button
                   key={t.key}
@@ -136,7 +249,7 @@ export default function Overview8b() {
                     {t.label}
                   </div>
                   <div className="num">{fmtPct(view.toolTotals[t.key] / grand)}</div>
-                  <div className="sub">{MODELS[t.key].length} models</div>
+                  <div className="sub">{nModels} model{nModels === 1 ? '' : 's'}</div>
                 </button>
               );
             })}
@@ -144,22 +257,26 @@ export default function Overview8b() {
 
           <div className="tt-b8-grid">
             <div className="tt-b8-col">
-              <Heatmap compact />
-              <AggTrend data={view.trend} per={per} rangeLabel={rangeLabel} />
+              <Heatmap days={days} compact />
+              <AggTrend data={view.trend} per={view.per} rangeLabel={rangeLabel} />
               <SmallMultiples items={view.sparks} rangeLabel={rangeLabel} />
             </div>
 
             <div className="tt-b8-col">
               <div>
-                <ContextBreakdown tool={tool} toolTokens={view.toolTotals[sel]} showBars />
+                <TokenBreakdown tool={tool} cats={view.cats} />
               </div>
               <div>
-                <ModelsList tool={tool} toolTokens={view.toolTotals[sel]} />
+                <ModelsList
+                  tool={tool}
+                  toolTokens={view.toolTotals[sel]}
+                  models={modelBars(modelRows, sel, view.toolTotals[sel])}
+                />
               </div>
             </div>
           </div>
 
-          <BreakdownTable days={view.days} total={view.total} />
+          <BreakdownTable dailyRows={view.dailyRows} projectRows={projectTableRows(projRows)} />
         </div>
       </div>
     </div>
@@ -179,7 +296,7 @@ function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rang
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
   const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
-  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0]);
+  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { label: '—', byTool: emptyByTool(), total: 0 });
   const plotW = VW - PL - PR;
   const slot = plotW / (data.length || 1);
   const barW = Math.min(38, slot * 0.62);

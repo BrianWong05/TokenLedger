@@ -3,6 +3,7 @@ import './overview.css';
 import Heatmap from './Heatmap';
 import TrendBars from './TrendBars';
 import FocusPanel from './FocusPanel';
+import { DAYS } from './mock';
 
 const NAV = ['Overview', 'Activity', 'Models', 'Settings'];
 
@@ -38,7 +39,7 @@ export default function Overview() {
 
         <div className="tt-grid">
           <div className="tt-left">
-            <Heatmap />
+            <Heatmap days={DAYS} />
             <TrendBars />
           </div>
           <FocusPanel />

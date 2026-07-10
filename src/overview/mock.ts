@@ -3,45 +3,11 @@
 // This is fake data purely to fill out the design — nothing here reads the
 // real Ledger. Category names follow CONTEXT.md's ubiquitous language.
 
-export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes';
+import { TOOLS, CATEGORIES, MONTHS, isoOf, type Day, type ToolKey, type Bucket } from './data';
 
-export interface ToolMeta {
-  key: ToolKey;
-  label: string;
-  source: string; // full source name, e.g. "Claude Code"
-  color: string;
-}
-
-export const TOOLS: ToolMeta[] = [
-  { key: 'claude', label: 'Claude', source: 'Claude Code', color: '#3b82f6' },
-  { key: 'codex', label: 'Codex', source: 'Codex', color: '#37c98b' },
-  { key: 'gemini', label: 'Gemini', source: 'Gemini CLI', color: '#e2a63b' },
-  { key: 'hermes', label: 'Hermes', source: 'Hermes', color: '#f472b6' },
-];
-
-// The four canonical token categories (CONTEXT.md). Colors match the app's
-// existing chart palette in index.css.
-export const CATEGORIES = [
-  { key: 'input', label: 'Input', color: '#7c5cff' },
-  { key: 'output', label: 'Output', color: '#2fbf71' },
-  { key: 'cacheRead', label: 'Cache read', color: '#3aa0ff' },
-  { key: 'cacheWrite', label: 'Cache write', color: '#f0a03c' },
-] as const;
-
-// Heatmap ramps: index 0 = empty cell, 1..4 = ascending intensity.
-export const THEMES: Record<string, string[]> = {
-  ocean: ['#12161f', '#173a63', '#1f5aa6', '#2f80ed', '#63a4ff'],
-  emerald: ['#12161f', '#14503a', '#1a7d55', '#25a56f', '#4ad991'],
-  neon: ['#12161f', '#312a63', '#4b3aa6', '#6d4fed', '#9a7cff'],
-  amber: ['#12161f', '#5a4114', '#8a6417', '#c98f25', '#f0b84a'],
-};
-
-export const THEME_OPTIONS = [
-  { value: 'ocean', label: 'Blue' },
-  { value: 'emerald', label: 'Green' },
-  { value: 'neon', label: 'Violet' },
-  { value: 'amber', label: 'Amber' },
-];
+// Re-export only what the 8a views actually consume via './mock'.
+export { TOOLS, type ToolKey, type ToolMeta } from './data';
+export { fmtTok, fmtUSD, fmtPct } from '../lib/format';
 
 const YEAR = 2025;
 const BLENDED_USD_PER_MTOK = 2.75; // est. blended list price, $/M tokens
@@ -57,24 +23,6 @@ function mulberry32(seed: number) {
   };
 }
 const rng = mulberry32(20250109);
-
-export interface Day {
-  index: number;
-  date: Date;
-  iso: string;
-  weekday: number; // 0 = Sun
-  col: number;
-  row: number;
-  tokens: number;
-  level: 0 | 1 | 2 | 3 | 4;
-  byTool: Record<ToolKey, number>;
-}
-
-function isoOf(d: Date): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
 
 function levelOf(t: number): 0 | 1 | 2 | 3 | 4 {
   if (t <= 0) return 0;
@@ -125,23 +73,8 @@ function buildDays(): Day[] {
 }
 
 export const DAYS = buildDays();
-export const COLS = Math.max(...DAYS.map((d) => d.col)) + 1;
 
 export const TOTAL_TOKENS = DAYS.reduce((a, d) => a + d.tokens, 0);
-export const ACTIVE_DAYS = DAYS.filter((d) => d.tokens > 0).length;
-export const BEST_DAY = DAYS.reduce((a, d) => (d.tokens > a.tokens ? d : a), DAYS[0]);
-
-export const LONGEST_STREAK = (() => {
-  let best = 0;
-  let run = 0;
-  for (const d of DAYS) {
-    if (d.tokens > 0) {
-      run += 1;
-      best = Math.max(best, run);
-    } else run = 0;
-  }
-  return best;
-})();
 
 export const TOOL_TOTALS = TOOLS.reduce((acc, t) => {
   acc[t.key] = DAYS.reduce((s, d) => s + d.byTool[t.key], 0);
@@ -251,12 +184,6 @@ export const INTERVALS: { key: Interval; label: string; per: string }[] = [
   { key: 'Q', label: 'Quarter', per: 'quarter' },
 ];
 
-export interface Bucket {
-  label: string;
-  byTool: Record<ToolKey, number>;
-  total: number;
-}
-
 function emptyByTool(): Record<ToolKey, number> {
   return { claude: 0, codex: 0, gemini: 0, hermes: 0 };
 }
@@ -266,8 +193,6 @@ function addInto(dst: Record<ToolKey, number>, src: Record<ToolKey, number>) {
 function finalize(label: string, by: Record<ToolKey, number>): Bucket {
   return { label, byTool: by, total: TOOLS.reduce((s, t) => s + by[t.key], 0) };
 }
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 export function buckets(interval: Interval): Bucket[] {
   if (interval === 'D') {
@@ -295,176 +220,26 @@ export function buckets(interval: Interval): Bucket[] {
     .map(([col, by]) => finalize('W' + (col + 1), by));
 }
 
-// ---- date ranges (8b overview) ----
+// ---- cost helpers ----
 
-export type Range8b = 'day' | 'week' | 'month' | 'total' | 'custom';
-export const RANGES_8B: { key: Range8b; label: string; long: string }[] = [
-  { key: 'day', label: 'Day', long: 'Today' },
-  { key: 'week', label: 'Week', long: 'Last 7 days' },
-  { key: 'month', label: 'Month', long: 'Last 30 days' },
-  { key: 'total', label: 'Total', long: '2025' },
-  { key: 'custom', label: 'Custom', long: 'Custom range' },
-];
-const RANGE_LEN: Record<Range8b, number> = { day: 1, week: 7, month: 30, total: 365, custom: 0 };
-
-// "today" = the most recent day with activity, so the Day view is never empty.
-export const TODAY: Day = [...DAYS].reverse().find((d) => d.tokens > 0) ?? DAYS[DAYS.length - 1];
-
-export function sliceDays(range: Range8b): Day[] {
-  if (range === 'day') return [TODAY];
-  return DAYS.slice(Math.max(0, DAYS.length - RANGE_LEN[range]));
-}
-
-export function daysBetween(fromIso: string, toIso: string): Day[] {
-  const lo = fromIso <= toIso ? fromIso : toIso;
-  const hi = fromIso <= toIso ? toIso : fromIso;
-  return DAYS.filter((d) => d.iso >= lo && d.iso <= hi);
-}
-
-export function fmtIsoDate(iso: string): string {
-  const [y, m, d] = iso.split('-').map(Number);
-  return fmtDate(new Date(y, m - 1, d));
-}
-
-export const FIRST_ISO = DAYS[0].iso;
-export const LAST_ISO = DAYS[DAYS.length - 1].iso;
-export function sumTokens(days: Day[]): number {
-  return days.reduce((a, d) => a + d.tokens, 0);
-}
-export function toolTotalsOf(days: Day[]): Record<ToolKey, number> {
-  const out = emptyByTool();
-  for (const d of days) addInto(out, d.byTool);
-  return out;
-}
-
-function dailyBuckets(days: Day[]): Bucket[] {
-  return days.map((d) => finalize(String(d.date.getDate()), { ...d.byTool }));
-}
-function weeklyBuckets(days: Day[]): Bucket[] {
-  const byWeek = new Map<number, Record<ToolKey, number>>();
-  for (const d of days) {
-    if (!byWeek.has(d.col)) byWeek.set(d.col, emptyByTool());
-    addInto(byWeek.get(d.col)!, d.byTool);
-  }
-  return [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(([col, by]) => finalize('W' + (col + 1), by));
-}
-function monthlyBuckets(days: Day[]): Bucket[] {
-  const byMonth = new Map<number, Record<ToolKey, number>>();
-  for (const d of days) {
-    const m = d.date.getMonth();
-    if (!byMonth.has(m)) byMonth.set(m, emptyByTool());
-    addInto(byMonth.get(m)!, d.byTool);
-  }
-  return [...byMonth.entries()].sort((a, b) => a[0] - b[0]).map(([m, by]) => finalize(MONTHS[m], by));
-}
-
-// diurnal shape for the single-day (hourly) view
-const DIURNAL = [2, 1, 1, 1, 2, 3, 6, 12, 18, 22, 24, 23, 25, 26, 24, 22, 20, 16, 12, 9, 7, 5, 4, 3];
-function hourlyBuckets(day: Day): Bucket[] {
-  const wsum = DIURNAL.reduce((a, b) => a + b, 0);
-  return DIURNAL.map((w, h) => {
-    const by = emptyByTool();
-    for (const t of TOOLS) by[t.key] = Math.round((day.byTool[t.key] * w) / wsum);
-    return finalize(String(h), by);
-  });
-}
-
-// stacked-by-tool buckets; granularity follows the range (hourly → monthly)
-export function bucketsOf(days: Day[], range: Range8b): Bucket[] {
-  if (range === 'day') return hourlyBuckets(days[0] ?? TODAY);
-  if (range === 'week' || range === 'month') return dailyBuckets(days);
-  if (range === 'total') return monthlyBuckets(days);
-  // custom: pick granularity by span
-  if (days.length <= 31) return dailyBuckets(days);
-  if (days.length <= 120) return weeklyBuckets(days);
-  return monthlyBuckets(days);
-}
-
-export function perOf(range: Range8b, count: number): string {
-  if (range === 'day') return 'hour';
-  if (range === 'week' || range === 'month') return 'day';
-  if (range === 'total') return 'month';
-  return count <= 31 ? 'day' : count <= 120 ? 'week' : 'month';
-}
-
-// per-tool sparkline series over the range's buckets (small multiples)
-export function smallMultiples(days: Day[], range: Range8b) {
-  const bks = bucketsOf(days, range);
-  const totals = toolTotalsOf(days);
-  const grand = sumTokens(days) || 1;
-  return TOOLS.map((t) => ({
-    ...t,
-    total: totals[t.key],
-    share: totals[t.key] / grand,
-    series: bks.map((b) => b.byTool[t.key]),
-  }));
-}
-
-// ---- daily / project breakdown table (8b) ----
-
-// Projects (working directories) the usage rolls up to. Weights are relative;
-// project totals are apportioned from the range total so they stay coherent.
-const PROJECTS: { name: string; weight: number }[] = [
-  { name: 'token-ledger-web', weight: 26 },
-  { name: 'agent-runtime', weight: 18.5 },
-  { name: 'infra-terraform', weight: 13.5 },
-  { name: 'ml-eval-harness', weight: 9.6 },
-  { name: 'design-system', weight: 8.4 },
-  { name: 'docs-portal', weight: 5.9 },
-  { name: 'mobile-client', weight: 3.8 },
-  { name: 'data-pipeline', weight: 4.3 },
-];
-
-export interface TableRow {
-  label: string; // iso date (daily) or project name — also the sort key
-  total: number;
-  input: number;
-  output: number;
-  cached: number;
-  reasoning: number;
-  convs: number;
-}
-
-// Split a total into the table's component columns. Columns don't fully sum to
-// total (cache-write is omitted), matching the design.
-function tableCats(total: number): Omit<TableRow, 'label'> {
-  return {
-    total,
-    input: Math.round(total * 0.15),
-    output: Math.round(total * 0.1),
-    cached: Math.round(total * 0.72),
-    reasoning: Math.round(total * 0.015),
-    convs: Math.max(1, Math.round(total / 550_000)),
-  };
-}
-
-export function dailyTableRows(days: Day[]): TableRow[] {
-  return days.filter((d) => d.tokens > 0).map((d) => ({ label: d.iso, ...tableCats(d.tokens) }));
-}
-
-export function projectTableRows(total: number): TableRow[] {
-  const sumW = PROJECTS.reduce((a, p) => a + p.weight, 0);
-  return PROJECTS.map((p) => ({ label: p.name, ...tableCats(Math.round((total * p.weight) / sumW)) }));
-}
-
-// ---- formatters ----
-
-export function fmtTok(n: number): string {
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 1 : 2) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + 'K';
-  return String(n);
-}
-export function fmtUSD(n: number): string {
-  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-export function fmtPct(x: number): string {
-  return (x * 100).toFixed(x < 0.1 ? 1 : 0) + '%';
-}
-export function fmtDate(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
 export function costOf(tokens: number): number {
   return (tokens / 1e6) * BLENDED_USD_PER_MTOK;
 }
 export const TOTAL_COST = costOf(TOTAL_TOKENS);
+
+// 8a adapter: fake ModelBar rows from the static MODELS shares.
+export function mockModelBars(tool: ToolKey, toolTokens: number) {
+  return MODELS[tool].map((m) => {
+    const tokens = Math.round(toolTokens * m.share);
+    const segs = categorySplit(tool, tokens);
+    const segTotal = Math.max(1, segs.reduce((a, c) => a + c.tokens, 0));
+    return {
+      name: m.name,
+      tokens,
+      cost: costOf(tokens),
+      share: m.share,
+      segs: segs.map((c) => ({ key: c.key, color: c.color, frac: c.tokens / segTotal })),
+      cacheEstimated: false,
+    };
+  });
+}

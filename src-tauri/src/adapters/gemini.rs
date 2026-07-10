@@ -129,6 +129,8 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
             cache_write_5m_tokens: 0,
             cache_write_1h_tokens: 0,
             source_file: path_str.clone(),
+            session_id: Some(session.session_id.clone()),
+            reasoning_tokens: Some(tokens.thoughts),
         });
     }
 
@@ -241,6 +243,25 @@ mod tests {
         assert_eq!(cread, 300);
         assert_eq!(model, "gemini-2.5-flash");
         assert_eq!(project, "/Users/dev/projects/alpha"); // friendly-name reverse map
+
+        // v2 columns: session id and thoughts-as-reasoning.
+        let (sid, rt): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT session_id, reasoning_tokens FROM events WHERE dedup_key = 'gemini:sess-alpha:m1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sid, Some("sess-alpha".to_string()));
+        assert_eq!(rt, Some(50), "thoughts reported as reasoning subset");
+        let rt2: Option<i64> = conn
+            .query_row(
+                "SELECT reasoning_tokens FROM events WHERE dedup_key = 'gemini:sess-alpha:m2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rt2, Some(0), "reported zero, not NULL");
 
         // m1 timestamp = epoch of 2026-03-01T10:05:00Z
         let ts: i64 = conn

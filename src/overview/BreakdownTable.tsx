@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { dailyTableRows, projectTableRows, fmtIsoDate, type Day, type TableRow } from './mock';
+import { type TableRow } from './data';
+import { fmtIsoDate } from '../lib/format';
 
 type Tab = 'daily' | 'projects';
 type SortKey = keyof TableRow;
@@ -16,21 +17,28 @@ const NUMCOLS: { key: SortKey; label: string }[] = [
 const fmtInt = (n: number) => n.toLocaleString('en-US');
 
 // Daily breakdown / project usage — a tabbed, click-to-sort table (design 8b).
-export default function BreakdownTable({ days, total }: { days: Day[]; total: number }) {
+export default function BreakdownTable({
+  dailyRows,
+  projectRows,
+}: {
+  dailyRows: TableRow[];
+  projectRows: TableRow[];
+}) {
   const [tab, setTab] = useState<Tab>('daily');
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'label', dir: 'desc' });
 
-  const rows = useMemo(
-    () => (tab === 'daily' ? dailyTableRows(days) : projectTableRows(total)),
-    [tab, days, total],
-  );
+  const rows = tab === 'daily' ? dailyRows : projectRows;
 
   const sorted = useMemo(() => {
     const { key, dir } = sort;
+    const num = (v: number | null) => (v == null ? -1 : v); // '—' sorts below 0
     return [...rows].sort((a, b) => {
       const av = a[key];
       const bv = b[key];
-      const cmp = typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number);
+      const cmp =
+        typeof av === 'string'
+          ? av.localeCompare(bv as string)
+          : num(av as number | null) - num(bv as number | null);
       return dir === 'asc' ? cmp : -cmp;
     });
   }, [rows, sort]);
@@ -65,7 +73,12 @@ export default function BreakdownTable({ days, total }: { days: Day[]; total: nu
       <div className="tt-tbl-scroll">
         <div className="tt-tbl-grid tt-tbl-head">
           {cols.map((c) => (
-            <button key={c.key} className={sort.key === c.key ? 'active' : ''} onClick={() => clickCol(c.key)}>
+            <button
+              key={c.key}
+              className={sort.key === c.key ? 'active' : ''}
+              onClick={() => clickCol(c.key)}
+              title={c.key === 'reasoning' ? 'Claude does not report reasoning separately' : undefined}
+            >
               {c.label}
               <span className="arrow">{sort.key === c.key ? (sort.dir === 'asc' ? '▲' : '▼') : ''}</span>
             </button>
@@ -78,7 +91,7 @@ export default function BreakdownTable({ days, total }: { days: Day[]; total: nu
             <span>{fmtInt(r.input)}</span>
             <span>{fmtInt(r.output)}</span>
             <span>{fmtInt(r.cached)}</span>
-            <span>{fmtInt(r.reasoning)}</span>
+            <span>{r.reasoning == null ? '—' : fmtInt(r.reasoning)}</span>
             <span>{fmtInt(r.convs)}</span>
           </div>
         ))}

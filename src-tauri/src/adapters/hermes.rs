@@ -102,6 +102,8 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
             cache_write_5m_tokens: cache_write,     // single Hermes bucket -> 5m
             cache_write_1h_tokens: 0,
             source_file: hermes_db.display().to_string(),
+            session_id: Some(id.clone()),
+            reasoning_tokens: Some(reasoning),
         });
     }
 
@@ -201,6 +203,17 @@ mod tests {
         assert_eq!(cw1, 0);
         assert_eq!(calls, 30);             // api_call_count verbatim
         assert_eq!(project, Some("/Users/dev/projects/alpha".to_string()));
+
+        // v2 columns.
+        let (sid, rt): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT session_id, reasoning_tokens FROM events WHERE dedup_key = 'hermes:s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sid, Some("s1".to_string()));
+        assert_eq!(rt, Some(50));
 
         // s3: api_calls forced to 1; empty cwd -> NULL project.
         let (calls3, project3): (i64, Option<String>) = conn

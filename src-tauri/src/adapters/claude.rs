@@ -154,6 +154,11 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
         None => return Ok(None),
     };
 
+    let session_id = v
+        .get("sessionId")
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+
     Ok(Some(UsageEvent {
         dedup_key,
         source: "claude".to_string(),
@@ -167,6 +172,8 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
         cache_write_5m_tokens: cw5m,
         cache_write_1h_tokens: cw1h,
         source_file: source_file.to_string(),
+        session_id,
+        reasoning_tokens: None,
     }))
 }
 
@@ -372,5 +379,40 @@ mod tests {
             )
             .unwrap();
         assert_eq!(out2, 4626);
+    }
+
+    #[test]
+    fn captures_session_id_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let with_sid = r#"{"type":"assistant","sessionId":"sess-cl-1","requestId":"req_s1","timestamp":"2026-06-05T09:00:00.000Z","cwd":"/Users/dev/projects/x","message":{"id":"msg_s1","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let without_sid = r#"{"type":"assistant","requestId":"req_s2","timestamp":"2026-06-05T09:01:00.000Z","cwd":"/Users/dev/projects/x","message":{"id":"msg_s2","model":"claude-opus-4-8","usage":{"input_tokens":20,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(proj.join("s.jsonl"), format!("{with_sid}\n{without_sid}\n")).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.events_inserted, 2);
+
+        let (sid, rt): (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT session_id, reasoning_tokens FROM events WHERE dedup_key='claude:msg_s1:req_s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sid, Some("sess-cl-1".to_string()));
+        assert_eq!(rt, None, "Claude does not report reasoning separately");
+
+        let sid2: Option<String> = conn
+            .query_row(
+                "SELECT session_id FROM events WHERE dedup_key='claude:msg_s2:req_s2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sid2, None);
     }
 }
