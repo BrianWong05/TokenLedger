@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { SeriesPoint, BreakdownRow } from '../types';
+import type { SeriesPoint, BreakdownRow, CtxResourceCount } from '../types';
 import {
   seriesToDays,
   windowOf,
@@ -10,6 +10,8 @@ import {
   projectTableRows,
   modelBars,
   catTotals,
+  ctxTotals,
+  ctxMeta,
   rangeToFilters,
 } from './data';
 
@@ -208,5 +210,48 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     const reversed = rangeToFilters('custom', '2026-07-08', '2026-07-01');
     expect(reversed).toEqual(forward);
     expect(reversed.startTs!).toBeLessThan(reversed.endTs!);
+  });
+});
+
+describe('ctxTotals', () => {
+  it('sums per-tool ctx preserving null (never 0)', () => {
+    const pts: SeriesPoint[] = [
+      pt({ source: 'claude', inputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 30,
+           ctxMessages: 250, ctxSystem: 60, ctxReasoning: 20, ctxToolcalls: 90 }),
+      pt({ source: 'claude', inputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0,
+           ctxMessages: 40, ctxSystem: 10, ctxReasoning: 0 }),
+      pt({ source: 'codex', ctxMessages: 999 }), // other tool: excluded
+    ];
+    const t = ctxTotals(pts, 'claude');
+    expect(t.billed).toBe(380); // (100+200+30) + (50+0+0)
+    expect(t.reused).toBe(200);
+    expect(t.messages).toBe(290);
+    expect(t.system).toBe(70);
+    expect(t.reasoning).toBe(20);
+    expect(t.toolcalls).toBe(90); // one null contributor does not zero it
+    expect(t.agents).toBeNull();  // nothing reported anywhere: null, not 0
+  });
+
+  it('all-null source stays all null (hermes)', () => {
+    const t = ctxTotals([pt({ source: 'hermes' })], 'hermes');
+    expect(t.messages).toBeNull();
+    expect(t.billed).toBe(330); // header still real: 100+200+30
+  });
+});
+
+describe('ctxMeta', () => {
+  const res: CtxResourceCount[] = [
+    { source: 'claude', kind: 'skill', count: 32 },
+    { source: 'claude', kind: 'mcp_server', count: 2 },
+    { source: 'claude', kind: 'agent', count: 1 },
+    { source: 'claude', kind: 'memory_file', count: 1 },
+    { source: 'codex', kind: 'mcp_server', count: 5 },
+  ];
+  it('renders counts in canonical order with pluralization', () => {
+    expect(ctxMeta(res, 'claude')).toBe('32 skills · 2 MCP servers · 1 agent · 1 memory file');
+  });
+  it('omits zero kinds and scopes to the tool', () => {
+    expect(ctxMeta(res, 'codex')).toBe('5 MCP servers');
+    expect(ctxMeta(res, 'hermes')).toBe('');
   });
 });

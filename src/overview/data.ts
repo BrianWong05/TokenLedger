@@ -1,7 +1,7 @@
 // Real-data layer for the Overview: shared design meta plus pure reshaping of
 // backend responses (SeriesPoint/BreakdownRow) into the shapes the components
 // consume. No fetching here — Overview8b orchestrates IPC calls.
-import type { BreakdownRow, Filters, SeriesPoint, DateRange } from '../types';
+import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount } from '../types';
 import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
 
 export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes';
@@ -386,4 +386,61 @@ export function modelBars(rows: BreakdownRow[], tool: ToolKey, toolTokens: numbe
         cacheEstimated: r.cacheEstimated,
       };
     });
+}
+
+// ---- context breakdown panel ----
+
+export interface CtxTotals {
+  billed: number; // input + cacheRead + cacheWrite — the context transmitted
+  reused: number; // cacheRead
+  messages: number | null;
+  system: number | null;
+  reasoning: number | null;
+  toolcalls: number | null;
+  agents: number | null;
+  mcp: number | null;
+  skills: number | null;
+}
+
+// Null-preserving sum: a null contributor never zeroes the total, and a
+// category nobody reported stays null (renders "—", same rule as reasoning).
+function addOpt(a: number | null, b: number | null): number | null {
+  return b == null ? a : (a ?? 0) + b;
+}
+
+export function ctxTotals(pts: SeriesPoint[], tool: ToolKey): CtxTotals {
+  const t: CtxTotals = {
+    billed: 0, reused: 0,
+    messages: null, system: null, reasoning: null,
+    toolcalls: null, agents: null, mcp: null, skills: null,
+  };
+  for (const p of pts) {
+    if (p.source !== tool) continue;
+    t.billed += p.inputTokens + p.cacheReadTokens + p.cacheWriteTokens;
+    t.reused += p.cacheReadTokens;
+    t.messages = addOpt(t.messages, p.ctxMessages);
+    t.system = addOpt(t.system, p.ctxSystem);
+    t.reasoning = addOpt(t.reasoning, p.ctxReasoning);
+    t.toolcalls = addOpt(t.toolcalls, p.ctxToolcalls);
+    t.agents = addOpt(t.agents, p.ctxAgents);
+    t.mcp = addOpt(t.mcp, p.ctxMcp);
+    t.skills = addOpt(t.skills, p.ctxSkills);
+  }
+  return t;
+}
+
+const CTX_KINDS: { kind: string; label: string }[] = [
+  { kind: 'skill', label: 'skill' },
+  { kind: 'mcp_server', label: 'MCP server' },
+  { kind: 'agent', label: 'agent' },
+  { kind: 'memory_file', label: 'memory file' },
+];
+
+export function ctxMeta(res: CtxResourceCount[], tool: ToolKey): string {
+  const bits: string[] = [];
+  for (const { kind, label } of CTX_KINDS) {
+    const n = res.find((r) => r.source === tool && r.kind === kind)?.count ?? 0;
+    if (n > 0) bits.push(`${n} ${label}${n === 1 ? '' : 's'}`);
+  }
+  return bits.join(' · ');
 }
