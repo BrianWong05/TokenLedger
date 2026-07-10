@@ -26,6 +26,13 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
     cost: 0.5,
     requests: 2,
     convs: 1,
+    ctxMessages: null,
+    ctxSystem: null,
+    ctxReasoning: null,
+    ctxToolcalls: null,
+    ctxAgents: null,
+    ctxMcp: null,
+    ctxSkills: null,
     ...over,
   };
 }

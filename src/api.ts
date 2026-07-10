@@ -5,6 +5,7 @@ import type {
   TrendPoint,
   SeriesPoint,
   BreakdownRow,
+  CtxResourceCount,
   Filters,
   OverrideRates,
 } from './types';
@@ -36,6 +37,10 @@ export function fetchBreakdown(
   filters: Filters,
 ): Promise<BreakdownRow[]> {
   return invoke('breakdown', { by, filters });
+}
+
+export function fetchCtxResources(filters: Filters): Promise<CtxResourceCount[]> {
+  return invoke('ctx_resources', { filters });
 }
 
 export function setPriceOverride(

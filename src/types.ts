@@ -55,6 +55,19 @@ export interface SeriesPoint {
   cost: number;
   requests: number;
   convs: number;
+  ctxMessages: number | null;
+  ctxSystem: number | null;
+  ctxReasoning: number | null;
+  ctxToolcalls: number | null;
+  ctxAgents: number | null;
+  ctxMcp: number | null;
+  ctxSkills: number | null;
+}
+
+export interface CtxResourceCount {
+  source: string;
+  kind: string; // 'skill' | 'mcp_server' | 'agent' | 'memory_file'
+  count: number;
 }
 
 export interface BreakdownRow {
