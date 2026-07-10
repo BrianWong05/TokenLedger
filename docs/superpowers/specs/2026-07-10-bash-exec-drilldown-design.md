@@ -58,8 +58,8 @@ string at scan time:
 - `exec_words(cmd) -> Vec<String>` — shell-ish word splitting honoring
   double/single quotes; `unwrap_shell(words)` strips `bash|sh|zsh|fish
   -lc` wrappers and `env|command|xcrun` prefixes (recursive).
-- `exec_exe(cmd) -> String` — basename of the first unwrapped word,
-  else "unknown".
+- `exec_exe(cmd) -> String` — basename of the first unwrapped word that
+  is not a `VAR=value` assignment, else "unknown".
 - `exec_cmd(cmd) -> String` — signature: `exe` + first non-flag,
   non-VAR=value argument (e.g. "git add", "npx vitest"), else `exe`.
 
