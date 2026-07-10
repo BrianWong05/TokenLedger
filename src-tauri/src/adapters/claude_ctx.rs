@@ -14,7 +14,7 @@ pub fn est(bytes: usize) -> i64 {
 }
 
 /// Bytes of a content value: strings verbatim, everything else JSON-serialized.
-fn content_bytes(v: &Value) -> usize {
+pub fn content_bytes(v: &Value) -> usize {
     match v.as_str() {
         Some(s) => s.len(),
         None => serde_json::to_string(v).map(|s| s.len()).unwrap_or(0),
