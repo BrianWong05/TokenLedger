@@ -91,14 +91,17 @@ fn scan_file(
         .unwrap_or(0);
 
     // Context attribution (spec 2026-07-10): feed every line through the
-    // running composition; attribute each API call at first sight of its
-    // dedup_key (content the call produces is its output, not its input).
+    // running composition. Snapshot the composition at first sight of a
+    // dedup_key (content the call produces is its output, not its input),
+    // but split per LINE: proxied models (chatcmpl ids) log partial usage on
+    // early duplicate lines, and the dedup upsert keeps the max-output line —
+    // its ctx must be computed from its own billed or the partition breaks.
     let is_agent_file = path_str.contains("/subagents/");
     let mut events = Vec::new();
     let mut comps: HashMap<String, Composition> = HashMap::new();
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
-    let mut attr_by_key: HashMap<String, CtxTokens> = HashMap::new();
+    let mut comp_by_key: HashMap<String, Composition> = HashMap::new();
 
     // ctx_tools idempotency: a parse from byte 0 rebuilds this file's tool
     // weights from scratch (same rule as the fresh composition).
@@ -167,9 +170,8 @@ fn scan_file(
                         + ev.cache_write_5m_tokens
                         + ev.cache_write_1h_tokens;
                     comp.init_system(billed);
-                    let mut ctx = *attr_by_key
-                        .entry(ev.dedup_key.clone())
-                        .or_insert_with(|| comp.attribute(billed));
+                    let snap = *comp_by_key.entry(ev.dedup_key.clone()).or_insert(*comp);
+                    let mut ctx = snap.attribute(billed);
                     let sidechain = is_agent_file
                         || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true);
                     if sidechain {
@@ -567,6 +569,41 @@ mod tests {
         assert_eq!(m2 + s2, 2000, "partition exact (reasoning excluded: NULL)");
         assert!(t2 > 0 && t2 <= m2, "toolcalls subset of messages");
         assert!(s2 > 0 && s2 < 2000);
+    }
+
+    #[test]
+    fn duplicate_lines_with_growing_usage_attribute_from_own_billed() {
+        // Proxied models (chatcmpl ids) log PARTIAL usage on early duplicate
+        // lines of the same message; the dedup upsert keeps the max-output
+        // line. Its ctx must be split from its own billed, not the first
+        // line's — or the primary partition falls short by the difference.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let user1 = r#"{"type":"user","sessionId":"sd","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        // First duplicate: partial usage (billed 100). Second: final usage
+        // (billed 2000, higher output → wins the upsert).
+        let l1 = r#"{"type":"assistant","sessionId":"sd","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"chatcmpl-dup","model":"z-ai/glm-5.2","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let l2 = r#"{"type":"assistant","sessionId":"sd","timestamp":"2026-07-01T10:00:02.000Z","cwd":"/p/x","message":{"id":"chatcmpl-dup","model":"z-ai/glm-5.2","content":[{"type":"text","text":"hi there"}],"usage":{"input_tokens":500,"output_tokens":25,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
+        let lines = [user1, l1, l2].join("\n") + "\n";
+        std::fs::write(proj.join("sd.jsonl"), lines).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.error, None);
+        assert_eq!(res.events_inserted, 1, "duplicates collapse to one event");
+
+        let (out, m, s, r): (i64, i64, i64, Option<i64>) = conn.query_row(
+            "SELECT output_tokens, ctx_messages, ctx_system, ctx_reasoning FROM events WHERE dedup_key='claude:chatcmpl-dup'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();
+        assert_eq!(out, 25, "max-output line wins");
+        assert_eq!(
+            m + s + r.unwrap_or(0),
+            2000,
+            "kept row's partition matches its OWN billed, not the first line's"
+        );
     }
 
     #[test]
