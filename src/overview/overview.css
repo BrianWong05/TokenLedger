@@ -41,13 +41,19 @@
 /* ---- top bar ---- */
 
 .tt-top {
+  position: sticky;
+  top: 0;
+  z-index: 50;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
   padding: 15px 22px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+  /* Opaque base so scrolled content never shows through the sticky bar */
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent),
+    var(--tt-panel);
 }
 .tt-brand {
   display: flex;
@@ -132,6 +138,42 @@
   font-size: 11px;
   font-weight: 700;
   color: #06130d;
+}
+.tt-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Match height/chrome of .tt-select and .tt-seg (shared surface language). */
+.tt-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--tt-mut);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--tt-line);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.tt-refresh-btn:hover:not(:disabled) {
+  color: var(--tt-fg);
+  background: rgba(255, 255, 255, 0.09);
+}
+.tt-refresh-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.tt-refresh-btn.spinning {
+  color: var(--tt-fg);
+}
+.tt-refresh-btn.spinning svg {
+  animation: tt-spin 0.8s linear infinite;
+}
+@keyframes tt-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ---- body grid ---- */

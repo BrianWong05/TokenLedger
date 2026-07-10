@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import './overview.css';
 import Heatmap from './Heatmap';
@@ -34,6 +34,7 @@ import {
   type Bucket,
 } from './data';
 import { fmtTok, fmtPct, fmtIsoDate, formatCost } from '../lib/format';
+import { useAutoRefresh, REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 
 const NAV = ['Overview', 'Insights', 'Models', 'Settings'];
 const EMPTY_FILTERS = { tools: [], models: [], project: null };
@@ -63,23 +64,34 @@ export default function Overview8b() {
   const [error, setError] = useState<string | null>(null);
   const [pricesVersion, setPricesVersion] = useState(0);
 
-  // Mount: scan the logs, then load the whole ledger's daily series once.
+  const onRefresh = useCallback(async () => {
+    try {
+      const status = await scan();
+      const errs = status.sources
+        .filter((s) => s.error)
+        .map((s) => `${s.source}: ${s.error}`);
+      setScanError(errs.length ? errs.join(' · ') : null);
+    } catch (e) {
+      setScanError(String(e));
+      // Spec: if scan() itself throws, do not proceed to series reload.
+      return;
+    }
+    try {
+      const pts = await fetchSeries(EMPTY_FILTERS, 'day');
+      setAllPoints(pts);
+    } catch (e) {
+      setError(String(e));
+      // Keep prior data after first paint; first load still settles to [] so loading ends.
+      setAllPoints((prev) => (prev === null ? [] : prev));
+    }
+  }, []);
+
+  const { refreshSec, setRefreshSec, refresh, refreshing } = useAutoRefresh(onRefresh);
+
+  // Initial scan + load once on mount (same path as manual/auto refresh).
   useEffect(() => {
-    (async () => {
-      try {
-        const status = await scan();
-        const errs = status.sources.filter((s) => s.error).map((s) => `${s.source}: ${s.error}`);
-        setScanError(errs.length ? errs.join(' · ') : null);
-      } catch (e) {
-        setScanError(String(e));
-      }
-      try {
-        setAllPoints(await fetchSeries(EMPTY_FILTERS, 'day'));
-      } catch (e) {
-        setError(String(e));
-        setAllPoints([]);
-      }
-    })();
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // The backend rebuilds prices off-thread at startup; when they land, re-run
@@ -192,6 +204,48 @@ export default function Overview8b() {
                   {r.label}
                 </button>
               ))}
+            </div>
+            <div className="tt-refresh">
+              <div className="tt-select-wrap">
+                <select
+                  className="tt-select"
+                  aria-label="Auto-refresh interval"
+                  value={refreshSec}
+                  onChange={(e) => setRefreshSec(Number(e.target.value) as RefreshSec)}
+                >
+                  {REFRESH_PRESETS.map((p) => (
+                    <option key={p.sec} value={p.sec}>
+                      {p.sec === 0 ? 'Off' : p.label}
+                    </option>
+                  ))}
+                </select>
+                <i>▼</i>
+              </div>
+              <button
+                type="button"
+                className={'tt-refresh-btn' + (refreshing ? ' spinning' : '')}
+                onClick={() => void refresh()}
+                disabled={refreshing}
+                aria-label="Refresh"
+                aria-busy={refreshing}
+                title="Refresh"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M21 12a9 9 0 1 1-2.64-6.36"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M21 3v6h-6"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
             </div>
             <span className="tt-avatar">BW</span>
           </div>
