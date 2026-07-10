@@ -245,6 +245,18 @@ export function mockCtxTotals(tool: ToolKey) {
       mcp: grab([...c.secondary], 'mcp'),
       skills: grab([...c.secondary], 'skills'),
     },
+    buckets: {
+      source: tool,
+      history: Math.round(c.reused * 0.98),
+      newInput: Math.round(c.input * 0.004),
+      system: Math.round(c.input * 0.003),
+      response: Math.round(c.input * 0.002),
+      reasoning: null,
+    },
+    toolRows: [
+      { source: tool, name: 'Bash', estTokens: 300, calls: 12 },
+      { source: tool, name: 'Read', estTokens: 200, calls: 9 },
+    ],
     meta: c.meta,
   };
 }

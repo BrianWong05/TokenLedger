@@ -545,6 +545,8 @@
 .tt-ctx-row:hover {
   background: rgba(255, 255, 255, 0.035);
 }
+.tt-ctx-row.indent-1 { padding-left: 22px; }
+.tt-ctx-row.indent-2 { padding-left: 40px; }
 .tt-ctx-row .bar {
   position: absolute;
   left: 0;
