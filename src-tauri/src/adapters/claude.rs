@@ -100,6 +100,13 @@ fn scan_file(
     let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
     let mut attr_by_key: HashMap<String, CtxTokens> = HashMap::new();
 
+    // ctx_tools idempotency: a parse from byte 0 rebuilds this file's tool
+    // weights from scratch (same rule as the fresh composition).
+    if start == 0 {
+        crate::db::clear_ctx_tools_for_file(conn, &path_str)?;
+    }
+    let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
+
     for line in buf[..consumed].split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
@@ -143,7 +150,11 @@ fn scan_file(
             .unwrap_or(0);
 
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("user") => claude_ctx::apply_user_line(comp, &v, &tool_names, &mut Vec::new()),
+            Some("user") => {
+                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut sizes);
+                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
+            }
             Some("system") => {
                 if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
                     comp.reset_compact();
@@ -176,8 +187,10 @@ fn scan_file(
                 // Attribution first, THEN book this line's own content: what a
                 // call produces is its output, not its input.
                 let mut sink: Vec<(&'static str, String)> = Vec::new();
-                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink, &mut Vec::new());
+                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink, &mut sizes);
                 resources.extend(sink.into_iter().map(|(k, n)| (k, n, line_ts)));
+                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
             }
             _ => {}
         }
@@ -189,6 +202,7 @@ fn scan_file(
         claude_ctx::save_composition(conn, sid, comp)?;
     }
     claude_ctx::record_resources(conn, "claude", &resources)?;
+    crate::db::add_ctx_tool_rows(conn, "claude", &path_str, &tool_rows)?;
 
     let new_offset = start + consumed as i64;
     set_file_state(conn, &path_str, FileState { size, mtime, byte_offset: new_offset })?;
@@ -697,5 +711,40 @@ mod tests {
             ("mcp_server".to_string(), "pencil".to_string()),
             ("skill".to_string(), "graphify".to_string()),
         ]);
+    }
+
+    #[test]
+    fn scan_populates_ctx_tools_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let logp = proj.join("s7.jsonl");
+        let tooluse = r#"{"type":"assistant","sessionId":"s7","requestId":"r1","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let toolres = r#"{"type":"user","sessionId":"s7","timestamp":"2026-07-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"cccccccccccccccccccccccccccccccccccccccc"}]}}"#;
+        std::fs::write(&logp, format!("{tooluse}\n{toolres}\n")).unwrap();
+
+        scan_claude(&mut conn, &root);
+        let (est1, calls1): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='claude' AND name='Bash'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(est1 > 0);
+        assert_eq!(calls1, 1, "tool_use counts one call; its result adds size only");
+
+        // Unchanged re-scan (resume at EOF): no new bytes, no double counting.
+        scan_claude(&mut conn, &root);
+        let (est2, calls2): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='claude' AND name='Bash'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((est2, calls2), (est1, calls1));
+
+        // Forced full re-parse (heal gesture): rows replaced, not doubled.
+        conn.execute("DELETE FROM scanned_files", []).unwrap();
+        scan_claude(&mut conn, &root);
+        let (est3, calls3): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='claude' AND name='Bash'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((est3, calls3), (est1, calls1), "full re-parse replaces the file's rows");
     }
 }
