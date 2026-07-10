@@ -54,27 +54,75 @@ ALTER TABLE events ADD COLUMN reasoning_tokens INTEGER;
 DELETE FROM scanned_files;
 PRAGMA user_version = 2;";
 
-// On dedup conflict, refresh only the v2 columns: token counts are immutable
-// (Ledger), but a backfill re-scan must fill session_id/reasoning on old rows.
+// v3: context attribution. ctx_* columns hold each event's attributed share
+// of billed context (see types::CtxTokens). ctx_resources powers the panel's
+// meta line (distinct names per local day). session_ctx persists Claude's
+// running composition across byte-offset resumes. Clearing scanned_files
+// forces a full re-scan so existing rows backfill ctx via the conflict
+// clauses below. Events are never deleted (Ledger rule).
+// No BEGIN/COMMIT here: migrate() runs the batches inside its own
+// BEGIN IMMEDIATE transaction.
+const SCHEMA_V3: &str = "\
+ALTER TABLE events ADD COLUMN ctx_messages INTEGER;
+ALTER TABLE events ADD COLUMN ctx_system INTEGER;
+ALTER TABLE events ADD COLUMN ctx_reasoning INTEGER;
+ALTER TABLE events ADD COLUMN ctx_toolcalls INTEGER;
+ALTER TABLE events ADD COLUMN ctx_agents INTEGER;
+ALTER TABLE events ADD COLUMN ctx_mcp INTEGER;
+ALTER TABLE events ADD COLUMN ctx_skills INTEGER;
+CREATE TABLE IF NOT EXISTS ctx_resources (
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  day TEXT NOT NULL,
+  PRIMARY KEY (source, kind, name, day)
+);
+CREATE TABLE IF NOT EXISTS session_ctx (
+  session_id TEXT PRIMARY KEY,
+  msg_est INTEGER NOT NULL DEFAULT 0,
+  tool_est INTEGER NOT NULL DEFAULT 0,
+  mcp_est INTEGER NOT NULL DEFAULT 0,
+  skill_est INTEGER NOT NULL DEFAULT 0,
+  reas_est INTEGER NOT NULL DEFAULT 0,
+  sys_est INTEGER NOT NULL DEFAULT 0,
+  initialized INTEGER NOT NULL DEFAULT 0,
+  tainted INTEGER NOT NULL DEFAULT 0
+);
+DELETE FROM scanned_files;
+DELETE FROM session_ctx;
+PRAGMA user_version = 3;";
+
+// On dedup conflict, refresh only the append-only columns: token counts are
+// immutable (Ledger), but a backfill re-scan must fill session_id/reasoning/ctx
+// on old rows.
 const INSERT_SQL: &str = "INSERT INTO events \
 (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, \
-cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
+cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, \
+ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) \
+VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) \
 ON CONFLICT(dedup_key) DO UPDATE SET \
   session_id = COALESCE(excluded.session_id, events.session_id), \
-  reasoning_tokens = COALESCE(excluded.reasoning_tokens, events.reasoning_tokens)";
+  reasoning_tokens = COALESCE(excluded.reasoning_tokens, events.reasoning_tokens), \
+  ctx_messages  = COALESCE(excluded.ctx_messages,  events.ctx_messages), \
+  ctx_system    = COALESCE(excluded.ctx_system,    events.ctx_system), \
+  ctx_reasoning = COALESCE(excluded.ctx_reasoning, events.ctx_reasoning), \
+  ctx_toolcalls = COALESCE(excluded.ctx_toolcalls, events.ctx_toolcalls), \
+  ctx_agents    = COALESCE(excluded.ctx_agents,    events.ctx_agents), \
+  ctx_mcp       = COALESCE(excluded.ctx_mcp,       events.ctx_mcp), \
+  ctx_skills    = COALESCE(excluded.ctx_skills,    events.ctx_skills)";
 
 const REPLACE_SQL: &str = "INSERT OR REPLACE INTO events \
 (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, \
-cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
-VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)";
+cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, \
+ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) \
+VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Serialize migrators and re-check the version INSIDE the write lock: two
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version=2 and no-ops.
+    // the committed user_version (currently 3) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -83,6 +131,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 2 {
             conn.execute_batch(SCHEMA_V2)?;
+        }
+        if version < 3 {
+            conn.execute_batch(SCHEMA_V3)?;
         }
         Ok(())
     };
@@ -114,7 +165,9 @@ pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
                 e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens
+                e.session_id, e.reasoning_tokens,
+                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
+                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
             ])?;
         }
     }
@@ -147,8 +200,9 @@ pub fn insert_events_keep_max_output(
         // repeated CASE guard reads the original output_tokens consistently.
         let mut stmt = tx.prepare(
             "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
-             input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) \
+             input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, \
+             ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) \
              ON CONFLICT(dedup_key) DO UPDATE SET \
                source           = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source           ELSE events.source           END, \
                input_tokens     = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.input_tokens     ELSE events.input_tokens     END, \
@@ -162,6 +216,13 @@ pub fn insert_events_keep_max_output(
                source_file      = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source_file      ELSE events.source_file      END, \
                session_id       = COALESCE(events.session_id, excluded.session_id), \
                reasoning_tokens = COALESCE(events.reasoning_tokens, excluded.reasoning_tokens), \
+               ctx_messages  = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_messages  ELSE COALESCE(events.ctx_messages,  excluded.ctx_messages)  END, \
+               ctx_system    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_system    ELSE COALESCE(events.ctx_system,    excluded.ctx_system)    END, \
+               ctx_reasoning = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_reasoning ELSE COALESCE(events.ctx_reasoning, excluded.ctx_reasoning) END, \
+               ctx_toolcalls = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_toolcalls ELSE COALESCE(events.ctx_toolcalls, excluded.ctx_toolcalls) END, \
+               ctx_agents    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_agents    ELSE COALESCE(events.ctx_agents,    excluded.ctx_agents)    END, \
+               ctx_mcp       = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_mcp       ELSE COALESCE(events.ctx_mcp,       excluded.ctx_mcp)       END, \
+               ctx_skills    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_skills    ELSE COALESCE(events.ctx_skills,    excluded.ctx_skills)    END, \
                output_tokens    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.output_tokens    ELSE events.output_tokens    END \
              WHERE excluded.output_tokens >= events.output_tokens",
         )?;
@@ -170,7 +231,9 @@ pub fn insert_events_keep_max_output(
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
                 e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens
+                e.session_id, e.reasoning_tokens,
+                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
+                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
             ])?;
         }
     }
@@ -188,7 +251,9 @@ pub fn upsert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
                 e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens
+                e.session_id, e.reasoning_tokens,
+                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
+                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
             ])?;
         }
     }
@@ -210,7 +275,9 @@ pub fn replace_file_events(
                 e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
                 e.input_tokens, e.output_tokens, e.cache_read_tokens,
                 e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens
+                e.session_id, e.reasoning_tokens,
+                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
+                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
             ])?;
         }
     }
@@ -278,6 +345,7 @@ mod tests {
             source_file: source_file.to_string(),
             session_id: None,
             reasoning_tokens: None,
+            ctx: Default::default(),
         }
     }
 
@@ -293,7 +361,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
         for table in ["events", "scanned_files", "prices", "price_overrides"] {
             let count: i64 = conn
                 .query_row(
@@ -323,14 +391,15 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3);
     }
 
     #[test]
     fn v1_db_migrates_to_v2_preserving_events() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
-        // Build a genuine v1 database by hand (SCHEMA still writes user_version 1).
+        // Build a genuine v1 database by hand (SCHEMA still writes user_version 1),
+        // then prove open_db chains v1->v2->v3 cleanly in one shot.
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
@@ -350,7 +419,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -457,9 +526,119 @@ mod tests {
     }
 
     #[test]
+    fn v2_db_migrates_to_v3_preserving_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // Build a genuine v2 database by hand.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                 cache_write_1h_tokens, source_file, session_id, reasoning_tokens) \
+                 VALUES ('claude:old:1','claude',1,'m',NULL,1,10,20,0,0,0,'f','s',NULL)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 3);
+        // Old row intact, ctx columns NULL.
+        let (input, cm): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT input_tokens, ctx_messages FROM events WHERE dedup_key='claude:old:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, 10);
+        assert_eq!(cm, None);
+        // Scan state cleared so the next scan re-parses every log (ctx backfill).
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 0);
+        // New tables exist.
+        for table in ["ctx_resources", "session_ctx"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "table {table} missing");
+        }
+    }
+
+    #[test]
+    fn insert_backfills_ctx_on_existing_rows() {
+        let (_dir, mut conn) = temp_db();
+        insert_events(&mut conn, &[sample_event("claude:a:1", "f1.jsonl")]).unwrap();
+        let mut new = sample_event("claude:a:1", "f1.jsonl");
+        new.ctx.messages = Some(90);
+        new.ctx.system = Some(15);
+        new.ctx.reasoning = Some(10);
+        let inserted = insert_events(&mut conn, &[new]).unwrap();
+        assert_eq!(inserted, 0);
+        let (cm, cs, cr): (Option<i64>, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_system, ctx_reasoning FROM events WHERE dedup_key='claude:a:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((cm, cs, cr), (Some(90), Some(15), Some(10)));
+    }
+
+    #[test]
+    fn keep_max_ctx_follows_winner_and_backfills_on_tie() {
+        let (_dir, mut conn) = temp_db();
+        let mut first = sample_event("claude:k:1", "f1.jsonl");
+        first.ctx.messages = Some(10);
+        insert_events_keep_max_output(&mut conn, &[first]).unwrap();
+        // Bigger output wins the row: its ctx values replace.
+        let mut bigger = sample_event("claude:k:1", "f1.jsonl");
+        bigger.output_tokens = 999;
+        bigger.ctx.messages = Some(50);
+        bigger.ctx.toolcalls = Some(5);
+        insert_events_keep_max_output(&mut conn, &[bigger]).unwrap();
+        let (cm, ct): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_toolcalls FROM events WHERE dedup_key='claude:k:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((cm, ct), (Some(50), Some(5)));
+        // Tie (equal output): NULLs backfill, existing values stay.
+        let mut tie = sample_event("claude:k:1", "f1.jsonl");
+        tie.output_tokens = 999;
+        tie.ctx.messages = Some(1); // must NOT overwrite 50
+        tie.ctx.skills = Some(2);   // fills a NULL
+        insert_events_keep_max_output(&mut conn, &[tie]).unwrap();
+        let (cm2, cs2): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_skills FROM events WHERE dedup_key='claude:k:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((cm2, cs2), (Some(50), Some(2)));
+    }
+
+    #[test]
     fn concurrent_opens_of_v1_db_both_succeed() {
-        // Two processes racing the v1->v2 migration: the loser of the
-        // BEGIN IMMEDIATE lock must see user_version=2 and no-op, not die on
+        // Two processes racing the v1->v3 migration: the loser of the
+        // BEGIN IMMEDIATE lock must see user_version=3 and no-op, not die on
         // "duplicate column name".
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
@@ -477,7 +656,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
     }
 
     #[test]

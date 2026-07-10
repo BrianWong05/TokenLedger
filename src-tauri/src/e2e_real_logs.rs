@@ -52,6 +52,68 @@ fn e2e_real_logs() {
         "expected non-zero tokens scanning real logs"
     );
 
+    // Context attribution invariants (spec 2026-07-10-context-breakdown).
+    // Partition exact where attributed:
+    let bad_partition: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE ctx_messages IS NOT NULL AND \
+             ctx_messages + COALESCE(ctx_system, 0) + COALESCE(ctx_reasoning, 0) != \
+             input_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_partition, 0, "primary partition must equal billed context exactly");
+
+    // Secondary ⊆ messages:
+    let bad_subset: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE \
+             COALESCE(ctx_toolcalls, 0) > COALESCE(ctx_messages, 0) OR \
+             COALESCE(ctx_mcp, 0) > COALESCE(ctx_messages, 0) OR \
+             COALESCE(ctx_skills, 0) > COALESCE(ctx_messages, 0)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bad_subset, 0, "secondary categories are subsets of messages");
+
+    // Hermes: no content, everything NULL:
+    let hermes_ctx: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE source='hermes' AND ctx_messages IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(hermes_ctx, 0);
+
+    // Claude attributed the bulk of its events (real transcripts on this machine):
+    let (claude_total, claude_attr): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(ctx_messages) FROM events WHERE source='claude'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    println!("\n=== claude ctx coverage: {claude_attr}/{claude_total} events attributed ===");
+    assert!(
+        claude_attr * 10 >= claude_total * 5,
+        "expected ≥50% of claude events attributed (got {claude_attr}/{claude_total})"
+    );
+
+    let resources: Vec<(String, String, i64)> = {
+        let mut stmt = conn
+            .prepare("SELECT source, kind, COUNT(DISTINCT name) FROM ctx_resources GROUP BY source, kind")
+            .unwrap();
+        let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        it.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    println!("=== ctx resources ===");
+    for (s, k, n) in &resources {
+        println!("  {s:<8} {k:<12} {n}");
+    }
+
     // Claude-only category totals, for a direct ccusage cross-check (Task 16 step 3).
     let claude_only = queries::Filters {
         tools: vec!["claude".to_string()],

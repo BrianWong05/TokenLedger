@@ -104,6 +104,7 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
             source_file: hermes_db.display().to_string(),
             session_id: Some(id.clone()),
             reasoning_tokens: Some(reasoning),
+            ctx: Default::default(),
         });
     }
 
@@ -225,6 +226,32 @@ mod tests {
             .unwrap();
         assert_eq!(calls3, 1);
         assert_eq!(project3, None);
+    }
+
+    #[test]
+    fn hermes_ctx_is_all_null() {
+        let hermes_dir = tempdir().unwrap();
+        let hermes_db = hermes_dir.path().join("state.db");
+        build_hermes_db(&hermes_db);
+
+        let app_dir = tempdir().unwrap();
+        let mut conn = open_db(&app_dir.path().join("tokenledger.db")).unwrap();
+
+        let res = scan_hermes(&mut conn, &hermes_db);
+        assert!(res.error.is_none());
+        assert_eq!(res.events_inserted, 2); // s1 + s3 scanned
+
+        let nulls: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE source='hermes' AND (\
+                 ctx_messages IS NOT NULL OR ctx_system IS NOT NULL OR \
+                 ctx_reasoning IS NOT NULL OR ctx_toolcalls IS NOT NULL OR \
+                 ctx_agents IS NOT NULL OR ctx_mcp IS NOT NULL OR ctx_skills IS NOT NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(nulls, 0, "hermes logs record no content: everything NULL");
     }
 
     #[test]

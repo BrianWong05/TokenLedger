@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde_json::Value;
 
+use super::claude_ctx::est;
 use crate::db;
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
@@ -74,6 +75,13 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     let mut prev_cached: i64 = 0;
     let mut prev_output: i64 = 0;
     let mut prev_reasoning: i64 = 0;
+    // Running composition for context attribution (est. tokens, bytes/4).
+    // Toolcall content is a subset of messages (schema subset rule); shares
+    // normalize over known content so the unattributable system prompt is
+    // absorbed proportionally and the partition sums to billed exactly.
+    let mut msg_est: i64 = 0;
+    let mut tool_est: i64 = 0;
+    let mut reas_est: i64 = 0;
 
     let mut offset: usize = 0;
     for line in content.split_inclusive('\n') {
@@ -100,6 +108,27 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
             "turn_context" => {
                 if let Some(m) = v.pointer("/payload/model").and_then(|m| m.as_str()) {
                     model = m.to_string();
+                }
+            }
+            "response_item" => {
+                let payload = match v.get("payload") {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let bytes = serde_json::to_string(payload).map(|s| s.len()).unwrap_or(0);
+                match payload.get("type").and_then(|t| t.as_str()) {
+                    Some("message") => {
+                        msg_est += est(bytes);
+                        if payload.get("role").and_then(|r| r.as_str()) == Some("user") {
+                            reas_est = 0; // user turn: reasoning leaves the context
+                        }
+                    }
+                    Some("function_call") | Some("function_call_output") => {
+                        msg_est += est(bytes); // subset rule: tool ⊆ messages
+                        tool_est += est(bytes);
+                    }
+                    Some("reasoning") => reas_est += est(bytes),
+                    _ => {}
                 }
             }
             "event_msg" => {
@@ -162,6 +191,24 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                     .and_then(iso_to_epoch)
                     .unwrap_or(0);
 
+                let billed = input + cache_read; // codex reports no cache writes
+                let total = msg_est + reas_est;
+                let ctx = if total > 0 && billed > 0 {
+                    let reasoning = billed * reas_est / total;
+                    let messages = billed - reasoning; // partition exact
+                    crate::types::CtxTokens {
+                        messages: Some(messages),
+                        system: None,
+                        reasoning: Some(reasoning),
+                        toolcalls: Some((billed * tool_est / total).min(messages)),
+                        agents: None,
+                        mcp: None,
+                        skills: None,
+                    }
+                } else {
+                    crate::types::CtxTokens::default()
+                };
+
                 events.push(UsageEvent {
                     dedup_key: format!("codex:{}:{}", file_stem, line_offset),
                     source: "codex".to_string(),
@@ -177,6 +224,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                     source_file: path_str.clone(),
                     session_id: Some(file_stem.clone()),
                     reasoning_tokens: reasoning,
+                    ctx,
                 });
             }
             _ => {}
@@ -331,5 +379,53 @@ mod tests {
             .query_row("SELECT reasoning_tokens FROM events WHERE source='codex'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rt, None, "absent field means not-reported, never 0");
+    }
+
+    #[test]
+    fn codex_attributes_context_from_response_items() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-05-01-ctx.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:00.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:01.000Z","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:02.000Z","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:03.000Z","payload":{"type":"function_call_output","output":"cccccccccccccccccccccccccccccccccccccccc"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:04.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":50,"total_tokens":950}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, &root);
+        assert_eq!(r.events_inserted, 1);
+
+        let (cm, cs, cr, ct, ca): (i64, Option<i64>, i64, i64, Option<i64>) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents \
+                 FROM events WHERE source='codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        // billed = Δinput(900, incl. cached) → partition exact over msg+reas.
+        assert_eq!(cm + cr, 900, "messages + reasoning == billed (system NULL, absorbed)");
+        assert!(cr > 0, "reasoning share attributed");
+        assert!(ct > 0 && ct <= cm, "toolcalls ⊆ messages");
+        assert_eq!(cs, None, "codex cannot attribute a system prompt");
+        assert_eq!(ca, None, "codex has no agent concept");
+    }
+
+    #[test]
+    fn codex_user_message_resets_reasoning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-05-02-rst.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-02T09:00:00.000Z","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-02T09:00:01.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-02T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":10,"total_tokens":510}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        scan_codex(&mut conn, &root);
+        let cr: i64 = conn
+            .query_row("SELECT ctx_reasoning FROM events WHERE source='codex'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cr, 0, "user turn strips prior reasoning from context");
     }
 }

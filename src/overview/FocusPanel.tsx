@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { TOOLS, TOTAL_TOKENS, TOTAL_COST, TOOL_TOTALS, contextBreakdown, mockModelBars, fmtTok, fmtUSD, fmtPct, type ToolKey } from './mock';
+import { TOOLS, TOTAL_TOKENS, TOTAL_COST, TOOL_TOTALS, contextBreakdown, mockCtxTotals, mockModelBars, fmtTok, fmtUSD, fmtPct, type ToolKey } from './mock';
 import ContextBreakdown from './ContextBreakdown';
 import ModelsList from './ModelsList';
 
@@ -55,7 +55,7 @@ export default function FocusPanel() {
       </div>
 
       {tab === 'context' ? (
-        <ContextBreakdown tool={tool} />
+        <ContextBreakdown tool={tool} {...mockCtxTotals(sel)} />
       ) : (
         <ModelsList tool={tool} toolTokens={toolTotal} models={mockModelBars(sel, toolTotal)} showCost={false} />
       )}
