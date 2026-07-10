@@ -1,7 +1,7 @@
 // Real-data layer for the Overview: shared design meta plus pure reshaping of
 // backend responses (SeriesPoint/BreakdownRow) into the shapes the components
 // consume. No fetching here — Overview8b orchestrates IPC calls.
-import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount, CtxBuckets, CtxToolRow } from '../types';
+import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
 
 export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes';
@@ -548,5 +548,43 @@ export function bucketView(b: CtxBuckets | null): BucketView | null {
     response: b.response,
     system: b.system,
     reasoning: b.reasoning,
+  };
+}
+
+// ---- Bash exec facets (spec 2026-07-10-bash-exec-drilldown) ----
+
+export interface ExecFacetRow { key: string; tokens: number; calls: number }
+export interface ExecFacets {
+  byType: ExecFacetRow[];
+  byExecutable: ExecFacetRow[];
+  byCommand: ExecFacetRow[];
+}
+
+function facetOf(rows: CtxExecRow[], keyOf: (r: CtxExecRow) => string, total: number): ExecFacetRow[] {
+  const groups = new Map<string, { weight: number; calls: number }>();
+  for (const r of rows) {
+    const k = keyOf(r);
+    const g = groups.get(k) ?? { weight: 0, calls: 0 };
+    g.weight += r.estTokens;
+    g.calls += r.calls;
+    groups.set(k, g);
+  }
+  const alloc = allocateByWeight(
+    total,
+    [...groups.entries()].map(([key, g]) => ({ key, weight: g.weight })),
+  );
+  return [...groups.entries()]
+    .map(([key, g]) => ({ key, tokens: alloc.get(key) ?? 0, calls: g.calls }))
+    .sort((a, b) => b.tokens - a.tokens);
+}
+
+// Three parallel views over the same rows; each facet's tokens sum exactly
+// to the Bash leaf's allocated total.
+export function execFacets(rows: CtxExecRow[], bashTotal: number | null): ExecFacets | null {
+  if (bashTotal == null || rows.length === 0) return null;
+  return {
+    byType: facetOf(rows, (r) => r.kind, bashTotal),
+    byExecutable: facetOf(rows, (r) => r.exe, bashTotal),
+    byCommand: facetOf(rows, (r) => r.cmd, bashTotal),
   };
 }

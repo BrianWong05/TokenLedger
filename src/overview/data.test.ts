@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow } from '../types';
+import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
 import {
   seriesToDays,
   windowOf,
@@ -17,6 +17,7 @@ import {
   allocateByWeight,
   toolTree,
   bucketView,
+  execFacets,
 } from './data';
 
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
@@ -322,5 +323,28 @@ describe('bucketView', () => {
   });
   it('null in → null out', () => {
     expect(bucketView(null)).toBeNull();
+  });
+});
+
+describe('execFacets', () => {
+  const rows: CtxExecRow[] = [
+    { source: 'claude', kind: 'git_local', exe: 'git', cmd: 'git add', estTokens: 300, calls: 5 },
+    { source: 'claude', kind: 'git_local', exe: 'git', cmd: 'git commit', estTokens: 100, calls: 2 },
+    { source: 'claude', kind: 'test', exe: 'npm', cmd: 'npm test', estTokens: 100, calls: 3 },
+  ];
+  it('groups three ways and allocates the bash total exactly per facet', () => {
+    const f = execFacets(rows, 1000)!;
+    for (const facet of [f.byType, f.byExecutable, f.byCommand]) {
+      expect(facet.reduce((a, r) => a + r.tokens, 0)).toBe(1000);
+    }
+    expect(f.byType.find((r) => r.key === 'git_local')!.tokens).toBe(800); // 400/500
+    expect(f.byType.find((r) => r.key === 'git_local')!.calls).toBe(7);
+    expect(f.byExecutable.find((r) => r.key === 'git')!.tokens).toBe(800);
+    expect(f.byCommand.find((r) => r.key === 'git add')!.tokens).toBe(600);
+    expect(f.byCommand[0].key).toBe('git add'); // sorted desc
+  });
+  it('null total or no rows → null', () => {
+    expect(execFacets(rows, null)).toBeNull();
+    expect(execFacets([], 1000)).toBeNull();
   });
 });
