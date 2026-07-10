@@ -206,26 +206,45 @@ export default function Overview8b() {
               ))}
             </div>
             <div className="tt-refresh">
-              <select
-                className="tt-refresh-select"
-                aria-label="Auto-refresh interval"
-                value={refreshSec}
-                onChange={(e) => setRefreshSec(Number(e.target.value) as RefreshSec)}
-              >
-                {REFRESH_PRESETS.map((p) => (
-                  <option key={p.sec} value={p.sec}>
-                    {p.sec === 0 ? 'Refresh off' : `Every ${p.label}`}
-                  </option>
-                ))}
-              </select>
+              <div className="tt-select-wrap">
+                <select
+                  className="tt-select"
+                  aria-label="Auto-refresh interval"
+                  value={refreshSec}
+                  onChange={(e) => setRefreshSec(Number(e.target.value) as RefreshSec)}
+                >
+                  {REFRESH_PRESETS.map((p) => (
+                    <option key={p.sec} value={p.sec}>
+                      {p.sec === 0 ? 'Off' : p.label}
+                    </option>
+                  ))}
+                </select>
+                <i>▼</i>
+              </div>
               <button
                 type="button"
-                className="tt-refresh-btn"
+                className={'tt-refresh-btn' + (refreshing ? ' spinning' : '')}
                 onClick={() => void refresh()}
                 disabled={refreshing}
+                aria-label="Refresh"
                 aria-busy={refreshing}
+                title="Refresh"
               >
-                {refreshing ? 'Refreshing…' : 'Refresh'}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M21 12a9 9 0 1 1-2.64-6.36"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M21 3v6h-6"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </button>
             </div>
             <span className="tt-avatar">BW</span>
