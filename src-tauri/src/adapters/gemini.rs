@@ -28,6 +28,8 @@ struct Tokens {
     output: i64,
     cached: i64,
     thoughts: i64,
+    #[serde(default)]
+    tool: i64,
 }
 
 pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path) -> SourceScanResult {
@@ -131,7 +133,16 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
             source_file: path_str.clone(),
             session_id: Some(session.session_id.clone()),
             reasoning_tokens: Some(tokens.thoughts),
-            ctx: Default::default(),
+            ctx: crate::types::CtxTokens {
+                // Billed context = raw input (cached is a subset; no cache writes).
+                messages: Some(tokens.input.max(0)),
+                system: None,
+                reasoning: None, // thoughts are output-side, never re-sent as input
+                toolcalls: Some(tokens.tool.clamp(0, tokens.input.max(0))),
+                agents: None,
+                mcp: None,
+                skills: None,
+            },
         });
     }
 
@@ -186,7 +197,7 @@ mod tests {
           "tokens": { "input": 1000, "output": 200, "cached": 300, "thoughts": 50, "tool": 0, "total": 1250 } },
         { "id": "m2", "timestamp": "2026-03-01T11:30:00.500Z", "type": "gemini",
           "model": "gemini-2.5-flash",
-          "tokens": { "input": 500, "output": 100, "cached": 0, "thoughts": 0, "tool": 0, "total": 600 } }
+          "tokens": { "input": 500, "output": 100, "cached": 0, "thoughts": 0, "tool": 120, "total": 600 } }
       ]
     }"#;
 
@@ -263,6 +274,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rt2, Some(0), "reported zero, not NULL");
+
+        // Context attribution: messages = raw input (incl. cached) = billed;
+        // toolcalls = reported tokens.tool; the rest NULL.
+        let (cm, ct, cs, cr): (i64, i64, Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_toolcalls, ctx_system, ctx_reasoning \
+                 FROM events WHERE dedup_key = 'gemini:sess-alpha:m1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(cm, 1000, "billed context = raw input incl. cached");
+        assert_eq!(ct, 0);
+        assert_eq!(cs, None);
+        assert_eq!(cr, None, "thoughts are output-side, never re-sent as input");
+        let (cm2, ct2): (i64, i64) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_toolcalls FROM events WHERE dedup_key = 'gemini:sess-alpha:m2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cm2, 500);
+        assert_eq!(ct2, 120, "reported tokens.tool, not an estimate");
 
         // m1 timestamp = epoch of 2026-03-01T10:05:00Z
         let ts: i64 = conn
