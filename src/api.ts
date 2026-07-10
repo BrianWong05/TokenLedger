@@ -8,6 +8,7 @@ import type {
   CtxResourceCount,
   CtxBuckets,
   CtxToolRow,
+  CtxExecRow,
   Filters,
   OverrideRates,
 } from './types';
@@ -51,6 +52,10 @@ export function fetchCtxBuckets(filters: Filters): Promise<CtxBuckets[]> {
 
 export function fetchCtxTools(filters: Filters): Promise<CtxToolRow[]> {
   return invoke('ctx_tools', { filters });
+}
+
+export function fetchCtxExec(filters: Filters): Promise<CtxExecRow[]> {
+  return invoke('ctx_exec', { filters });
 }
 
 export function setPriceOverride(

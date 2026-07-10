@@ -86,6 +86,15 @@ export interface CtxToolRow {
   calls: number;
 }
 
+export interface CtxExecRow {
+  source: string;
+  kind: string;   // classified command kind (git_local, test, compound, …)
+  exe: string;    // executable basename
+  cmd: string;    // signature: executable + first subcommand
+  estTokens: number; // allocation weight, not a display value
+  calls: number;
+}
+
 export interface BreakdownRow {
   key: string;
   inputTokens: number;

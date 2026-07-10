@@ -595,6 +595,52 @@ pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxTool
     rows.collect()
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtxExecRow {
+    pub source: String,
+    pub kind: String,
+    pub exe: String,
+    pub cmd: String,
+    pub est_tokens: i64,
+    pub calls: i64,
+}
+
+// Bash command facets in range: same tool + day-bounds convention as
+// ctx_tools/ctx_resources. Ignores model/project (table has neither).
+pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+    if !f.tools.is_empty() {
+        let ph = f.tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        clauses.push(format!("source IN ({ph})"));
+        for t in &f.tools {
+            params.push(Value::Text(t.clone()));
+        }
+    }
+    if let Some(s) = f.start_ts {
+        clauses.push("day >= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(s));
+    }
+    if let Some(e) = f.end_ts {
+        clauses.push("day <= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(e - 1));
+    }
+    let where_sql = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let sql = format!(
+        "SELECT source, kind, exe, cmd, SUM(est_tokens), SUM(calls) FROM ctx_exec {where_sql} \
+         GROUP BY source, kind, exe, cmd ORDER BY SUM(est_tokens) DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxExecRow {
+            source: r.get(0)?, kind: r.get(1)?, exe: r.get(2)?, cmd: r.get(3)?,
+            est_tokens: r.get(4)?, calls: r.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1089,29 @@ mod tests {
         let cx = ctx_tools(&conn, &f2).unwrap();
         assert_eq!(cx.len(), 1);
         assert_eq!(cx[0].name, "shell");
+    }
+
+    #[test]
+    fn ctx_exec_sums_by_key_and_range() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::add_ctx_exec_rows(&mut conn, "claude", "f1", &[
+            ("git_local".into(), "git".into(), "git add".into(), 100, 1, DAY1_TS),
+            ("git_local".into(), "git".into(), "git add".into(), 50, 1, DAY2_TS),
+            ("test".into(), "npm".into(), "npm test".into(), 30, 1, DAY1_TS),
+        ]).unwrap();
+
+        let all = ctx_exec(&conn, &Filters::default()).unwrap();
+        let ga = all.iter().find(|r| r.cmd == "git add").unwrap();
+        assert_eq!((ga.est_tokens, ga.calls), (150, 2), "summed across days");
+        assert_eq!(ga.kind, "git_local");
+
+        let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
+        let d1 = ctx_exec(&conn, &f).unwrap();
+        assert_eq!(d1.iter().find(|r| r.cmd == "git add").unwrap().est_tokens, 100);
+
+        let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
+        assert!(ctx_exec(&conn, &f2).unwrap().is_empty());
     }
 }
