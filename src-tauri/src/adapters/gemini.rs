@@ -131,6 +131,7 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
             source_file: path_str.clone(),
             session_id: Some(session.session_id.clone()),
             reasoning_tokens: Some(tokens.thoughts),
+            ctx: Default::default(),
         });
     }
 

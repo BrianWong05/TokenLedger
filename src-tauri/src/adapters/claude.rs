@@ -174,6 +174,7 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
         source_file: source_file.to_string(),
         session_id,
         reasoning_tokens: None,
+        ctx: Default::default(),
     }))
 }
 

@@ -177,6 +177,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                     source_file: path_str.clone(),
                     session_id: Some(file_stem.clone()),
                     reasoning_tokens: reasoning,
+                    ctx: Default::default(),
                 });
             }
             _ => {}

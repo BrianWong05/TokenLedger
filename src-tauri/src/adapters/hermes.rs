@@ -104,6 +104,7 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
             source_file: hermes_db.display().to_string(),
             session_id: Some(id.clone()),
             reasoning_tokens: Some(reasoning),
+            ctx: Default::default(),
         });
     }
 

@@ -16,6 +16,22 @@ pub struct UsageEvent {
     pub source_file: String,
     pub session_id: Option<String>,
     pub reasoning_tokens: Option<i64>,
+    pub ctx: CtxTokens,
+}
+
+/// Attributed share of an event's billed context (input + cache_read +
+/// cache_write). NULL = the source cannot attribute that category.
+/// messages/system/reasoning partition billed exactly; toolcalls/agents/
+/// mcp/skills are overlapping subsets of messages.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CtxTokens {
+    pub messages: Option<i64>,
+    pub system: Option<i64>,
+    pub reasoning: Option<i64>,
+    pub toolcalls: Option<i64>,
+    pub agents: Option<i64>,
+    pub mcp: Option<i64>,
+    pub skills: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy)]

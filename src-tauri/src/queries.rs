@@ -457,6 +457,7 @@ mod tests {
             source_file: "fixture.jsonl".to_string(),
             session_id: None,
             reasoning_tokens: None,
+            ctx: Default::default(),
         }
     }
 
