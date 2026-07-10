@@ -175,12 +175,14 @@ fn scan_file(
                     if sidechain {
                         ctx.agents = Some(billed);
                     }
-                    // Transcripts store thinking signatures only (the text is always empty),
-                    // so reasoning-in-context is unobservable for Claude. NULL per the honesty
-                    // rule — matching reasoning_tokens, which is NULL for Claude for the same
-                    // reason. The engine's reasoning machinery stays: if a future log format
-                    // carries thinking text, remove this override.
-                    ctx.reasoning = None;
+                    // Reasoning share: genuine Anthropic transcripts store thinking
+                    // signature-only (empty text) so the share is 0 — unobservable, NULL.
+                    // Proxied third-party models (e.g. GLM) DO log thinking text; a
+                    // nonzero share is a real observation and must stay, or the primary
+                    // partition loses exactly that amount.
+                    if ctx.reasoning == Some(0) {
+                        ctx.reasoning = None;
+                    }
                     ev.ctx = ctx;
                     events.push(ev);
                 }
@@ -565,6 +567,43 @@ mod tests {
         assert_eq!(m2 + s2, 2000, "partition exact (reasoning excluded: NULL)");
         assert!(t2 > 0 && t2 <= m2, "toolcalls subset of messages");
         assert!(s2 > 0 && s2 < 2000);
+    }
+
+    #[test]
+    fn nonempty_thinking_text_yields_reasoning_share() {
+        // Third-party models proxied through Claude Code (e.g. z-ai/glm-5.2) DO
+        // log thinking text, unlike genuine Anthropic transcripts. The engine
+        // then computes a nonzero reasoning share; it is a real observation and
+        // must survive to the stored row, or the primary partition
+        // (messages + system + reasoning) falls short of billed by that amount.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // user text (40 bytes → 10 est) → call m1 carrying ~400 chars of real
+        // thinking text (est 100) → call m2 (billed 2000). m2's attribution is
+        // computed from the composition after m1's thinking is booked, so its
+        // reasoning share is nonzero.
+        let think_text = "Reasoning through the request carefully to reach a correct answer. ".repeat(6);
+        let user1 = r#"{"type":"user","sessionId":"sg","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        let m1 = r#"{"type":"assistant","sessionId":"sg","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"z-ai/glm-5.2","content":[{"type":"thinking","thinking":"THINK","signature":"s"}],"usage":{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#.replace("THINK", &think_text);
+        let m2 = r#"{"type":"assistant","sessionId":"sg","requestId":"r2","timestamp":"2026-07-01T10:00:05.000Z","cwd":"/p/x","message":{"id":"m2","model":"z-ai/glm-5.2","usage":{"input_tokens":500,"output_tokens":10,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
+        let lines = format!("{user1}\n{m1}\n{m2}\n");
+        std::fs::write(proj.join("sg.jsonl"), lines).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.error, None);
+        assert_eq!(res.events_inserted, 2);
+
+        // billed m2 = input 500 + cache_read 1500 = 2000.
+        let (m, s, r): (i64, i64, Option<i64>) = conn.query_row(
+            "SELECT ctx_messages, ctx_system, ctx_reasoning FROM events WHERE dedup_key='claude:m2:r2'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        let r = r.expect("proxied thinking text is a real observation → Some, not NULL");
+        assert!(r > 0, "nonzero reasoning share must be kept, not discarded");
+        assert_eq!(m + s + r, 2000, "primary partition exact, incl. reasoning share");
     }
 
     #[test]

@@ -89,6 +89,7 @@ cache_write_5m + cache_write_1h`).
   engine still counts thinking text within its tool-use turn (reset at each
   user-turn boundary; all counters reset on `compact_boundary` lines) in
   case a future log format carries it.
+- Proxied third-party models log real thinking text; their nonzero reasoning share is kept (Some), while the empty-text zero share stays NULL.
 - **Custom agents**: events in transcripts under `subagents/` (or lines
   with `isSidechain: true`) attribute their entire billed context to
   `ctx_agents`. In the parent session, agent output arriving as
