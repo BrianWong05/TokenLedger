@@ -143,7 +143,7 @@ fn scan_file(
             .unwrap_or(0);
 
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("user") => claude_ctx::apply_user_line(comp, &v, &tool_names),
+            Some("user") => claude_ctx::apply_user_line(comp, &v, &tool_names, &mut Vec::new()),
             Some("system") => {
                 if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
                     comp.reset_compact();
@@ -176,7 +176,7 @@ fn scan_file(
                 // Attribution first, THEN book this line's own content: what a
                 // call produces is its output, not its input.
                 let mut sink: Vec<(&'static str, String)> = Vec::new();
-                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink);
+                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink, &mut Vec::new());
                 resources.extend(sink.into_iter().map(|(k, n)| (k, n, line_ts)));
             }
             _ => {}
