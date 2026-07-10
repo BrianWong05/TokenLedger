@@ -133,19 +133,9 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         let tokens = in_ + out + cr + w5 + w1;
         match rates.resolve(&model) {
             Some(rt) => {
-                cost += in_ as f64 * rt.input
-                    + out as f64 * rt.output
-                    + cr as f64 * rt.cache_read
-                    + w5 as f64 * rt.cache_write_5m
-                    + w1 as f64 * rt.cache_write_1h;
+                cost += rt.cost(in_, out, cr, w5, w1);
                 priced_tokens += tokens;
-                // ponytail: prices store an absent cache rate as 0.0, so "no
-                // rate" == 0.0 here; distinguish-explicit-zero needs nullable
-                // price columns — add if a catalog ever prices cache at $0.
-                let cache_gap = (cr > 0 && rt.cache_read == 0.0)
-                    || (w5 > 0 && rt.cache_write_5m == 0.0)
-                    || (w1 > 0 && rt.cache_write_1h == 0.0);
-                if cache_gap {
+                if rt.cache_gap(cr, w5, w1) {
                     cache_estimated_models.push(model);
                 }
             }
@@ -205,13 +195,7 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     for row in rows {
         let (bucket, model, in_, out, cr, w5, w1) = row?;
         let c = match rates.resolve(&model) {
-            Some(rt) => {
-                in_ as f64 * rt.input
-                    + out as f64 * rt.output
-                    + cr as f64 * rt.cache_read
-                    + w5 as f64 * rt.cache_write_5m
-                    + w1 as f64 * rt.cache_write_1h
-            }
+            Some(rt) => rt.cost(in_, out, cr, w5, w1),
             None => 0.0,
         };
         let i = *idx.entry(bucket.clone()).or_insert_with(|| {
@@ -281,13 +265,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     for row in rows {
         let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
         let c = match rates.resolve(&model) {
-            Some(rt) => {
-                in_ as f64 * rt.input
-                    + out as f64 * rt.output
-                    + cr as f64 * rt.cache_read
-                    + w5 as f64 * rt.cache_write_5m
-                    + w1 as f64 * rt.cache_write_1h
-            }
+            Some(rt) => rt.cost(in_, out, cr, w5, w1),
             None => 0.0,
         };
         // Clone into the map key like trend(); avoid moving (bucket, source) before push.
@@ -396,15 +374,9 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             a.reasoning = Some(a.reasoning.unwrap_or(0) + r);
         }
         if let Some(rt) = rates.resolve(&model) {
-            a.cost += in_ as f64 * rt.input
-                + out as f64 * rt.output
-                + cr as f64 * rt.cache_read
-                + w5 as f64 * rt.cache_write_5m
-                + w1 as f64 * rt.cache_write_1h;
+            a.cost += rt.cost(in_, out, cr, w5, w1);
             a.priced += in_ + out + cr + w5 + w1;
-            a.cache_estimated |= (cr > 0 && rt.cache_read == 0.0)
-                || (w5 > 0 && rt.cache_write_5m == 0.0)
-                || (w1 > 0 && rt.cache_write_1h == 0.0);
+            a.cache_estimated |= rt.cache_gap(cr, w5, w1);
         }
     }
 

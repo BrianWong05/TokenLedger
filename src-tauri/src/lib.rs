@@ -18,7 +18,7 @@ mod e2e_real_logs;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use pricing::OverrideRates;
 use queries::{BreakdownRow, Filters, SeriesPoint, Summary, TrendPoint};
@@ -119,6 +119,9 @@ pub fn run() {
                 if let Ok(mut db) = state.db.lock() {
                     let _ = pricing::rebuild_prices(&mut db, &json);
                 };
+                // Tell the frontend so it re-fetches costs: without this, a
+                // fresh install renders 'unpriced' until the next range change.
+                let _ = handle.emit("prices-rebuilt", ());
             });
             Ok(())
         })

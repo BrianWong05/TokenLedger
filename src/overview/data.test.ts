@@ -5,6 +5,7 @@ import {
   windowOf,
   pointsIn,
   bucketsFromPoints,
+  calendarSpan,
   dailyTableRows,
   projectTableRows,
   modelBars,
@@ -39,21 +40,32 @@ describe('seriesToDays', () => {
     expect(days[0].iso).toBe('2025-07-11');
     expect(days.every((d) => d.tokens === 0 && d.level === 0)).toBe(true);
   });
-  it('fills byTool, cost, and quartile levels', () => {
+  it('fills byTool and rank-based levels', () => {
     const pts = [
-      pt({ bucket: '2026-07-09', source: 'claude', totalTokens: 100, cost: 0.1 }),
-      pt({ bucket: '2026-07-09', source: 'codex', totalTokens: 300, cost: 0.2 }),
-      pt({ bucket: '2026-07-08', source: 'claude', totalTokens: 1000, cost: 1 }),
+      pt({ bucket: '2026-07-09', source: 'claude', totalTokens: 100 }),
+      pt({ bucket: '2026-07-09', source: 'codex', totalTokens: 300 }),
+      pt({ bucket: '2026-07-08', source: 'claude', totalTokens: 1000 }),
     ];
     const days = seriesToDays(pts, TODAY);
     const d9 = days.find((d) => d.iso === '2026-07-09')!;
     expect(d9.tokens).toBe(400);
     expect(d9.byTool.claude).toBe(100);
     expect(d9.byTool.codex).toBe(300);
-    expect(d9.cost).toBeCloseTo(0.3);
     const d8 = days.find((d) => d.iso === '2026-07-08')!;
-    expect(d8.level).toBeGreaterThanOrEqual(d9.level);
+    expect(d8.level).toBe(4);
     expect(d9.level).toBeGreaterThan(0);
+    expect(d8.level).toBeGreaterThan(d9.level);
+  });
+  it('busiest day is always brightest, even with a short all-equal history', () => {
+    const pts = [
+      pt({ bucket: '2026-07-08', totalTokens: 500 }),
+      pt({ bucket: '2026-07-09', totalTokens: 500 }),
+      pt({ bucket: '2026-07-10', totalTokens: 500 }),
+    ];
+    const days = seriesToDays(pts, TODAY);
+    const active = days.filter((d) => d.tokens > 0);
+    expect(active).toHaveLength(3);
+    expect(active.every((d) => d.level === 4)).toBe(true);
   });
 });
 
@@ -95,6 +107,38 @@ describe('bucketsFromPoints', () => {
   it('hour buckets label by hour', () => {
     const bks = bucketsFromPoints([pt({ bucket: '2026-07-10 09:00' })], 'hour');
     expect(bks[0].label).toBe('9');
+  });
+  it('zero-fills idle days across the window', () => {
+    // Usage on 2 of 7 days: the trend must still show 7 buckets so gaps are
+    // visible and avg-per-day divides by the calendar length.
+    const bks = bucketsFromPoints(
+      [pt({ bucket: '2026-07-04', totalTokens: 10 }), pt({ bucket: '2026-07-08', totalTokens: 5 })],
+      'day',
+      '2026-07-04',
+      '2026-07-10',
+    );
+    expect(bks).toHaveLength(7);
+    expect(bks.map((b) => b.total)).toEqual([10, 0, 0, 0, 5, 0, 0]);
+    expect(bks[0].label).toBe('4');
+  });
+  it('zero-fills all 24 hours of a day', () => {
+    const bks = bucketsFromPoints(
+      [pt({ bucket: '2026-07-10 09:00', totalTokens: 7 })],
+      'hour',
+      '2026-07-10',
+      '2026-07-10',
+    );
+    expect(bks).toHaveLength(24);
+    expect(bks[9].total).toBe(7);
+    expect(bks[0].label).toBe('0');
+  });
+});
+
+describe('calendarSpan', () => {
+  it('counts inclusive calendar days', () => {
+    expect(calendarSpan('2026-07-10', '2026-07-10')).toBe(1);
+    expect(calendarSpan('2026-07-04', '2026-07-10')).toBe(7);
+    expect(calendarSpan('2026-01-01', '2026-12-31')).toBe(365);
   });
 });
 
@@ -151,5 +195,11 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     const f = rangeToFilters('custom', '2026-07-01', '2026-07-02');
     expect(f.startTs).toBeDefined();
     expect(f.endTs).toBeDefined();
+  });
+  it('rangeToFilters normalizes a reversed custom range like windowOf', () => {
+    const forward = rangeToFilters('custom', '2026-07-01', '2026-07-08');
+    const reversed = rangeToFilters('custom', '2026-07-08', '2026-07-01');
+    expect(reversed).toEqual(forward);
+    expect(reversed.startTs!).toBeLessThan(reversed.endTs!);
   });
 });

@@ -22,6 +22,14 @@ describe('overview formatters', () => {
     expect(fmtTok(2_340_000)).toBe('2.34M');
     expect(fmtTok(1_200_000_000)).toBe('1.20B');
   });
+  it('fmtTok rounds fractional averages instead of printing float noise', () => {
+    expect(fmtTok(850 / 3)).toBe('283');
+  });
+  it('fmtTok rolls over units at rounding boundaries', () => {
+    expect(fmtTok(999_600)).toBe('1.00M'); // not '1000K'
+    expect(fmtTok(999_950_000)).toBe('1.00B'); // not '1000.0M'
+    expect(fmtTok(999.6)).toBe('1.0K'); // not '1000'
+  });
   it('fmtPct adapts precision below 10%', () => {
     expect(fmtPct(0.5)).toBe('50%');
     expect(fmtPct(0.043)).toBe('4.3%');

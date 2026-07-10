@@ -133,6 +133,18 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                 prev_cached = cur_cached;
                 prev_output = cur_output;
 
+                // cached is a subset of input; keep them mutually exclusive.
+                let input = (d_input - d_cached).max(0);
+                let cache_read = d_cached;
+                let output = d_output;
+                // Duplicate snapshots and degenerate rows produce an all-zero delta.
+                // prev_reasoning is intentionally NOT advanced before this skip: a
+                // reasoning-only advance on a skipped line rides along with the
+                // next token-bearing event instead of being lost.
+                if input == 0 && cache_read == 0 && output == 0 {
+                    continue;
+                }
+
                 // reasoning_output_tokens is cumulative like the other fields.
                 // Absent field => this source/build doesn't report reasoning => None.
                 let reasoning = usage
@@ -143,15 +155,6 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                         prev_reasoning = cur;
                         d
                     });
-
-                // cached is a subset of input; keep them mutually exclusive.
-                let input = (d_input - d_cached).max(0);
-                let cache_read = d_cached;
-                let output = d_output;
-                // Duplicate snapshots and degenerate rows produce an all-zero delta.
-                if input == 0 && cache_read == 0 && output == 0 {
-                    continue;
-                }
 
                 let ts = v
                     .get("timestamp")
@@ -286,6 +289,32 @@ mod tests {
         };
         assert_eq!(rows[0], (Some("rollout-2026-04-23-abc".to_string()), Some(10)));
         assert_eq!(rows[1], (Some("rollout-2026-04-23-abc".to_string()), Some(15)));
+    }
+
+    #[test]
+    fn codex_reasoning_only_snapshot_rides_along() {
+        // A snapshot whose input/cached/output are unchanged but whose
+        // reasoning advanced must not lose those reasoning tokens: the line is
+        // skipped, prev_reasoning stays put, and the next token-bearing event
+        // books the accumulated delta.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-04-25-ghi.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":25,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:10.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":30,"total_tokens":230}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, &root);
+        assert_eq!(r.events_inserted, 2, "reasoning-only line still skipped as an event");
+        let total: i64 = conn
+            .query_row(
+                "SELECT SUM(reasoning_tokens) FROM events WHERE source='codex'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total, 30, "sum of reasoning deltas equals the final cumulative value");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { TOOLS, THEMES, THEME_OPTIONS, type Day } from './data';
+import { TOOLS, THEMES, THEME_OPTIONS, MONTHS, type Day } from './data';
 import { fmtTok, fmtDate } from '../lib/format';
 
 type Mode = '2d' | '3d';
@@ -8,7 +8,6 @@ type Mode = '2d' | '3d';
 const S = 13; // cell size
 const STEP = 16; // cell + gap
 const TOP = 16; // room for month labels
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // ---- 3D isometric geometry ----
 const TILE = 0.86;

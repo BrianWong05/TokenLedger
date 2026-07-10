@@ -2,7 +2,7 @@
 // backend responses (SeriesPoint/BreakdownRow) into the shapes the components
 // consume. No fetching here — Overview8b orchestrates IPC calls.
 import type { BreakdownRow, Filters, SeriesPoint, DateRange } from '../types';
-import { rangeToBounds } from '../lib/dateRange';
+import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
 
 export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes';
 
@@ -50,7 +50,6 @@ export interface Day {
   col: number;
   row: number;
   tokens: number;
-  cost: number;
   level: 0 | 1 | 2 | 3 | 4;
   byTool: Record<ToolKey, number>;
 }
@@ -84,10 +83,18 @@ export function emptyByTool(): Record<ToolKey, number> {
   return { claude: 0, codex: 0, gemini: 0, hermes: 0 };
 }
 
-function isoOf(d: Date): string {
+// Local date -> 'YYYY-MM-DD'. The one formatter — keep in sync with nothing:
+// every overview consumer imports this.
+export function isoOf(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// Inclusive number of calendar days between two ISO dates.
+export function calendarSpan(fromIso: string, toIso: string): number {
+  const ms = parseLocalDate(toIso).getTime() - parseLocalDate(fromIso).getTime();
+  return Math.max(1, Math.round(ms / 86_400_000) + 1);
 }
 
 // ---- heatmap days ----
@@ -113,25 +120,38 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     const iso = isoOf(date);
     const byTool = emptyByTool();
     let tokens = 0;
-    let cost = 0;
     for (const p of byDate.get(iso) ?? []) {
       if (p.source in byTool) byTool[p.source as ToolKey] += p.totalTokens;
       tokens += p.totalTokens;
-      cost += p.cost;
     }
     const cell = i + startDow;
     days.push({
       index: i, date, iso, weekday: date.getDay(),
       col: Math.floor(cell / 7), row: cell % 7,
-      tokens, cost, level: 0, byTool,
+      tokens, level: 0, byTool,
     });
   }
 
+  // Level = quartile of the day's RANK among active days, so the busiest day
+  // is always brightest and a short all-equal history doesn't render dimmest.
   const nonzero = days.filter((d) => d.tokens > 0).map((d) => d.tokens).sort((a, b) => a - b);
-  const q = (f: number) => nonzero[Math.min(nonzero.length - 1, Math.floor(f * nonzero.length))] ?? 0;
-  const [q1, q2, q3] = [q(0.25), q(0.5), q(0.75)];
+  const countLE = (t: number) => {
+    let lo = 0;
+    let hi = nonzero.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (nonzero[mid] <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
   for (const d of days) {
-    d.level = d.tokens <= 0 ? 0 : d.tokens <= q1 ? 1 : d.tokens <= q2 ? 2 : d.tokens <= q3 ? 3 : 4;
+    if (d.tokens <= 0) {
+      d.level = 0;
+      continue;
+    }
+    const rank = countLE(d.tokens) / nonzero.length; // (0, 1]
+    d.level = Math.min(4, Math.max(1, Math.ceil(rank * 4))) as Day['level'];
   }
   return days;
 }
@@ -173,19 +193,22 @@ export function pointsIn(points: SeriesPoint[], win: Window): SeriesPoint[] {
 }
 
 export function rangeToFilters(range: Range8b, customFrom: string, customTo: string): Filters {
+  if (range === 'custom') {
+    // Normalize a reversed range exactly like windowOf does, so server-fetched
+    // panels (summary, breakdowns) always agree with the client-sliced ones.
+    const lo = customFrom <= customTo ? customFrom : customTo;
+    const hi = customFrom <= customTo ? customTo : customFrom;
+    return { tools: [], models: [], project: null, ...rangeToBounds({ start: lo, end: hi }) };
+  }
   const dr: DateRange =
-    range === 'day' ? 'today'
-    : range === 'week' ? '7d'
-    : range === 'month' ? '30d'
-    : range === 'total' ? 'all'
-    : { start: customFrom, end: customTo };
+    range === 'day' ? 'today' : range === 'week' ? '7d' : range === 'month' ? '30d' : 'all';
   return { tools: [], models: [], project: null, ...rangeToBounds(dr) };
 }
 
 // ---- trend buckets ----
 
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // Adaptive granularity: hourly for a single day, daily up to a month,
 // weekly up to ~a quarter, monthly beyond.
@@ -196,13 +219,38 @@ export function granularityOf(range: Range8b, spanDays: number): Granularity {
 }
 
 function weekKey(iso: string): string {
-  const [y, m, d] = iso.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
+  const date = parseLocalDate(iso);
   date.setDate(date.getDate() - date.getDay()); // back to Sunday
   return isoOf(date);
 }
 
-export function bucketsFromPoints(pts: SeriesPoint[], per: Granularity): Bucket[] {
+// Every bucket key for [fromIso, toIso] at the given granularity, so idle
+// periods render as zero bars instead of silently disappearing (which would
+// also inflate the avg-per-bucket stat).
+function allKeys(per: Granularity, fromIso: string, toIso: string): string[] {
+  if (per === 'hour') {
+    return Array.from({ length: 24 }, (_, h) => `${fromIso} ${String(h).padStart(2, '0')}:00`);
+  }
+  const keys: string[] = [];
+  const d = parseLocalDate(fromIso);
+  const end = parseLocalDate(toIso);
+  if (per === 'week') d.setDate(d.getDate() - d.getDay());
+  if (per === 'month') d.setDate(1);
+  while (d <= end) {
+    keys.push(per === 'month' ? isoOf(d).slice(0, 7) : isoOf(d));
+    if (per === 'day') d.setDate(d.getDate() + 1);
+    else if (per === 'week') d.setDate(d.getDate() + 7);
+    else d.setMonth(d.getMonth() + 1);
+  }
+  return keys;
+}
+
+export function bucketsFromPoints(
+  pts: SeriesPoint[],
+  per: Granularity,
+  fromIso?: string,
+  toIso?: string,
+): Bucket[] {
   const keyOf = (p: SeriesPoint) =>
     per === 'hour' ? p.bucket
     : per === 'day' ? p.bucket.slice(0, 10)
@@ -220,13 +268,17 @@ export function bucketsFromPoints(pts: SeriesPoint[], per: Granularity): Bucket[
     : per === 'day' ? String(parseInt(k.slice(8, 10), 10))
     : per === 'month' ? MONTHS[parseInt(k.slice(5, 7), 10) - 1]
     : k; // week: placeholder, renumbered below
-  const out = [...map.entries()]
-    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
-    .map(([k, by]) => ({
+  // Zero-fill the whole window when its bounds are known; fall back to
+  // data-present keys otherwise.
+  const keys = fromIso && toIso ? allKeys(per, fromIso, toIso) : [...map.keys()].sort();
+  const out = keys.map((k) => {
+    const by = map.get(k) ?? emptyByTool();
+    return {
       label: labelOf(k),
       byTool: by,
       total: (Object.values(by) as number[]).reduce((a, b) => a + b, 0),
-    }));
+    };
+  });
   if (per === 'week') out.forEach((b, i) => (b.label = 'W' + (i + 1)));
   return out;
 }

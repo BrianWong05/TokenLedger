@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import './overview.css';
 import Heatmap from './Heatmap';
 import TokenBreakdown from './TokenBreakdown';
@@ -9,6 +10,9 @@ import type { BreakdownRow, SeriesPoint, Summary } from '../types';
 import {
   TOOLS,
   RANGES_8B,
+  isoOf,
+  calendarSpan,
+  emptyByTool,
   seriesToDays,
   windowOf,
   pointsIn,
@@ -31,13 +35,6 @@ import { fmtTok, fmtPct, fmtIsoDate, formatCost } from '../lib/format';
 const NAV = ['Overview', 'Insights', 'Models', 'Settings'];
 const EMPTY_FILTERS = { tools: [], models: [], project: null };
 
-function isoToday(): string {
-  const d = new Date();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
-
 // Design 8b — "App · Overview", wired to the real Ledger. One unbounded daily
 // series powers heatmap/trends/tables via client-side slicing; summary and
 // breakdowns re-fetch per range; an hourly series serves the Day view.
@@ -53,7 +50,11 @@ export default function Overview8b() {
   const [sum, setSum] = useState<Summary | null>(null);
   const [modelRows, setModelRows] = useState<BreakdownRow[]>([]);
   const [projRows, setProjRows] = useState<BreakdownRow[]>([]);
+  // Scan problems persist until the next scan; fetch problems clear on the
+  // next successful fetch cycle — one transient failure must not stick.
+  const [scanError, setScanError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pricesVersion, setPricesVersion] = useState(0);
 
   // Mount: scan the logs, then load the whole ledger's daily series once.
   useEffect(() => {
@@ -61,9 +62,9 @@ export default function Overview8b() {
       try {
         const status = await scan();
         const errs = status.sources.filter((s) => s.error).map((s) => `${s.source}: ${s.error}`);
-        if (errs.length) setError(errs.join(' · '));
+        setScanError(errs.length ? errs.join(' · ') : null);
       } catch (e) {
-        setError(String(e));
+        setScanError(String(e));
       }
       try {
         setAllPoints(await fetchSeries(EMPTY_FILTERS, 'day'));
@@ -74,33 +75,70 @@ export default function Overview8b() {
     })();
   }, []);
 
-  const firstIso = allPoints?.length ? allPoints.reduce((a, p) => (p.bucket < a ? p.bucket : a), allPoints[0].bucket) : isoToday();
-  const lastIso = isoToday();
+  // The backend rebuilds prices off-thread at startup; when they land, re-run
+  // the per-range fetches so a fresh install doesn't render 'unpriced' until
+  // the user happens to change range.
+  useEffect(() => {
+    const un = listen('prices-rebuilt', () => setPricesVersion((v) => v + 1));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  const firstIso = allPoints?.length
+    ? allPoints.reduce((a, p) => (p.bucket < a ? p.bucket : a), allPoints[0].bucket)
+    : isoOf(new Date());
+  const lastIso = isoOf(new Date());
   const cf = customFrom || firstIso;
   const ct = customTo || lastIso;
 
-  // Per-range data: authoritative cost + right column + project table (+ hourly on Day).
+  // Per-range data: authoritative cost + right column + project table (+ hourly
+  // on Day). The cleanup marks in-flight responses stale so a slow previous
+  // range can never overwrite a newer one; custom-range keystrokes debounce.
   useEffect(() => {
     if (allPoints === null) return;
-    const filters = rangeToFilters(range, cf, ct);
-    fetchSummary(filters).then(setSum).catch((e) => setError(String(e)));
-    fetchBreakdown('model', filters).then(setModelRows).catch((e) => setError(String(e)));
-    fetchBreakdown('project', filters).then(setProjRows).catch((e) => setError(String(e)));
-    if (range === 'day') {
-      fetchSeries(filters, 'hour').then(setHourPoints).catch((e) => setError(String(e)));
-    }
-  }, [allPoints, range, cf, ct]);
+    let stale = false;
+    const run = () => {
+      const filters = rangeToFilters(range, cf, ct);
+      const jobs: Promise<unknown>[] = [
+        fetchSummary(filters).then((v) => { if (!stale) setSum(v); }),
+        fetchBreakdown('model', filters).then((v) => { if (!stale) setModelRows(v); }),
+        fetchBreakdown('project', filters).then((v) => { if (!stale) setProjRows(v); }),
+      ];
+      if (range === 'day') {
+        jobs.push(fetchSeries(filters, 'hour').then((v) => { if (!stale) setHourPoints(v); }));
+      } else {
+        setHourPoints((prev) => (prev.length ? [] : prev));
+      }
+      Promise.all(jobs)
+        .then(() => { if (!stale) setError(null); })
+        .catch((e) => { if (!stale) setError(String(e)); });
+    };
+    const t = window.setTimeout(run, range === 'custom' ? 250 : 0);
+    return () => {
+      stale = true;
+      window.clearTimeout(t);
+    };
+  }, [allPoints, range, cf, ct, pricesVersion]);
+
+  // The 365-day heatmap grid only depends on the full series — not on
+  // range/tool selection — so it gets its own memo.
+  const days = useMemo(() => seriesToDays(allPoints ?? []), [allPoints]);
 
   const view = useMemo(() => {
     const pts = allPoints ?? [];
-    const days = seriesToDays(pts);
     const win = windowOf(range, cf, ct);
     const rpts = pointsIn(pts, win);
-    const spanDays = new Set(rpts.map((p) => p.bucket.slice(0, 10))).size || 1;
-    const per = granularityOf(range, spanDays);
-    const trend = per === 'hour' ? bucketsFromPoints(hourPoints, 'hour') : bucketsFromPoints(rpts, per);
+    // Calendar span of the window (not active-day count) drives granularity;
+    // 'total' spans the whole ledger.
+    const from = win.fromIso ?? firstIso;
+    const to = win.toIso ?? lastIso;
+    const per = granularityOf(range, calendarSpan(from, to));
+    const trend =
+      per === 'hour'
+        ? bucketsFromPoints(hourPoints, 'hour', from, to)
+        : bucketsFromPoints(rpts, per, from, to);
     return {
-      days,
       rpts,
       total: sumPoints(rpts),
       toolTotals: toolTotalsOfPoints(rpts),
@@ -110,7 +148,7 @@ export default function Overview8b() {
       cats: catTotals(rpts, sel),
       dailyRows: dailyTableRows(rpts),
     };
-  }, [allPoints, hourPoints, range, cf, ct, sel]);
+  }, [allPoints, hourPoints, range, cf, ct, sel, firstIso, lastIso]);
 
   const rangeLabel =
     range === 'custom' ? `${fmtIsoDate(cf)} – ${fmtIsoDate(ct)}` : RANGES_8B.find((r) => r.key === range)!.long;
@@ -147,7 +185,9 @@ export default function Overview8b() {
           </div>
         </div>
 
-        {error && <div className="tt-error">{error}</div>}
+        {(scanError || error) && (
+          <div className="tt-error">{[scanError, error].filter(Boolean).join(' · ')}</div>
+        )}
 
         {range === 'custom' && (
           <div className="tt-custom-row">
@@ -178,6 +218,11 @@ export default function Overview8b() {
               {sum ? formatCost(sum.cost, sum.hasUnpriced) : '…'} est.
               {sum?.hasUnpriced && (
                 <span title={sum.unpricedModels.join(', ')}> · {sum.unpricedModels.length} unpriced</span>
+              )}
+              {sum && sum.cacheEstimatedModels.length > 0 && (
+                <span title={sum.cacheEstimatedModels.join(', ')}>
+                  {' '}· {sum.cacheEstimatedModels.length} cache est.
+                </span>
               )}
             </div>
           </div>
@@ -212,7 +257,7 @@ export default function Overview8b() {
 
           <div className="tt-b8-grid">
             <div className="tt-b8-col">
-              <Heatmap days={view.days} compact />
+              <Heatmap days={days} compact />
               <AggTrend data={view.trend} per={view.per} rangeLabel={rangeLabel} />
               <SmallMultiples items={view.sparks} rangeLabel={rangeLabel} />
             </div>
@@ -251,7 +296,7 @@ function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rang
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
   const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
-  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { label: '—', byTool: { claude: 0, codex: 0, gemini: 0, hermes: 0 }, total: 0 });
+  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { label: '—', byTool: emptyByTool(), total: 0 });
   const plotW = VW - PL - PR;
   const slot = plotW / (data.length || 1);
   const barW = Math.min(38, slot * 0.62);

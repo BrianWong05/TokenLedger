@@ -3,16 +3,11 @@
 // This is fake data purely to fill out the design — nothing here reads the
 // real Ledger. Category names follow CONTEXT.md's ubiquitous language.
 
-import {
-  TOOLS, CATEGORIES,
-  type Day, type ToolKey, type Bucket, type TableRow, type Range8b,
-} from './data';
+import { TOOLS, CATEGORIES, MONTHS, isoOf, type Day, type ToolKey, type Bucket } from './data';
 
-export {
-  TOOLS, CATEGORIES, THEMES, THEME_OPTIONS, RANGES_8B,
-  type ToolKey, type ToolMeta, type Day, type Bucket, type TableRow, type Range8b,
-} from './data';
-export { fmtTok, fmtUSD, fmtPct, fmtDate, fmtIsoDate } from '../lib/format';
+// Re-export only what the 8a views actually consume via './mock'.
+export { TOOLS, type ToolKey, type ToolMeta } from './data';
+export { fmtTok, fmtUSD, fmtPct } from '../lib/format';
 
 const YEAR = 2025;
 const BLENDED_USD_PER_MTOK = 2.75; // est. blended list price, $/M tokens
@@ -28,12 +23,6 @@ function mulberry32(seed: number) {
   };
 }
 const rng = mulberry32(20250109);
-
-function isoOf(d: Date): string {
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
-}
 
 function levelOf(t: number): 0 | 1 | 2 | 3 | 4 {
   if (t <= 0) return 0;
@@ -76,7 +65,6 @@ function buildDays(): Day[] {
       col: Math.floor(cell / 7),
       row: cell % 7,
       tokens,
-      cost: costOf(tokens),
       level: levelOf(tokens),
       byTool: splitTools(tokens),
     });
@@ -85,23 +73,8 @@ function buildDays(): Day[] {
 }
 
 export const DAYS = buildDays();
-export const COLS = Math.max(...DAYS.map((d) => d.col)) + 1;
 
 export const TOTAL_TOKENS = DAYS.reduce((a, d) => a + d.tokens, 0);
-export const ACTIVE_DAYS = DAYS.filter((d) => d.tokens > 0).length;
-export const BEST_DAY = DAYS.reduce((a, d) => (d.tokens > a.tokens ? d : a), DAYS[0]);
-
-export const LONGEST_STREAK = (() => {
-  let best = 0;
-  let run = 0;
-  for (const d of DAYS) {
-    if (d.tokens > 0) {
-      run += 1;
-      best = Math.max(best, run);
-    } else run = 0;
-  }
-  return best;
-})();
 
 export const TOOL_TOTALS = TOOLS.reduce((acc, t) => {
   acc[t.key] = DAYS.reduce((s, d) => s + d.byTool[t.key], 0);
@@ -221,8 +194,6 @@ function finalize(label: string, by: Record<ToolKey, number>): Bucket {
   return { label, byTool: by, total: TOOLS.reduce((s, t) => s + by[t.key], 0) };
 }
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
 export function buckets(interval: Interval): Bucket[] {
   if (interval === 'D') {
     return DAYS.slice(-14).map((d) => finalize(String(d.date.getDate()), { ...d.byTool }));
@@ -247,135 +218,6 @@ export function buckets(interval: Interval): Bucket[] {
     .sort((a, b) => a[0] - b[0])
     .slice(-10)
     .map(([col, by]) => finalize('W' + (col + 1), by));
-}
-
-// ---- date ranges (8b overview) ----
-
-const RANGE_LEN: Record<Range8b, number> = { day: 1, week: 7, month: 30, total: 365, custom: 0 };
-
-// "today" = the most recent day with activity, so the Day view is never empty.
-export const TODAY: Day = [...DAYS].reverse().find((d) => d.tokens > 0) ?? DAYS[DAYS.length - 1];
-
-export function sliceDays(range: Range8b): Day[] {
-  if (range === 'day') return [TODAY];
-  return DAYS.slice(Math.max(0, DAYS.length - RANGE_LEN[range]));
-}
-
-export function daysBetween(fromIso: string, toIso: string): Day[] {
-  const lo = fromIso <= toIso ? fromIso : toIso;
-  const hi = fromIso <= toIso ? toIso : fromIso;
-  return DAYS.filter((d) => d.iso >= lo && d.iso <= hi);
-}
-
-export const FIRST_ISO = DAYS[0].iso;
-export const LAST_ISO = DAYS[DAYS.length - 1].iso;
-export function sumTokens(days: Day[]): number {
-  return days.reduce((a, d) => a + d.tokens, 0);
-}
-export function toolTotalsOf(days: Day[]): Record<ToolKey, number> {
-  const out = emptyByTool();
-  for (const d of days) addInto(out, d.byTool);
-  return out;
-}
-
-function dailyBuckets(days: Day[]): Bucket[] {
-  return days.map((d) => finalize(String(d.date.getDate()), { ...d.byTool }));
-}
-function weeklyBuckets(days: Day[]): Bucket[] {
-  const byWeek = new Map<number, Record<ToolKey, number>>();
-  for (const d of days) {
-    if (!byWeek.has(d.col)) byWeek.set(d.col, emptyByTool());
-    addInto(byWeek.get(d.col)!, d.byTool);
-  }
-  return [...byWeek.entries()].sort((a, b) => a[0] - b[0]).map(([col, by]) => finalize('W' + (col + 1), by));
-}
-function monthlyBuckets(days: Day[]): Bucket[] {
-  const byMonth = new Map<number, Record<ToolKey, number>>();
-  for (const d of days) {
-    const m = d.date.getMonth();
-    if (!byMonth.has(m)) byMonth.set(m, emptyByTool());
-    addInto(byMonth.get(m)!, d.byTool);
-  }
-  return [...byMonth.entries()].sort((a, b) => a[0] - b[0]).map(([m, by]) => finalize(MONTHS[m], by));
-}
-
-// diurnal shape for the single-day (hourly) view
-const DIURNAL = [2, 1, 1, 1, 2, 3, 6, 12, 18, 22, 24, 23, 25, 26, 24, 22, 20, 16, 12, 9, 7, 5, 4, 3];
-function hourlyBuckets(day: Day): Bucket[] {
-  const wsum = DIURNAL.reduce((a, b) => a + b, 0);
-  return DIURNAL.map((w, h) => {
-    const by = emptyByTool();
-    for (const t of TOOLS) by[t.key] = Math.round((day.byTool[t.key] * w) / wsum);
-    return finalize(String(h), by);
-  });
-}
-
-// stacked-by-tool buckets; granularity follows the range (hourly → monthly)
-export function bucketsOf(days: Day[], range: Range8b): Bucket[] {
-  if (range === 'day') return hourlyBuckets(days[0] ?? TODAY);
-  if (range === 'week' || range === 'month') return dailyBuckets(days);
-  if (range === 'total') return monthlyBuckets(days);
-  // custom: pick granularity by span
-  if (days.length <= 31) return dailyBuckets(days);
-  if (days.length <= 120) return weeklyBuckets(days);
-  return monthlyBuckets(days);
-}
-
-export function perOf(range: Range8b, count: number): string {
-  if (range === 'day') return 'hour';
-  if (range === 'week' || range === 'month') return 'day';
-  if (range === 'total') return 'month';
-  return count <= 31 ? 'day' : count <= 120 ? 'week' : 'month';
-}
-
-// per-tool sparkline series over the range's buckets (small multiples)
-export function smallMultiples(days: Day[], range: Range8b) {
-  const bks = bucketsOf(days, range);
-  const totals = toolTotalsOf(days);
-  const grand = sumTokens(days) || 1;
-  return TOOLS.map((t) => ({
-    ...t,
-    total: totals[t.key],
-    share: totals[t.key] / grand,
-    series: bks.map((b) => b.byTool[t.key]),
-  }));
-}
-
-// ---- daily / project breakdown table (8b) ----
-
-// Projects (working directories) the usage rolls up to. Weights are relative;
-// project totals are apportioned from the range total so they stay coherent.
-const PROJECTS: { name: string; weight: number }[] = [
-  { name: 'token-ledger-web', weight: 26 },
-  { name: 'agent-runtime', weight: 18.5 },
-  { name: 'infra-terraform', weight: 13.5 },
-  { name: 'ml-eval-harness', weight: 9.6 },
-  { name: 'design-system', weight: 8.4 },
-  { name: 'docs-portal', weight: 5.9 },
-  { name: 'mobile-client', weight: 3.8 },
-  { name: 'data-pipeline', weight: 4.3 },
-];
-
-// Split a total into the table's component columns. Columns don't fully sum to
-// total (cache-write is omitted), matching the design.
-function tableCats(total: number): Omit<TableRow, 'label'> {
-  return {
-    total,
-    input: Math.round(total * 0.15),
-    output: Math.round(total * 0.1),
-    cached: Math.round(total * 0.72),
-    reasoning: Math.round(total * 0.015),
-    convs: Math.max(1, Math.round(total / 550_000)),
-  };
-}
-
-export function dailyTableRows(days: Day[]): TableRow[] {
-  return days.filter((d) => d.tokens > 0).map((d) => ({ label: d.iso, ...tableCats(d.tokens) }));
-}
-
-export function projectTableRows(total: number): TableRow[] {
-  const sumW = PROJECTS.reduce((a, p) => a + p.weight, 0);
-  return PROJECTS.map((p) => ({ label: p.name, ...tableCats(Math.round((total * p.weight) / sumW)) }));
 }
 
 // ---- cost helpers ----

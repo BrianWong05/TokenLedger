@@ -38,6 +38,30 @@ pub struct Rates {
     pub cache_write_1h: f64,
 }
 
+impl Rates {
+    /// List-price value of a token bundle at these rates. The single home of
+    /// the pricing formula — every query (summary/trend/series/breakdown)
+    /// must call this so a rate change can never make panels disagree.
+    pub fn cost(&self, input: i64, output: i64, cache_read: i64, w5: i64, w1: i64) -> f64 {
+        input as f64 * self.input
+            + output as f64 * self.output
+            + cache_read as f64 * self.cache_read
+            + w5 as f64 * self.cache_write_5m
+            + w1 as f64 * self.cache_write_1h
+    }
+
+    /// Cache tokens were used but their rate is missing → the model is
+    /// Cache-Estimated (CONTEXT.md).
+    /// ponytail: prices store an absent cache rate as 0.0, so "no rate" == 0.0
+    /// here; distinguish-explicit-zero needs nullable price columns — add if a
+    /// catalog ever prices cache at $0.
+    pub fn cache_gap(&self, cache_read: i64, w5: i64, w1: i64) -> bool {
+        (cache_read > 0 && self.cache_read == 0.0)
+            || (w5 > 0 && self.cache_write_5m == 0.0)
+            || (w1 > 0 && self.cache_write_1h == 0.0)
+    }
+}
+
 /// A candidate price row with Option fields so merges can honor
 /// "never overwrite a non-null value with a null one".
 #[derive(Clone)]
