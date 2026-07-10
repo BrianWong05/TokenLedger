@@ -235,6 +235,21 @@ pub struct SeriesPoint {
     pub cost: f64,
     pub requests: i64,
     pub convs: i64,
+    pub ctx_messages: Option<i64>,
+    pub ctx_system: Option<i64>,
+    pub ctx_reasoning: Option<i64>,
+    pub ctx_toolcalls: Option<i64>,
+    pub ctx_agents: Option<i64>,
+    pub ctx_mcp: Option<i64>,
+    pub ctx_skills: Option<i64>,
+}
+
+// Merges a nullable per-group SUM into an accumulator: only Some contributes,
+// so a group whose values are all NULL stays None (never coerced to 0).
+fn add_opt(acc: &mut Option<i64>, v: Option<i64>) {
+    if let Some(x) = v {
+        *acc = Some(acc.unwrap_or(0) + x);
+    }
 }
 
 // Per-(bucket, source) series — the real-data twin of the frontend mock's DAYS.
@@ -247,7 +262,8 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     let sql = format!(
         "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
+         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens), \
+         SUM(ctx_messages), SUM(ctx_system), SUM(ctx_reasoning), SUM(ctx_toolcalls), SUM(ctx_agents), SUM(ctx_mcp), SUM(ctx_skills) \
          FROM events {where_sql} GROUP BY bucket, source, model ORDER BY bucket, source"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -257,13 +273,17 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
             r.get::<_, Option<i64>>(9)?,
+            r.get::<_, Option<i64>>(10)?, r.get::<_, Option<i64>>(11)?, r.get::<_, Option<i64>>(12)?,
+            r.get::<_, Option<i64>>(13)?, r.get::<_, Option<i64>>(14)?, r.get::<_, Option<i64>>(15)?,
+            r.get::<_, Option<i64>>(16)?,
         ))
     })?;
 
     let mut idx: HashMap<(String, String), usize> = HashMap::new();
     let mut points: Vec<SeriesPoint> = Vec::new();
     for row in rows {
-        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
+        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning,
+             cxm, cxs, cxr, cxt, cxa, cxmc, cxsk) = row?;
         let c = match rates.resolve(&model) {
             Some(rt) => rt.cost(in_, out, cr, w5, w1),
             None => 0.0,
@@ -282,6 +302,13 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
                 cost: 0.0,
                 requests: 0,
                 convs: 0,
+                ctx_messages: None,
+                ctx_system: None,
+                ctx_reasoning: None,
+                ctx_toolcalls: None,
+                ctx_agents: None,
+                ctx_mcp: None,
+                ctx_skills: None,
             });
             points.len() - 1
         });
@@ -293,9 +320,14 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
         p.total_tokens += in_ + out + cr + w5 + w1;
         p.requests += calls;
         p.cost += c;
-        if let Some(r) = reasoning {
-            p.reasoning_tokens = Some(p.reasoning_tokens.unwrap_or(0) + r);
-        }
+        add_opt(&mut p.reasoning_tokens, reasoning);
+        add_opt(&mut p.ctx_messages, cxm);
+        add_opt(&mut p.ctx_system, cxs);
+        add_opt(&mut p.ctx_reasoning, cxr);
+        add_opt(&mut p.ctx_toolcalls, cxt);
+        add_opt(&mut p.ctx_agents, cxa);
+        add_opt(&mut p.ctx_mcp, cxmc);
+        add_opt(&mut p.ctx_skills, cxsk);
     }
 
     // Convs need distinct-count at (bucket, source) — a session can span
@@ -416,6 +448,52 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));
     Ok(out)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtxResourceCount {
+    pub source: String,
+    pub kind: String,
+    pub count: i64,
+}
+
+// Distinct resources (skills / MCP servers / agents / memory files) seen in
+// range, per source — the Context Breakdown meta line. Day-granular: the
+// ctx_resources table dedups per local day, so ts bounds map to day strings
+// (end_ts exclusive → day of end_ts − 1s inclusive).
+pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResourceCount>> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+    if !f.tools.is_empty() {
+        let ph = f.tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        clauses.push(format!("source IN ({ph})"));
+        for t in &f.tools {
+            params.push(Value::Text(t.clone()));
+        }
+    }
+    if let Some(s) = f.start_ts {
+        clauses.push("day >= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(s));
+    }
+    if let Some(e) = f.end_ts {
+        clauses.push("day <= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(e - 1));
+    }
+    let where_sql = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", clauses.join(" AND "))
+    };
+    let sql = format!(
+        "SELECT source, kind, COUNT(DISTINCT name) FROM ctx_resources {where_sql} \
+         GROUP BY source, kind"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxResourceCount { source: r.get(0)?, kind: r.get(1)?, count: r.get(2)? })
+    })?;
+    rows.collect()
 }
 
 #[cfg(test)]
@@ -736,5 +814,62 @@ mod tests {
         approx(cost, s.cost.unwrap());
         let reqs: i64 = pts.iter().map(|p| p.requests).sum();
         assert_eq!(reqs, s.requests);
+    }
+
+    #[test]
+    fn series_sums_ctx_preserving_null() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut a = ev_s("a", "claude", DAY1_TS, "claude-opus-4-8", Some("s1"), None);
+        a.ctx.messages = Some(900);
+        a.ctx.system = Some(80);
+        a.ctx.reasoning = Some(20);
+        a.ctx.toolcalls = Some(300);
+        let mut b = ev_s("b", "claude", DAY1_TS, "claude-opus-4-8", Some("s1"), None);
+        b.ctx.messages = Some(100);
+        b.ctx.system = Some(10);
+        b.ctx.reasoning = Some(0);
+        // hermes: all-NULL ctx must stay NULL, not become 0
+        let h = ev_s("h", "hermes", DAY1_TS, "hermes-local", Some("hs"), None);
+        db::insert_events(&mut conn, &[a, b, h]).unwrap();
+
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        let c = pts.iter().find(|p| p.source == "claude").unwrap();
+        assert_eq!(c.ctx_messages, Some(1000));
+        assert_eq!(c.ctx_system, Some(90));
+        assert_eq!(c.ctx_reasoning, Some(20));
+        assert_eq!(c.ctx_toolcalls, Some(300));
+        assert_eq!(c.ctx_agents, None, "no contributing value: NULL, never 0");
+        let hm = pts.iter().find(|p| p.source == "hermes").unwrap();
+        assert_eq!(hm.ctx_messages, None);
+    }
+
+    #[test]
+    fn ctx_resources_counts_distinct_in_range() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        crate::adapters::claude_ctx::record_resources(&conn, "claude", &[
+            ("skill", "graphify".to_string(), DAY1_TS),
+            ("skill", "graphify".to_string(), DAY2_TS), // same name, new day: still 1 distinct
+            ("skill", "verify".to_string(), DAY2_TS),
+            ("mcp_server", "pencil".to_string(), DAY1_TS),
+        ]).unwrap();
+
+        let all = ctx_resources(&conn, &Filters::default()).unwrap();
+        let skill = all.iter().find(|r| r.kind == "skill").unwrap();
+        assert_eq!(skill.count, 2);
+        let mcp = all.iter().find(|r| r.kind == "mcp_server").unwrap();
+        assert_eq!(mcp.count, 1);
+
+        // Day-1-only window excludes the day-2 'verify'.
+        let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
+        let d1 = ctx_resources(&conn, &f).unwrap();
+        assert_eq!(d1.iter().find(|r| r.kind == "skill").unwrap().count, 1);
+
+        // Tool filter scopes by source.
+        let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
+        assert!(ctx_resources(&conn, &f2).unwrap().is_empty());
     }
 }
