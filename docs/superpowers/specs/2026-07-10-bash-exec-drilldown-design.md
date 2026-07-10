@@ -119,7 +119,9 @@ string at scan time:
   (incl. "npm run build"→build, "npx vitest"→unknown — the ported table
   has no npx rule, it ranks via the Executable/Command facets instead,
   "git status"→git_status, "git push"→git_remote,
-  "rm x && git add ."→compound, `bash -lc "git add ."` unwrap,
+  "rm x && git add ."→git_local — the git/http rules match anywhere in
+  the command, before file_mutation/compound, "cd a && npx tsc"→compound,
+  `bash -lc "git add ."` unwrap,
   quoted-arg word splitting, VAR=value skip in signatures).
 - Scan test: Bash tool_use + result accumulate one classified row;
   unchanged re-scan stable; forced full re-parse replaces (the
