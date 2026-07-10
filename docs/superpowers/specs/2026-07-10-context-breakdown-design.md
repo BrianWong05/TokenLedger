@@ -17,8 +17,12 @@ the panel fed by real, estimated-from-logs attribution.
 1. **Real attribution**, not a re-mounted mock and not a stripped-down
    partial panel.
 2. **Billed-context semantics**: category numbers decompose cumulative
-   billed context (`input + cache_read`), i.e. "what am I paying to
-   re-send every turn". Messages will legitimately dominate (~99%).
+   billed context (`input + cache_read + cache_write_5m + cache_write_1h`
+   — cache writes are context being transmitted; on a session's first
+   call the system prompt arrives as `cache_creation` tokens, so
+   excluding writes would blind the system-prompt heuristic), i.e. "what
+   am I paying to re-send every turn". Messages will legitimately
+   dominate (~99%).
 3. **All four sources, best effort**: categories a source's logs cannot
    support are NULL and render "—" (never 0 — same honesty rule as
    Reasoning/Unpriced in v2).
@@ -31,12 +35,15 @@ the panel fed by real, estimated-from-logs attribution.
 ## Schema (migration v2 → v3)
 
 Seven nullable INTEGER columns on events; each is the event's attributed
-share of billed context (`input_tokens + cache_read_tokens`), computed at
-scan time:
+share of billed context (`input_tokens + cache_read_tokens +
+cache_write_5m_tokens + cache_write_1h_tokens` — cache writes are context
+being transmitted; on a session's first call the system prompt arrives as
+`cache_creation` tokens, so excluding writes would blind the system-prompt
+heuristic), computed at scan time:
 
 - **Primary — a partition**: `ctx_messages`, `ctx_system`,
-  `ctx_reasoning`. When attribution exists they sum to
-  ≈ `input + cache_read` (± rounding).
+  `ctx_reasoning`. When attribution exists they sum to billed context
+  exactly (messages takes the rounding remainder).
 - **Secondary — overlapping subsets of `ctx_messages`**:
   `ctx_toolcalls`, `ctx_agents`, `ctx_mcp`, `ctx_skills`. They do not
   sum to anything by design (matches the mock's muted sub-rows).
@@ -66,13 +73,15 @@ Per session, maintain running char counters by category. Every line's
 content (user text, assistant text, tool_use input, tool_result content,
 thinking) is added to its category counter as lines stream by. At each
 assistant API call, attribute: share of each category in the running
-composition × that call's `input + cache_read`.
+composition × that call's billed context (`input + cache_read +
+cache_write_5m + cache_write_1h`).
 
 - **System prompt** (not present in transcripts): heuristic — the
-  session's first call's billed input minus the estimated chars of the
-  first user turn = system baseline, held constant in the composition
-  thereafter. UI keeps the ⓘ affordance: "estimated from each
-  session's first call".
+  session's first call's billed context minus the estimated chars of the
+  content seen so far = system baseline, held constant in the composition
+  thereafter. (The system prompt lands largely in `cache_creation` on
+  that first call, which is why billed context includes cache writes.) UI
+  keeps the ⓘ affordance: "estimated from each session's first call".
 - **Thinking** is stripped across turns by the API: thinking chars count
   toward the reasoning counter only within their own tool-use turn; the
   reasoning counter resets at each user-turn boundary. All counters
@@ -138,7 +147,10 @@ No content in `state.db` rows: all seven NULL.
   rows and a tooltip: "Hermes logs don't record content".
 - Mounted in Overview8b right column: Context Breakdown, Token
   Breakdown, Models (in that order).
-- `mock.ts` and the unmounted 8a variant are untouched.
+- `mock.ts` gains a tiny `mockCtxTotals()` adapter (mock fractions
+  reshaped into the real `CtxTotals` prop) so the unmounted 8a FocusPanel
+  keeps compiling against the repurposed ContextBreakdown — the same
+  pattern v2 used for ModelsList (`mockModelBars`).
 
 ## Backfill & edge cases
 
@@ -158,7 +170,8 @@ No content in `state.db` rows: all seven NULL.
 
 - `e2e_real_logs.rs` invariants over this machine's real logs:
   - attributed Claude events: `ctx_messages + ctx_system +
-    ctx_reasoning ≈ input + cache_read` (± rounding tolerance);
+    ctx_reasoning == input + cache_read + cache_write_5m +
+    cache_write_1h` (exact — messages absorbs the rounding remainder);
   - each secondary column ≤ `ctx_messages`;
   - Gemini `ctx_toolcalls` totals equal reported `tokens.tool` sums;
   - Hermes events: all seven columns NULL.
