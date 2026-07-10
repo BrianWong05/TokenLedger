@@ -1,6 +1,8 @@
+use super::claude_ctx::{self, Composition};
 use crate::db::{get_file_state, insert_events_keep_max_output, set_file_state};
-use crate::types::{FileState, SourceScanResult, UsageEvent};
+use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub fn scan_claude(conn: &mut Connection, projects_root: &Path) -> SourceScanResult {
@@ -88,30 +90,102 @@ fn scan_file(
         .map(|i| i + 1)
         .unwrap_or(0);
 
+    // Context attribution (spec 2026-07-10): feed every line through the
+    // running composition; attribute each API call at first sight of its
+    // dedup_key (content the call produces is its output, not its input).
+    let is_agent_file = path_str.contains("/subagents/");
     let mut events = Vec::new();
+    let mut comps: HashMap<String, Composition> = HashMap::new();
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
+    let mut attr_by_key: HashMap<String, CtxTokens> = HashMap::new();
+
     for line in buf[..consumed].split(|&b| b == b'\n') {
         if line.is_empty() {
             continue;
         }
-        match parse_line(line, &path_str, &encoded_dir) {
-            Ok(Some(ev)) => events.push(ev),
-            Ok(None) => {}                          // non-assistant or synthetic: ignore
-            Err(()) => result.lines_skipped += 1,   // malformed line
+        let v: serde_json::Value = match serde_json::from_slice(line) {
+            Ok(v) => v,
+            Err(_) => {
+                result.lines_skipped += 1;
+                continue;
+            }
+        };
+        // Session key: per-line sessionId, else the file stem (one session per file).
+        let sid = v
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
+            });
+        if !comps.contains_key(&sid) {
+            let loaded = claude_ctx::load_composition(conn, &sid)?;
+            let mut c = loaded.unwrap_or_default();
+            // Mid-file resume with no persisted state: composition is unknowable —
+            // taint the session so attribution stays NULL instead of guessing.
+            if loaded.is_none() && start > 0 {
+                c.tainted = true;
+            }
+            comps.insert(sid.clone(), c);
+        }
+        let comp = comps.get_mut(&sid).expect("inserted above");
+        let line_ts = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(crate::time::iso_to_epoch)
+            .unwrap_or(0);
+
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user") => claude_ctx::apply_user_line(comp, &v, &tool_names),
+            Some("system") => {
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
+                    comp.reset_compact();
+                }
+            }
+            Some("assistant") => {
+                if let Some(mut ev) = parse_line_event(&v, &path_str, &encoded_dir) {
+                    let billed = ev.input_tokens
+                        + ev.cache_read_tokens
+                        + ev.cache_write_5m_tokens
+                        + ev.cache_write_1h_tokens;
+                    comp.init_system(billed);
+                    let mut ctx = *attr_by_key
+                        .entry(ev.dedup_key.clone())
+                        .or_insert_with(|| comp.attribute(billed));
+                    let sidechain = is_agent_file
+                        || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true);
+                    if sidechain {
+                        ctx.agents = Some(billed);
+                    }
+                    ev.ctx = ctx;
+                    events.push(ev);
+                }
+                // Attribution first, THEN book this line's own content: what a
+                // call produces is its output, not its input.
+                let mut sink: Vec<(&'static str, String)> = Vec::new();
+                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink);
+                resources.extend(sink.into_iter().map(|(k, n)| (k, n, line_ts)));
+            }
+            _ => {}
         }
     }
 
     let inserted = insert_events_keep_max_output(conn, &events)?;
     result.events_inserted += inserted;
+    for (sid, comp) in &comps {
+        claude_ctx::save_composition(conn, sid, comp)?;
+    }
+    claude_ctx::record_resources(conn, "claude", &resources)?;
 
     let new_offset = start + consumed as i64;
     set_file_state(conn, &path_str, FileState { size, mtime, byte_offset: new_offset })?;
     Ok(())
 }
 
-fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Option<UsageEvent>, ()> {
-    let v: serde_json::Value = serde_json::from_slice(line).map_err(|_| ())?;
+fn parse_line_event(v: &serde_json::Value, source_file: &str, encoded_dir: &str) -> Option<UsageEvent> {
     if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-        return Ok(None);
+        return None;
     }
     let msg = &v["message"];
     let usage = &msg["usage"];
@@ -133,12 +207,12 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
 
     // <synthetic> error placeholders have all-zero usage: skip, don't count.
     if input == 0 && output == 0 && cache_read == 0 && cw5m == 0 && cw1h == 0 {
-        return Ok(None);
+        return None;
     }
 
     let id = match msg["id"].as_str() {
         Some(s) if !s.is_empty() => s,
-        _ => return Ok(None),
+        _ => return None,
     };
     let dedup_key = match v.get("requestId").and_then(|r| r.as_str()) {
         Some(r) => format!("claude:{id}:{r}"),
@@ -151,7 +225,7 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
     });
     let timestamp = match v.get("timestamp").and_then(|t| t.as_str()).and_then(crate::time::iso_to_epoch) {
         Some(ts) => ts,
-        None => return Ok(None),
+        None => return None,
     };
 
     let session_id = v
@@ -159,7 +233,7 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
         .and_then(|s| s.as_str())
         .map(|s| s.to_string());
 
-    Ok(Some(UsageEvent {
+    Some(UsageEvent {
         dedup_key,
         source: "claude".to_string(),
         timestamp,
@@ -174,8 +248,8 @@ fn parse_line(line: &[u8], source_file: &str, encoded_dir: &str) -> Result<Optio
         source_file: source_file.to_string(),
         session_id,
         reasoning_tokens: None,
-        ctx: Default::default(),
-    }))
+        ctx: CtxTokens::default(),
+    })
 }
 
 fn rollup_worktree(cwd: &str) -> String {
@@ -415,5 +489,146 @@ mod tests {
             )
             .unwrap();
         assert_eq!(sid2, None);
+    }
+
+    #[test]
+    fn attributes_context_categories_across_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // user text (40 bytes → 10 est) → call 1 (billed 1000: input 100 + cw 900)
+        // → assistant thinking (80 bytes → 20 est) + tool_use → tool_result
+        // → call 2 (billed 2000: input 500 + cache_read 1500)
+        let user1 = r#"{"type":"user","sessionId":"s1","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        let call1 = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
+        let think = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:02.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"usage":{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
+        let tooluse = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:03.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":100,"output_tokens":40,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
+        let toolres = r#"{"type":"user","sessionId":"s1","timestamp":"2026-07-01T10:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"cccccccccccccccccccccccccccccccccccccccc"}]}}"#;
+        let call2 = r#"{"type":"assistant","sessionId":"s1","requestId":"r2","timestamp":"2026-07-01T10:00:05.000Z","cwd":"/p/x","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":500,"output_tokens":10,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
+        let lines = [user1, call1, think, tooluse, toolres, call2].join("\n") + "\n";
+        std::fs::write(proj.join("s1.jsonl"), lines).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.error, None);
+        assert_eq!(res.events_inserted, 2);
+
+        // Call 1: composition = msg 10 (user text only) → sys initialized to 990.
+        // Partition: total=1000, sys=990, reas=0 → system=990, reasoning=0, messages=10.
+        let (m1, s1, r1, t1): (i64, i64, i64, i64) = conn.query_row(
+            "SELECT ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls FROM events WHERE dedup_key='claude:m1:r1'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(s1, 990);
+        assert_eq!(r1, 0);
+        assert_eq!(m1, 10);
+        assert_eq!(t1, 0);
+        assert_eq!(m1 + s1 + r1, 1000, "partition exact");
+
+        // Call 2 composition: msg 10 + tool_use input est + tool_result est(10),
+        // reas 20 (in-turn thinking persists across tool_result), sys 990.
+        // Just assert the invariants — exact split depends on JSON byte lengths.
+        let (m2, s2, r2, t2): (i64, i64, i64, i64) = conn.query_row(
+            "SELECT ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls FROM events WHERE dedup_key='claude:m2:r2'",
+            [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!(m2 + s2 + r2, 2000, "partition exact");
+        assert!(r2 > 0, "thinking counted within its turn");
+        assert!(t2 > 0 && t2 <= m2, "toolcalls subset of messages");
+        assert!(s2 > 0 && s2 < 2000);
+    }
+
+    #[test]
+    fn sidechain_and_subagent_files_attribute_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let agent_dir = root.join("x/sess-a/subagents");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let user = r#"{"type":"user","sessionId":"ag1","timestamp":"2026-07-01T09:00:00.000Z","message":{"role":"user","content":"task prompt here"}}"#;
+        let call = r#"{"type":"assistant","sessionId":"ag1","requestId":"ra","timestamp":"2026-07-01T09:00:01.000Z","cwd":"/p/x","message":{"id":"ma","model":"claude-opus-4-8","usage":{"input_tokens":400,"output_tokens":5,"cache_read_input_tokens":600,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(agent_dir.join("agent-1.jsonl"), format!("{user}\n{call}\n")).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.events_inserted, 1);
+        let (agents, msgs): (i64, i64) = conn.query_row(
+            "SELECT ctx_agents, ctx_messages FROM events WHERE dedup_key='claude:ma:ra'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(agents, 1000, "whole billed context attributed to agents");
+        assert!(msgs > 0, "primary partition still computed for agent sessions");
+    }
+
+    #[test]
+    fn resume_with_lost_state_taints_session_to_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let logp = proj.join("s2.jsonl");
+        let user = r#"{"type":"user","sessionId":"s2","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"hello there friend"}}"#;
+        let call1 = r#"{"type":"assistant","sessionId":"s2","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(&logp, format!("{user}\n{call1}\n")).unwrap();
+        scan_claude(&mut conn, &root);
+
+        // Simulate lost state (e.g. cleared out-of-band) between scans.
+        conn.execute("DELETE FROM session_ctx", []).unwrap();
+
+        let call2 = r#"{"type":"assistant","sessionId":"s2","requestId":"r2","timestamp":"2026-07-01T10:05:00.000Z","cwd":"/p/x","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":200,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&logp).unwrap();
+            writeln!(f, "{call2}").unwrap();
+        }
+        scan_claude(&mut conn, &root);
+        let cm: Option<i64> = conn.query_row(
+            "SELECT ctx_messages FROM events WHERE dedup_key='claude:m2:r2'",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(cm, None, "resumed without state: NULL, never a guess");
+    }
+
+    #[test]
+    fn compact_boundary_resets_content_counters() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let user1 = r#"{"type":"user","sessionId":"s3","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        let call1 = r#"{"type":"assistant","sessionId":"s3","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
+        let compact = r#"{"type":"system","subtype":"compact_boundary","sessionId":"s3","timestamp":"2026-07-01T11:00:00.000Z"}"#;
+        let user2 = r#"{"type":"user","sessionId":"s3","timestamp":"2026-07-01T11:00:01.000Z","message":{"role":"user","content":"bbbb"}}"#;
+        let call2 = r#"{"type":"assistant","sessionId":"s3","requestId":"r2","timestamp":"2026-07-01T11:00:02.000Z","cwd":"/p/x","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":900,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(proj.join("s3.jsonl"), [user1, call1, compact, user2, call2].join("\n") + "\n").unwrap();
+
+        scan_claude(&mut conn, &root);
+        // After compaction: composition = msg 1 (4 bytes user2), sys 990 → of 1000
+        // billed, system ≈ 990/991·1000, messages the remainder.
+        let (m2, s2): (i64, i64) = conn.query_row(
+            "SELECT ctx_messages, ctx_system FROM events WHERE dedup_key='claude:m2:r2'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(s2 > 900, "system baseline survives compaction");
+        assert!(m2 < 100, "pre-compaction messages no longer in the window");
+    }
+
+    #[test]
+    fn records_skill_and_mcp_resources() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let line = r#"{"type":"assistant","sessionId":"s4","requestId":"r1","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"graphify"}},{"type":"tool_use","id":"t2","name":"mcp__pencil__batch_get","input":{}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(proj.join("s4.jsonl"), format!("{line}\n")).unwrap();
+        scan_claude(&mut conn, &root);
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn.prepare("SELECT kind, name FROM ctx_resources WHERE source='claude' ORDER BY kind").unwrap();
+            let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            it.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(rows, vec![
+            ("mcp_server".to_string(), "pencil".to_string()),
+            ("skill".to_string(), "graphify".to_string()),
+        ]);
     }
 }
