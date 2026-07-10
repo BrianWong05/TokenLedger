@@ -82,10 +82,13 @@ cache_write_5m + cache_write_1h`).
   thereafter. (The system prompt lands largely in `cache_creation` on
   that first call, which is why billed context includes cache writes.) UI
   keeps the ⓘ affordance: "estimated from each session's first call".
-- **Thinking** is stripped across turns by the API: thinking chars count
-  toward the reasoning counter only within their own tool-use turn; the
-  reasoning counter resets at each user-turn boundary. All counters
-  reset on `compact_boundary` lines.
+- **Reasoning: NULL.** Transcripts store thinking blocks as signature-only
+  (the `thinking` text is always empty — verified across old and new logs),
+  so reasoning-in-context is unobservable for Claude. `ctx_reasoning` is
+  NULL, matching v2's `reasoning_tokens` convention, and renders "—". The
+  engine still counts thinking text within its tool-use turn (reset at each
+  user-turn boundary; all counters reset on `compact_boundary` lines) in
+  case a future log format carries it.
 - **Custom agents**: events in transcripts under `subagents/` (or lines
   with `isSidechain: true`) attribute their entire billed context to
   `ctx_agents`. In the parent session, agent output arriving as

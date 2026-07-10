@@ -164,6 +164,12 @@ fn scan_file(
                     if sidechain {
                         ctx.agents = Some(billed);
                     }
+                    // Transcripts store thinking signatures only (the text is always empty),
+                    // so reasoning-in-context is unobservable for Claude. NULL per the honesty
+                    // rule — matching reasoning_tokens, which is NULL for Claude for the same
+                    // reason. The engine's reasoning machinery stays: if a future log format
+                    // carries thinking text, remove this override.
+                    ctx.reasoning = None;
                     ev.ctx = ctx;
                     events.push(ev);
                 }
@@ -506,11 +512,11 @@ mod tests {
         std::fs::create_dir_all(&proj).unwrap();
 
         // user text (40 bytes → 10 est) → call 1 (billed 1000: input 100 + cw 900)
-        // → assistant thinking (80 bytes → 20 est) + tool_use → tool_result
-        // → call 2 (billed 2000: input 500 + cache_read 1500)
+        // → assistant thinking (signature-only, empty text — like real logs)
+        // + tool_use → tool_result → call 2 (billed 2000: input 500 + cache_read 1500)
         let user1 = r#"{"type":"user","sessionId":"s1","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
         let call1 = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
-        let think = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:02.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}],"usage":{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
+        let think = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:02.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"thinking","thinking":"","signature":"sig1"}],"usage":{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
         let tooluse = r#"{"type":"assistant","sessionId":"s1","requestId":"r1","timestamp":"2026-07-01T10:00:03.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":100,"output_tokens":40,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
         let toolres = r#"{"type":"user","sessionId":"s1","timestamp":"2026-07-01T10:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"cccccccccccccccccccccccccccccccccccccccc"}]}}"#;
         let call2 = r#"{"type":"assistant","sessionId":"s1","requestId":"r2","timestamp":"2026-07-01T10:00:05.000Z","cwd":"/p/x","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":500,"output_tokens":10,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
@@ -522,24 +528,27 @@ mod tests {
         assert_eq!(res.events_inserted, 2);
 
         // Call 1: composition = msg 10 (user text only) → sys initialized to 990.
-        // Partition: total=1000, sys=990, reas=0 → system=990, reasoning=0, messages=10.
-        let (m1, s1, r1, t1): (i64, i64, i64, i64) = conn.query_row(
+        // Partition: total=1000, sys=990 → system=990, messages=10. Reasoning is
+        // NULL: real transcripts carry signature-only thinking blocks (text always
+        // empty), so reasoning-in-context is unobservable for Claude.
+        let (m1, s1, r1, t1): (i64, i64, Option<i64>, i64) = conn.query_row(
             "SELECT ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls FROM events WHERE dedup_key='claude:m1:r1'",
             [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(s1, 990);
-        assert_eq!(r1, 0);
+        assert_eq!(r1, None, "reasoning unobservable in Claude logs → NULL");
         assert_eq!(m1, 10);
         assert_eq!(t1, 0);
-        assert_eq!(m1 + s1 + r1, 1000, "partition exact");
+        assert_eq!(m1 + s1, 1000, "partition exact (reasoning excluded: NULL)");
 
         // Call 2 composition: msg 10 + tool_use input est + tool_result est(10),
-        // reas 20 (in-turn thinking persists across tool_result), sys 990.
-        // Just assert the invariants — exact split depends on JSON byte lengths.
-        let (m2, s2, r2, t2): (i64, i64, i64, i64) = conn.query_row(
+        // sys 990; the thinking block contributes nothing (empty text, like real
+        // logs). Just assert the invariants — exact split depends on JSON byte
+        // lengths.
+        let (m2, s2, r2, t2): (i64, i64, Option<i64>, i64) = conn.query_row(
             "SELECT ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls FROM events WHERE dedup_key='claude:m2:r2'",
             [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
-        assert_eq!(m2 + s2 + r2, 2000, "partition exact");
-        assert!(r2 > 0, "thinking counted within its turn");
+        assert_eq!(r2, None, "reasoning unobservable in Claude logs → NULL");
+        assert_eq!(m2 + s2, 2000, "partition exact (reasoning excluded: NULL)");
         assert!(t2 > 0 && t2 <= m2, "toolcalls subset of messages");
         assert!(s2 > 0 && s2 < 2000);
     }
