@@ -1,4 +1,5 @@
 use super::claude_ctx::{self, Composition};
+use super::exec_class;
 use crate::db::{get_file_state, insert_events_keep_max_output, set_file_state};
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
@@ -91,14 +92,27 @@ fn scan_file(
         .unwrap_or(0);
 
     // Context attribution (spec 2026-07-10): feed every line through the
-    // running composition; attribute each API call at first sight of its
-    // dedup_key (content the call produces is its output, not its input).
+    // running composition. Snapshot the composition at first sight of a
+    // dedup_key (content the call produces is its output, not its input),
+    // but split per LINE: proxied models (chatcmpl ids) log partial usage on
+    // early duplicate lines, and the dedup upsert keeps the max-output line —
+    // its ctx must be computed from its own billed or the partition breaks.
     let is_agent_file = path_str.contains("/subagents/");
     let mut events = Vec::new();
     let mut comps: HashMap<String, Composition> = HashMap::new();
     let mut tool_names: HashMap<String, String> = HashMap::new();
     let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
-    let mut attr_by_key: HashMap<String, CtxTokens> = HashMap::new();
+    let mut comp_by_key: HashMap<String, Composition> = HashMap::new();
+
+    // ctx_tools idempotency: a parse from byte 0 rebuilds this file's tool
+    // weights from scratch (same rule as the fresh composition).
+    if start == 0 {
+        crate::db::clear_ctx_tools_for_file(conn, &path_str)?;
+        crate::db::clear_ctx_exec_for_file(conn, &path_str)?;
+    }
+    let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
+    let mut exec_by_id: HashMap<String, (String, String, String)> = HashMap::new();
+    let mut exec_rows: Vec<(String, String, String, i64, i64, i64)> = Vec::new();
 
     for line in buf[..consumed].split(|&b| b == b'\n') {
         if line.is_empty() {
@@ -143,7 +157,12 @@ fn scan_file(
             .unwrap_or(0);
 
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("user") => claude_ctx::apply_user_line(comp, &v, &tool_names),
+            Some("user") => {
+                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut sizes);
+                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
+                collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
+            }
             Some("system") => {
                 if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
                     comp.reset_compact();
@@ -156,28 +175,32 @@ fn scan_file(
                         + ev.cache_write_5m_tokens
                         + ev.cache_write_1h_tokens;
                     comp.init_system(billed);
-                    let mut ctx = *attr_by_key
-                        .entry(ev.dedup_key.clone())
-                        .or_insert_with(|| comp.attribute(billed));
+                    let snap = *comp_by_key.entry(ev.dedup_key.clone()).or_insert(*comp);
+                    let mut ctx = snap.attribute(billed);
                     let sidechain = is_agent_file
                         || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true);
                     if sidechain {
                         ctx.agents = Some(billed);
                     }
-                    // Transcripts store thinking signatures only (the text is always empty),
-                    // so reasoning-in-context is unobservable for Claude. NULL per the honesty
-                    // rule — matching reasoning_tokens, which is NULL for Claude for the same
-                    // reason. The engine's reasoning machinery stays: if a future log format
-                    // carries thinking text, remove this override.
-                    ctx.reasoning = None;
+                    // Reasoning share: genuine Anthropic transcripts store thinking
+                    // signature-only (empty text) so the share is 0 — unobservable, NULL.
+                    // Proxied third-party models (e.g. GLM) DO log thinking text; a
+                    // nonzero share is a real observation and must stay, or the primary
+                    // partition loses exactly that amount.
+                    if ctx.reasoning == Some(0) {
+                        ctx.reasoning = None;
+                    }
                     ev.ctx = ctx;
                     events.push(ev);
                 }
                 // Attribution first, THEN book this line's own content: what a
                 // call produces is its output, not its input.
                 let mut sink: Vec<(&'static str, String)> = Vec::new();
-                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink);
+                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink, &mut sizes);
                 resources.extend(sink.into_iter().map(|(k, n)| (k, n, line_ts)));
+                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
+                collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
             }
             _ => {}
         }
@@ -189,6 +212,8 @@ fn scan_file(
         claude_ctx::save_composition(conn, sid, comp)?;
     }
     claude_ctx::record_resources(conn, "claude", &resources)?;
+    crate::db::add_ctx_tool_rows(conn, "claude", &path_str, &tool_rows)?;
+    crate::db::add_ctx_exec_rows(conn, "claude", &path_str, &exec_rows)?;
 
     let new_offset = start + consumed as i64;
     set_file_state(conn, &path_str, FileState { size, mtime, byte_offset: new_offset })?;
@@ -268,6 +293,51 @@ fn rollup_worktree(cwd: &str) -> String {
     match cwd.find("/.claude/worktrees/") {
         Some(i) => cwd[..i].to_string(),
         None => cwd.to_string(),
+    }
+}
+
+// Bash command-level facets (spec 2026-07-10-bash-exec-drilldown): classify
+// each Bash tool_use once, remember the classification by tool_use id so the
+// paired result's bytes book to the same command. Reads the line only —
+// independent of the attribution engine.
+fn collect_exec(
+    v: &serde_json::Value,
+    exec_by_id: &mut HashMap<String, (String, String, String)>,
+    exec_rows: &mut Vec<(String, String, String, i64, i64, i64)>,
+    line_ts: i64,
+) {
+    let blocks = match v["message"]["content"].as_array() {
+        Some(b) => b,
+        None => return,
+    };
+    for b in blocks {
+        match b.get("type").and_then(|t| t.as_str()) {
+            Some("tool_use") if b.get("name").and_then(|n| n.as_str()) == Some("Bash") => {
+                if let Some(cmd) = b.pointer("/input/command").and_then(|c| c.as_str()) {
+                    let kind = exec_class::exec_kind(cmd).to_string();
+                    let exe = exec_class::exec_exe(cmd);
+                    let sig = exec_class::exec_cmd(cmd);
+                    if let Some(id) = b.get("id").and_then(|i| i.as_str()) {
+                        exec_by_id
+                            .insert(id.to_string(), (kind.clone(), exe.clone(), sig.clone()));
+                    }
+                    let est = claude_ctx::est(claude_ctx::content_bytes(&b["input"]));
+                    exec_rows.push((kind, exe, sig, est, 1, line_ts));
+                }
+            }
+            Some("tool_result") => {
+                let hit = b
+                    .get("tool_use_id")
+                    .and_then(|i| i.as_str())
+                    .and_then(|id| exec_by_id.get(id))
+                    .cloned();
+                if let Some((kind, exe, sig)) = hit {
+                    let est = claude_ctx::est(claude_ctx::content_bytes(&b["content"]));
+                    exec_rows.push((kind, exe, sig, est, 0, line_ts));
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -554,6 +624,78 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_lines_with_growing_usage_attribute_from_own_billed() {
+        // Proxied models (chatcmpl ids) log PARTIAL usage on early duplicate
+        // lines of the same message; the dedup upsert keeps the max-output
+        // line. Its ctx must be split from its own billed, not the first
+        // line's — or the primary partition falls short by the difference.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        let user1 = r#"{"type":"user","sessionId":"sd","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        // First duplicate: partial usage (billed 100). Second: final usage
+        // (billed 2000, higher output → wins the upsert).
+        let l1 = r#"{"type":"assistant","sessionId":"sd","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"chatcmpl-dup","model":"z-ai/glm-5.2","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let l2 = r#"{"type":"assistant","sessionId":"sd","timestamp":"2026-07-01T10:00:02.000Z","cwd":"/p/x","message":{"id":"chatcmpl-dup","model":"z-ai/glm-5.2","content":[{"type":"text","text":"hi there"}],"usage":{"input_tokens":500,"output_tokens":25,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
+        let lines = [user1, l1, l2].join("\n") + "\n";
+        std::fs::write(proj.join("sd.jsonl"), lines).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.error, None);
+        assert_eq!(res.events_inserted, 1, "duplicates collapse to one event");
+
+        let (out, m, s, r): (i64, i64, i64, Option<i64>) = conn.query_row(
+            "SELECT output_tokens, ctx_messages, ctx_system, ctx_reasoning FROM events WHERE dedup_key='claude:chatcmpl-dup'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();
+        assert_eq!(out, 25, "max-output line wins");
+        assert_eq!(
+            m + s + r.unwrap_or(0),
+            2000,
+            "kept row's partition matches its OWN billed, not the first line's"
+        );
+    }
+
+    #[test]
+    fn nonempty_thinking_text_yields_reasoning_share() {
+        // Third-party models proxied through Claude Code (e.g. z-ai/glm-5.2) DO
+        // log thinking text, unlike genuine Anthropic transcripts. The engine
+        // then computes a nonzero reasoning share; it is a real observation and
+        // must survive to the stored row, or the primary partition
+        // (messages + system + reasoning) falls short of billed by that amount.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+
+        // user text (40 bytes → 10 est) → call m1 carrying ~400 chars of real
+        // thinking text (est 100) → call m2 (billed 2000). m2's attribution is
+        // computed from the composition after m1's thinking is booked, so its
+        // reasoning share is nonzero.
+        let think_text = "Reasoning through the request carefully to reach a correct answer. ".repeat(6);
+        let user1 = r#"{"type":"user","sessionId":"sg","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        let m1 = r#"{"type":"assistant","sessionId":"sg","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"z-ai/glm-5.2","content":[{"type":"thinking","thinking":"THINK","signature":"s"}],"usage":{"input_tokens":100,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#.replace("THINK", &think_text);
+        let m2 = r#"{"type":"assistant","sessionId":"sg","requestId":"r2","timestamp":"2026-07-01T10:00:05.000Z","cwd":"/p/x","message":{"id":"m2","model":"z-ai/glm-5.2","usage":{"input_tokens":500,"output_tokens":10,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
+        let lines = format!("{user1}\n{m1}\n{m2}\n");
+        std::fs::write(proj.join("sg.jsonl"), lines).unwrap();
+
+        let res = scan_claude(&mut conn, &root);
+        assert_eq!(res.error, None);
+        assert_eq!(res.events_inserted, 2);
+
+        // billed m2 = input 500 + cache_read 1500 = 2000.
+        let (m, s, r): (i64, i64, Option<i64>) = conn.query_row(
+            "SELECT ctx_messages, ctx_system, ctx_reasoning FROM events WHERE dedup_key='claude:m2:r2'",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        let r = r.expect("proxied thinking text is a real observation → Some, not NULL");
+        assert!(r > 0, "nonzero reasoning share must be kept, not discarded");
+        assert_eq!(m + s + r, 2000, "primary partition exact, incl. reasoning share");
+    }
+
+    #[test]
     fn sidechain_and_subagent_files_attribute_agents() {
         let dir = tempfile::tempdir().unwrap();
         let mut conn = open_db(&dir.path().join("t.db")).unwrap();
@@ -697,5 +839,80 @@ mod tests {
             ("mcp_server".to_string(), "pencil".to_string()),
             ("skill".to_string(), "graphify".to_string()),
         ]);
+    }
+
+    #[test]
+    fn scan_populates_ctx_tools_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let logp = proj.join("s7.jsonl");
+        let tooluse = r#"{"type":"assistant","sessionId":"s7","requestId":"r1","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let toolres = r#"{"type":"user","sessionId":"s7","timestamp":"2026-07-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"cccccccccccccccccccccccccccccccccccccccc"}]}}"#;
+        std::fs::write(&logp, format!("{tooluse}\n{toolres}\n")).unwrap();
+
+        scan_claude(&mut conn, &root);
+        let (est1, calls1): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='claude' AND name='Bash'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(est1 > 0);
+        assert_eq!(calls1, 1, "tool_use counts one call; its result adds size only");
+
+        // Unchanged re-scan (resume at EOF): no new bytes, no double counting.
+        scan_claude(&mut conn, &root);
+        let (est2, calls2): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='claude' AND name='Bash'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((est2, calls2), (est1, calls1));
+
+        // Forced full re-parse (heal gesture): rows replaced, not doubled.
+        conn.execute("DELETE FROM scanned_files", []).unwrap();
+        scan_claude(&mut conn, &root);
+        let (est3, calls3): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='claude' AND name='Bash'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((est3, calls3), (est1, calls1), "full re-parse replaces the file's rows");
+    }
+
+    #[test]
+    fn scan_populates_ctx_exec_idempotently() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let logp = proj.join("s8.jsonl");
+        let tooluse = r#"{"type":"assistant","sessionId":"s8","requestId":"r1","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git add ."}}],"usage":{"input_tokens":10,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let toolres = r#"{"type":"user","sessionId":"s8","timestamp":"2026-07-01T10:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"okokokokokokokokokokokokokokokokokokokok"}]}}"#;
+        std::fs::write(&logp, format!("{tooluse}\n{toolres}\n")).unwrap();
+
+        scan_claude(&mut conn, &root);
+        let (kind, exe, cmd, est1, calls1): (String, String, String, i64, i64) = conn
+            .query_row(
+                "SELECT kind, exe, cmd, est_tokens, calls FROM ctx_exec WHERE source='claude'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), exe.as_str(), cmd.as_str()), ("git_local", "git", "git add"));
+        assert!(est1 > 0, "command + result bytes booked");
+        assert_eq!(calls1, 1, "tool_use counts the call; its result adds size only");
+
+        // Unchanged re-scan: resume at EOF, nothing added.
+        scan_claude(&mut conn, &root);
+        let (est2, calls2): (i64, i64) = conn
+            .query_row("SELECT est_tokens, calls FROM ctx_exec", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((est2, calls2), (est1, calls1));
+
+        // Forced full re-parse: rows replaced, not doubled.
+        conn.execute("DELETE FROM scanned_files", []).unwrap();
+        scan_claude(&mut conn, &root);
+        let (est3, calls3): (i64, i64) = conn
+            .query_row("SELECT est_tokens, calls FROM ctx_exec", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((est3, calls3), (est1, calls1));
     }
 }

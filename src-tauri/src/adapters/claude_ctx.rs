@@ -14,7 +14,7 @@ pub fn est(bytes: usize) -> i64 {
 }
 
 /// Bytes of a content value: strings verbatim, everything else JSON-serialized.
-fn content_bytes(v: &Value) -> usize {
+pub fn content_bytes(v: &Value) -> usize {
     match v.as_str() {
         Some(s) => s.len(),
         None => serde_json::to_string(v).map(|s| s.len()).unwrap_or(0),
@@ -71,7 +71,12 @@ impl Composition {
     }
 }
 
-pub fn apply_user_line(comp: &mut Composition, v: &Value, tool_names: &HashMap<String, String>) {
+pub fn apply_user_line(
+    comp: &mut Composition,
+    v: &Value,
+    tool_names: &HashMap<String, String>,
+    tool_sizes: &mut Vec<(String, i64, i64)>,
+) {
     let content = &v["message"]["content"];
     if let Some(s) = content.as_str() {
         comp.msg += est(s.len());
@@ -85,11 +90,16 @@ pub fn apply_user_line(comp: &mut Composition, v: &Value, tool_names: &HashMap<S
                 let n = est(content_bytes(&b["content"]));
                 comp.msg += n;
                 comp.tool += n;
-                let name = b["tool_use_id"].as_str().and_then(|id| tool_names.get(id));
-                match name.map(|s| s.as_str()) {
-                    Some(s) if s.starts_with("mcp__") => comp.mcp += n,
-                    Some("Skill") => comp.skill += n,
-                    _ => {}
+                let name = b["tool_use_id"]
+                    .as_str()
+                    .and_then(|id| tool_names.get(id))
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                tool_sizes.push((name.clone(), n, 0));
+                if name.starts_with("mcp__") {
+                    comp.mcp += n;
+                } else if name == "Skill" {
+                    comp.skill += n;
                 }
             }
             Some("text") => {
@@ -106,6 +116,7 @@ pub fn apply_assistant_content(
     v: &Value,
     tool_names: &mut HashMap<String, String>,
     resources: &mut Vec<(&'static str, String)>,
+    tool_sizes: &mut Vec<(String, i64, i64)>,
 ) {
     let Some(blocks) = v["message"]["content"].as_array() else { return };
     for b in blocks {
@@ -117,6 +128,7 @@ pub fn apply_assistant_content(
                 let n = est(content_bytes(&b["input"]));
                 comp.msg += n;
                 comp.tool += n;
+                tool_sizes.push((name.to_string(), n, 1));
                 if let Some(id) = b["id"].as_str() {
                     tool_names.insert(id.to_string(), name.to_string());
                 }
@@ -231,7 +243,7 @@ mod tests {
     fn user_text_line_adds_messages_and_resets_reasoning() {
         let mut c = Composition { reas: 500, ..Default::default() };
         let line = json!({"type":"user","message":{"role":"user","content":"abcdefgh"}});
-        apply_user_line(&mut c, &line, &HashMap::new());
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut Vec::new());
         assert_eq!(c.msg, 2); // 8 bytes / 4
         assert_eq!(c.reas, 0, "genuine user turn strips prior thinking from context");
     }
@@ -244,7 +256,7 @@ mod tests {
         let line = json!({"type":"user","message":{"role":"user","content":[
             {"type":"tool_result","tool_use_id":"tu1","content":"xxxxxxxxxxxxxxxx"}
         ]}});
-        apply_user_line(&mut c, &line, &names);
+        apply_user_line(&mut c, &line, &names, &mut Vec::new());
         assert_eq!(c.msg, 4);
         assert_eq!(c.tool, 4);
         assert_eq!(c.mcp, 4);
@@ -265,7 +277,7 @@ mod tests {
             {"type":"tool_use","id":"c","name":"Task","input":{"subagent_type":"Explore"}},
             {"type":"tool_use","id":"d","name":"Read","input":{"file_path":"/Users/x/.claude/projects/-p/memory/MEMORY.md"}}
         ]}});
-        apply_assistant_content(&mut c, &line, &mut names, &mut res);
+        apply_assistant_content(&mut c, &line, &mut names, &mut res, &mut Vec::new());
         assert_eq!(c.msg, 2 + est_of(&json!({"skill":"graphify"})) + est_of(&json!({"x":1}))
             + est_of(&json!({"subagent_type":"Explore"}))
             + est_of(&json!({"file_path":"/Users/x/.claude/projects/-p/memory/MEMORY.md"})));
@@ -298,6 +310,39 @@ mod tests {
         let c = Composition { msg: 1, tool: 2, mcp: 3, skill: 4, reas: 5, sys: 6, initialized: true, tainted: true };
         save_composition(&conn, "s1", &c).unwrap();
         assert_eq!(load_composition(&conn, "s1").unwrap(), Some(c));
+    }
+
+    #[test]
+    fn tool_sizes_reported_for_tool_use_and_matched_result() {
+        let mut c = Composition::default();
+        let mut names = HashMap::new();
+        let mut res: Vec<(&'static str, String)> = Vec::new();
+        let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+        let line = json!({"type":"assistant","message":{"content":[
+            {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls -la"}}
+        ]}});
+        apply_assistant_content(&mut c, &line, &mut names, &mut res, &mut sizes);
+        assert_eq!(sizes.len(), 1);
+        let est_in = est(serde_json::to_string(&json!({"command":"ls -la"})).unwrap().len());
+        assert_eq!(sizes[0], ("Bash".to_string(), est_in, 1));
+
+        let mut sizes2: Vec<(String, i64, i64)> = Vec::new();
+        let result = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"t1","content":"xxxxxxxxxxxxxxxx"}
+        ]}});
+        apply_user_line(&mut c, &result, &names, &mut sizes2);
+        assert_eq!(sizes2, vec![("Bash".to_string(), 4, 0)], "result attributed via id map, calls 0");
+    }
+
+    #[test]
+    fn unmatched_tool_result_reports_unknown() {
+        let mut c = Composition::default();
+        let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+        let line = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"tool_result","tool_use_id":"missing","content":"yyyyyyyy"}
+        ]}});
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut sizes);
+        assert_eq!(sizes, vec![("unknown".to_string(), 2, 0)]);
     }
 
     #[test]

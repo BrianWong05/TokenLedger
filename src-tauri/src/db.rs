@@ -92,6 +92,47 @@ DELETE FROM scanned_files;
 DELETE FROM session_ctx;
 PRAGMA user_version = 3;";
 
+// v4: per-tool drill-down weights. Rows are keyed per (source_file, name,
+// local day) so re-parses stay idempotent: any parse from byte 0 clears the
+// file's rows first; byte-offset resumes add increments over fresh bytes
+// only. ctx_tools is scan-state-derived (unlike events) and may be rebuilt.
+// Clearing scan state forces the one-time full re-scan that populates
+// history. No BEGIN/COMMIT here: migrate() wraps the batches.
+const SCHEMA_V4: &str = "\
+CREATE TABLE IF NOT EXISTS ctx_tools (
+  source TEXT NOT NULL,
+  source_file TEXT NOT NULL,
+  name TEXT NOT NULL,
+  day TEXT NOT NULL,
+  est_tokens INTEGER NOT NULL DEFAULT 0,
+  calls INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (source_file, name, day)
+);
+DELETE FROM scanned_files;
+DELETE FROM session_ctx;
+PRAGMA user_version = 4;";
+
+// v5: Bash command-level facets. One row per (file, local day, classified
+// command); kind/exe/cmd are computed at scan time by exec_class. Same
+// idempotency contract as ctx_tools: parse-from-byte-0 clears the file's
+// rows first; resumes add increments. Scan-state clear forces the one-time
+// backfill re-scan. No BEGIN/COMMIT: migrate() wraps the batches.
+const SCHEMA_V5: &str = "\
+CREATE TABLE IF NOT EXISTS ctx_exec (
+  source TEXT NOT NULL,
+  source_file TEXT NOT NULL,
+  day TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  exe TEXT NOT NULL,
+  cmd TEXT NOT NULL,
+  est_tokens INTEGER NOT NULL DEFAULT 0,
+  calls INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (source_file, day, kind, exe, cmd)
+);
+DELETE FROM scanned_files;
+DELETE FROM session_ctx;
+PRAGMA user_version = 5;";
+
 // On dedup conflict, refresh only the append-only columns: token counts are
 // immutable (Ledger), but a backfill re-scan must fill session_id/reasoning/ctx
 // on old rows.
@@ -122,7 +163,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 3) and no-ops.
+    // the committed user_version (currently 5) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -134,6 +175,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 3 {
             conn.execute_batch(SCHEMA_V3)?;
+        }
+        if version < 4 {
+            conn.execute_batch(SCHEMA_V4)?;
+        }
+        if version < 5 {
+            conn.execute_batch(SCHEMA_V5)?;
         }
         Ok(())
     };
@@ -325,6 +372,72 @@ pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     Ok(removed)
 }
 
+pub fn clear_ctx_tools_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM ctx_tools WHERE source_file = ?1", [source_file])?;
+    Ok(())
+}
+
+/// Additive per-(file, name, local-day) upsert of tool weights.
+/// Idempotency contract: callers clear the file's rows first whenever they
+/// re-parse from byte 0; resumes append increments over fresh bytes only.
+pub fn add_ctx_tool_rows(
+    conn: &mut Connection,
+    source: &str,
+    source_file: &str,
+    rows: &[(String, i64, i64, i64)], // (name, est_tokens, calls, epoch_ts)
+) -> rusqlite::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO ctx_tools (source, source_file, name, day, est_tokens, calls) \
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%d', ?4, 'unixepoch', 'localtime'), ?5, ?6) \
+             ON CONFLICT(source_file, name, day) DO UPDATE SET \
+               est_tokens = est_tokens + excluded.est_tokens, \
+               calls = calls + excluded.calls",
+        )?;
+        for (name, est, calls, ts) in rows {
+            stmt.execute(params![source, source_file, name, ts, est, calls])?;
+        }
+    }
+    tx.commit()
+}
+
+pub fn clear_ctx_exec_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM ctx_exec WHERE source_file = ?1", [source_file])?;
+    Ok(())
+}
+
+/// Additive per-(file, day, kind, exe, cmd) upsert of exec weights. Same
+/// idempotency contract as add_ctx_tool_rows: callers clear per file on any
+/// parse from byte 0; resumes append increments over fresh bytes only.
+pub fn add_ctx_exec_rows(
+    conn: &mut Connection,
+    source: &str,
+    source_file: &str,
+    rows: &[(String, String, String, i64, i64, i64)], // (kind, exe, cmd, est, calls, ts)
+) -> rusqlite::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO ctx_exec (source, source_file, day, kind, exe, cmd, est_tokens, calls) \
+             VALUES (?1, ?2, strftime('%Y-%m-%d', ?3, 'unixepoch', 'localtime'), ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(source_file, day, kind, exe, cmd) DO UPDATE SET \
+               est_tokens = est_tokens + excluded.est_tokens, \
+               calls = calls + excluded.calls",
+        )?;
+        for (kind, exe, cmd, est, calls, ts) in rows {
+            stmt.execute(params![source, source_file, ts, kind, exe, cmd, est, calls])?;
+        }
+    }
+    tx.commit()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,8 +474,8 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
-        for table in ["events", "scanned_files", "prices", "price_overrides"] {
+        assert_eq!(version, 5);
+        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -391,7 +504,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -399,7 +512,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         // Build a genuine v1 database by hand (SCHEMA still writes user_version 1),
-        // then prove open_db chains v1->v2->v3 cleanly in one shot.
+        // then prove open_db chains v1->v2->v3->v4->v5 cleanly in one shot.
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
@@ -419,7 +532,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 5);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -550,7 +663,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 5);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -637,8 +750,8 @@ mod tests {
 
     #[test]
     fn concurrent_opens_of_v1_db_both_succeed() {
-        // Two processes racing the v1->v3 migration: the loser of the
-        // BEGIN IMMEDIATE lock must see user_version=3 and no-op, not die on
+        // Two processes racing the v1->v5 migration: the loser of the
+        // BEGIN IMMEDIATE lock must see user_version=5 and no-op, not die on
         // "duplicate column name".
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
@@ -656,7 +769,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 5);
     }
 
     #[test]
@@ -797,5 +910,128 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn v3_db_migrates_to_v4_with_ctx_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // Build a genuine v3 database by hand.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 5);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // Scan state cleared: the one-time full re-scan populates ctx_tools history.
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 0);
+    }
+
+    #[test]
+    fn ctx_tool_rows_accumulate_and_clear_per_file() {
+        let (_dir, mut conn) = temp_db();
+        let ts = 1_782_907_200i64;
+        add_ctx_tool_rows(&mut conn, "claude", "f1.jsonl", &[
+            ("Bash".to_string(), 100, 1, ts),
+            ("Bash".to_string(), 50, 0, ts + 60), // same local day: accumulates
+            ("Read".to_string(), 30, 1, ts),
+        ]).unwrap();
+        add_ctx_tool_rows(&mut conn, "claude", "f2.jsonl", &[
+            ("Bash".to_string(), 7, 1, ts),
+        ]).unwrap();
+        let (est, calls): (i64, i64) = conn
+            .query_row(
+                "SELECT est_tokens, calls FROM ctx_tools WHERE source_file='f1.jsonl' AND name='Bash'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((est, calls), (150, 1));
+        // Clearing one file leaves the other's rows.
+        clear_ctx_tools_for_file(&conn, "f1.jsonl").unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_tools", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
+        let src: String = conn
+            .query_row("SELECT source_file FROM ctx_tools", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(src, "f2.jsonl");
+    }
+
+    #[test]
+    fn v4_db_migrates_to_v5_with_ctx_exec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // Build a genuine v4 database by hand.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 5);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 0, "scan state cleared for the one-time backfill re-scan");
+    }
+
+    #[test]
+    fn ctx_exec_rows_accumulate_and_clear_per_file() {
+        let (_dir, mut conn) = temp_db();
+        let ts = 1_782_907_200i64;
+        add_ctx_exec_rows(&mut conn, "claude", "f1.jsonl", &[
+            ("git_local".into(), "git".into(), "git add".into(), 100, 1, ts),
+            ("git_local".into(), "git".into(), "git add".into(), 40, 0, ts + 60),
+            ("test".into(), "npm".into(), "npm test".into(), 30, 1, ts),
+        ]).unwrap();
+        add_ctx_exec_rows(&mut conn, "claude", "f2.jsonl", &[
+            ("git_local".into(), "git".into(), "git add".into(), 7, 1, ts),
+        ]).unwrap();
+        let (est, calls): (i64, i64) = conn
+            .query_row(
+                "SELECT est_tokens, calls FROM ctx_exec WHERE source_file='f1.jsonl' AND cmd='git add'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((est, calls), (140, 1), "same day+key accumulates; result adds size only");
+        clear_ctx_exec_for_file(&conn, "f1.jsonl").unwrap();
+        let left: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_exec", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1);
     }
 }

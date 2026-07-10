@@ -1,7 +1,7 @@
 // Real-data layer for the Overview: shared design meta plus pure reshaping of
 // backend responses (SeriesPoint/BreakdownRow) into the shapes the components
 // consume. No fetching here — Overview8b orchestrates IPC calls.
-import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount } from '../types';
+import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
 
 export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes';
@@ -443,4 +443,148 @@ export function ctxMeta(res: CtxResourceCount[], tool: ToolKey): string {
     if (n > 0) bits.push(`${n} ${label}${n === 1 ? '' : 's'}`);
   }
   return bits.join(' · ');
+}
+
+// ---- tool drill-down (spec 2026-07-10-context-drilldown) ----
+
+// Category map mirrors TokenTracker's, trimmed to names seen in our logs.
+export function categorizeTool(name: string): string {
+  if (name === 'Task' || name === 'Agent') return 'Agent';
+  if (/^Task(Create|Update|Get|List|Output|Stop)$/.test(name) || name.startsWith('Todo')) return 'Task Mgmt';
+  if (/^(Read|Write|Edit|Glob)$/.test(name)) return 'File Ops';
+  if (name === 'Grep') return 'Search';
+  if (name === 'Bash') return 'Execution';
+  if (/^Web(Fetch|Search)$/.test(name)) return 'Web';
+  if (name.startsWith('mcp__')) {
+    const server = name.split('__')[1] ?? 'unknown';
+    return `MCP: ${server}`;
+  }
+  if (name === 'Skill') return 'Skill';
+  return 'Other';
+}
+
+// Largest-remainder integer allocation: results sum exactly to total.
+// Ties broken by key ascending for determinism.
+export function allocateByWeight(
+  total: number,
+  entries: { key: string; weight: number }[],
+): Map<string, number> {
+  const out = new Map<string, number>();
+  const W = entries.reduce((a, e) => a + Math.max(0, e.weight), 0);
+  if (W <= 0 || total <= 0) {
+    for (const e of entries) out.set(e.key, 0);
+    return out;
+  }
+  let allocated = 0;
+  const rems: { key: string; rem: number }[] = [];
+  for (const e of entries) {
+    const exact = (total * Math.max(0, e.weight)) / W;
+    const base = Math.floor(exact);
+    out.set(e.key, base);
+    allocated += base;
+    rems.push({ key: e.key, rem: exact - base });
+  }
+  rems.sort((a, b) => b.rem - a.rem || (a.key < b.key ? -1 : 1));
+  for (let i = 0; i < total - allocated; i++) {
+    const k = rems[i % rems.length].key;
+    out.set(k, (out.get(k) ?? 0) + 1);
+  }
+  return out;
+}
+
+export interface ToolLeaf { name: string; tokens: number; calls: number }
+export interface ToolCategory { label: string; tokens: number; tools: ToolLeaf[] }
+
+// Allocate the estimated Tool-calls total down category → tool by the stored
+// content weights, so children sum to their parent at both levels.
+export function toolTree(rows: CtxToolRow[], toolcallsTotal: number | null): ToolCategory[] {
+  if (toolcallsTotal == null || rows.length === 0) return [];
+  const byCat = new Map<string, CtxToolRow[]>();
+  for (const r of rows) {
+    const cat = categorizeTool(r.name);
+    const arr = byCat.get(cat);
+    if (arr) arr.push(r);
+    else byCat.set(cat, [r]);
+  }
+  const catWeights = [...byCat.entries()].map(([label, rs]) => ({
+    key: label,
+    weight: rs.reduce((a, r) => a + r.estTokens, 0),
+  }));
+  const catTokens = allocateByWeight(toolcallsTotal, catWeights);
+  const tree = [...byCat.entries()].map(([label, rs]) => {
+    const tokens = catTokens.get(label) ?? 0;
+    const leafTokens = allocateByWeight(
+      tokens,
+      rs.map((r) => ({ key: r.name, weight: r.estTokens })),
+    );
+    const tools = rs
+      .map((r) => ({ name: r.name, tokens: leafTokens.get(r.name) ?? 0, calls: r.calls }))
+      .sort((a, b) => b.tokens - a.tokens);
+    return { label, tokens, tools };
+  });
+  return tree.sort((a, b) => b.tokens - a.tokens);
+}
+
+// ---- exact usage buckets ----
+
+export interface BucketView {
+  total: number;
+  messages: number;
+  history: number;
+  newInput: number;
+  response: number;
+  system: number | null;
+  reasoning: number | null;
+}
+
+export function bucketView(b: CtxBuckets | null): BucketView | null {
+  if (!b) return null;
+  const messages = b.history + b.newInput + b.response;
+  return {
+    total: messages + (b.system ?? 0) + (b.reasoning ?? 0),
+    messages,
+    history: b.history,
+    newInput: b.newInput,
+    response: b.response,
+    system: b.system,
+    reasoning: b.reasoning,
+  };
+}
+
+// ---- Bash exec facets (spec 2026-07-10-bash-exec-drilldown) ----
+
+export interface ExecFacetRow { key: string; tokens: number; calls: number }
+export interface ExecFacets {
+  byType: ExecFacetRow[];
+  byExecutable: ExecFacetRow[];
+  byCommand: ExecFacetRow[];
+}
+
+function facetOf(rows: CtxExecRow[], keyOf: (r: CtxExecRow) => string, total: number): ExecFacetRow[] {
+  const groups = new Map<string, { weight: number; calls: number }>();
+  for (const r of rows) {
+    const k = keyOf(r);
+    const g = groups.get(k) ?? { weight: 0, calls: 0 };
+    g.weight += r.estTokens;
+    g.calls += r.calls;
+    groups.set(k, g);
+  }
+  const alloc = allocateByWeight(
+    total,
+    [...groups.entries()].map(([key, g]) => ({ key, weight: g.weight })),
+  );
+  return [...groups.entries()]
+    .map(([key, g]) => ({ key, tokens: alloc.get(key) ?? 0, calls: g.calls }))
+    .sort((a, b) => b.tokens - a.tokens);
+}
+
+// Three parallel views over the same rows; each facet's tokens sum exactly
+// to the Bash leaf's allocated total.
+export function execFacets(rows: CtxExecRow[], bashTotal: number | null): ExecFacets | null {
+  if (bashTotal == null || rows.length === 0) return null;
+  return {
+    byType: facetOf(rows, (r) => r.kind, bashTotal),
+    byExecutable: facetOf(rows, (r) => r.exe, bashTotal),
+    byCommand: facetOf(rows, (r) => r.cmd, bashTotal),
+  };
 }

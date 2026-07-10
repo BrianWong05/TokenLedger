@@ -496,6 +496,151 @@ pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<Ctx
     rows.collect()
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtxBuckets {
+    pub source: String,
+    pub history: i64,          // cache_read + non-first cache writes
+    pub new_input: i64,        // fresh input_tokens
+    pub system: Option<i64>,   // first cache write per session; NULL when unknowable
+    pub response: i64,         // max(0, output − reasoning)
+    pub reasoning: Option<i64>,
+}
+
+// Exact usage-field buckets (spec 2026-07-10-context-drilldown). The window
+// runs over the WHOLE table so a session straddling the range still knows
+// which cache-write was its first; range/tool/model/project filters apply
+// OUTSIDE the window. A first-cw event outside the range means in-range
+// writes count as history — conservative, never inflates System.
+pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBuckets>> {
+    let (where_sql, params) = build_where(f);
+    let sql = format!(
+        "WITH ranked AS ( \
+           SELECT source, model, project, timestamp, session_id, \
+                  input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, \
+                  cache_write_5m_tokens + cache_write_1h_tokens AS cw, \
+                  ROW_NUMBER() OVER ( \
+                    PARTITION BY source, session_id, \
+                      CASE WHEN cache_write_5m_tokens + cache_write_1h_tokens > 0 THEN 1 ELSE 0 END \
+                    ORDER BY timestamp, dedup_key) AS cw_rank \
+           FROM events) \
+         SELECT source, \
+           SUM(cache_read_tokens) + SUM(CASE WHEN cw > 0 AND NOT (cw_rank = 1 AND session_id IS NOT NULL AND source != 'hermes') THEN cw ELSE 0 END), \
+           SUM(input_tokens), \
+           SUM(CASE WHEN cw > 0 AND cw_rank = 1 AND session_id IS NOT NULL AND source != 'hermes' THEN cw END), \
+           SUM(output_tokens), \
+           SUM(reasoning_tokens) \
+         FROM ranked {where_sql} GROUP BY source ORDER BY source"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok((
+            r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?,
+            r.get::<_, Option<i64>>(3)?, r.get::<_, i64>(4)?, r.get::<_, Option<i64>>(5)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (source, history, new_input, system, output, reasoning) = row?;
+        out.push(CtxBuckets {
+            source,
+            history,
+            new_input,
+            system,
+            response: (output - reasoning.unwrap_or(0)).max(0),
+            reasoning,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtxToolRow {
+    pub source: String,
+    pub name: String,
+    pub est_tokens: i64,
+    pub calls: i64,
+}
+
+// Per-tool weights in range: same day-bounds convention as ctx_resources
+// (end_ts exclusive → day of end_ts − 1s inclusive). Ignores model/project.
+pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxToolRow>> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+    if !f.tools.is_empty() {
+        let ph = f.tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        clauses.push(format!("source IN ({ph})"));
+        for t in &f.tools {
+            params.push(Value::Text(t.clone()));
+        }
+    }
+    if let Some(s) = f.start_ts {
+        clauses.push("day >= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(s));
+    }
+    if let Some(e) = f.end_ts {
+        clauses.push("day <= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(e - 1));
+    }
+    let where_sql = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let sql = format!(
+        "SELECT source, name, SUM(est_tokens), SUM(calls) FROM ctx_tools {where_sql} \
+         GROUP BY source, name ORDER BY SUM(est_tokens) DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxToolRow { source: r.get(0)?, name: r.get(1)?, est_tokens: r.get(2)?, calls: r.get(3)? })
+    })?;
+    rows.collect()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CtxExecRow {
+    pub source: String,
+    pub kind: String,
+    pub exe: String,
+    pub cmd: String,
+    pub est_tokens: i64,
+    pub calls: i64,
+}
+
+// Bash command facets in range: same tool + day-bounds convention as
+// ctx_tools/ctx_resources. Ignores model/project (table has neither).
+pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Value> = Vec::new();
+    if !f.tools.is_empty() {
+        let ph = f.tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        clauses.push(format!("source IN ({ph})"));
+        for t in &f.tools {
+            params.push(Value::Text(t.clone()));
+        }
+    }
+    if let Some(s) = f.start_ts {
+        clauses.push("day >= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(s));
+    }
+    if let Some(e) = f.end_ts {
+        clauses.push("day <= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
+        params.push(Value::Integer(e - 1));
+    }
+    let where_sql = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let sql = format!(
+        "SELECT source, kind, exe, cmd, SUM(est_tokens), SUM(calls) FROM ctx_exec {where_sql} \
+         GROUP BY source, kind, exe, cmd ORDER BY SUM(est_tokens) DESC"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxExecRow {
+            source: r.get(0)?, kind: r.get(1)?, exe: r.get(2)?, cmd: r.get(3)?,
+            est_tokens: r.get(4)?, calls: r.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -871,5 +1016,102 @@ mod tests {
         // Tool filter scopes by source.
         let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
         assert!(ctx_resources(&conn, &f2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ctx_buckets_exact_partition_and_first_cw() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // Session sa: first cw event (day1) then a later cw event (day2).
+        let mut a = ev("a", "claude", DAY1_TS, "m", None, 1, 100, 50, 0, 900, 0);
+        a.session_id = Some("sa".to_string());
+        let mut b = ev("b", "claude", DAY2_TS, "m", None, 1, 200, 30, 1500, 250, 0);
+        b.session_id = Some("sa".to_string());
+        // NULL session id: cache writes count as history, never system.
+        let c = ev("c", "claude", DAY1_TS, "m", None, 1, 10, 5, 0, 40, 0);
+        // Hermes: aggregated rows — all cw is history, system NULL.
+        let mut h = ev("h", "hermes", DAY1_TS, "hermes-local", None, 1, 300, 100, 20, 60, 0);
+        h.session_id = Some("hs".to_string());
+        h.reasoning_tokens = Some(25);
+        db::insert_events(&mut conn, &[a, b, c, h]).unwrap();
+
+        let all = ctx_buckets(&conn, &Filters::default()).unwrap();
+        let cl = all.iter().find(|x| x.source == "claude").unwrap();
+        assert_eq!(cl.system, Some(900), "session sa's FIRST cache write only");
+        assert_eq!(cl.history, 1500 + 250 + 40, "cache_read + later cw + NULL-session cw");
+        assert_eq!(cl.new_input, 310);
+        assert_eq!(cl.reasoning, None, "claude reasoning not reported");
+        assert_eq!(cl.response, 85);
+        // Exact partition vs total usage.
+        let total = 100 + 50 + 900 + 200 + 30 + 1500 + 250 + 10 + 5 + 40;
+        assert_eq!(cl.history + cl.new_input + cl.system.unwrap_or(0) + cl.response
+            + cl.reasoning.unwrap_or(0), total);
+
+        let hm = all.iter().find(|x| x.source == "hermes").unwrap();
+        assert_eq!(hm.system, None, "hermes aggregates: first-vs-rest unknowable");
+        assert_eq!(hm.history, 20 + 60, "all hermes cw is history");
+        assert_eq!(hm.reasoning, Some(25));
+        assert_eq!(hm.response, 75);
+
+        // Range starting day2: session sa's first cw is OUTSIDE the range →
+        // in-range cw counts as history, system is NULL (nothing in range).
+        let f = Filters { start_ts: Some(DAY2_START), ..Filters::default() };
+        let d2 = ctx_buckets(&conn, &f).unwrap();
+        let cl2 = d2.iter().find(|x| x.source == "claude").unwrap();
+        assert_eq!(cl2.system, None);
+        assert_eq!(cl2.history, 1500 + 250);
+    }
+
+    #[test]
+    fn ctx_tools_sums_by_source_and_range() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::add_ctx_tool_rows(&mut conn, "claude", "f1", &[
+            ("Bash".to_string(), 100, 2, DAY1_TS),
+            ("Bash".to_string(), 50, 1, DAY2_TS),
+            ("Read".to_string(), 30, 1, DAY1_TS),
+        ]).unwrap();
+        db::add_ctx_tool_rows(&mut conn, "codex", "f2", &[
+            ("shell".to_string(), 70, 1, DAY1_TS),
+        ]).unwrap();
+
+        let all = ctx_tools(&conn, &Filters::default()).unwrap();
+        let bash = all.iter().find(|r| r.name == "Bash").unwrap();
+        assert_eq!((bash.est_tokens, bash.calls), (150, 3));
+
+        let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
+        let d1 = ctx_tools(&conn, &f).unwrap();
+        assert_eq!(d1.iter().find(|r| r.name == "Bash").unwrap().est_tokens, 100);
+
+        let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
+        let cx = ctx_tools(&conn, &f2).unwrap();
+        assert_eq!(cx.len(), 1);
+        assert_eq!(cx[0].name, "shell");
+    }
+
+    #[test]
+    fn ctx_exec_sums_by_key_and_range() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::add_ctx_exec_rows(&mut conn, "claude", "f1", &[
+            ("git_local".into(), "git".into(), "git add".into(), 100, 1, DAY1_TS),
+            ("git_local".into(), "git".into(), "git add".into(), 50, 1, DAY2_TS),
+            ("test".into(), "npm".into(), "npm test".into(), 30, 1, DAY1_TS),
+        ]).unwrap();
+
+        let all = ctx_exec(&conn, &Filters::default()).unwrap();
+        let ga = all.iter().find(|r| r.cmd == "git add").unwrap();
+        assert_eq!((ga.est_tokens, ga.calls), (150, 2), "summed across days");
+        assert_eq!(ga.kind, "git_local");
+
+        let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
+        let d1 = ctx_exec(&conn, &f).unwrap();
+        assert_eq!(d1.iter().find(|r| r.cmd == "git add").unwrap().est_tokens, 100);
+
+        let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
+        assert!(ctx_exec(&conn, &f2).unwrap().is_empty());
     }
 }

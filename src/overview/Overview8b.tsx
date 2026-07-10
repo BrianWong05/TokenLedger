@@ -6,8 +6,8 @@ import ContextBreakdown from './ContextBreakdown';
 import TokenBreakdown from './TokenBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
-import { scan, fetchSeries, fetchSummary, fetchBreakdown, fetchCtxResources } from '../api';
-import type { BreakdownRow, SeriesPoint, Summary, CtxResourceCount } from '../types';
+import { scan, fetchSeries, fetchSummary, fetchBreakdown, fetchCtxResources, fetchCtxBuckets, fetchCtxTools, fetchCtxExec } from '../api';
+import type { BreakdownRow, SeriesPoint, Summary, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import {
   TOOLS,
   RANGES_8B,
@@ -54,6 +54,9 @@ export default function Overview8b() {
   const [modelRows, setModelRows] = useState<BreakdownRow[]>([]);
   const [projRows, setProjRows] = useState<BreakdownRow[]>([]);
   const [ctxRes, setCtxRes] = useState<CtxResourceCount[]>([]);
+  const [ctxBuckets, setCtxBuckets] = useState<CtxBuckets[]>([]);
+  const [ctxToolRows, setCtxToolRows] = useState<CtxToolRow[]>([]);
+  const [ctxExecRows, setCtxExecRows] = useState<CtxExecRow[]>([]);
   // Scan problems persist until the next scan; fetch problems clear on the
   // next successful fetch cycle — one transient failure must not stick.
   const [scanError, setScanError] = useState<string | null>(null);
@@ -109,6 +112,9 @@ export default function Overview8b() {
         fetchBreakdown('model', filters).then((v) => { if (!stale) setModelRows(v); }),
         fetchBreakdown('project', filters).then((v) => { if (!stale) setProjRows(v); }),
         fetchCtxResources(filters).then((v) => { if (!stale) setCtxRes(v); }),
+        fetchCtxBuckets(filters).then((v) => { if (!stale) setCtxBuckets(v); }),
+        fetchCtxTools(filters).then((v) => { if (!stale) setCtxToolRows(v); }),
+        fetchCtxExec(filters).then((v) => { if (!stale) setCtxExecRows(v); }),
       ];
       if (range === 'day') {
         jobs.push(fetchSeries(filters, 'hour').then((v) => { if (!stale) setHourPoints(v); }));
@@ -270,7 +276,14 @@ export default function Overview8b() {
 
             <div className="tt-b8-col">
               <div>
-                <ContextBreakdown tool={tool} ctx={view.ctx} meta={ctxMeta(ctxRes, sel)} />
+                <ContextBreakdown
+                  tool={tool}
+                  ctx={view.ctx}
+                  buckets={ctxBuckets.find((b) => b.source === sel) ?? null}
+                  toolRows={ctxToolRows.filter((r) => r.source === sel)}
+                  execRows={ctxExecRows.filter((r) => r.source === sel)}
+                  meta={ctxMeta(ctxRes, sel)}
+                />
               </div>
               <div>
                 <TokenBreakdown tool={tool} cats={view.cats} />

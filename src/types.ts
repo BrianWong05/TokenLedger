@@ -70,6 +70,31 @@ export interface CtxResourceCount {
   count: number;
 }
 
+export interface CtxBuckets {
+  source: string;
+  history: number;         // cache reads + non-first cache writes
+  newInput: number;        // fresh input tokens
+  system: number | null;   // first cache write per session; null = unknowable
+  response: number;        // output − reasoning
+  reasoning: number | null;
+}
+
+export interface CtxToolRow {
+  source: string;
+  name: string;
+  estTokens: number; // allocation weight (estimated content), not display value
+  calls: number;
+}
+
+export interface CtxExecRow {
+  source: string;
+  kind: string;   // classified command kind (git_local, test, compound, …)
+  exe: string;    // executable basename
+  cmd: string;    // signature: executable + first subcommand
+  estTokens: number; // allocation weight, not a display value
+  calls: number;
+}
+
 export interface BreakdownRow {
   key: string;
   inputTokens: number;

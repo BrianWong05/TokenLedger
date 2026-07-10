@@ -128,4 +128,67 @@ fn e2e_real_logs() {
     println!("  total_tokens        {}", claude_summary.total_tokens);
     println!("  requests            {}", claude_summary.requests);
     println!("  cost                {:?}", claude_summary.cost);
+
+    // Exact-bucket partition (spec 2026-07-10-context-drilldown): per source,
+    // history + new_input + system + response + reasoning == total usage.
+    let buckets = queries::ctx_buckets(&conn, &all).unwrap();
+    for b in &buckets {
+        let (tot_in, tot_out, tot_cr, tot_cw): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
+                 SUM(cache_write_5m_tokens + cache_write_1h_tokens) FROM events WHERE source = ?1",
+                [&b.source],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        let total = tot_in + tot_out + tot_cr + tot_cw;
+        let sum = b.history + b.new_input + b.system.unwrap_or(0) + b.response
+            + b.reasoning.unwrap_or(0);
+        assert_eq!(sum, total, "bucket partition exact for {}", b.source);
+        println!(
+            "  {:<8} history={} new_input={} system={:?} response={} reasoning={:?}",
+            b.source, b.history, b.new_input, b.system, b.response, b.reasoning
+        );
+    }
+
+    // Tool weights: print top rows per source for an eyeball check.
+    let tools = queries::ctx_tools(&conn, &all).unwrap();
+    println!("=== top ctx_tools ===");
+    for t in tools.iter().take(12) {
+        println!("  {:<8} {:<28} est={:<10} calls={}", t.source, t.name, t.est_tokens, t.calls);
+    }
+    assert!(
+        tools.iter().any(|t| t.source == "claude" && t.est_tokens > 0),
+        "expected claude tool weights on real logs"
+    );
+
+    // Bash exec facets (spec 2026-07-10-bash-exec-drilldown): rows must exist
+    // for claude on real logs; print the top kinds and executables.
+    let exec = queries::ctx_exec(&conn, &all).unwrap();
+    assert!(
+        exec.iter().any(|r| r.source == "claude" && r.est_tokens > 0),
+        "expected claude ctx_exec rows on real logs"
+    );
+    let mut by_kind: std::collections::HashMap<&str, (i64, i64)> = std::collections::HashMap::new();
+    let mut by_exe: std::collections::HashMap<&str, (i64, i64)> = std::collections::HashMap::new();
+    for r in exec.iter().filter(|r| r.source == "claude") {
+        let k = by_kind.entry(r.kind.as_str()).or_insert((0, 0));
+        k.0 += r.est_tokens;
+        k.1 += r.calls;
+        let e = by_exe.entry(r.exe.as_str()).or_insert((0, 0));
+        e.0 += r.est_tokens;
+        e.1 += r.calls;
+    }
+    let mut kinds: Vec<_> = by_kind.into_iter().collect();
+    kinds.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    println!("=== top exec kinds (claude) ===");
+    for (k, (est, calls)) in kinds.iter().take(8) {
+        println!("  {:<16} est={:<12} calls={}", k, est, calls);
+    }
+    let mut exes: Vec<_> = by_exe.into_iter().collect();
+    exes.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    println!("=== top exec executables (claude) ===");
+    for (e, (est, calls)) in exes.iter().take(8) {
+        println!("  {:<16} est={:<12} calls={}", e, est, calls);
+    }
 }

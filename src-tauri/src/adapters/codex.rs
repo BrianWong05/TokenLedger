@@ -60,6 +60,11 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
         }
     }
 
+    // Codex re-parses changed files in full: replace this file's tool rows.
+    db::clear_ctx_tools_for_file(conn, &path_str).map_err(|e| e.to_string())?;
+    let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
+    let mut call_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file_stem = path
         .file_stem()
@@ -126,6 +131,23 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                     Some("function_call") | Some("function_call_output") => {
                         msg_est += est(bytes); // subset rule: tool ⊆ messages
                         tool_est += est(bytes);
+                        let ts = v.get("timestamp").and_then(|t| t.as_str()).and_then(iso_to_epoch).unwrap_or(0);
+                        let is_call = payload.get("type").and_then(|t| t.as_str()) == Some("function_call");
+                        let name = if is_call {
+                            let n = payload.get("name").and_then(|n| n.as_str()).unwrap_or("unknown").to_string();
+                            if let Some(id) = payload.get("call_id").and_then(|c| c.as_str()) {
+                                call_names.insert(id.to_string(), n.clone());
+                            }
+                            n
+                        } else {
+                            payload
+                                .get("call_id")
+                                .and_then(|c| c.as_str())
+                                .and_then(|id| call_names.get(id))
+                                .cloned()
+                                .unwrap_or_else(|| "unknown".to_string())
+                        };
+                        tool_rows.push((name, est(bytes), if is_call { 1 } else { 0 }, ts));
                     }
                     Some("reasoning") => reas_est += est(bytes),
                     _ => {}
@@ -232,6 +254,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     }
 
     let inserted = db::insert_events(conn, &events).map_err(|e| e.to_string())?;
+    db::add_ctx_tool_rows(conn, "codex", &path_str, &tool_rows).map_err(|e| e.to_string())?;
     db::set_file_state(
         conn,
         &path_str,
@@ -427,5 +450,36 @@ mod tests {
             .query_row("SELECT ctx_reasoning FROM events WHERE source='codex'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(cr, 0, "user turn strips prior reasoning from context");
+    }
+
+    #[test]
+    fn codex_populates_ctx_tools_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-05-03-tools.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"cccccccccccccccccccc"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        scan_codex(&mut conn, &root);
+        let (est1, calls1): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert!(est1 > 0);
+        assert_eq!(calls1, 1);
+
+        // Touch the file (size/mtime change) → full re-parse must REPLACE rows.
+        let fp = root.join("rollout-2026-05-03-tools.jsonl");
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&fp).unwrap();
+            writeln!(f, r#"{{"type":"event_msg","timestamp":"2026-05-03T09:00:03.000Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":150,"cached_input_tokens":0,"output_tokens":20,"total_tokens":170}}}}}}}}"#).unwrap();
+        }
+        scan_codex(&mut conn, &root);
+        let (est2, calls2): (i64, i64) = conn.query_row(
+            "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
+            [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((est2, calls2), (est1, calls1), "re-parse replaced, not doubled");
     }
 }

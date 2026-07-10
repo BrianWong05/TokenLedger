@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { SeriesPoint, BreakdownRow, CtxResourceCount } from '../types';
+import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
 import {
   seriesToDays,
   windowOf,
@@ -13,6 +13,11 @@ import {
   ctxTotals,
   ctxMeta,
   rangeToFilters,
+  categorizeTool,
+  allocateByWeight,
+  toolTree,
+  bucketView,
+  execFacets,
 } from './data';
 
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
@@ -253,5 +258,93 @@ describe('ctxMeta', () => {
   it('omits zero kinds and scopes to the tool', () => {
     expect(ctxMeta(res, 'codex')).toBe('5 MCP servers');
     expect(ctxMeta(res, 'hermes')).toBe('');
+  });
+});
+
+describe('categorizeTool', () => {
+  it('maps the known names', () => {
+    expect(categorizeTool('Read')).toBe('File Ops');
+    expect(categorizeTool('Edit')).toBe('File Ops');
+    expect(categorizeTool('Grep')).toBe('Search');
+    expect(categorizeTool('Bash')).toBe('Execution');
+    expect(categorizeTool('TaskUpdate')).toBe('Task Mgmt');
+    expect(categorizeTool('TodoWrite')).toBe('Task Mgmt');
+    expect(categorizeTool('Task')).toBe('Agent');
+    expect(categorizeTool('Agent')).toBe('Agent');
+    expect(categorizeTool('WebFetch')).toBe('Web');
+    expect(categorizeTool('mcp__pencil__batch_get')).toBe('MCP: pencil');
+    expect(categorizeTool('Skill')).toBe('Skill');
+    expect(categorizeTool('SomethingNew')).toBe('Other');
+  });
+});
+
+describe('allocateByWeight', () => {
+  it('children sum exactly to total (largest remainder)', () => {
+    const out = allocateByWeight(100, [
+      { key: 'a', weight: 1 }, { key: 'b', weight: 1 }, { key: 'c', weight: 1 },
+    ]);
+    const vals = [...out.values()];
+    expect(vals.reduce((x, y) => x + y, 0)).toBe(100);
+    expect(Math.max(...vals) - Math.min(...vals)).toBeLessThanOrEqual(1);
+  });
+  it('zero weights yield zeros', () => {
+    const out = allocateByWeight(50, [{ key: 'a', weight: 0 }]);
+    expect(out.get('a')).toBe(0);
+  });
+});
+
+describe('toolTree', () => {
+  const rows: CtxToolRow[] = [
+    { source: 'claude', name: 'Bash', estTokens: 300, calls: 5 },
+    { source: 'claude', name: 'Read', estTokens: 150, calls: 3 },
+    { source: 'claude', name: 'Edit', estTokens: 50, calls: 2 },
+  ];
+  it('allocates parent total down two summing levels', () => {
+    const tree = toolTree(rows, 1000);
+    expect(tree.reduce((a, c) => a + c.tokens, 0)).toBe(1000);
+    for (const cat of tree) {
+      expect(cat.tools.reduce((a, t) => a + t.tokens, 0)).toBe(cat.tokens);
+    }
+    const exec = tree.find((c) => c.label === 'Execution')!;
+    expect(exec.tokens).toBe(600); // 300/500 of 1000
+  });
+  it('null total or no rows → empty tree', () => {
+    expect(toolTree(rows, null)).toEqual([]);
+    expect(toolTree([], 1000)).toEqual([]);
+  });
+});
+
+describe('bucketView', () => {
+  it('derives messages group and total', () => {
+    const v = bucketView({ source: 'claude', history: 800, newInput: 100, system: 50, response: 40, reasoning: null })!;
+    expect(v.messages).toBe(940);
+    expect(v.total).toBe(990);
+    expect(v.reasoning).toBeNull();
+  });
+  it('null in → null out', () => {
+    expect(bucketView(null)).toBeNull();
+  });
+});
+
+describe('execFacets', () => {
+  const rows: CtxExecRow[] = [
+    { source: 'claude', kind: 'git_local', exe: 'git', cmd: 'git add', estTokens: 300, calls: 5 },
+    { source: 'claude', kind: 'git_local', exe: 'git', cmd: 'git commit', estTokens: 100, calls: 2 },
+    { source: 'claude', kind: 'test', exe: 'npm', cmd: 'npm test', estTokens: 100, calls: 3 },
+  ];
+  it('groups three ways and allocates the bash total exactly per facet', () => {
+    const f = execFacets(rows, 1000)!;
+    for (const facet of [f.byType, f.byExecutable, f.byCommand]) {
+      expect(facet.reduce((a, r) => a + r.tokens, 0)).toBe(1000);
+    }
+    expect(f.byType.find((r) => r.key === 'git_local')!.tokens).toBe(800); // 400/500
+    expect(f.byType.find((r) => r.key === 'git_local')!.calls).toBe(7);
+    expect(f.byExecutable.find((r) => r.key === 'git')!.tokens).toBe(800);
+    expect(f.byCommand.find((r) => r.key === 'git add')!.tokens).toBe(600);
+    expect(f.byCommand[0].key).toBe('git add'); // sorted desc
+  });
+  it('null total or no rows → null', () => {
+    expect(execFacets(rows, null)).toBeNull();
+    expect(execFacets([], 1000)).toBeNull();
   });
 });
