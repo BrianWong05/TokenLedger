@@ -6,7 +6,6 @@ import {
   scheduleAutoRefresh,
   createRefreshGate,
   STORAGE_KEY,
-  type RefreshSec,
 } from './useAutoRefresh';
 
 function memoryStorage(initial: Record<string, string> = {}) {
