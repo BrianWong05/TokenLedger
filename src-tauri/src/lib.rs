@@ -21,7 +21,7 @@ use rusqlite::Connection;
 use tauri::{Emitter, Manager, State};
 
 use pricing::OverrideRates;
-use queries::{BreakdownRow, CtxResourceCount, Filters, SeriesPoint, Summary, TrendPoint};
+use queries::{BreakdownRow, CtxBuckets, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
 use scan::{run_scan, SourceRoots};
 use types::ScanStatus;
 
@@ -89,6 +89,24 @@ fn ctx_resources(
 }
 
 #[tauri::command]
+fn ctx_buckets(
+    state: State<'_, AppState>,
+    filters: Filters,
+) -> Result<Vec<CtxBuckets>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::ctx_buckets(&db, &filters).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ctx_tools(
+    state: State<'_, AppState>,
+    filters: Filters,
+) -> Result<Vec<CtxToolRow>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::ctx_tools(&db, &filters).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn set_price_override(
     state: State<'_, AppState>,
     model: String,
@@ -141,6 +159,8 @@ pub fn run() {
             series,
             breakdown,
             ctx_resources,
+            ctx_buckets,
+            ctx_tools,
             set_price_override,
             delete_price_override
         ])

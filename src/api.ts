@@ -6,6 +6,8 @@ import type {
   SeriesPoint,
   BreakdownRow,
   CtxResourceCount,
+  CtxBuckets,
+  CtxToolRow,
   Filters,
   OverrideRates,
 } from './types';
@@ -41,6 +43,14 @@ export function fetchBreakdown(
 
 export function fetchCtxResources(filters: Filters): Promise<CtxResourceCount[]> {
   return invoke('ctx_resources', { filters });
+}
+
+export function fetchCtxBuckets(filters: Filters): Promise<CtxBuckets[]> {
+  return invoke('ctx_buckets', { filters });
+}
+
+export function fetchCtxTools(filters: Filters): Promise<CtxToolRow[]> {
+  return invoke('ctx_tools', { filters });
 }
 
 export function setPriceOverride(
