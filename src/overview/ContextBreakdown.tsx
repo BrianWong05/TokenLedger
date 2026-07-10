@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { bucketView, toolTree, type CtxTotals, type ToolMeta } from './data';
-import type { CtxBuckets, CtxToolRow } from '../types';
+import { bucketView, toolTree, execFacets, type CtxTotals, type ToolMeta, type ExecFacets } from './data';
+import type { CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
 
 const EST_TIP = 'estimated share of billed context (content bytes ÷ 4)';
@@ -15,14 +15,17 @@ export default function ContextBreakdown({
   buckets,
   toolRows,
   meta,
+  execRows,
 }: {
   tool: ToolMeta;
   ctx: CtxTotals;
   buckets: CtxBuckets | null;
   toolRows: CtxToolRow[];
   meta: string;
+  execRows: CtxExecRow[];
 }) {
   const [open, setOpen] = useState<Set<string>>(new Set());
+  const [execTab, setExecTab] = useState<'type' | 'exe' | 'cmd'>('type');
   const toggle = (k: string) =>
     setOpen((prev) => {
       const next = new Set(prev);
@@ -118,13 +121,22 @@ export default function ContextBreakdown({
               expandable: cat.tools.length > 0,
             })}
             {open.has(`cat:${cat.label}`) &&
-              cat.tools.map((t) =>
-                row(`tool:${t.name}`, t.name, t.tokens, {
-                  muted: true,
-                  indent: 2,
-                  info: `${t.calls} calls`,
-                }),
-              )}
+              cat.tools.map((t) => {
+                const facets = t.name === 'Bash' ? execFacets(execRows, t.tokens) : null;
+                return (
+                  <div key={`leaf:${t.name}`}>
+                    {row(`tool:${t.name}`, t.name, t.tokens, {
+                      muted: true,
+                      indent: 2,
+                      info: `${t.calls} calls`,
+                      expandable: !!facets,
+                    })}
+                    {facets && open.has(`tool:${t.name}`) && (
+                      <ExecTable facets={facets} tab={execTab} onTab={setExecTab} />
+                    )}
+                  </div>
+                );
+              })}
           </div>
         ))}
       {row('agents', 'Custom agents', ctx.agents, { muted: true, info: EST_TIP })}
@@ -133,5 +145,57 @@ export default function ContextBreakdown({
 
       {meta && <div className="tt-ctx-meta">{meta}</div>}
     </>
+  );
+}
+
+const EXEC_TABS = [
+  { key: 'type', label: 'By type' },
+  { key: 'exe', label: 'Executable' },
+  { key: 'cmd', label: 'Command' },
+] as const;
+const EXEC_TOP_N = 20;
+
+function ExecTable({
+  facets,
+  tab,
+  onTab,
+}: {
+  facets: ExecFacets;
+  tab: 'type' | 'exe' | 'cmd';
+  onTab: (t: 'type' | 'exe' | 'cmd') => void;
+}) {
+  const rows =
+    tab === 'type' ? facets.byType : tab === 'exe' ? facets.byExecutable : facets.byCommand;
+  const shown = rows.slice(0, EXEC_TOP_N);
+  const hidden = rows.length - shown.length;
+  return (
+    <div className="tt-exec">
+      <div className="tt-exec-tabs">
+        {EXEC_TABS.map((t) => (
+          <button
+            key={t.key}
+            className={t.key === tab ? 'active' : ''}
+            onClick={() => onTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="tt-exec-table">
+        <div className="hd">
+          <span>Type</span>
+          <span>Calls</span>
+          <span>Total</span>
+        </div>
+        {shown.map((r) => (
+          <div className="tr" key={r.key}>
+            <span className="k" title={r.key}>{r.key}</span>
+            <span>{r.calls}</span>
+            <span>{fmtTok(r.tokens)}</span>
+          </div>
+        ))}
+        {hidden > 0 && <div className="more">+{hidden} more</div>}
+      </div>
+    </div>
   );
 }

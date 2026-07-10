@@ -257,6 +257,7 @@ export function mockCtxTotals(tool: ToolKey) {
       { source: tool, name: 'Bash', estTokens: 300, calls: 12 },
       { source: tool, name: 'Read', estTokens: 200, calls: 9 },
     ],
+    execRows: [],
     meta: c.meta,
   };
 }

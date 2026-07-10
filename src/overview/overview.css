@@ -606,6 +606,24 @@
   margin-top: 12px;
 }
 
+/* Bash exec facet tabs + table */
+.tt-exec { margin: 4px 4px 8px 44px; }
+.tt-exec-tabs { display: flex; gap: 4px; margin-bottom: 6px; }
+.tt-exec-tabs button {
+  background: none; border: 1px solid rgba(255,255,255,.08); border-radius: 6px;
+  color: var(--tt-mut2); font-size: 10.5px; padding: 2px 8px; cursor: pointer;
+}
+.tt-exec-tabs button.active { color: var(--tt-fg); background: rgba(255,255,255,.06); }
+.tt-exec-table .hd, .tt-exec-table .tr {
+  display: grid; grid-template-columns: 1fr 52px 72px; gap: 8px;
+  font-size: 11px; padding: 2px 0;
+}
+.tt-exec-table .hd { color: var(--tt-mut3); text-transform: uppercase; font-size: 9.5px; }
+.tt-exec-table .tr .k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tt-exec-table .tr span:nth-child(2), .tt-exec-table .tr span:nth-child(3),
+.tt-exec-table .hd span:nth-child(2), .tt-exec-table .hd span:nth-child(3) { text-align: right; }
+.tt-exec-table .more { color: var(--tt-mut3); font-size: 10.5px; padding: 2px 0; }
+
 /* models tab */
 .tt-model {
   padding: 9px 0;
