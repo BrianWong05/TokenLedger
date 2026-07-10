@@ -161,4 +161,34 @@ fn e2e_real_logs() {
         tools.iter().any(|t| t.source == "claude" && t.est_tokens > 0),
         "expected claude tool weights on real logs"
     );
+
+    // Bash exec facets (spec 2026-07-10-bash-exec-drilldown): rows must exist
+    // for claude on real logs; print the top kinds and executables.
+    let exec = queries::ctx_exec(&conn, &all).unwrap();
+    assert!(
+        exec.iter().any(|r| r.source == "claude" && r.est_tokens > 0),
+        "expected claude ctx_exec rows on real logs"
+    );
+    let mut by_kind: std::collections::HashMap<&str, (i64, i64)> = std::collections::HashMap::new();
+    let mut by_exe: std::collections::HashMap<&str, (i64, i64)> = std::collections::HashMap::new();
+    for r in exec.iter().filter(|r| r.source == "claude") {
+        let k = by_kind.entry(r.kind.as_str()).or_insert((0, 0));
+        k.0 += r.est_tokens;
+        k.1 += r.calls;
+        let e = by_exe.entry(r.exe.as_str()).or_insert((0, 0));
+        e.0 += r.est_tokens;
+        e.1 += r.calls;
+    }
+    let mut kinds: Vec<_> = by_kind.into_iter().collect();
+    kinds.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    println!("=== top exec kinds (claude) ===");
+    for (k, (est, calls)) in kinds.iter().take(8) {
+        println!("  {:<16} est={:<12} calls={}", k, est, calls);
+    }
+    let mut exes: Vec<_> = by_exe.into_iter().collect();
+    exes.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    println!("=== top exec executables (claude) ===");
+    for (e, (est, calls)) in exes.iter().take(8) {
+        println!("  {:<16} est={:<12} calls={}", e, est, calls);
+    }
 }
