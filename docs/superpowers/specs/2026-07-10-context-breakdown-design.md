@@ -165,6 +165,7 @@ No content in `state.db` rows: all seven NULL.
 - A Claude file resumed mid-session with no `session_ctx` row (state
   cleared out-of-band) gets NULL attribution for the remainder of that
   session rather than guessing from a partial window.
+- A full re-parse from byte 0 always starts a fresh composition (persisted state is only for byte-offset resumes), so clearing scan state self-heals tainted or stale attribution.
 
 ## Testing
 

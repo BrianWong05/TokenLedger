@@ -120,13 +120,19 @@ fn scan_file(
                 path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
             });
         if !comps.contains_key(&sid) {
-            let loaded = claude_ctx::load_composition(conn, &sid)?;
-            let mut c = loaded.unwrap_or_default();
-            // Mid-file resume with no persisted state: composition is unknowable —
-            // taint the session so attribution stays NULL instead of guessing.
-            if loaded.is_none() && start > 0 {
-                c.tainted = true;
-            }
+            // The persisted composition exists only to survive byte-offset resumes.
+            // A full parse from byte 0 rebuilds it from scratch — loading here would
+            // double-count content and make a stale taint permanent.
+            let c = if start > 0 {
+                // Mid-file resume with no persisted state: composition is unknowable —
+                // taint the session so attribution stays NULL instead of guessing.
+                match claude_ctx::load_composition(conn, &sid)? {
+                    Some(c) => c,
+                    None => Composition { tainted: true, ..Default::default() },
+                }
+            } else {
+                Composition::default()
+            };
             comps.insert(sid.clone(), c);
         }
         let comp = comps.get_mut(&sid).expect("inserted above");
@@ -585,6 +591,58 @@ mod tests {
             "SELECT ctx_messages FROM events WHERE dedup_key='claude:m2:r2'",
             [], |r| r.get(0)).unwrap();
         assert_eq!(cm, None, "resumed without state: NULL, never a guess");
+    }
+
+    #[test]
+    fn full_reparse_heals_tainted_session() {
+        // A session tainted by a lost-state resume must recover when its file is
+        // re-parsed from byte 0 (the v3 "clear scanned_files" backfill gesture):
+        // a full parse rebuilds the composition from scratch and must ignore the
+        // persisted tainted row.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("t.db")).unwrap();
+        let root = dir.path().join("projects");
+        let proj = root.join("x");
+        std::fs::create_dir_all(&proj).unwrap();
+        let logp = proj.join("s9.jsonl");
+        let user = r#"{"type":"user","sessionId":"s9","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"hello there friend"}}"#;
+        let call1 = r#"{"type":"assistant","sessionId":"s9","requestId":"r1","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        std::fs::write(&logp, format!("{user}\n{call1}\n")).unwrap();
+        scan_claude(&mut conn, &root);
+
+        // Lose the composition between scans, then append: the resume taints s9.
+        conn.execute("DELETE FROM session_ctx", []).unwrap();
+        let call2 = r#"{"type":"assistant","sessionId":"s9","requestId":"r2","timestamp":"2026-07-01T10:05:00.000Z","cwd":"/p/x","message":{"id":"m2","model":"claude-opus-4-8","usage":{"input_tokens":200,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new().append(true).open(&logp).unwrap();
+            writeln!(f, "{call2}").unwrap();
+        }
+        scan_claude(&mut conn, &root);
+        let cm: Option<i64> = conn
+            .query_row("SELECT ctx_messages FROM events WHERE dedup_key='claude:m2:r2'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cm, None, "precondition: session tainted after lost-state resume");
+
+        // Repair gesture: force a full re-parse (what the v3 migration backfill does).
+        conn.execute("DELETE FROM scanned_files", []).unwrap();
+        scan_claude(&mut conn, &root);
+
+        // The tie-backfill fills the previously-NULL ctx columns from the healed scan.
+        let (cm2, cs2): (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT ctx_messages, ctx_system FROM events WHERE dedup_key='claude:m2:r2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(cm2.is_some(), "full re-parse must heal the tainted session");
+        assert_eq!(cm2.unwrap() + cs2.unwrap_or(0), 200, "partition holds after heal (reasoning 0 here)");
+        // And the persisted composition is no longer tainted.
+        let tainted: i64 = conn
+            .query_row("SELECT tainted FROM session_ctx WHERE session_id='s9'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tainted, 0);
     }
 
     #[test]
