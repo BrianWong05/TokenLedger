@@ -122,7 +122,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version=2 and no-ops.
+    // the committed user_version (currently 3) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
