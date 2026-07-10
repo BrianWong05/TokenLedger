@@ -227,6 +227,28 @@ export function costOf(tokens: number): number {
 }
 export const TOTAL_COST = costOf(TOTAL_TOKENS);
 
+// Adapter: mock fractions reshaped into the real ContextBreakdown props
+// (CtxTotals + meta string), so the unmounted 8a FocusPanel keeps compiling.
+export function mockCtxTotals(tool: ToolKey) {
+  const c = contextBreakdown(tool);
+  const grab = (arr: { key: string; tokens: number }[], key: string) =>
+    arr.find((x) => x.key === key)?.tokens ?? null;
+  return {
+    ctx: {
+      billed: c.input,
+      reused: c.reused,
+      messages: grab([...c.primary], 'messages'),
+      system: grab([...c.primary], 'system'),
+      reasoning: grab([...c.primary], 'reasoning'),
+      toolcalls: grab([...c.secondary], 'toolcalls'),
+      agents: grab([...c.secondary], 'agents'),
+      mcp: grab([...c.secondary], 'mcp'),
+      skills: grab([...c.secondary], 'skills'),
+    },
+    meta: c.meta,
+  };
+}
+
 // 8a adapter: fake ModelBar rows from the static MODELS shares.
 export function mockModelBars(tool: ToolKey, toolTokens: number) {
   return MODELS[tool].map((m) => {

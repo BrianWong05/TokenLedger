@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import './overview.css';
 import Heatmap from './Heatmap';
+import ContextBreakdown from './ContextBreakdown';
 import TokenBreakdown from './TokenBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
-import { scan, fetchSeries, fetchSummary, fetchBreakdown } from '../api';
-import type { BreakdownRow, SeriesPoint, Summary } from '../types';
+import { scan, fetchSeries, fetchSummary, fetchBreakdown, fetchCtxResources } from '../api';
+import type { BreakdownRow, SeriesPoint, Summary, CtxResourceCount } from '../types';
 import {
   TOOLS,
   RANGES_8B,
@@ -25,6 +26,8 @@ import {
   dailyTableRows,
   projectTableRows,
   modelBars,
+  ctxTotals,
+  ctxMeta,
   rangeToFilters,
   type Range8b,
   type ToolKey,
@@ -50,6 +53,7 @@ export default function Overview8b() {
   const [sum, setSum] = useState<Summary | null>(null);
   const [modelRows, setModelRows] = useState<BreakdownRow[]>([]);
   const [projRows, setProjRows] = useState<BreakdownRow[]>([]);
+  const [ctxRes, setCtxRes] = useState<CtxResourceCount[]>([]);
   // Scan problems persist until the next scan; fetch problems clear on the
   // next successful fetch cycle — one transient failure must not stick.
   const [scanError, setScanError] = useState<string | null>(null);
@@ -104,6 +108,7 @@ export default function Overview8b() {
         fetchSummary(filters).then((v) => { if (!stale) setSum(v); }),
         fetchBreakdown('model', filters).then((v) => { if (!stale) setModelRows(v); }),
         fetchBreakdown('project', filters).then((v) => { if (!stale) setProjRows(v); }),
+        fetchCtxResources(filters).then((v) => { if (!stale) setCtxRes(v); }),
       ];
       if (range === 'day') {
         jobs.push(fetchSeries(filters, 'hour').then((v) => { if (!stale) setHourPoints(v); }));
@@ -146,6 +151,7 @@ export default function Overview8b() {
       trend,
       sparks: smallMultiples(trend),
       cats: catTotals(rpts, sel),
+      ctx: ctxTotals(rpts, sel),
       dailyRows: dailyTableRows(rpts),
     };
   }, [allPoints, hourPoints, range, cf, ct, sel, firstIso, lastIso]);
@@ -263,6 +269,9 @@ export default function Overview8b() {
             </div>
 
             <div className="tt-b8-col">
+              <div>
+                <ContextBreakdown tool={tool} ctx={view.ctx} meta={ctxMeta(ctxRes, sel)} />
+              </div>
               <div>
                 <TokenBreakdown tool={tool} cats={view.cats} />
               </div>
