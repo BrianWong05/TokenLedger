@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatTokens, formatCost, fmtTok, fmtPct, fmtIsoDate } from './format';
+import { formatTokens, formatCost, fmtTok, fmtPct, fmtIsoDate, fmtRemain, fmtAgo } from './format';
 
 describe('formatTokens', () => {
   it('zero', () => expect(formatTokens(0)).toBe('0'));
@@ -38,8 +38,6 @@ describe('overview formatters', () => {
     expect(fmtIsoDate('2026-07-04')).toBe('Jul 4');
   });
 });
-
-import { fmtRemain, fmtAgo } from './format';
 
 const NOW = Date.parse('2026-07-12T12:00:00Z');
 const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);

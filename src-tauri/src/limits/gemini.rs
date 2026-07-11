@@ -109,7 +109,15 @@ fn refresh_token(home: &Path, refresh: &str) -> Result<String, FetchErr> {
                     .unwrap_or(0.0);
                 o.insert("expiry_date".into(), json!(now_ms + exp * 1000.0));
             }
-            let _ = std::fs::write(&path, serde_json::to_string_pretty(&creds).unwrap_or_default());
+            // Atomic persist so a kill mid-write can't corrupt oauth_creds.json.
+            let tmp = path.with_extension("json.tmp");
+            if serde_json::to_string_pretty(&creds)
+                .ok()
+                .and_then(|s| std::fs::write(&tmp, s).ok())
+                .is_some()
+            {
+                let _ = std::fs::rename(&tmp, &path);
+            }
         }
     }
     Ok(access.to_string())
