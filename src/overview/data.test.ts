@@ -5,6 +5,8 @@ import {
   windowOf,
   pointsIn,
   bucketsFromPoints,
+  rankModels,
+  modelTools,
   calendarSpan,
   dailyTableRows,
   projectTableRows,
@@ -24,6 +26,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
   return {
     bucket: '2026-07-09',
     source: 'claude',
+    byModel: {},
     inputTokens: 100,
     outputTokens: 50,
     cacheReadTokens: 200,
@@ -145,6 +148,36 @@ describe('bucketsFromPoints', () => {
     expect(bks).toHaveLength(24);
     expect(bks[9].total).toBe(7);
     expect(bks[0].label).toBe('0');
+  });
+  it('merges byModel across sources and keeps the bucket key', () => {
+    const bks = bucketsFromPoints(
+      [pt({ bucket: '2026-07-09', source: 'claude', byModel: { 'claude-fable-5': 300, 'claude-opus-4-8': 80 } }),
+       pt({ bucket: '2026-07-09', source: 'codex', byModel: { 'gpt-5.6-sol': 50 } })],
+      'day',
+    );
+    expect(bks[0].key).toBe('2026-07-09');
+    expect(bks[0].byModel).toEqual({ 'claude-fable-5': 300, 'claude-opus-4-8': 80, 'gpt-5.6-sol': 50 });
+  });
+});
+
+describe('rankModels', () => {
+  it('orders models by window total, descending', () => {
+    const bks = bucketsFromPoints(
+      [pt({ bucket: '2026-07-09', byModel: { a: 10, b: 300 } }),
+       pt({ bucket: '2026-07-10', byModel: { a: 500, c: 40 } })],
+      'day',
+    );
+    expect(rankModels(bks)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('modelTools', () => {
+  it('maps each model to its source', () => {
+    const map = modelTools([
+      pt({ source: 'claude', byModel: { 'claude-fable-5': 300 } }),
+      pt({ source: 'codex', byModel: { 'gpt-5.6-sol': 50 } }),
+    ]);
+    expect(map).toEqual({ 'claude-fable-5': 'claude', 'gpt-5.6-sol': 'codex' });
   });
 });
 

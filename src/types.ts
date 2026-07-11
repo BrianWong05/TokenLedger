@@ -46,6 +46,7 @@ export interface TrendPoint {
 export interface SeriesPoint {
   bucket: string;                 // 'YYYY-MM-DD' (day) or 'YYYY-MM-DD HH:00' (hour)
   source: string;
+  byModel: Record<string, number>; // model -> total tokens within (bucket, source)
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;

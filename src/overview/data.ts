@@ -20,6 +20,25 @@ export const TOOLS: ToolMeta[] = [
   { key: 'hermes', label: 'Hermes', source: 'Hermes', color: '#f472b6' },
 ];
 
+// Models present in the buckets, ordered by window total descending.
+export function rankModels(bks: Bucket[]): string[] {
+  const totals = new Map<string, number>();
+  for (const b of bks) {
+    for (const [m, v] of Object.entries(b.byModel)) {
+      if (v > 0) totals.set(m, (totals.get(m) ?? 0) + v);
+    }
+  }
+  return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
+}
+
+// Model -> owning tool, from the raw points. Models don't span sources in
+// practice, so last-write-wins is fine.
+export function modelTools(pts: SeriesPoint[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of pts) for (const m of Object.keys(p.byModel)) out[m] = p.source;
+  return out;
+}
+
 // The four canonical token categories (CONTEXT.md).
 export const CATEGORIES = [
   { key: 'input', label: 'Input', color: '#7c5cff' },
@@ -55,8 +74,10 @@ export interface Day {
 }
 
 export interface Bucket {
+  key: string;  // bucket key: iso day, 'YYYY-MM-DD HH:00', week-start iso, or 'YYYY-MM'
   label: string;
   byTool: Record<ToolKey, number>;
+  byModel: Record<string, number>;
   total: number;
 }
 
@@ -256,12 +277,13 @@ export function bucketsFromPoints(
     : per === 'day' ? p.bucket.slice(0, 10)
     : per === 'week' ? weekKey(p.bucket.slice(0, 10))
     : p.bucket.slice(0, 7); // YYYY-MM
-  const map = new Map<string, Record<ToolKey, number>>();
+  const map = new Map<string, { byTool: Record<ToolKey, number>; byModel: Record<string, number> }>();
   for (const p of pts) {
     const k = keyOf(p);
-    const by = map.get(k) ?? emptyByTool();
-    if (p.source in by) by[p.source as ToolKey] += p.totalTokens;
-    map.set(k, by);
+    const g = map.get(k) ?? { byTool: emptyByTool(), byModel: {} };
+    if (p.source in g.byTool) g.byTool[p.source as ToolKey] += p.totalTokens;
+    for (const [m, v] of Object.entries(p.byModel)) g.byModel[m] = (g.byModel[m] ?? 0) + v;
+    map.set(k, g);
   }
   const labelOf = (k: string) =>
     per === 'hour' ? String(parseInt(k.slice(11, 13), 10))
@@ -272,11 +294,13 @@ export function bucketsFromPoints(
   // data-present keys otherwise.
   const keys = fromIso && toIso ? allKeys(per, fromIso, toIso) : [...map.keys()].sort();
   const out = keys.map((k) => {
-    const by = map.get(k) ?? emptyByTool();
+    const g = map.get(k) ?? { byTool: emptyByTool(), byModel: {} };
     return {
+      key: k,
       label: labelOf(k),
-      byTool: by,
-      total: (Object.values(by) as number[]).reduce((a, b) => a + b, 0),
+      byTool: g.byTool,
+      byModel: g.byModel,
+      total: (Object.values(g.byTool) as number[]).reduce((a, b) => a + b, 0),
     };
   });
   if (per === 'week') out.forEach((b, i) => (b.label = 'W' + (i + 1)));
