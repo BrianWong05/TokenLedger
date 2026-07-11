@@ -1,6 +1,6 @@
 // Mirrors the Rust IPC structs (serde rename_all = "camelCase"). Do not rename.
 
-export type Tool = 'claude' | 'codex' | 'gemini' | 'hermes';
+export type Tool = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity';
 
 export type RangePreset = 'today' | '7d' | '30d' | 'all';
 

@@ -9,9 +9,10 @@ precise meaning of each domain term, independent of how the code implements it.
 
 **Usage Record**:
 The token usage attributed to one unit of billable work from a Source. The
-"unit of work" is one API call/response for Claude, Codex, and Gemini, but one
-whole Session for Hermes — so a Usage Record is not synonymous with one API
-request. (Implemented as `UsageEvent`.)
+"unit of work" is one API call/response for Claude, Codex, Gemini, and
+Antigravity, one user Turn for Grok, but one whole Session for Hermes — so a
+Usage Record is not synonymous with one API request. (Implemented as
+`UsageEvent`.)
 _Avoid_: Event, row, entry
 
 **Ledger**:
@@ -25,7 +26,8 @@ _Avoid_: Cache, database, store
 
 **Source**:
 An AI tool whose local logs TokenLedger reads: Claude Code, Codex, Gemini CLI,
-or Hermes.
+Hermes, Grok Build, or Google Antigravity (IDE and CLI conversations count as
+the one Antigravity Source).
 _Avoid_: Provider, tool, agent, integration
 
 **Session**:
@@ -36,9 +38,11 @@ _Avoid_: Conversation, run, thread
 
 **Request**:
 One API call to a Model. The displayed **Requests** figure is the total number
-of API calls — the count of Usage Records for Claude/Codex/Gemini (one call
-each), but the summed `api_call_count` for Hermes (whose one Session Record
-stands for many calls). Requests is a sum of calls, never a row count.
+of API calls — the count of Usage Records for Claude/Codex/Gemini/Antigravity
+(one call each), but the summed `api_call_count` for Hermes (whose one Session
+Record stands for many calls). Grok logs expose Turn boundaries only, so each
+Grok Record counts as one Request even though a Turn spans several calls.
+Requests is a sum of calls, never a row count.
 _Avoid_: Call count, hits
 
 **Project**:
@@ -65,7 +69,8 @@ exactly one bucket.
 Fresh prompt tokens the model read that were not served from cache. Excludes
 cache reads — this exclusion is what makes totals and Cache Hit Rate coherent
 across Sources (Codex and Gemini report cached tokens inside input natively;
-adapters subtract to honour this rule).
+adapters subtract to honour this rule). Grok logs carry only an
+undifferentiated running total, which is booked entirely as Input.
 _Avoid_: Prompt tokens
 
 **Output Tokens**:

@@ -4,7 +4,7 @@
 import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
 
-export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes';
+export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity';
 
 export interface ToolMeta {
   key: ToolKey;
@@ -18,6 +18,8 @@ export const TOOLS: ToolMeta[] = [
   { key: 'codex', label: 'Codex', source: 'Codex', color: '#37c98b' },
   { key: 'gemini', label: 'Gemini', source: 'Gemini CLI', color: '#e2a63b' },
   { key: 'hermes', label: 'Hermes', source: 'Hermes', color: '#f472b6' },
+  { key: 'grok', label: 'Grok', source: 'Grok Build', color: '#a8b0bd' },
+  { key: 'antigravity', label: 'Antigravity', source: 'Google Antigravity', color: '#22d3ee' },
 ];
 
 // Models present in the buckets, ordered by window total descending.
@@ -101,7 +103,7 @@ export const RANGES_8B: { key: Range8b; label: string; long: string }[] = [
 ];
 
 export function emptyByTool(): Record<ToolKey, number> {
-  return { claude: 0, codex: 0, gemini: 0, hermes: 0 };
+  return { claude: 0, codex: 0, gemini: 0, hermes: 0, grok: 0, antigravity: 0 };
 }
 
 // Local date -> 'YYYY-MM-DD'. The one formatter — keep in sync with nothing:

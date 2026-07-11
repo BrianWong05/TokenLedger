@@ -6,6 +6,8 @@ const TOOLS: Array<{ value: Tool | 'all'; label: string }> = [
   { value: 'codex', label: 'Codex' },
   { value: 'gemini', label: 'Gemini' },
   { value: 'hermes', label: 'Hermes' },
+  { value: 'grok', label: 'Grok' },
+  { value: 'antigravity', label: 'Antigravity' },
 ];
 
 const PRESETS: Array<{ value: RangePreset; label: string }> = [

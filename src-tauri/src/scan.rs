@@ -4,9 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
+use crate::adapters::antigravity::scan_antigravity;
 use crate::adapters::claude::scan_claude;
 use crate::adapters::codex::scan_codex;
 use crate::adapters::gemini::scan_gemini;
+use crate::adapters::grok::scan_grok;
 use crate::adapters::hermes::scan_hermes;
 use crate::db::prune_missing_files;
 use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
@@ -17,6 +19,10 @@ pub struct SourceRoots {
     pub gemini_tmp: PathBuf,
     pub gemini_projects_json: PathBuf,
     pub hermes_db: PathBuf,
+    pub grok_sessions: PathBuf,
+    // IDE and CLI conversation dirs share one SQLite schema; both scanned.
+    pub antigravity_conversations: PathBuf,
+    pub antigravity_cli_conversations: PathBuf,
 }
 
 impl SourceRoots {
@@ -28,6 +34,9 @@ impl SourceRoots {
             gemini_tmp: home.join(".gemini/tmp"),
             gemini_projects_json: home.join(".gemini/projects.json"),
             hermes_db: home.join(".hermes/state.db"),
+            grok_sessions: home.join(".grok/sessions"),
+            antigravity_conversations: home.join(".gemini/antigravity/conversations"),
+            antigravity_cli_conversations: home.join(".gemini/antigravity-cli/conversations"),
         }
     }
 }
@@ -53,13 +62,23 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
 }
 
 pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
-    let mut sources = Vec::with_capacity(4);
+    let mut sources = Vec::with_capacity(6);
     sources.push(run_one("claude", || scan_claude(conn, &roots.claude)));
     sources.push(run_one("codex", || scan_codex(conn, &roots.codex)));
     sources.push(run_one("gemini", || {
         scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
     }));
     sources.push(run_one("hermes", || scan_hermes(conn, &roots.hermes_db)));
+    sources.push(run_one("grok", || scan_grok(conn, &roots.grok_sessions)));
+    sources.push(run_one("antigravity", || {
+        scan_antigravity(
+            conn,
+            &[
+                roots.antigravity_conversations.as_path(),
+                roots.antigravity_cli_conversations.as_path(),
+            ],
+        )
+    }));
 
     // Ledger hygiene only: drops scanned_files rows for vanished paths.
     // Never deletes events (see prune_missing_files contract). Best-effort.
@@ -100,6 +119,13 @@ mod tests {
         assert!(r.gemini_tmp.ends_with(".gemini/tmp"));
         assert!(r.gemini_projects_json.ends_with(".gemini/projects.json"));
         assert!(r.hermes_db.ends_with(".hermes/state.db"));
+        assert!(r.grok_sessions.ends_with(".grok/sessions"));
+        assert!(r
+            .antigravity_conversations
+            .ends_with(".gemini/antigravity/conversations"));
+        assert!(r
+            .antigravity_cli_conversations
+            .ends_with(".gemini/antigravity-cli/conversations"));
     }
 
     #[test]
@@ -125,12 +151,15 @@ mod tests {
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
+            grok_sessions: base.join("no-grok"),
+            antigravity_conversations: base.join("no-antigravity"),
+            antigravity_cli_conversations: base.join("no-antigravity-cli"),
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 4);
+        assert_eq!(status.sources.len(), 6);
         assert!(status.scanned_at > 0);
 
         // Claude still ingests its event even though hermes errors.
@@ -149,5 +178,13 @@ mod tests {
         // Nonexistent hermes DB → error string set; other sources unaffected.
         let hermes = find(&status, "hermes");
         assert!(hermes.error.is_some());
+
+        // Missing directory-shaped roots → zero events, no error.
+        let grok = find(&status, "grok");
+        assert_eq!(grok.events_inserted, 0);
+        assert!(grok.error.is_none());
+        let antigravity = find(&status, "antigravity");
+        assert_eq!(antigravity.events_inserted, 0);
+        assert!(antigravity.error.is_none());
     }
 }
