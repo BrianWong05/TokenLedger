@@ -23,7 +23,7 @@ Providers in v1 — the Ledger Sources with quotas:
 | Codex | `~/.codex/auth.json` (honors `$CODEX_HOME`): `tokens.access_token`, account id from field or JWT claim `chatgpt_account_id` | GET `https://chatgpt.com/backend-api/wham/usage`, header `ChatGPT-Account-Id` | `5h`, `7d` — classified by `limit_window_seconds` (18000 / 604800), never by slot position |
 | Gemini | `~/.gemini/oauth_creds.json` | POST `https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist` (tier, project) then `…:retrieveUserQuota` | `Pro`, `Flash`, `Lite` — used = (1 − remainingFraction) × 100, lowest-remaining bucket per family |
 | Grok Build | `~/.grok/auth.json` → first entry with a `key` | GET `https://cli-chat-proxy.grok.com/v1/billing` | `Month` (used/monthlyLimit), `Extra` (onDemandUsed/onDemandCap) |
-| Antigravity | running IDE: `ps` → language_server with Antigravity markers + `--csrf_token` flag; `lsof` → listening ports | probe ports with POST `GetUnleashData`; then `RetrieveUserQuotaSummary` (fallbacks `GetUserStatus`, `GetCommandModelConfigs`) on `/exa.language_server_pb.LanguageServerService/` | one row per model family: `Claude`, `G Pro`, `G Flash` |
+| Antigravity | running IDE: `ps` → language_server with Antigravity markers + `--csrf_token` flag; `lsof` → listening ports | probe ports with POST `GetUnleashData`; then `RetrieveUserQuotaSummary` (fallbacks `GetUserStatus`, `GetCommandModelConfigs`) on `/exa.language_server_pb.LanguageServerService/` | `Cl 7d`, `Cl 5h`, `Gm 7d`, `Gm 5h` (the vendor's own quota buckets: `3p-weekly`, `3p-5h`, `gemini-weekly`, `gemini-5h`) |
 
 Hermes gets **no card** — self-hosted, no quota.
 
@@ -75,18 +75,21 @@ Normalization happens in Rust — the UI has exactly one renderer (unlike
 the example, which returns provider-specific shapes and normalizes in JS):
 
 ```rust
-struct LimitsSnapshot { fetched_at: String, tools: Vec<ToolLimits> }
+struct LimitsSnapshot { fetched_at_ts: i64, tools: Vec<ToolLimits> }
 struct ToolLimits {
-    source: String,            // "claude" | "codex" | "gemini" | "grok" | "antigravity"
-    configured: bool,          // false → "Not connected" card
-    error: Option<String>,     // Some → error card with actionable text
-    plan: Option<String>,      // e.g. "Pro", "Plus" → card title "Claude Pro"
-    windows: Vec<LimitWindow>, // the bars
-    stale: bool,               // served from disk cache (render "cached · Xh" badge)
-    cached_at: Option<String>, // ISO timestamp of the data
+    source: String,             // "claude" | "codex" | "gemini" | "grok" | "antigravity"
+    configured: bool,           // false → "Not connected" card
+    error: Option<String>,      // Some → error card with actionable text
+    plan: Option<String>,       // e.g. "Pro", "Plus" → card title "Claude Pro"
+    windows: Vec<LimitWindow>,  // the bars
+    stale: bool,                // served from disk cache (render "cached · Xh" badge)
+    cached_at_ts: Option<i64>,  // epoch seconds of the data
 }
-struct LimitWindow { label: String, used_percent: f64, resets_at: Option<String> }
+struct LimitWindow { label: String, used_percent: f64, resets_at_ts: Option<i64> }
 ```
+
+All timestamps crossing IPC are epoch seconds (matching the repo's
+`Filters.startTs` convention); vendor ISO strings are parsed in Rust.
 
 Plan labels: Claude `subscriptionType` from the keychain payload; Codex
 JWT `chatgpt_plan_type`; Gemini tier from `loadCodeAssist`
