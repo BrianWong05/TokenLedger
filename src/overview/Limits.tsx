@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import './overview.css';
 import { fetchLimits } from '../api';
 import type { LimitsSnapshot, ToolLimits } from '../types';
 import { fmtAgo, fmtRemain } from '../lib/format';
@@ -37,16 +38,10 @@ function ToolIcon({ icon }: { icon: IconKey }) {
   }
 }
 
+// Page-local styles; the shell (.tt-*) and tt-rise keyframes come from overview.css.
 const SCOPED_CSS = `
-.lim a{color:#5b9dff;text-decoration:none;}
-.lim a:hover{color:#84b6ff;text-decoration:underline;}
-.lim-nav{padding:6px 12px;border-radius:8px;font-size:13px;font-weight:500;color:#8891a6;cursor:pointer;transition:background .15s,color .15s;}
-.lim-nav:hover{background:rgba(255,255,255,.04);color:#cfd6e6;}
 .lim-iconbtn{width:34px;height:34px;border-radius:9px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);color:#a9b2c4;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;font-size:16px;line-height:1;transition:border-color .15s,color .15s;}
 .lim-iconbtn:hover{border-color:rgba(255,255,255,.18);color:#e8ecf4;}
-.lim-ghost{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:8px;color:#cfd6e6;padding:6px 13px;font-size:12px;font-weight:650;cursor:pointer;font-family:inherit;transition:border-color .15s,color .15s;}
-.lim-ghost:hover{border-color:rgba(255,255,255,.2);color:#f3f6fc;}
-@keyframes tt-rise{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
 @keyframes tl-spin{to{transform:rotate(360deg);}}
 `;
 
@@ -111,52 +106,30 @@ export default function Limits({ nav, onNav }: { nav: string; onNav: (n: string)
   const loading = snap === null && !error;
 
   return (
-    <div
-      className="lim"
-      style={{
-        minHeight: '100vh',
-        background: '#131519',
-        backgroundImage: 'radial-gradient(1200px 620px at 30% -14%, #1b1e26 0%, transparent 60%)',
-        padding: '44px',
-        fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif",
-        fontVariantNumeric: 'tabular-nums',
-        WebkitFontSmoothing: 'antialiased',
-      }}
-    >
-      <style>{SCOPED_CSS}</style>
-      <div
-        style={{
-          width: '100%',
-          maxWidth: '1180px',
-          margin: '0 auto',
-          background: '#0b0d13',
-          border: '1px solid rgba(255,255,255,.09)',
-          borderRadius: '18px',
-          overflow: 'hidden',
-          color: '#e8ecf4',
-          boxShadow: '0 40px 90px -46px rgba(0,0,0,.92)',
-          animation: 'tt-rise .5s cubic-bezier(.2,.7,.2,1) both',
-        }}
-      >
-        {/* ===== app top bar ===== */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '20px', padding: '15px 22px', borderBottom: '1px solid rgba(255,255,255,.07)', background: 'linear-gradient(180deg, rgba(255,255,255,.03), transparent)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '26px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
-              <span style={{ width: '22px', height: '22px', borderRadius: '6px', background: 'linear-gradient(135deg,#3b82f6,#1d4ed8)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 800, color: '#fff', fontFamily: "ui-monospace,'SF Mono',Menlo,monospace" }}>T</span>
-              <span style={{ fontSize: '14.5px', fontWeight: 700, letterSpacing: '-.01em', color: '#f3f6fc' }}>tokentracker</span>
+    <div className="tt">
+      <div className="tt-app">
+        <style>{SCOPED_CSS}</style>
+        {/* ===== app top bar (same shell as Overview8b) ===== */}
+        <div className="tt-top">
+          <div className="tt-brand">
+            <div className="tt-logo">
+              <i>T</i>
+              <b>tokentracker</b>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              {NAV.map((n) =>
-                n === nav ? (
-                  <span key={n} style={{ padding: '6px 12px', borderRadius: '8px', fontSize: '13px', fontWeight: 600, color: '#f3f6fc', background: 'rgba(255,255,255,.07)', cursor: 'pointer' }} onClick={() => (n === 'Overview' || n === 'Limits') && onNav(n)}>{n}</span>
-                ) : (
-                  <span key={n} className="lim-nav" onClick={() => (n === 'Overview' || n === 'Limits') && onNav(n)}>{n}</span>
-                ),
-              )}
+            <div className="tt-nav">
+              {NAV.map((n) => (
+                <button
+                  key={n}
+                  className={n === nav ? 'active' : ''}
+                  onClick={() => (n === 'Overview' || n === 'Limits') && onNav(n)}
+                >
+                  {n}
+                </button>
+              ))}
             </div>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'linear-gradient(135deg,#37c98b,#1f8a5b)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', fontWeight: 700, color: '#06130d' }}>BW</span>
+          <div className="tt-top-right">
+            <span className="tt-avatar">BW</span>
           </div>
         </div>
 
@@ -264,3 +237,4 @@ export default function Limits({ nav, onNav }: { nav: string; onNav: (n: string)
     </div>
   );
 }
+
