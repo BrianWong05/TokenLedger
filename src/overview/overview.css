@@ -402,6 +402,14 @@
   letter-spacing: 0.06em;
   font-weight: 650;
 }
+.tt-tip-sec {
+  margin-top: 9px;
+  font-size: 9px;
+  color: var(--tt-mut2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 650;
+}
 .tt-tip-row {
   margin-top: 7px;
 }
@@ -412,6 +420,7 @@
   gap: 10px;
   font-size: 10.5px;
   margin-bottom: 3px;
+  white-space: nowrap;
 }
 .tt-tip-row .lab span:first-child {
   color: var(--tt-mut);

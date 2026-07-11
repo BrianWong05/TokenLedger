@@ -226,6 +226,7 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
 pub struct SeriesPoint {
     pub bucket: String,
     pub source: String,
+    pub by_model: HashMap<String, i64>, // model -> total tokens within (bucket, source)
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cache_read_tokens: i64,
@@ -293,6 +294,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             points.push(SeriesPoint {
                 bucket: bucket.clone(),
                 source: source.clone(),
+                by_model: HashMap::new(),
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -313,6 +315,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             points.len() - 1
         });
         let p = &mut points[i];
+        *p.by_model.entry(model).or_insert(0) += in_ + out + cr + w5 + w1;
         p.input_tokens += in_;
         p.output_tokens += out;
         p.cache_read_tokens += cr;
@@ -922,6 +925,8 @@ mod tests {
 
         let d1c = pts.iter().find(|p| p.bucket == "2026-07-01" && p.source == "codex").unwrap();
         assert_eq!(d1c.total_tokens, 450); // 3 events × (100 input + 50 output)
+        assert_eq!(d1c.by_model.get("gpt-5.4"), Some(&300));
+        assert_eq!(d1c.by_model.get("gpt-5.4-mini"), Some(&150));
         assert_eq!(d1c.requests, 3);
         assert_eq!(d1c.convs, 2, "sa + sb, distinct across models within the source");
         assert_eq!(d1c.reasoning_tokens, Some(8), "5 + 3; the NULL event does not zero it");

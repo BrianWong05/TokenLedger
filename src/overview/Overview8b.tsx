@@ -10,6 +10,8 @@ import { scan, fetchSeries, fetchSummary, fetchBreakdown, fetchCtxResources, fet
 import type { BreakdownRow, SeriesPoint, Summary, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import {
   TOOLS,
+  rankModels,
+  modelTools,
   RANGES_8B,
   isoOf,
   calendarSpan,
@@ -167,6 +169,7 @@ export default function Overview8b() {
       toolTotals: toolTotalsOfPoints(rpts),
       per,
       trend,
+      modelTool: modelTools(rpts),
       sparks: smallMultiples(trend),
       cats: catTotals(rpts, sel),
       ctx: ctxTotals(rpts, sel),
@@ -324,7 +327,7 @@ export default function Overview8b() {
           <div className="tt-b8-grid">
             <div className="tt-b8-col">
               <Heatmap days={days} compact />
-              <AggTrend data={view.trend} per={view.per} rangeLabel={rangeLabel} />
+              <AggTrend data={view.trend} per={view.per} rangeLabel={rangeLabel} modelTool={view.modelTool} />
               <SmallMultiples items={view.sparks} rangeLabel={rangeLabel} />
             </div>
 
@@ -367,12 +370,13 @@ const PT = 14;
 const BASE = 176;
 const LABEL_Y = 194;
 
-function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rangeLabel: string }) {
+function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: string; rangeLabel: string; modelTool: Record<string, string> }) {
   const [hover, setHover] = useState<number | null>(null);
+  const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
   const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
-  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { label: '—', byTool: emptyByTool(), total: 0 });
+  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { key: '', label: '—', byTool: emptyByTool(), byModel: {}, total: 0 });
   const plotW = VW - PL - PR;
   const slot = plotW / (data.length || 1);
   const barW = Math.min(38, slot * 0.62);
@@ -381,19 +385,46 @@ function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rang
   const shown = hover != null ? data[hover] : null;
   const dense = data.length > 16;
 
+  // Segments are per model but colored by the model's tool; grouping the stack
+  // by tool keeps each bar reading as contiguous tool blocks.
+  const colorOf = (m: string) => TOOLS.find((t) => t.key === modelTool[m])?.color ?? '#5f6880';
+  const models = useMemo(() => {
+    const toolIdx = (m: string) => {
+      const i = TOOLS.findIndex((t) => t.key === modelTool[m]);
+      return i < 0 ? TOOLS.length : i;
+    };
+    // rankModels is largest-first; the stable sort keeps that order within a tool.
+    return rankModels(data).sort((a, b) => toolIdx(a) - toolIdx(b));
+  }, [data, modelTool]);
+  const segsOf = (b: Bucket) => models.map((m) => ({ key: m, color: colorOf(m), val: b.byModel[m] ?? 0 }));
+
+  // Hovered bucket's model rows, largest first.
+  const tipRows = shown
+    ? Object.entries(shown.byModel)
+        .filter(([, v]) => v > 0)
+        .sort((a, b) => b[1] - a[1])
+        .map(([m, v]) => ({ key: m, val: v, color: colorOf(m) }))
+    : [];
+  const tipMore = Math.max(0, tipRows.length - 6);
+
+  function onMove(e: React.MouseEvent<HTMLDivElement>) {
+    const w = e.currentTarget.clientWidth;
+    setPos({ x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY, flip: e.nativeEvent.offsetX > w * 0.58 });
+  }
+
   return (
     <div className="tt-card">
       <div className="tt-head">
         <div>
           <div className="tt-title">Usage trend</div>
-          <div className="tt-sub">Stacked by tool · {rangeLabel}</div>
+          <div className="tt-sub">Stacked by model · {rangeLabel}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div className="tt-read-big">{fmtTok(shown ? shown.total : total)}</div>
           <div style={{ fontSize: 10.5, color: 'var(--tt-mut3)' }}>{shown ? shown.label : 'total'}</div>
         </div>
       </div>
-      <div style={{ marginTop: 12 }}>
+      <div style={{ marginTop: 12, position: 'relative' }} onMouseMove={onMove}>
         <svg viewBox={`0 0 ${VW} 200`} preserveAspectRatio="xMidYMid meet" onMouseLeave={() => setHover(null)} style={{ width: '100%', display: 'block' }}>
           {grid.map((g, i) => (
             <g key={i}>
@@ -409,10 +440,10 @@ function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rang
             const op = hover == null || hover === i ? 1 : 0.32;
             return (
               <g key={i} opacity={op} style={{ transition: 'opacity .2s' }}>
-                {TOOLS.map((t) => {
-                  const seg = h(b.byTool[t.key]);
+                {segsOf(b).map((s) => {
+                  const seg = h(s.val);
                   y -= seg;
-                  return <rect key={t.key} x={x} y={y} width={barW} height={Math.max(0, seg)} fill={t.color} />;
+                  return <rect key={s.key} x={x} y={y} width={barW} height={Math.max(0, seg)} fill={s.color} />;
                 })}
               </g>
             );
@@ -426,6 +457,40 @@ function AggTrend({ data, per, rangeLabel }: { data: Bucket[]; per: string; rang
             </text>
           ))}
         </svg>
+        {shown && (
+          <div
+            className="tt-tip"
+            style={{
+              left: pos.x,
+              top: pos.y,
+              transform: `translate(${pos.flip ? 'calc(-100% - 14px)' : '14px'}, -50%)`,
+            }}
+          >
+            <div className="tt-tip-head">
+              <b>{shown.key || shown.label}</b>
+            </div>
+            <div className="tt-tip-tok">
+              <b>{shown.total.toLocaleString('en-US')}</b>
+              <span>tokens</span>
+            </div>
+            {tipRows.length > 0 && <div className="tt-tip-sec">Model breakdown</div>}
+            {tipRows.slice(0, 6).map((r) => (
+              <div className="tt-tip-row" key={r.key}>
+                <div className="lab">
+                  <span>{r.key}</span>
+                  <span>
+                    {r.val.toLocaleString('en-US')} · {fmtPct(r.val / (shown.total || 1))}
+                  </span>
+                </div>
+                <div className="track">
+                  <div className="fill" style={{ width: (r.val / (shown.total || 1)) * 100 + '%', background: r.color }} />
+                </div>
+              </div>
+            ))}
+            {tipMore > 0 && <div className="tt-ctx-meta">+{tipMore} more</div>}
+            {tipRows.length === 0 && <div className="tt-ctx-meta">No activity</div>}
+          </div>
+        )}
       </div>
       <div className="tt-foot">
         <div className="tt-stats">

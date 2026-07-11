@@ -191,7 +191,7 @@ function addInto(dst: Record<ToolKey, number>, src: Record<ToolKey, number>) {
   for (const t of TOOLS) dst[t.key] += src[t.key];
 }
 function finalize(label: string, by: Record<ToolKey, number>): Bucket {
-  return { label, byTool: by, total: TOOLS.reduce((s, t) => s + by[t.key], 0) };
+  return { key: label, label, byTool: by, byModel: {}, total: TOOLS.reduce((s, t) => s + by[t.key], 0) };
 }
 
 export function buckets(interval: Interval): Bucket[] {
