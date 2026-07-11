@@ -36,3 +36,27 @@ export function fmtDate(d: Date): string {
 export function fmtIsoDate(iso: string): string {
   return fmtDate(parseLocalDate(iso));
 }
+
+// Time-until a limit-window reset (epoch seconds) — '34m', '2h', '6d'.
+export function fmtRemain(ts: number | null, nowMs = Date.now()): string {
+  if (ts == null) return '—';
+  const secs = ts - Math.floor(nowMs / 1000);
+  if (secs <= 0) return 'now';
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${Math.max(1, m)}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+// Age of a reading (epoch seconds) — 'just now', '45m ago', '2h ago'.
+export function fmtAgo(ts: number | null, nowMs = Date.now()): string {
+  if (ts == null) return '—';
+  const secs = Math.floor(nowMs / 1000) - ts;
+  if (secs < 60) return 'just now';
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}

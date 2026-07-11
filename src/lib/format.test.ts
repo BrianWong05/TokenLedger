@@ -38,3 +38,28 @@ describe('overview formatters', () => {
     expect(fmtIsoDate('2026-07-04')).toBe('Jul 4');
   });
 });
+
+import { fmtRemain, fmtAgo } from './format';
+
+const NOW = Date.parse('2026-07-12T12:00:00Z');
+const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+describe('fmtRemain', () => {
+  it('em-dash for null', () => expect(fmtRemain(null, NOW)).toBe('—'));
+  it('now for past', () => expect(fmtRemain(ts('2026-07-12T11:00:00Z'), NOW)).toBe('now'));
+  it('minutes under an hour', () =>
+    expect(fmtRemain(ts('2026-07-12T12:34:00Z'), NOW)).toBe('34m'));
+  it('hours under a day', () =>
+    expect(fmtRemain(ts('2026-07-12T14:30:00Z'), NOW)).toBe('2h'));
+  it('days beyond 24h', () =>
+    expect(fmtRemain(ts('2026-07-18T13:00:00Z'), NOW)).toBe('6d'));
+});
+
+describe('fmtAgo', () => {
+  it('em-dash for null', () => expect(fmtAgo(null, NOW)).toBe('—'));
+  it('just now under a minute', () =>
+    expect(fmtAgo(ts('2026-07-12T11:59:30Z'), NOW)).toBe('just now'));
+  it('minutes', () => expect(fmtAgo(ts('2026-07-12T11:15:00Z'), NOW)).toBe('45m ago'));
+  it('hours', () => expect(fmtAgo(ts('2026-07-12T10:00:00Z'), NOW)).toBe('2h ago'));
+  it('days', () => expect(fmtAgo(ts('2026-07-10T10:00:00Z'), NOW)).toBe('2d ago'));
+});

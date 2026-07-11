@@ -129,3 +129,26 @@ export interface OverrideRates {
   cacheRead: number | null;
   cacheWrite: number | null;
 }
+
+// ---- Limits page (limits command) ----
+
+export interface LimitWindow {
+  label: string;
+  usedPercent: number;
+  resetsAtTs: number | null; // epoch seconds
+}
+
+export interface ToolLimits {
+  source: string; // 'claude' | 'codex' | 'gemini' | 'grok' | 'antigravity'
+  configured: boolean;
+  error: string | null;
+  plan: string | null;
+  windows: LimitWindow[];
+  stale: boolean;
+  cachedAtTs: number | null; // epoch seconds
+}
+
+export interface LimitsSnapshot {
+  fetchedAtTs: number; // epoch seconds
+  tools: ToolLimits[];
+}

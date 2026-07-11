@@ -11,6 +11,7 @@ import type {
   CtxExecRow,
   Filters,
   OverrideRates,
+  LimitsSnapshot,
 } from './types';
 
 export function scan(): Promise<ScanStatus> {
@@ -67,4 +68,8 @@ export function setPriceOverride(
 
 export function deletePriceOverride(model: string): Promise<void> {
   return invoke('delete_price_override', { model });
+}
+
+export function fetchLimits(force = false): Promise<LimitsSnapshot> {
+  return invoke('limits', { force });
 }
