@@ -1,5 +1,6 @@
 mod adapters;
 mod db;
+mod limits;
 mod pricing;
 mod queries;
 mod scan;
