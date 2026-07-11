@@ -16,11 +16,13 @@ mod types;
 #[cfg(test)]
 mod e2e_real_logs;
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
 use tauri::{Emitter, Manager, State};
 
+use limits::LimitsSnapshot;
 use pricing::OverrideRates;
 use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
 use scan::{run_scan, SourceRoots};
@@ -30,6 +32,8 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub roots: SourceRoots,
     pub scan_lock: Mutex<()>,
+    pub data_dir: PathBuf,
+    pub limits_snapshot: Mutex<Option<(std::time::Instant, LimitsSnapshot)>>,
 }
 
 #[tauri::command]
@@ -42,6 +46,24 @@ async fn scan(state: State<'_, AppState>) -> Result<ScanStatus, String> {
     // connection. Add one only if UI jank during scans is ever measured.
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
     Ok(run_scan(&mut db, &state.roots))
+}
+
+#[tauri::command]
+async fn limits(state: State<'_, AppState>, force: bool) -> Result<LimitsSnapshot, String> {
+    // Hold the snapshot lock across the fetch: a second caller blocks, then
+    // sees the fresh cache — natural coalescing, mirroring scan_lock.
+    let mut guard = state.limits_snapshot.lock().map_err(|e| e.to_string())?;
+    if !force {
+        if let Some((at, snap)) = guard.as_ref() {
+            if at.elapsed().as_secs() < limits::SNAPSHOT_TTL_SECS {
+                return Ok(snap.clone());
+            }
+        }
+    }
+    let home = dirs::home_dir().ok_or("no home directory")?;
+    let snap = limits::fetch_snapshot(&state.data_dir, &home);
+    *guard = Some((std::time::Instant::now(), snap.clone()));
+    Ok(snap)
 }
 
 #[tauri::command]
@@ -144,6 +166,8 @@ pub fn run() {
                 db: Mutex::new(conn),
                 roots: SourceRoots::default_roots(),
                 scan_lock: Mutex::new(()),
+                data_dir: data_dir.clone(),
+                limits_snapshot: Mutex::new(None),
             });
             // Refresh LiteLLM prices off the main thread; any fetch failure falls
             // back to the cached/bundled snapshot inside load_prices_json. The
@@ -164,6 +188,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan,
+            limits,
             summary,
             trend,
             series,
@@ -208,6 +233,8 @@ mod tests {
             db: Mutex::new(conn),
             roots,
             scan_lock: Mutex::new(()),
+            data_dir: dir.path().to_path_buf(),
+            limits_snapshot: Mutex::new(None),
         };
 
         let mut db = state.db.lock().unwrap();

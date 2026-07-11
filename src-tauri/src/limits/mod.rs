@@ -211,6 +211,75 @@ pub fn parse_any_ts(v: &serde_json::Value) -> Option<i64> {
     }
 }
 
+// ---- orchestrator ----------------------------------------------------------
+
+/// One full snapshot: all five providers in parallel, cache-aware.
+/// Blocking (network + subprocesses); callers run it off the UI path.
+pub fn fetch_snapshot(data_dir: &Path, home: &Path) -> LimitsSnapshot {
+    let now = now_ts();
+    let cache_path = data_dir.join("limits-cache.json");
+    let mut cache = load_cache(&cache_path);
+
+    // Claude may be served from cache without a live call (fresh success
+    // within CLAUDE_FRESH_SECS, or an armed 429 cooldown).
+    let claude_pre = claude::precheck(&cache, now);
+
+    let (claude_r, codex_r, gemini_r, grok_r, anti_r) = std::thread::scope(|s| {
+        let c = s.spawn(|| match claude_pre {
+            Some(t) => Ok(t),
+            None => claude::fetch(home, now),
+        });
+        let x = s.spawn(|| codex::fetch(home, now));
+        let g = s.spawn(|| gemini::fetch(home, now));
+        let k = s.spawn(|| grok::fetch(home, now));
+        let a = s.spawn(|| antigravity::fetch(home, now));
+        (
+            c.join().unwrap_or_else(|_| Err("Claude provider panicked".into())),
+            x.join().unwrap_or_else(|_| Err("Codex provider panicked".into())),
+            g.join().unwrap_or_else(|_| Err("Gemini provider panicked".into())),
+            k.join().unwrap_or_else(|_| Err("Grok provider panicked".into())),
+            a.join().unwrap_or_else(|_| Err("Antigravity provider panicked".into())),
+        )
+    });
+
+    // Arm / clear the Claude 429 cooldown before resolving fallbacks.
+    match &claude_r {
+        Err(e) if e.retry_after_secs.is_some() => {
+            cache.claude_retry_at_ts = Some(now + e.retry_after_secs.unwrap());
+        }
+        Ok(t) if t.error.is_none() && !t.windows.is_empty() => {
+            cache.claude_retry_at_ts = None;
+        }
+        _ => {}
+    }
+
+    let mut tools = Vec::with_capacity(5);
+    for (source, live) in [
+        ("claude", claude_r),
+        ("codex", codex_r),
+        ("gemini", gemini_r),
+        ("grok", grok_r),
+        ("antigravity", anti_r),
+    ] {
+        let resolved = with_fallback(source, live, cache.tools.get(source), now);
+        // Persist live successes (real bars, not served-from-cache) for
+        // future stale fallbacks.
+        if resolved.configured
+            && resolved.error.is_none()
+            && !resolved.windows.is_empty()
+            && !resolved.stale
+            && resolved.cached_at_ts == Some(now)
+        {
+            cache
+                .tools
+                .insert(source.to_string(), CachedTool { tool: resolved.clone(), cached_at_ts: now });
+        }
+        tools.push(resolved);
+    }
+    save_cache(&cache_path, &cache);
+    LimitsSnapshot { fetched_at_ts: now, tools }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
