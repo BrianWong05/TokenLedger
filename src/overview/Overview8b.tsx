@@ -38,14 +38,13 @@ import {
 import { fmtTok, fmtPct, fmtIsoDate, formatCost } from '../lib/format';
 import { useAutoRefresh, REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 
-const NAV = ['Overview', 'Insights', 'Models', 'Settings'];
+const NAV = ['Overview', 'Activity', 'Models', 'Limits', 'Settings'];
 const EMPTY_FILTERS = { tools: [], models: [], project: null };
 
 // Design 8b — "App · Overview", wired to the real Ledger. One unbounded daily
 // series powers heatmap/trends/tables via client-side slicing; summary and
 // breakdowns re-fetch per range; an hourly series serves the Day view.
-export default function Overview8b() {
-  const [nav, setNav] = useState('Overview');
+export default function Overview8b({ nav, onNav }: { nav: string; onNav: (n: string) => void }) {
   const [range, setRange] = useState<Range8b>('total');
   const [sel, setSel] = useState<ToolKey>('claude');
   const [customFrom, setCustomFrom] = useState('');
@@ -206,7 +205,7 @@ export default function Overview8b() {
             </div>
             <div className="tt-nav">
               {NAV.map((n) => (
-                <button key={n} className={n === nav ? 'active' : ''} onClick={() => setNav(n)}>
+                <button key={n} className={n === nav ? 'active' : ''} onClick={() => (n === 'Overview' || n === 'Limits') && onNav(n)}>
                   {n}
                 </button>
               ))}
