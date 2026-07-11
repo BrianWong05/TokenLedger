@@ -180,6 +180,18 @@ export default function Overview8b() {
   const rangeLabel =
     range === 'custom' ? `${fmtIsoDate(cf)} – ${fmtIsoDate(ct)}` : RANGES_8B.find((r) => r.key === range)!.long;
   const grand = view.total || 1;
+  // Only tools with usage in the window get a card; a zero-usage tool is noise.
+  const visibleTools = useMemo(
+    () => TOOLS.filter((t) => view.toolTotals[t.key] > 0),
+    [view.toolTotals],
+  );
+  // Keep the selection on a visible tool so the breakdown panel never shows an
+  // all-empty tool (e.g. selecting Hermes, then switching to a day it was idle).
+  useEffect(() => {
+    if (visibleTools.length && !visibleTools.some((t) => t.key === sel)) {
+      setSel(visibleTools[0].key);
+    }
+  }, [visibleTools, sel]);
   const tool = TOOLS.find((t) => t.key === sel)!;
   const loading = allPoints === null;
 
@@ -303,7 +315,7 @@ export default function Overview8b() {
           </div>
 
           <div className="tt-toolcards">
-            {TOOLS.map((t) => {
+            {visibleTools.map((t) => {
               const active = t.key === sel;
               const nModels = modelRows.filter((r) => r.source === t.key).length;
               return (
@@ -318,7 +330,7 @@ export default function Overview8b() {
                     {t.label}
                   </div>
                   <div className="num">{fmtPct(view.toolTotals[t.key] / grand)}</div>
-                  <div className="sub">{nModels} model{nModels === 1 ? '' : 's'}</div>
+                  {nModels > 0 && <div className="sub">{nModels} model{nModels === 1 ? '' : 's'}</div>}
                 </button>
               );
             })}

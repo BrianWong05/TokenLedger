@@ -87,6 +87,8 @@ const CAT_MIX: Record<ToolKey, [number, number, number, number]> = {
   codex: [0.3, 0.2, 0.42, 0.08],
   gemini: [0.26, 0.17, 0.49, 0.08],
   hermes: [0.4, 0.3, 0.22, 0.08],
+  grok: [1, 0, 0, 0], // grok logs expose only a context-size counter → all input
+  antigravity: [0.12, 0.01, 0.87, 0], // cache-read dominated (real-data shape)
 };
 
 export function categorySplit(tool: ToolKey, tokens: number) {
@@ -116,6 +118,8 @@ const CTX_RESOURCES: Record<ToolKey, { skills: number; mcp: number; agents: numb
   codex: { skills: 0, mcp: 1, agents: 0, memory: 1 },
   gemini: { skills: 0, mcp: 1, agents: 0, memory: 0 },
   hermes: { skills: 4, mcp: 0, agents: 2, memory: 1 },
+  grok: { skills: 0, mcp: 0, agents: 0, memory: 0 },
+  antigravity: { skills: 0, mcp: 1, agents: 0, memory: 0 },
 };
 
 function plural(n: number, one: string): string {
@@ -172,6 +176,11 @@ export const MODELS: Record<ToolKey, { name: string; share: number }[]> = {
     { name: 'llama-3.3-70b', share: 0.57 },
     { name: 'mixtral-8x22b', share: 0.43 },
   ],
+  grok: [{ name: 'grok-4.5', share: 1 }],
+  antigravity: [
+    { name: 'gemini-3-flash-a', share: 0.75 },
+    { name: 'gemini-default', share: 0.25 },
+  ],
 };
 
 // ---- usage-trend buckets, stacked by tool ----
@@ -185,7 +194,7 @@ export const INTERVALS: { key: Interval; label: string; per: string }[] = [
 ];
 
 function emptyByTool(): Record<ToolKey, number> {
-  return { claude: 0, codex: 0, gemini: 0, hermes: 0 };
+  return { claude: 0, codex: 0, gemini: 0, hermes: 0, grok: 0, antigravity: 0 };
 }
 function addInto(dst: Record<ToolKey, number>, src: Record<ToolKey, number>) {
   for (const t of TOOLS) dst[t.key] += src[t.key];

@@ -188,7 +188,7 @@ mod tests {
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
-    // functions. Empty fixture roots => 4 source statuses, zero events.
+    // functions. Empty fixture roots => 6 source statuses, zero events.
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
@@ -199,6 +199,9 @@ mod tests {
             gemini_tmp: dir.path().join("gemini"),
             gemini_projects_json: dir.path().join("projects.json"),
             hermes_db: dir.path().join("state.db"),
+            grok_sessions: dir.path().join("grok"),
+            antigravity_conversations: dir.path().join("antigravity"),
+            antigravity_cli_conversations: dir.path().join("antigravity-cli"),
         };
         let state = AppState {
             db: Mutex::new(conn),
@@ -208,7 +211,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 4);
+        assert_eq!(status.sources.len(), 6);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);
