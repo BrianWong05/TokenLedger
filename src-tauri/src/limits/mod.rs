@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 // pub mod claude;
 // pub mod codex;
 // pub mod gemini;
-// pub mod grok;
+pub mod grok;
 
 /// Live fetch failure. `retry_after_secs` is set only by Claude's 429 path
 /// so the orchestrator can arm the cooldown.
