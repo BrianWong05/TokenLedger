@@ -243,15 +243,7 @@ pub fn fetch_snapshot(data_dir: &Path, home: &Path) -> LimitsSnapshot {
     });
 
     // Arm / clear the Claude 429 cooldown before resolving fallbacks.
-    match &claude_r {
-        Err(e) if e.retry_after_secs.is_some() => {
-            cache.claude_retry_at_ts = Some(now + e.retry_after_secs.unwrap());
-        }
-        Ok(t) if t.error.is_none() && !t.windows.is_empty() => {
-            cache.claude_retry_at_ts = None;
-        }
-        _ => {}
-    }
+    update_claude_cooldown(&mut cache, &claude_r, now);
 
     let mut tools = Vec::with_capacity(5);
     for (source, live) in [
@@ -278,6 +270,21 @@ pub fn fetch_snapshot(data_dir: &Path, home: &Path) -> LimitsSnapshot {
     }
     save_cache(&cache_path, &cache);
     LimitsSnapshot { fetched_at_ts: now, tools }
+}
+
+/// Arm on a 429; clear ONLY on a genuine LIVE success. Precheck serves
+/// (fresh: original cached_at_ts != now; cooldown: stale == true) must leave
+/// the cooldown armed, else the next poll calls upstream mid-cooldown.
+fn update_claude_cooldown(cache: &mut DiskCache, claude_r: &Result<ToolLimits, FetchErr>, now: i64) {
+    match claude_r {
+        Err(e) if e.retry_after_secs.is_some() => {
+            cache.claude_retry_at_ts = Some(now + e.retry_after_secs.unwrap());
+        }
+        Ok(t) if t.error.is_none() && !t.windows.is_empty() && !t.stale && t.cached_at_ts == Some(now) => {
+            cache.claude_retry_at_ts = None;
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +363,38 @@ mod tests {
         };
         let out = with_fallback("grok", Err("boom".into()), Some(&cached), 1001);
         assert_eq!(out.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn cooldown_cleared_only_by_live_success() {
+        let now = 5000;
+        let mut cache = DiskCache::default();
+
+        // 429 arms the cooldown.
+        update_claude_cooldown(
+            &mut cache,
+            &Err(FetchErr { message: "429".into(), retry_after_secs: Some(60) }),
+            now,
+        );
+        assert_eq!(cache.claude_retry_at_ts, Some(now + 60));
+
+        // Cooldown stale-serve from precheck (stale == true) leaves it armed.
+        let mut stale_serve = ToolLimits::live("claude", None, win(), 1000);
+        stale_serve.stale = true;
+        update_claude_cooldown(&mut cache, &Ok(stale_serve), now);
+        assert_eq!(cache.claude_retry_at_ts, Some(now + 60));
+
+        // Precheck fresh-serve (original cached_at_ts != now) leaves it armed.
+        update_claude_cooldown(&mut cache, &Ok(ToolLimits::live("claude", None, win(), 4800)), now);
+        assert_eq!(cache.claude_retry_at_ts, Some(now + 60));
+
+        // Non-429 failure leaves it armed.
+        update_claude_cooldown(&mut cache, &Err("timeout".into()), now);
+        assert_eq!(cache.claude_retry_at_ts, Some(now + 60));
+
+        // A genuine live success (cached_at_ts == now, not stale) clears it.
+        update_claude_cooldown(&mut cache, &Ok(ToolLimits::live("claude", None, win(), now)), now);
+        assert_eq!(cache.claude_retry_at_ts, None);
     }
 
     #[test]
