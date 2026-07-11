@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-// pub mod antigravity;
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod gemini;
