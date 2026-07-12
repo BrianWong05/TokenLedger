@@ -195,6 +195,11 @@ export default function Limits({ nav, onNav }: { nav: string; onNav: (n: string)
                       )}
                     </div>
 
+                    {/* why the live fetch failed while cached bars are shown */}
+                    {t.stale && t.staleReason && (
+                      <div style={{ fontSize: '11.5px', color: '#e8a13c', lineHeight: 1.5, margin: '-7px 0 12px' }}>{t.staleReason}</div>
+                    )}
+
                     {/* body */}
                     {!t.configured ? (
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '2px 0' }}>

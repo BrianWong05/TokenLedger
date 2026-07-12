@@ -89,6 +89,7 @@ pub fn missing_profile_scope(payload: &Value) -> bool {
 }
 
 /// subscriptionType → title-cased plan label; free/none/unknown filtered.
+/// A multiplier in rateLimitTier (e.g. "..._20x") is appended: "Max 20x".
 pub fn plan_of(payload: &Value) -> Option<String> {
     let raw = payload.get("claudeAiOauth")?.get("subscriptionType")?.as_str()?.trim();
     let lower = raw.to_lowercase();
@@ -96,7 +97,23 @@ pub fn plan_of(payload: &Value) -> Option<String> {
         return None;
     }
     let mut c = lower.chars();
-    Some(c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default())
+    let base =
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default();
+    let tier = payload
+        .get("claudeAiOauth")
+        .and_then(|o| o.get("rateLimitTier"))
+        .and_then(Value::as_str)
+        .and_then(|t| {
+            t.split('_').find(|s| {
+                s.len() >= 2
+                    && s.ends_with('x')
+                    && s[..s.len() - 1].bytes().all(|b| b.is_ascii_digit())
+            })
+        });
+    Some(match tier {
+        Some(t) => format!("{base} {t}"),
+        None => base,
+    })
 }
 
 /// Merge a refresh-grant response into the credential payload: new access
@@ -280,6 +297,7 @@ pub fn precheck(cache: &DiskCache, now_ts: i64) -> Option<ToolLimits> {
                 if c.tool.error.is_none() && !c.tool.windows.is_empty() {
                     let mut t = c.tool.clone();
                     t.stale = true;
+                    t.stale_reason = Some(rate_limit_msg(Some(retry_at - now_ts)));
                     t.cached_at_ts = Some(c.cached_at_ts);
                     return Some(t);
                 }
@@ -423,6 +441,18 @@ mod tests {
         assert_eq!(plan_of(&p).as_deref(), Some("Pro"));
         let f = json!({ "claudeAiOauth": { "subscriptionType": "free" } });
         assert_eq!(plan_of(&f), None);
+    }
+
+    #[test]
+    fn plan_appends_rate_limit_tier_multiplier() {
+        let p = json!({ "claudeAiOauth": {
+            "subscriptionType": "max", "rateLimitTier": "default_claude_max_20x"
+        }});
+        assert_eq!(plan_of(&p).as_deref(), Some("Max 20x"));
+        let no_tier = json!({ "claudeAiOauth": {
+            "subscriptionType": "max", "rateLimitTier": "default_claude"
+        }});
+        assert_eq!(plan_of(&no_tier).as_deref(), Some("Max"));
     }
 
     #[test]

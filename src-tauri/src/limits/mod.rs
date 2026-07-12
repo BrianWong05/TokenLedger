@@ -54,6 +54,10 @@ pub struct ToolLimits {
     pub plan: Option<String>,
     pub windows: Vec<LimitWindow>,
     pub stale: bool,
+    /// Why the live fetch failed when stale bars are served, so the card can
+    /// say "rate limited, retry in ~34m" instead of a bare "cached" badge.
+    #[serde(default)]
+    pub stale_reason: Option<String>,
     pub cached_at_ts: Option<i64>, // epoch seconds
 }
 
@@ -66,6 +70,7 @@ impl ToolLimits {
             plan: None,
             windows: Vec::new(),
             stale: false,
+            stale_reason: None,
             cached_at_ts: None,
         }
     }
@@ -78,6 +83,7 @@ impl ToolLimits {
             plan: None,
             windows: Vec::new(),
             stale: false,
+            stale_reason: None,
             cached_at_ts: None,
         }
     }
@@ -90,6 +96,7 @@ impl ToolLimits {
             plan,
             windows,
             stale: false,
+            stale_reason: None,
             cached_at_ts: Some(now_ts),
         }
     }
@@ -162,6 +169,7 @@ pub fn with_fallback(
                 if cache_usable(c, now_ts) {
                     let mut t = c.tool.clone();
                     t.stale = true;
+                    t.stale_reason = Some(e.message.clone());
                     t.cached_at_ts = Some(c.cached_at_ts);
                     return t;
                 }
@@ -335,6 +343,16 @@ mod tests {
         let live = ToolLimits::live("grok", None, win(), 2000);
         let out = with_fallback("grok", Ok(live.clone()), None, 2000);
         assert_eq!(out, live);
+    }
+
+    #[test]
+    fn fallback_carries_live_error_as_stale_reason() {
+        let cached =
+            CachedTool { tool: ToolLimits::live("grok", None, win(), 1000), cached_at_ts: 1000 };
+        let out = with_fallback("grok", Err("boom".into()), Some(&cached), 2000);
+        assert!(out.stale);
+        assert_eq!(out.stale_reason.as_deref(), Some("boom"));
+        assert_eq!(out.cached_at_ts, Some(1000));
     }
 
     #[test]

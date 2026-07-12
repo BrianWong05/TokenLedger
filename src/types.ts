@@ -145,6 +145,7 @@ export interface ToolLimits {
   plan: string | null;
   windows: LimitWindow[];
   stale: boolean;
+  staleReason: string | null;
   cachedAtTs: number | null; // epoch seconds
 }
 
