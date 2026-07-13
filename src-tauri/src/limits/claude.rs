@@ -33,22 +33,64 @@ const EXPIRED_MSG: &str = "Claude token expired — run `claude` once to re-logi
 const RELOGIN_MSG: &str =
     "Claude login can't read usage (missing user:profile scope) — run `claude` and sign in again.";
 
-/// Raw credential text as stored, so a write-back can compare against exactly
-/// what was read.
-fn read_credentials_raw(home: &Path) -> Option<String> {
-    let raw = if cfg!(target_os = "macos") {
-        let out = std::process::Command::new("/usr/bin/security")
-            .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
+/// How a credential read ended: found (raw text as stored, and where), cleanly
+/// absent (never logged in → "Not connected"), or blocked (item may exist but
+/// can't be read — locked keychain, denied access prompt — which must surface
+/// as an actionable error, never as "Not connected").
+enum CredRead {
+    Found { raw: String, from_keychain: bool },
+    NotFound,
+    Blocked(String),
+}
+
+/// security(1) outcome → CredRead. Exit 44 is errSecItemNotFound; any other
+/// failure means the read was blocked rather than the item being absent.
+fn classify_security_output(code: Option<i32>, stdout: Option<String>) -> CredRead {
+    let text = stdout.map(|s| s.trim().to_string()).unwrap_or_default();
+    match code {
+        Some(0) if !text.is_empty() => CredRead::Found { raw: text, from_keychain: true },
+        Some(0) | Some(44) => CredRead::NotFound,
+        c => CredRead::Blocked(format!(
+            "keychain read failed (security exit {})",
+            c.map(|v| v.to_string()).unwrap_or_else(|| "?".into())
+        )),
+    }
+}
+
+fn read_keychain() -> CredRead {
+    match std::process::Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .output()
+    {
+        Ok(out) => classify_security_output(out.status.code(), String::from_utf8(out.stdout).ok()),
+        Err(e) => CredRead::Blocked(format!("couldn't run security: {e}")),
+    }
+}
+
+fn read_cred_file(home: &Path) -> Option<String> {
+    std::fs::read_to_string(home.join(".claude/.credentials.json"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Keychain first on macOS with the credentials file as fallback (either can
+/// hold the login); file only elsewhere.
+fn read_credentials_source(home: &Path) -> CredRead {
+    if cfg!(target_os = "macos") {
+        match read_keychain() {
+            found @ CredRead::Found { .. } => found,
+            not_found_or_blocked => match read_cred_file(home) {
+                Some(raw) => CredRead::Found { raw, from_keychain: false },
+                None => not_found_or_blocked,
+            },
         }
-        String::from_utf8(out.stdout).ok()?
     } else {
-        std::fs::read_to_string(home.join(".claude/.credentials.json")).ok()?
-    };
-    Some(raw.trim().to_string())
+        match read_cred_file(home) {
+            Some(raw) => CredRead::Found { raw, from_keychain: false },
+            None => CredRead::NotFound,
+        }
+    }
 }
 
 fn oauth_str(payload: &Value, key: &str) -> Option<String> {
@@ -172,12 +214,20 @@ fn keychain_account() -> String {
 /// Claude Code must keep working with the refresh token we just rotated away.
 /// Guarded: skipped when the store no longer holds exactly what we read, so a
 /// credential rotated mid-flight by `claude` itself is never clobbered.
-fn write_credentials(home: &Path, original_raw: &str, payload: &Value) {
-    if read_credentials_raw(home).as_deref() != Some(original_raw) {
+fn write_credentials(home: &Path, from_keychain: bool, original_raw: &str, payload: &Value) {
+    let current = if from_keychain {
+        match read_keychain() {
+            CredRead::Found { raw, .. } => Some(raw),
+            _ => None,
+        }
+    } else {
+        read_cred_file(home)
+    };
+    if current.as_deref() != Some(original_raw) {
         return;
     }
     let Ok(text) = serde_json::to_string(payload) else { return };
-    if cfg!(target_os = "macos") {
+    if from_keychain {
         // ponytail: the blob rides argv for a moment (ps-visible to this
         // user's machine only); Security.framework FFI if that ever matters.
         let _ = std::process::Command::new("/usr/bin/security")
@@ -199,7 +249,13 @@ fn write_credentials(home: &Path, original_raw: &str, payload: &Value) {
 
 /// Refresh grant → rotated tokens merged into `payload` and persisted.
 /// False = refresh unavailable/failed; caller keeps the old token.
-fn try_refresh(home: &Path, original_raw: &str, payload: &mut Value, now_ts: i64) -> bool {
+fn try_refresh(
+    home: &Path,
+    from_keychain: bool,
+    original_raw: &str,
+    payload: &mut Value,
+    now_ts: i64,
+) -> bool {
     let Some(refresh_token) = oauth_str(payload, "refreshToken") else { return false };
     let body = serde_json::json!({
         "grant_type": "refresh_token",
@@ -219,7 +275,7 @@ fn try_refresh(home: &Path, original_raw: &str, payload: &mut Value, now_ts: i64
     if !apply_refresh_response(payload, &tokens, now_ts) {
         return false;
     }
-    write_credentials(home, original_raw, payload);
+    write_credentials(home, from_keychain, original_raw, payload);
     true
 }
 
@@ -319,8 +375,18 @@ fn call_usage(token: &str) -> Result<ureq::Response, ureq::Error> {
 }
 
 pub fn fetch(home: &Path, now_ts: i64) -> Result<ToolLimits, FetchErr> {
-    let Some(raw) = read_credentials_raw(home) else {
-        return Ok(ToolLimits::not_configured("claude"));
+    let (raw, from_keychain) = match read_credentials_source(home) {
+        CredRead::Found { raw, from_keychain } => (raw, from_keychain),
+        CredRead::NotFound => return Ok(ToolLimits::not_configured("claude")),
+        CredRead::Blocked(detail) => {
+            return Ok(ToolLimits::error_card(
+                "claude",
+                format!(
+                    "Claude credentials unreadable: {detail}. If macOS shows a keychain \
+                     prompt for \"security\", click Always Allow, then refresh."
+                ),
+            ));
+        }
     };
     let Ok(mut payload) = serde_json::from_str::<Value>(&raw) else {
         return Ok(ToolLimits::not_configured("claude"));
@@ -337,7 +403,9 @@ pub fn fetch(home: &Path, now_ts: i64) -> Result<ToolLimits, FetchErr> {
     let mut refresh_attempted = false;
     if needs_refresh(&payload, now_ts) {
         refresh_attempted = true;
-        if !try_refresh(home, &raw, &mut payload, now_ts) && token_expired(&payload, now_ts) {
+        if !try_refresh(home, from_keychain, &raw, &mut payload, now_ts)
+            && token_expired(&payload, now_ts)
+        {
             return Ok(ToolLimits::error_card("claude", EXPIRED_MSG));
         }
     }
@@ -356,7 +424,7 @@ pub fn fetch(home: &Path, now_ts: i64) -> Result<ToolLimits, FetchErr> {
             Err(ureq::Error::Status(401 | 403, _)) => {
                 if !refresh_attempted {
                     refresh_attempted = true;
-                    if try_refresh(home, &raw, &mut payload, now_ts) {
+                    if try_refresh(home, from_keychain, &raw, &mut payload, now_ts) {
                         continue;
                     }
                 }
@@ -480,6 +548,20 @@ mod tests {
         assert!(!missing_profile_scope(&full));
         let empty = json!({ "claudeAiOauth": { "scopes": [] } });
         assert!(!missing_profile_scope(&empty));
+    }
+
+    #[test]
+    fn classify_keychain_read_outcomes() {
+        assert!(matches!(
+            classify_security_output(Some(0), Some("{\"claudeAiOauth\":{}}".into())),
+            CredRead::Found { from_keychain: true, .. }
+        ));
+        // 44 = errSecItemNotFound → genuinely not logged in
+        assert!(matches!(classify_security_output(Some(44), None), CredRead::NotFound));
+        assert!(matches!(classify_security_output(Some(0), Some("  ".into())), CredRead::NotFound));
+        // any other failure (locked keychain, denied prompt) is blocked, not absent
+        assert!(matches!(classify_security_output(Some(36), None), CredRead::Blocked(_)));
+        assert!(matches!(classify_security_output(None, None), CredRead::Blocked(_)));
     }
 
     #[test]
