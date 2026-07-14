@@ -842,17 +842,34 @@
 .tt-toolcard .lbl {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #cfd6e6;
 }
-.tt-toolcard .lbl .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.tt-toolicon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  overflow: hidden;
+}
+.tt-toolicon img {
+  display: block;
+  width: 15px;
+  height: 15px;
+}
+.tt-toolicon b {
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
 }
 .tt-toolcard .num {
   font-size: 22px;
