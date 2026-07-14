@@ -1,4 +1,5 @@
 import type { BreakdownRow } from '../types';
+import { formatCost } from '../lib/format';
 import { TOOLS } from './data';
 
 export interface CostBreakdownModel {
@@ -64,27 +65,8 @@ export function buildCostBreakdown(rows: BreakdownRow[]): CostBreakdownGroup[] {
   });
 }
 
-function formatAmount(cost: number): string {
-  const absoluteCost = Math.abs(cost);
-  const fractionDigits =
-    cost === 0 || absoluteCost >= 0.01
-      ? 2
-      : Math.min(8, Math.max(4, Math.ceil(-Math.log10(absoluteCost)) + 1));
-  const rounded = cost.toFixed(fractionDigits);
-
-  if (cost !== 0 && Number(rounded) === 0) return `$${cost.toExponential(2)}`;
-
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: fractionDigits,
-    maximumFractionDigits: fractionDigits,
-  }).format(cost);
-}
-
 export function formatBreakdownCost(cost: number | null, partial = false): string {
-  if (cost === null) return 'Unpriced';
-  return `${partial ? '≥ ' : ''}${formatAmount(cost)}`;
+  return formatCost(cost, partial, { adaptivePrecision: true, unpricedLabel: 'Unpriced' });
 }
 
 export function formatSourceCost(cost: number | null, unpricedCount: number): string {

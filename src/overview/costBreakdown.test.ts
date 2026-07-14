@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BreakdownRow } from '../types';
 import { buildCostBreakdown, formatBreakdownCost, formatSourceCost } from './costBreakdown';
 
-function row(over: Partial<BreakdownRow>): BreakdownRow {
+function row(overrides: Partial<BreakdownRow>): BreakdownRow {
   return {
     key: 'model',
     inputTokens: 1,
@@ -16,7 +16,7 @@ function row(over: Partial<BreakdownRow>): BreakdownRow {
     reasoningTokens: null,
     convs: 1,
     cacheEstimated: false,
-    ...over,
+    ...overrides,
   };
 }
 

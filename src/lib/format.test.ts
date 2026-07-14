@@ -13,6 +13,11 @@ describe('formatCost', () => {
   it('null is unpriced', () => expect(formatCost(null, false)).toBe('unpriced'));
   it('priced', () => expect(formatCost(12.5, false)).toBe('$12.50'));
   it('unpriced marker', () => expect(formatCost(12.5, true)).toBe('≥ $12.50'));
+  it('supports detailed Cost labels without losing tiny nonzero values', () => {
+    expect(formatCost(4_148.76, false, { adaptivePrecision: true })).toBe('$4,148.76');
+    expect(formatCost(0.004, false, { adaptivePrecision: true })).toBe('$0.0040');
+    expect(formatCost(null, false, { unpricedLabel: 'Unpriced' })).toBe('Unpriced');
+  });
 });
 
 describe('overview formatters', () => {

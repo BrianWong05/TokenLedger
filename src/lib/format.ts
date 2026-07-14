@@ -7,10 +7,34 @@ export function formatTokens(n: number): string {
   return n.toLocaleString('en-US');
 }
 
+interface FormatCostOptions {
+  adaptivePrecision?: boolean;
+  unpricedLabel?: string;
+}
+
 // null -> "unpriced"; hasUnpriced -> "≥ $X.XX"; else "$X.XX".
-export function formatCost(c: number | null, hasUnpriced: boolean): string {
-  if (c === null) return 'unpriced';
-  const amount = `$${c.toFixed(2)}`;
+export function formatCost(
+  c: number | null,
+  hasUnpriced: boolean,
+  options: FormatCostOptions = {},
+): string {
+  if (c === null) return options.unpricedLabel ?? 'unpriced';
+
+  const absoluteCost = Math.abs(c);
+  const fractionDigits =
+    options.adaptivePrecision && c !== 0 && absoluteCost < 0.01
+      ? Math.min(8, Math.max(4, Math.ceil(-Math.log10(absoluteCost)) + 1))
+      : 2;
+  const rounded = c.toFixed(fractionDigits);
+  const amount =
+    options.adaptivePrecision && c !== 0 && Number(rounded) === 0
+      ? `$${c.toExponential(2)}`
+      : new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: 'USD',
+          minimumFractionDigits: fractionDigits,
+          maximumFractionDigits: fractionDigits,
+        }).format(c);
   return hasUnpriced ? `≥ ${amount}` : amount;
 }
 

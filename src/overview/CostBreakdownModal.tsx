@@ -33,6 +33,7 @@ export default function CostBreakdownModal({ summary, rows, onClose }: CostBreak
                 {summary.unpricedModels.length === 1 ? '' : 's'}
               </div>
             )}
+            <div className="tt-cost-modal-disclosure">At API list prices — not billed</div>
           </div>
           <button type="button" className="tt-cost-modal-close" onClick={onClose} aria-label="Close Cost breakdown">
             ×
@@ -55,7 +56,11 @@ export default function CostBreakdownModal({ summary, rows, onClose }: CostBreak
                 <div className="tt-cost-model" key={model.name}>
                   <span className="tt-cost-model-name">
                     {model.name}
-                    {model.cacheEstimated && <span className="tt-tag">cache est.</span>}
+                    {model.cacheEstimated && (
+                      <span className="tt-tag" title="Cache-Estimated">
+                        cache est.
+                      </span>
+                    )}
                   </span>
                   <span className={model.cost === null ? 'unpriced' : ''}>
                     {formatBreakdownCost(model.cost)}

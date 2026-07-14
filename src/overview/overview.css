@@ -886,6 +886,11 @@
   color: #d9a441;
   font-size: 11px;
 }
+.tt-cost-modal-disclosure {
+  margin-top: 7px;
+  color: #767e8e;
+  font-size: 10.5px;
+}
 .tt-cost-modal-close {
   width: 32px;
   height: 32px;
