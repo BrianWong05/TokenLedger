@@ -6,6 +6,7 @@ import ContextBreakdown from './ContextBreakdown';
 import TokenBreakdown from './TokenBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
+import CostBreakdownModal from './CostBreakdownModal';
 import { scan, fetchSeries, fetchSummary, fetchBreakdown, fetchCtxResources, fetchCtxBuckets, fetchCtxTools, fetchCtxExec } from '../api';
 import type { BreakdownRow, SeriesPoint, Summary, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import {
@@ -67,6 +68,7 @@ export default function Overview8b() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pricesVersion, setPricesVersion] = useState(0);
+  const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
 
   const onRefresh = useCallback(async () => {
     try {
@@ -196,6 +198,20 @@ export default function Overview8b() {
   }, [visibleTools, sel]);
   const tool = TOOLS.find((t) => t.key === sel)!;
   const loading = allPoints === null;
+  const canOpenCostBreakdown = sum !== null && modelRows.length > 0;
+  const headlineCost = (
+    <>
+      {sum ? formatCost(sum.cost, sum.hasUnpriced) : '…'} est.
+      {sum?.hasUnpriced && (
+        <span title={sum.unpricedModels.join(', ')}> · {sum.unpricedModels.length} unpriced</span>
+      )}
+      {sum && sum.cacheEstimatedModels.length > 0 && (
+        <span title={sum.cacheEstimatedModels.join(', ')}>
+          {' '}· {sum.cacheEstimatedModels.length} cache est.
+        </span>
+      )}
+    </>
+  );
 
   return (
     <div className="tt">
@@ -297,17 +313,19 @@ export default function Overview8b() {
           <div className="tt-b8-head">
             <div className="tt-eyebrow">Total tokens · {rangeLabel}</div>
             <div className="tt-b8-total">{fmtTok(sum?.totalTokens ?? view.total)}</div>
-            <div className="tt-b8-cost">
-              {sum ? formatCost(sum.cost, sum.hasUnpriced) : '…'} est.
-              {sum?.hasUnpriced && (
-                <span title={sum.unpricedModels.join(', ')}> · {sum.unpricedModels.length} unpriced</span>
-              )}
-              {sum && sum.cacheEstimatedModels.length > 0 && (
-                <span title={sum.cacheEstimatedModels.join(', ')}>
-                  {' '}· {sum.cacheEstimatedModels.length} cache est.
-                </span>
-              )}
-            </div>
+            {canOpenCostBreakdown ? (
+              <button
+                type="button"
+                className="tt-b8-cost tt-b8-cost-button"
+                onClick={() => setCostBreakdownOpen(true)}
+                aria-haspopup="dialog"
+                title="Show Cost breakdown"
+              >
+                {headlineCost}
+              </button>
+            ) : (
+              <div className="tt-b8-cost">{headlineCost}</div>
+            )}
           </div>
 
           <div className="tt-split">
@@ -372,6 +390,9 @@ export default function Overview8b() {
           <BreakdownTable dailyRows={view.dailyRows} projectRows={projectTableRows(projRows)} />
         </div>
       </div>
+      {costBreakdownOpen && sum && (
+        <CostBreakdownModal summary={sum} rows={modelRows} onClose={() => setCostBreakdownOpen(false)} />
+      )}
     </div>
   );
 }
