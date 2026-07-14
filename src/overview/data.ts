@@ -13,12 +13,14 @@ export interface ToolMeta {
   color: string;
 }
 
+// color = each source's brand accent, matching its icon (src/overview/icons/).
+// Hermes has no brand mark, so it keeps a distinct pink.
 export const TOOLS: ToolMeta[] = [
-  { key: 'claude', label: 'Claude', source: 'Claude Code', color: '#3b82f6' },
-  { key: 'codex', label: 'Codex', source: 'Codex', color: '#37c98b' },
-  { key: 'gemini', label: 'Gemini', source: 'Gemini CLI', color: '#e2a63b' },
+  { key: 'claude', label: 'Claude', source: 'Claude Code', color: '#d97757' },
+  { key: 'codex', label: 'Codex', source: 'Codex', color: '#6e50f2' },
+  { key: 'gemini', label: 'Gemini', source: 'Gemini CLI', color: '#3186ff' },
   { key: 'hermes', label: 'Hermes', source: 'Hermes', color: '#f472b6' },
-  { key: 'grok', label: 'Grok', source: 'Grok Build', color: '#a8b0bd' },
+  { key: 'grok', label: 'Grok', source: 'Grok Build', color: '#c3c8d2' },
   { key: 'antigravity', label: 'Antigravity', source: 'Google Antigravity', color: '#22d3ee' },
 ];
 

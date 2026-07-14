@@ -33,8 +33,10 @@ import {
   rangeToFilters,
   type Range8b,
   type ToolKey,
+  type ToolMeta,
   type Bucket,
 } from './data';
+import { TOOL_ICONS } from './icons';
 import { fmtTok, fmtPct, fmtIsoDate, formatCost } from '../lib/format';
 import { useAutoRefresh, REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 
@@ -326,7 +328,7 @@ export default function Overview8b() {
                   style={active ? { borderColor: t.color, background: t.color + '1e' } : undefined}
                 >
                   <div className="lbl">
-                    <span className="dot" style={{ background: t.color }} />
+                    <ToolIcon tool={t} />
                     {t.label}
                   </div>
                   <div className="num">{fmtPct(view.toolTotals[t.key] / grand)}</div>
@@ -371,6 +373,21 @@ export default function Overview8b() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Brand-icon chip for a source; falls back to a colored monogram when the tool
+// has no brand mark (e.g. Hermes).
+function ToolIcon({ tool }: { tool: ToolMeta }) {
+  const src = TOOL_ICONS[tool.key];
+  return (
+    <span className="tt-toolicon">
+      {src ? (
+        <img src={src} alt="" width={15} height={15} />
+      ) : (
+        <b style={{ color: tool.color }}>{tool.label[0]}</b>
+      )}
+    </span>
   );
 }
 
