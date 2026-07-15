@@ -119,6 +119,9 @@ PRAGMA user_version = 4;";
 // idempotency contract as ctx_tools: parse-from-byte-0 clears the file's
 // rows first; resumes add increments. Scan-state clear forces the one-time
 // backfill re-scan. No BEGIN/COMMIT: migrate() wraps the batches.
+// The `source` column is claude-only by design: codex logs shell commands as
+// JSON arrays inside function_call payloads (no shell string for exec_class to
+// classify), and the Overview renders exec facets only under the Bash node.
 const SCHEMA_V5: &str = "\
 CREATE TABLE IF NOT EXISTS ctx_exec (
   source TEXT NOT NULL,

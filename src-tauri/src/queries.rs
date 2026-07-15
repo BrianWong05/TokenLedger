@@ -660,6 +660,9 @@ pub struct CtxExecRow {
 }
 
 // Bash command facets in range. Ignores model/project (table has neither).
+// `source` groups by producer but is claude-only by design: codex logs shell
+// commands as JSON arrays inside function_call payloads (no shell string for
+// exec_class), and the Overview renders exec facets only under the Bash node.
 pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(

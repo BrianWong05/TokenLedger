@@ -1,4 +1,5 @@
-use crate::db::{get_file_state, replace_file_events, set_file_state};
+use super::unchanged;
+use crate::db::{replace_file_events, set_file_state};
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
@@ -84,10 +85,8 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
         .unwrap_or(0);
 
     // unchanged (same size AND mtime) → skip whole file
-    if let Ok(Some(state)) = get_file_state(conn, &path_str) {
-        if state.size == size && state.mtime == mtime {
-            return;
-        }
+    if unchanged(conn, path, &FileState { size, mtime, byte_offset: 0 }) {
+        return;
     }
 
     let content = match fs::read_to_string(path) {

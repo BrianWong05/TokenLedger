@@ -4,6 +4,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::ctx::{self, est};
+use super::unchanged;
 use crate::db;
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
@@ -253,10 +254,8 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
         .unwrap_or(0);
 
     // Unchanged file → skip (full re-parse only on change).
-    if let Ok(Some(state)) = db::get_file_state(conn, &path_str) {
-        if state.size == size && state.mtime == mtime {
-            return Ok((0, 0));
-        }
+    if unchanged(conn, path, &FileState { size, mtime, byte_offset: size }) {
+        return Ok((0, 0));
     }
 
     // Codex re-parses changed files in full: replace this file's tool rows.

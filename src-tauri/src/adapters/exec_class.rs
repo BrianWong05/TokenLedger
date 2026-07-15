@@ -179,6 +179,8 @@ pub fn exec_kind(raw: &str) -> &'static str {
     if matches!(w0, "pwd" | "ls" | "test") {
         return "shell_inspect";
     }
+    // ponytail: raw-string scan — quoted separators misclassify as compound;
+    // tokenize if facet accuracy ever matters.
     if cmd.contains(';') || cmd.contains('&') || cmd.contains('|') {
         return "compound";
     }
