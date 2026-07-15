@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import './overview.css';
 import Heatmap from './Heatmap';
@@ -69,6 +69,10 @@ export default function Overview8b() {
   const [error, setError] = useState<string | null>(null);
   const [pricesVersion, setPricesVersion] = useState(0);
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
+  const costBreakdownFocusTargetRef = useRef<HTMLElement | null>(null);
+  const setCostBreakdownFocusTarget = useCallback((element: HTMLElement | null) => {
+    costBreakdownFocusTargetRef.current = element;
+  }, []);
 
   const onRefresh = useCallback(async () => {
     try {
@@ -315,6 +319,7 @@ export default function Overview8b() {
             <div className="tt-b8-total">{fmtTok(sum?.totalTokens ?? view.total)}</div>
             {canOpenCostBreakdown ? (
               <button
+                ref={setCostBreakdownFocusTarget}
                 type="button"
                 className="tt-b8-cost tt-b8-cost-button"
                 onClick={() => setCostBreakdownOpen(true)}
@@ -324,7 +329,9 @@ export default function Overview8b() {
                 {headlineCost}
               </button>
             ) : (
-              <div className="tt-b8-cost">{headlineCost}</div>
+              <div ref={setCostBreakdownFocusTarget} className="tt-b8-cost" tabIndex={-1}>
+                {headlineCost}
+              </div>
             )}
           </div>
 
@@ -391,7 +398,12 @@ export default function Overview8b() {
         </div>
       </div>
       {costBreakdownOpen && sum && (
-        <CostBreakdownModal summary={sum} rows={modelRows} onClose={() => setCostBreakdownOpen(false)} />
+        <CostBreakdownModal
+          summary={sum}
+          rows={modelRows}
+          returnFocusRef={costBreakdownFocusTargetRef}
+          onClose={() => setCostBreakdownOpen(false)}
+        />
       )}
     </div>
   );

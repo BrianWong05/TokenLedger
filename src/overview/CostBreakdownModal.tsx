@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useLayoutEffect, useMemo, useRef, type RefObject } from 'react';
 import type { BreakdownRow, Summary } from '../types';
 import { buildCostBreakdownView } from './costBreakdown';
 
 interface CostBreakdownModalProps {
   summary: Summary;
   rows: BreakdownRow[];
+  returnFocusRef: RefObject<HTMLElement>;
   onClose: () => void;
 }
 
@@ -17,14 +18,19 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',');
 
-export default function CostBreakdownModal({ summary, rows, onClose }: CostBreakdownModalProps) {
+export default function CostBreakdownModal({
+  summary,
+  rows,
+  returnFocusRef,
+  onClose,
+}: CostBreakdownModalProps) {
   const view = useMemo(() => buildCostBreakdownView(summary, rows), [summary, rows]);
   const modalRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const modal = modalRef.current;
     (closeButtonRef.current ?? modal)?.focus();
@@ -61,7 +67,8 @@ export default function CostBreakdownModal({ summary, rows, onClose }: CostBreak
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+      const focusTarget = returnFocusRef.current ?? previouslyFocused;
+      if (focusTarget?.isConnected) focusTarget.focus();
     };
   }, []);
 
