@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   motion,
   useMotionValue,
@@ -27,7 +27,7 @@ interface ModeAnimation {
 
 interface TokenTotalHeadlineProps {
   total: number;
-  authoritativeReady?: boolean;
+  summaryReady: boolean;
 }
 
 type HeadlineStyle = CSSProperties & {
@@ -164,19 +164,23 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
 
 export default function TokenTotalHeadline({
   total,
-  authoritativeReady,
+  summaryReady,
 }: TokenTotalHeadlineProps) {
   const [mode, setMode] = useState<TokenDisplayMode>(loadDisplayMode);
   const [modeAnimation, setModeAnimation] = useState<ModeAnimation | null>(null);
   const [awaitingInitialLoad, setAwaitingInitialLoad] = useState(
-    () =>
-      authoritativeReady !== undefined &&
-      sessionStorage.getItem(ENTRANCE_PLAYED_KEY) !== 'true',
+    () => sessionStorage.getItem(ENTRANCE_PLAYED_KEY) !== 'true',
   );
   const animationId = useRef(0);
+  const startAnimation = useCallback((to: string) => {
+    animationId.current += 1;
+    setModeAnimation({ id: animationId.current, to });
+  }, []);
   const exact = formatExactTokenTotal(total);
   const display = mode === 'exact' ? exact : formatCompactTokenTotal(total);
-  const restingDisplay = awaitingInitialLoad ? zeroShaped(display) : display;
+  const revealImmediately = summaryReady && prefersReducedMotion();
+  const restingDisplay =
+    awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
   const action = mode === 'exact' ? 'Show compact token count' : 'Show exact token count';
   const layoutLength = modeAnimation ? modeAnimation.to.length : restingDisplay.length;
   const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 46px)`;
@@ -201,15 +205,14 @@ export default function TokenTotalHeadline({
   }, [modeAnimation]);
 
   useEffect(() => {
-    if (!awaitingInitialLoad || !authoritativeReady || total <= 0) return;
+    if (!awaitingInitialLoad || !summaryReady || total <= 0) return;
 
     sessionStorage.setItem(ENTRANCE_PLAYED_KEY, 'true');
     setAwaitingInitialLoad(false);
     if (!prefersReducedMotion()) {
-      animationId.current += 1;
-      setModeAnimation({ id: animationId.current, to: display });
+      startAnimation(display);
     }
-  }, [authoritativeReady, awaitingInitialLoad, display, total]);
+  }, [awaitingInitialLoad, display, startAnimation, summaryReady, total]);
 
   const toggleMode = () => {
     if (modeAnimation) return;
@@ -221,8 +224,7 @@ export default function TokenTotalHeadline({
       !prefersReducedMotion() &&
       !usesCompactLayout()
     ) {
-      animationId.current += 1;
-      setModeAnimation({ id: animationId.current, to: nextDisplay });
+      startAnimation(nextDisplay);
     } else {
       setModeAnimation(null);
     }

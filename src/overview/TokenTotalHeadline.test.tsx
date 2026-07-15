@@ -10,33 +10,30 @@ import './overview.css';
   true;
 
 const mountedRoots: Root[] = [];
+const ENTRANCE_PLAYED_KEY = 'tokenledger.tokenTotalEntrancePlayed';
 
-function renderHeadline(total: number): HTMLButtonElement {
+function mountHeadline(total: number, summaryReady: boolean) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
-  act(() => root.render(<TokenTotalHeadline total={total} />));
-  return container.querySelector('button')!;
-}
-
-function renderLoadableHeadline(total: number, authoritativeReady: boolean) {
-  const container = document.createElement('div');
-  document.body.append(container);
-  const root = createRoot(container);
-  mountedRoots.push(root);
-  const rerender = (nextTotal: number, nextAuthoritativeReady: boolean) => {
+  const rerender = (nextTotal: number, nextSummaryReady: boolean) => {
     act(() =>
       root.render(
         <TokenTotalHeadline
           total={nextTotal}
-          authoritativeReady={nextAuthoritativeReady}
+          summaryReady={nextSummaryReady}
         />,
       ),
     );
   };
-  rerender(total, authoritativeReady);
+  rerender(total, summaryReady);
   return { button: container.querySelector('button')!, rerender };
+}
+
+function renderHeadline(total: number): HTMLButtonElement {
+  sessionStorage.setItem(ENTRANCE_PLAYED_KEY, 'true');
+  return mountHeadline(total, true).button;
 }
 
 function setMediaPreferences({
@@ -104,7 +101,7 @@ describe('TokenTotalHeadline', () => {
 
   it('rolls from a zero-shaped compact value when the first authoritative total arrives', () => {
     vi.useFakeTimers();
-    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+    const { button, rerender } = mountHeadline(4_500_000_000, false);
 
     expect(button.textContent).toBe('0.0B');
 
@@ -122,7 +119,7 @@ describe('TokenTotalHeadline', () => {
   it('uses the saved exact shape for the first authoritative total', () => {
     vi.useFakeTimers();
     localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
-    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+    const { button, rerender } = mountHeadline(4_500_000_000, false);
 
     expect(button.textContent).toBe('0,000,000,000');
 
@@ -135,7 +132,7 @@ describe('TokenTotalHeadline', () => {
 
   it('waits past an authoritative zero for the first later nonzero total', () => {
     vi.useFakeTimers();
-    const { button, rerender } = renderLoadableHeadline(0, true);
+    const { button, rerender } = mountHeadline(0, true);
 
     expect(button.textContent).toBe('0');
     expect(button.getAttribute('aria-busy')).toBeNull();
@@ -149,21 +146,21 @@ describe('TokenTotalHeadline', () => {
 
   it('does not replay the entrance for later totals or another headline mount', () => {
     vi.useFakeTimers();
-    const { button, rerender } = renderLoadableHeadline(4_500_000_000, true);
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
     act(() => vi.advanceTimersByTime(1_400));
 
     rerender(5_000_000_000, true);
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('5B');
 
-    const revisited = renderLoadableHeadline(6_000_000_000, true).button;
+    const revisited = mountHeadline(6_000_000_000, true).button;
     expect(revisited.getAttribute('aria-busy')).toBeNull();
     expect(revisited.textContent).toBe('6B');
   });
 
   it('reveals the first authoritative total immediately with Reduce Motion', () => {
     setReducedMotion(true);
-    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+    const { button, rerender } = mountHeadline(4_500_000_000, false);
 
     rerender(4_500_000_000, true);
 
@@ -174,7 +171,7 @@ describe('TokenTotalHeadline', () => {
   it('still rolls the first authoritative total in a compact layout', () => {
     vi.useFakeTimers();
     setMediaPreferences({ compactLayout: true });
-    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+    const { button, rerender } = mountHeadline(4_500_000_000, false);
 
     rerender(4_500_000_000, true);
 
