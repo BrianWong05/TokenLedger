@@ -11,7 +11,7 @@ import { formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
 
 type TokenDisplayMode = 'compact' | 'exact';
 type CounterToken =
-  | { kind: 'digit'; place: number }
+  | { kind: 'digit'; glyph: number; target: number }
   | { kind: 'static'; value: string };
 
 const STORAGE_KEY = 'tokenledger.tokenTotalDisplayMode';
@@ -40,84 +40,38 @@ function usesCompactLayout() {
   return window.matchMedia?.('(max-width: 639px)').matches ?? false;
 }
 
-function parseAnimatedCounterValue(displayValue: string) {
-  const match = displayValue.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
-  if (!match) return null;
-  const parsed = Number(match[0]);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeNearInteger(value: number) {
-  const nearest = Math.round(value);
-  const tolerance = 1e-9 * Math.max(1, Math.abs(value));
-  return Math.abs(value - nearest) < tolerance ? nearest : value;
-}
-
-function getTruncatedValueAtPlace(value: number, place: number) {
-  return Math.floor(normalizeNearInteger(value / place));
-}
-
 function getCounterTokens(displayValue: string): CounterToken[] {
-  const characters = Array.from(displayValue);
-  const decimalIndex = characters.indexOf('.');
-  let digitsBeforeDecimal = characters.filter(
-    (character, index) => /\d/.test(character) && (decimalIndex === -1 || index < decimalIndex),
-  ).length;
-  let decimalPlaces = 0;
-  let pastDecimal = false;
+  let digitPrefix = 0;
 
-  return characters.map((character) => {
-    if (!/\d/.test(character)) {
-      if (character === '.') pastDecimal = true;
-      return { kind: 'static', value: character };
+  return Array.from(displayValue, (character): CounterToken => {
+    if (character >= '0' && character <= '9') {
+      const glyph = Number(character);
+      digitPrefix = digitPrefix * 10 + glyph;
+      return { kind: 'digit', glyph, target: digitPrefix };
     }
 
-    if (!pastDecimal) {
-      const place = 10 ** Math.max(digitsBeforeDecimal - 1, 0);
-      digitsBeforeDecimal -= 1;
-      return { kind: 'digit', place };
-    }
-
-    decimalPlaces += 1;
-    return { kind: 'digit', place: 10 ** -decimalPlaces };
+    return { kind: 'static', value: character };
   });
 }
 
-function staticTokenStyle(token: string): CSSProperties {
-  if (token === '.') {
-    return {
-      width: '0.34ch',
-      justifyContent: 'center',
-      marginInline: '-0.04ch',
-    };
-  }
-
-  if (token === ',') {
-    return {
-      width: '0.88ch',
-      justifyContent: 'center',
-      marginInline: '-0.30ch',
-    };
-  }
-
-  return {
-    width: 'auto',
-    justifyContent: 'center',
-    paddingInline: '0.06ch',
-  };
+function staticTokenClass(token: string) {
+  if (token === '.') return 'is-decimal';
+  if (token === ',') return 'is-comma';
+  return 'is-unit';
 }
 
-function RollingDigit({ value, digit }: { value: MotionValue<number>; digit: number }) {
-  const y = useTransform(value, (latest) => {
-    const placeValue = ((latest % 10) + 10) % 10;
-    const offset = (10 + digit - placeValue) % 10;
-    const wrappedOffset = offset > 5 ? offset - 10 : offset;
-    return `calc(${wrappedOffset} * var(--tt-counter-height))`;
+function WheelGlyph({ position, glyph }: { position: MotionValue<number>; glyph: number }) {
+  const y = useTransform(position, (current) => {
+    const phase = current - Math.floor(current / 10) * 10;
+    let rowOffset = glyph - phase;
+    if (rowOffset > 5) rowOffset -= 10;
+    if (rowOffset <= -5) rowOffset += 10;
+    return `calc(${rowOffset} * var(--tt-counter-height))`;
   });
 
   return (
     <motion.span className="tt-token-counter-rolling-digit" style={{ y }}>
-      {digit}
+      {glyph}
     </motion.span>
   );
 }
@@ -126,8 +80,7 @@ function StaticCounterToken({ token }: { token: string }) {
   return (
     <span
       data-counter-token="static"
-      className="tt-token-counter-token is-static"
-      style={staticTokenStyle(token)}
+      className={`tt-token-counter-token is-static ${staticTokenClass(token)}`}
     >
       {token}
     </span>
@@ -135,42 +88,40 @@ function StaticCounterToken({ token }: { token: string }) {
 }
 
 function AnimatedCounterToken({
-  place,
-  value,
+  glyph,
+  target,
 }: {
-  place: number;
-  value: number;
+  glyph: number;
+  target: number;
 }) {
-  const truncatedValueAtPlace = getTruncatedValueAtPlace(value, place);
-  const motionValue = useMotionValue(0);
-  const animatedValue = useSpring(motionValue, {
+  const destination = useMotionValue(0);
+  const position = useSpring(destination, {
     stiffness: 220,
     damping: 26,
     mass: 0.8,
   });
 
   useEffect(() => {
-    motionValue.set(truncatedValueAtPlace);
-  }, [motionValue, truncatedValueAtPlace]);
+    destination.set(target);
+  }, [destination, target]);
 
   return (
     <span
       data-counter-token="digit"
-      data-counter-place={place}
-      data-counter-target={truncatedValueAtPlace}
+      data-counter-glyph={glyph}
+      data-counter-target={target}
       className="tt-token-counter-token is-digit"
     >
-      {Array.from({ length: 10 }, (_, digit) => (
-        <RollingDigit key={digit} value={animatedValue} digit={digit} />
+      {Array.from({ length: 10 }, (_, wheelGlyph) => (
+        <WheelGlyph key={wheelGlyph} position={position} glyph={wheelGlyph} />
       ))}
     </span>
   );
 }
 
-function TokenTrackerCounter({ displayValue }: { displayValue: string }) {
+function SpringCounter({ displayValue }: { displayValue: string }) {
   const tokens = useMemo(() => getCounterTokens(displayValue), [displayValue]);
   const shouldReduceMotion = useReducedMotion() ?? false;
-  const numericValue = Math.abs(parseAnimatedCounterValue(displayValue) ?? 0);
 
   if (shouldReduceMotion) {
     return (
@@ -186,9 +137,9 @@ function TokenTrackerCounter({ displayValue }: { displayValue: string }) {
         {tokens.map((token, index) =>
           token.kind === 'digit' ? (
             <AnimatedCounterToken
-              key={`${token.place}-${index}`}
-              place={token.place}
-              value={numericValue}
+              key={`${token.target}-${index}`}
+              glyph={token.glyph}
+              target={token.target}
             />
           ) : (
             <StaticCounterToken key={`${token.value}-${index}`} token={token.value} />
@@ -257,7 +208,7 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
       style={headlineStyle}
     >
       {modeAnimation ? (
-        <TokenTrackerCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
+        <SpringCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
       ) : (
         display
       )}

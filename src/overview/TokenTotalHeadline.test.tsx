@@ -139,7 +139,7 @@ describe('TokenTotalHeadline', () => {
     expect(counter.textContent).not.toContain(',');
   });
 
-  it('uses TokenTracker place values for deterministic non-uniform travel', () => {
+  it('uses digit prefixes for deterministic non-uniform travel', () => {
     vi.useFakeTimers();
     localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
     const button = renderHeadline(5_841_112_112);
@@ -150,7 +150,12 @@ describe('TokenTotalHeadline', () => {
       button.querySelectorAll<HTMLElement>('[data-counter-token="digit"]'),
       (digit) => Number(digit.dataset.counterTarget),
     );
+    const glyphs = Array.from(
+      button.querySelectorAll<HTMLElement>('[data-counter-token="digit"]'),
+      (digit) => Number(digit.dataset.counterGlyph),
+    );
     expect(targets).toEqual([5, 58, 584]);
+    expect(glyphs).toEqual([5, 8, 4]);
   });
 
   it('anchors target punctuation and units while the digits roll', () => {
@@ -167,7 +172,7 @@ describe('TokenTotalHeadline', () => {
     expect(anchoredSymbols).toEqual(expect.arrayContaining(['.', 'B']));
   });
 
-  it('uses TokenTracker punctuation widths in the animated row', () => {
+  it('uses tuned punctuation widths in the animated row', () => {
     vi.useFakeTimers();
     const button = renderHeadline(5_841_112_112);
 
@@ -175,8 +180,7 @@ describe('TokenTotalHeadline', () => {
 
     const comma = button.querySelector<HTMLElement>('[data-counter-token="static"]')!;
     expect(comma.textContent).toBe(',');
-    expect(comma.style.width).toBe('0.88ch');
-    expect(comma.style.marginInline).toBe('-0.3ch');
+    expect(comma.classList.contains('is-comma')).toBe(true);
   });
 
   it('uses the settled target font size throughout a mode change', () => {
@@ -208,7 +212,7 @@ describe('TokenTotalHeadline', () => {
     ).toEqual([',', ',', ',']);
   });
 
-  it('uses TokenTracker ten-glyph columns inside a fixed counter window', () => {
+  it('uses ten-glyph columns inside a fixed counter window', () => {
     vi.useFakeTimers();
     const button = renderHeadline(5_841_112_112);
 
