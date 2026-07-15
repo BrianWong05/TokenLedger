@@ -1,4 +1,5 @@
 use serde::Serialize;
+use ts_rs::TS;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsageEvent {
@@ -49,18 +50,23 @@ pub struct SourceScanResult {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct SourceStatus {
     pub source: String,
+    #[ts(type = "number")]
     pub events_inserted: u64,
+    #[ts(type = "number")]
     pub lines_skipped: u64,
     pub error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct ScanStatus {
     pub sources: Vec<SourceStatus>,
+    #[ts(type = "number")]
     pub scanned_at: i64,
 }

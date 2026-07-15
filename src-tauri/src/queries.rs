@@ -1,23 +1,34 @@
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct Filters {
     pub tools: Vec<String>,
     pub models: Vec<String>,
     pub project: Option<String>,
+    #[ts(optional, type = "number")]
     pub start_ts: Option<i64>,
+    #[ts(optional, type = "number")]
     pub end_ts: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct Summary {
+    #[ts(type = "number")]
     pub input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
+    #[ts(type = "number")]
     pub cache_read_tokens: i64,
+    #[ts(type = "number")]
     pub cache_write_tokens: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
+    #[ts(type = "number")]
     pub requests: i64,
     pub cost: Option<f64>,
     pub has_unpriced: bool,
@@ -26,31 +37,46 @@ pub struct Summary {
     pub cache_hit_rate: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct TrendPoint {
     pub bucket: String,
+    #[ts(type = "number")]
     pub input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
+    #[ts(type = "number")]
     pub cache_read_tokens: i64,
+    #[ts(type = "number")]
     pub cache_write_tokens: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
     pub cost: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct BreakdownRow {
     pub key: String,
     pub source: Option<String>,
+    #[ts(type = "number")]
     pub input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
+    #[ts(type = "number")]
     pub cache_read_tokens: i64,
+    #[ts(type = "number")]
     pub cache_write_tokens: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
+    #[ts(type = "number")]
     pub requests: i64,
     pub cost: Option<f64>,
+    #[ts(type = "number | null")]
     pub reasoning_tokens: Option<i64>,
+    #[ts(type = "number")]
     pub convs: i64,
     pub cache_estimated: bool,
 }
@@ -221,27 +247,44 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     Ok(points)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct SeriesPoint {
     pub bucket: String,
     pub source: String,
+    #[ts(type = "Record<string, number>")]
     pub by_model: HashMap<String, i64>, // model -> total tokens within (bucket, source)
+    #[ts(type = "number")]
     pub input_tokens: i64,
+    #[ts(type = "number")]
     pub output_tokens: i64,
+    #[ts(type = "number")]
     pub cache_read_tokens: i64,
+    #[ts(type = "number")]
     pub cache_write_tokens: i64,
+    #[ts(type = "number")]
     pub total_tokens: i64,
+    #[ts(type = "number | null")]
     pub reasoning_tokens: Option<i64>,
     pub cost: f64,
+    #[ts(type = "number")]
     pub requests: i64,
+    #[ts(type = "number")]
     pub convs: i64,
+    #[ts(type = "number | null")]
     pub ctx_messages: Option<i64>,
+    #[ts(type = "number | null")]
     pub ctx_system: Option<i64>,
+    #[ts(type = "number | null")]
     pub ctx_reasoning: Option<i64>,
+    #[ts(type = "number | null")]
     pub ctx_toolcalls: Option<i64>,
+    #[ts(type = "number | null")]
     pub ctx_agents: Option<i64>,
+    #[ts(type = "number | null")]
     pub ctx_mcp: Option<i64>,
+    #[ts(type = "number | null")]
     pub ctx_skills: Option<i64>,
 }
 
@@ -453,11 +496,13 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     Ok(out)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct CtxResourceCount {
     pub source: String,
     pub kind: String,
+    #[ts(type = "number")]
     pub count: i64,
 }
 
@@ -499,14 +544,20 @@ pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<Ctx
     rows.collect()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct CtxBuckets {
     pub source: String,
+    #[ts(type = "number")]
     pub history: i64,          // cache_read + non-first cache writes
+    #[ts(type = "number")]
     pub new_input: i64,        // fresh input_tokens
+    #[ts(type = "number | null")]
     pub system: Option<i64>,   // first cache write per session; NULL when unknowable
+    #[ts(type = "number")]
     pub response: i64,         // max(0, output − reasoning)
+    #[ts(type = "number | null")]
     pub reasoning: Option<i64>,
 }
 
@@ -557,12 +608,15 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
     Ok(out)
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct CtxToolRow {
     pub source: String,
     pub name: String,
+    #[ts(type = "number")]
     pub est_tokens: i64,
+    #[ts(type = "number")]
     pub calls: i64,
 }
 
@@ -598,14 +652,17 @@ pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxTool
     rows.collect()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct CtxExecRow {
     pub source: String,
     pub kind: String,
     pub exe: String,
     pub cmd: String,
+    #[ts(type = "number")]
     pub est_tokens: i64,
+    #[ts(type = "number")]
     pub calls: i64,
 }
 

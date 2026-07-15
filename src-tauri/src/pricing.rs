@@ -2,6 +2,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use ts_rs::TS;
 
 /// Providers whose normalized entry wins a collision over prefixed resellers.
 const CANONICAL: &[&str] = &["anthropic", "openai", "gemini", "vertex_ai-language-models"];
@@ -205,8 +206,9 @@ pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, St
     rebuild_prices(conn, &json)
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct OverrideRates {
     pub input: Option<f64>,
     pub output: Option<f64>,
