@@ -15,6 +15,7 @@ type CounterToken =
   | { kind: 'static'; value: string };
 
 const STORAGE_KEY = 'tokenledger.tokenTotalDisplayMode';
+const ENTRANCE_PLAYED_KEY = 'tokenledger.tokenTotalEntrancePlayed';
 const MODE_ANIMATION_MS = 1_400;
 const COUNTER_HEIGHT = '1.0833em';
 const HEADLINE_TRACKING_EM = 0.03;
@@ -24,6 +25,11 @@ interface ModeAnimation {
   to: string;
 }
 
+interface TokenTotalHeadlineProps {
+  total: number;
+  authoritativeReady?: boolean;
+}
+
 type HeadlineStyle = CSSProperties & {
   '--tt-counter-height': string;
   '--tt-headline-font-size': string;
@@ -31,6 +37,10 @@ type HeadlineStyle = CSSProperties & {
 
 function loadDisplayMode(): TokenDisplayMode {
   return localStorage.getItem(STORAGE_KEY) === 'exact' ? 'exact' : 'compact';
+}
+
+function zeroShaped(displayValue: string) {
+  return displayValue.replace(/\d/g, '0');
 }
 
 function prefersReducedMotion() {
@@ -152,14 +162,23 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
   );
 }
 
-export default function TokenTotalHeadline({ total }: { total: number }) {
+export default function TokenTotalHeadline({
+  total,
+  authoritativeReady,
+}: TokenTotalHeadlineProps) {
   const [mode, setMode] = useState<TokenDisplayMode>(loadDisplayMode);
   const [modeAnimation, setModeAnimation] = useState<ModeAnimation | null>(null);
+  const [awaitingInitialLoad, setAwaitingInitialLoad] = useState(
+    () =>
+      authoritativeReady !== undefined &&
+      sessionStorage.getItem(ENTRANCE_PLAYED_KEY) !== 'true',
+  );
   const animationId = useRef(0);
   const exact = formatExactTokenTotal(total);
   const display = mode === 'exact' ? exact : formatCompactTokenTotal(total);
+  const restingDisplay = awaitingInitialLoad ? zeroShaped(display) : display;
   const action = mode === 'exact' ? 'Show compact token count' : 'Show exact token count';
-  const layoutLength = modeAnimation ? modeAnimation.to.length : display.length;
+  const layoutLength = modeAnimation ? modeAnimation.to.length : restingDisplay.length;
   const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 46px)`;
   const headlineStyle: HeadlineStyle = {
     display: 'block',
@@ -180,6 +199,17 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
     }, MODE_ANIMATION_MS);
     return () => window.clearTimeout(timeout);
   }, [modeAnimation]);
+
+  useEffect(() => {
+    if (!awaitingInitialLoad || !authoritativeReady || total <= 0) return;
+
+    sessionStorage.setItem(ENTRANCE_PLAYED_KEY, 'true');
+    setAwaitingInitialLoad(false);
+    if (!prefersReducedMotion()) {
+      animationId.current += 1;
+      setModeAnimation({ id: animationId.current, to: display });
+    }
+  }, [authoritativeReady, awaitingInitialLoad, display, total]);
 
   const toggleMode = () => {
     if (modeAnimation) return;
@@ -212,7 +242,7 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
       {modeAnimation ? (
         <SpringCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
       ) : (
-        display
+        restingDisplay
       )}
     </button>
   );

@@ -20,11 +20,39 @@ function renderHeadline(total: number): HTMLButtonElement {
   return container.querySelector('button')!;
 }
 
-function setReducedMotion(matches: boolean) {
+function renderLoadableHeadline(total: number, authoritativeReady: boolean) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  const rerender = (nextTotal: number, nextAuthoritativeReady: boolean) => {
+    act(() =>
+      root.render(
+        <TokenTotalHeadline
+          total={nextTotal}
+          authoritativeReady={nextAuthoritativeReady}
+        />,
+      ),
+    );
+  };
+  rerender(total, authoritativeReady);
+  return { button: container.querySelector('button')!, rerender };
+}
+
+function setMediaPreferences({
+  reducedMotion = false,
+  compactLayout = false,
+}: {
+  reducedMotion?: boolean;
+  compactLayout?: boolean;
+}) {
   Object.defineProperty(window, 'matchMedia', {
     configurable: true,
     value: vi.fn().mockImplementation((query: string) => ({
-      matches,
+      matches:
+        query === '(prefers-reduced-motion: reduce)'
+          ? reducedMotion
+          : query === '(max-width: 639px)' && compactLayout,
       media: query,
       onchange: null,
       addListener: vi.fn(),
@@ -36,9 +64,14 @@ function setReducedMotion(matches: boolean) {
   });
 }
 
+function setReducedMotion(matches: boolean) {
+  setMediaPreferences({ reducedMotion: matches });
+}
+
 describe('TokenTotalHeadline', () => {
   beforeEach(() => {
     localStorage.clear();
+    sessionStorage.clear();
     setReducedMotion(false);
   });
 
@@ -67,6 +100,87 @@ describe('TokenTotalHeadline', () => {
     act(() => vi.advanceTimersByTime(1));
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('4,500,000,000');
+  });
+
+  it('rolls from a zero-shaped compact value when the first authoritative total arrives', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+
+    expect(button.textContent).toBe('0.0B');
+
+    rerender(4_500_000_000, true);
+
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    act(() => vi.advanceTimersByTime(1_399));
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('4.5B');
+  });
+
+  it('uses the saved exact shape for the first authoritative total', () => {
+    vi.useFakeTimers();
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+
+    expect(button.textContent).toBe('0,000,000,000');
+
+    rerender(4_500_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toBe('4,500,000,000');
+  });
+
+  it('waits past an authoritative zero for the first later nonzero total', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = renderLoadableHeadline(0, true);
+
+    expect(button.textContent).toBe('0');
+    expect(button.getAttribute('aria-busy')).toBeNull();
+
+    rerender(4_500_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toBe('4.5B');
+  });
+
+  it('does not replay the entrance for later totals or another headline mount', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = renderLoadableHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    rerender(5_000_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('5B');
+
+    const revisited = renderLoadableHeadline(6_000_000_000, true).button;
+    expect(revisited.getAttribute('aria-busy')).toBeNull();
+    expect(revisited.textContent).toBe('6B');
+  });
+
+  it('reveals the first authoritative total immediately with Reduce Motion', () => {
+    setReducedMotion(true);
+    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+
+    rerender(4_500_000_000, true);
+
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('4.5B');
+  });
+
+  it('still rolls the first authoritative total in a compact layout', () => {
+    vi.useFakeTimers();
+    setMediaPreferences({ compactLayout: true });
+    const { button, rerender } = renderLoadableHeadline(4_500_000_000, false);
+
+    rerender(4_500_000_000, true);
+
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toBe('4.5B');
   });
 
   it('swaps modes immediately when Reduce Motion is enabled', () => {

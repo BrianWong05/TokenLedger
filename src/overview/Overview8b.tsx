@@ -317,7 +317,10 @@ export default function Overview8b() {
         <div className="tt-b8-body">
           <div className="tt-b8-head">
             <div className="tt-eyebrow">Total tokens · {rangeLabel}</div>
-            <TokenTotalHeadline total={sum?.totalTokens ?? view.total} />
+            <TokenTotalHeadline
+              total={sum?.totalTokens ?? view.total}
+              authoritativeReady={sum !== null}
+            />
             {canOpenCostBreakdown ? (
               <button
                 ref={setCostBreakdownFocusTarget}
