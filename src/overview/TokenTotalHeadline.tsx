@@ -5,6 +5,7 @@ type TokenDisplayMode = 'compact' | 'exact';
 
 const STORAGE_KEY = 'tokenledger.tokenTotalDisplayMode';
 const MODE_ANIMATION_MS = 1_400;
+const TARGET_STAGE_MS = 160;
 const DIGIT_SETTLE_STAGGER_MS = 55;
 const MIN_DIGIT_ROLL_MS = 320;
 
@@ -16,6 +17,8 @@ interface ModeAnimation {
 
 type OdometerViewportStyle = CSSProperties & {
   '--tt-from-width': string;
+  '--tt-reel-window': string;
+  '--tt-stage-duration': string;
   '--tt-to-width': string;
 };
 
@@ -27,6 +30,10 @@ type OdometerReelStyle = CSSProperties & {
 type OdometerGridStyle = CSSProperties & {
   '--tt-from-offset': string;
   '--tt-to-offset': string;
+};
+
+type HeadlineStyle = CSSProperties & {
+  '--tt-headline-font-size': string;
 };
 
 function loadDisplayMode(): TokenDisplayMode {
@@ -43,16 +50,17 @@ function centeredCharacters(value: string, length: number) {
   return Array.from({ length }, (_, index) => characters[index - leftPadding] ?? null);
 }
 
-function upwardDigitReel(from: string | null, to: string) {
+function upwardDigitReel(from: string | null, to: string, extraTurns: number) {
   const start = from !== null && isDigit(from) ? Number(from) : 0;
   const target = Number(to);
-  const steps = 10 + ((target - start + 10) % 10);
+  const steps = 10 * (1 + extraTurns) + ((target - start + 10) % 10);
   return Array.from({ length: steps + 1 }, (_, index) => String((start + index) % 10));
 }
 
-function exitingDigitReel(from: string) {
+function exitingDigitReel(from: string, extraTurns: number) {
   const start = Number(from);
-  return Array.from({ length: 11 }, (_, index) => String((start + index) % 10));
+  const steps = 10 * (1 + extraTurns);
+  return Array.from({ length: steps + 1 }, (_, index) => String((start + index) % 10));
 }
 
 function prefersReducedMotion() {
@@ -81,6 +89,8 @@ function RollingTokenTotal({ from, to }: { from: string; to: string }) {
   const viewportStyle: OdometerViewportStyle = {
     overflow: 'hidden',
     '--tt-from-width': `${Array.from(from).length}ch`,
+    '--tt-reel-window': '1.32em',
+    '--tt-stage-duration': `${TARGET_STAGE_MS}ms`,
     '--tt-to-width': `${Array.from(to).length}ch`,
   };
   const gridStyle: OdometerGridStyle = {
@@ -100,12 +110,13 @@ function RollingTokenTotal({ from, to }: { from: string; to: string }) {
           const toIsDigit = toCharacter !== null && isDigit(toCharacter);
           const rollingIndex = rollingSlotIndexes.indexOf(index);
           const duration = firstSettleMs + rollingIndex * settleStaggerMs;
+          const extraTurns = rollingIndex % 2;
 
           let reel: string[] | null = null;
           if (toIsDigit) {
-            reel = upwardDigitReel(fromCharacter, toCharacter!);
+            reel = upwardDigitReel(fromCharacter, toCharacter!, extraTurns);
           } else if (fromIsDigit) {
-            reel = exitingDigitReel(fromCharacter!);
+            reel = exitingDigitReel(fromCharacter!, extraTurns);
           }
 
           const reelStyle: OdometerReelStyle | undefined = reel
@@ -114,9 +125,6 @@ function RollingTokenTotal({ from, to }: { from: string; to: string }) {
                 '--tt-roll-duration': `${duration}ms`,
               }
             : undefined;
-          const symbolIsUnchanged =
-            fromCharacter !== null && fromCharacter === toCharacter && !fromIsDigit;
-
           return (
             <span className="tt-token-odometer-slot" key={index}>
               {reel ? (
@@ -129,18 +137,11 @@ function RollingTokenTotal({ from, to }: { from: string; to: string }) {
                   ))}
                 </span>
               ) : null}
-              {symbolIsUnchanged ? (
+              {toCharacter !== null && !toIsDigit ? (
                 <span className="tt-token-odometer-symbol is-static">{toCharacter}</span>
-              ) : (
-                <>
-                  {fromCharacter !== null && !fromIsDigit ? (
-                    <span className="tt-token-odometer-symbol is-old">{fromCharacter}</span>
-                  ) : null}
-                  {toCharacter !== null && !toIsDigit ? (
-                    <span className="tt-token-odometer-symbol is-new">{toCharacter}</span>
-                  ) : null}
-                </>
-              )}
+              ) : fromCharacter !== null && !fromIsDigit ? (
+                <span className="tt-token-odometer-symbol is-old">{fromCharacter}</span>
+              ) : null}
             </span>
           );
         })}
@@ -156,10 +157,18 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
   const exact = formatExactTokenTotal(total);
   const display = mode === 'exact' ? exact : formatCompactTokenTotal(total);
   const action = mode === 'exact' ? 'Show compact token count' : 'Show exact token count';
-  const layoutLength = modeAnimation
-    ? Math.max(modeAnimation.from.length, modeAnimation.to.length)
-    : display.length;
+  const layoutLength = modeAnimation ? modeAnimation.to.length : display.length;
   const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 46px)`;
+  const headlineStyle: HeadlineStyle = {
+    display: 'block',
+    width: 'fit-content',
+    maxWidth: '100%',
+    marginInline: 'auto',
+    height: '1.32em',
+    fontSize: 'var(--tt-headline-font-size)',
+    whiteSpace: 'nowrap',
+    '--tt-headline-font-size': responsiveFontSize,
+  };
 
   useEffect(() => {
     if (!modeAnimation) return;
@@ -170,6 +179,7 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
   }, [modeAnimation]);
 
   const toggleMode = () => {
+    if (modeAnimation) return;
     const next = mode === 'compact' ? 'exact' : 'compact';
     const nextDisplay = next === 'exact' ? exact : formatCompactTokenTotal(total);
     localStorage.setItem(STORAGE_KEY, next);
@@ -190,14 +200,7 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
       title={action}
       aria-label={`${exact} total tokens. ${action}`}
       aria-busy={modeAnimation ? true : undefined}
-      style={{
-        display: 'block',
-        width: 'fit-content',
-        maxWidth: '100%',
-        marginInline: 'auto',
-        fontSize: responsiveFontSize,
-        whiteSpace: 'nowrap',
-      }}
+      style={headlineStyle}
     >
       {modeAnimation ? (
         <RollingTokenTotal from={modeAnimation.from} to={modeAnimation.to} />

@@ -102,7 +102,85 @@ describe('TokenTotalHeadline', () => {
     expect(button.textContent).toBe('4.5B');
   });
 
-  it('keeps exact-to-compact motion inside one clipped viewport for 1.4 seconds', () => {
+  it('ignores another activation until the current mode change settles', () => {
+    vi.useFakeTimers();
+    const button = renderHeadline(4_500_000_000);
+
+    act(() => button.click());
+    act(() => button.click());
+
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.title).toBe('Show compact token count');
+    expect(localStorage.getItem('tokenledger.tokenTotalDisplayMode')).toBe('exact');
+
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toBe('4,500,000,000');
+  });
+
+  it('uses deterministic non-uniform reel travel across neighboring digits', () => {
+    vi.useFakeTimers();
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const reelLengths = Array.from(
+      button.querySelectorAll<HTMLElement>('.tt-token-odometer-reel'),
+      (reel) => reel.childElementCount,
+    );
+    expect(Math.min(...reelLengths)).toBeGreaterThanOrEqual(11);
+    expect(Math.max(...reelLengths)).toBeGreaterThanOrEqual(21);
+  });
+
+  it('anchors target punctuation and units while the digits roll', () => {
+    vi.useFakeTimers();
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const anchoredSymbols = Array.from(
+      button.querySelectorAll<HTMLElement>('.tt-token-odometer-symbol.is-static'),
+      (symbol) => symbol.textContent,
+    );
+    expect(anchoredSymbols).toEqual(expect.arrayContaining(['.', 'B']));
+  });
+
+  it('uses the settled target font size throughout a mode change', () => {
+    vi.useFakeTimers();
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+    expect(button.getAttribute('style')).toContain('31.000cqi');
+
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.getAttribute('style')).toContain('31.000cqi');
+  });
+
+  it('forms the target-width stage before the digit reels settle', () => {
+    vi.useFakeTimers();
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const viewport = button.querySelector<HTMLElement>('.tt-token-odometer-viewport')!;
+    const reel = button.querySelector<HTMLElement>('.tt-token-odometer-reel')!;
+    expect(viewport.style.getPropertyValue('--tt-stage-duration')).toBe('160ms');
+    expect(parseFloat(reel.style.getPropertyValue('--tt-roll-duration'))).toBeGreaterThan(160);
+  });
+
+  it('uses a controlled multi-row window for the digit reels', () => {
+    vi.useFakeTimers();
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const viewport = button.querySelector<HTMLElement>('.tt-token-odometer-viewport')!;
+    expect(viewport.style.getPropertyValue('--tt-reel-window')).toBe('1.32em');
+  });
+
+  it('keeps exact-to-compact motion inside one target-width viewport for 1.4 seconds', () => {
     vi.useFakeTimers();
     localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
     const button = renderHeadline(5_841_112_112);
@@ -111,6 +189,8 @@ describe('TokenTotalHeadline', () => {
 
     const viewport = button.firstElementChild as HTMLElement;
     expect(getComputedStyle(viewport).overflow).toBe('hidden');
+    expect(viewport.style.getPropertyValue('--tt-from-width')).toBe('13ch');
+    expect(viewport.style.getPropertyValue('--tt-to-width')).toBe('5ch');
     expect(viewport.childElementCount).toBe(1);
     const reels = Array.from(viewport.querySelectorAll<HTMLElement>('.tt-token-odometer-reel'));
     expect(reels.length).toBeGreaterThan(1);

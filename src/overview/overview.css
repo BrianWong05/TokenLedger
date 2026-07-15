@@ -808,7 +808,7 @@
 }
 .tt-b8-total {
   appearance: none;
-  padding: 2px 8px;
+  padding: 0 8px;
   border: 0;
   border-radius: 9px;
   background: transparent;
@@ -831,12 +831,12 @@
 }
 .tt-token-odometer-viewport {
   position: relative;
-  display: inline-block;
-  height: 1em;
+  display: block;
+  height: var(--tt-reel-window);
   line-height: 1em;
-  vertical-align: -0.04em;
   width: var(--tt-from-width);
-  animation: tt-token-odometer-width 1400ms cubic-bezier(0.2, 0.72, 0.18, 1) forwards;
+  animation: tt-token-odometer-width var(--tt-stage-duration)
+    cubic-bezier(0.2, 0.72, 0.18, 1) forwards;
   pointer-events: none;
 }
 .tt-token-odometer-grid {
@@ -845,12 +845,13 @@
   left: 50%;
   display: grid;
   height: 1em;
-  animation: tt-token-odometer-align 1400ms cubic-bezier(0.2, 0.72, 0.18, 1) forwards;
+  animation: tt-token-odometer-align var(--tt-stage-duration)
+    cubic-bezier(0.2, 0.72, 0.18, 1) forwards;
 }
 .tt-token-odometer-slot {
   position: relative;
   width: 1ch;
-  height: 1em;
+  height: var(--tt-reel-window);
   overflow: hidden;
   text-align: center;
 }
@@ -861,7 +862,7 @@
   flex-direction: column;
   animation: tt-token-odometer-up var(--tt-roll-duration)
     cubic-bezier(0.14, 0.7, 0.16, 1) forwards;
-  will-change: filter, transform;
+  will-change: transform;
 }
 .tt-token-odometer-reel > span {
   flex: 0 0 1em;
@@ -879,9 +880,6 @@
 }
 .tt-token-odometer-symbol.is-old {
   animation: tt-token-odometer-symbol-out 1400ms ease forwards;
-}
-.tt-token-odometer-symbol.is-new {
-  animation: tt-token-odometer-symbol-in 1400ms ease both;
 }
 @keyframes tt-token-odometer-width {
   from {
@@ -901,32 +899,21 @@
 }
 @keyframes tt-token-odometer-up {
   from {
-    filter: blur(0);
     transform: translateY(0);
   }
-  46% {
-    filter: blur(0.65px);
-  }
   to {
-    filter: blur(0);
     transform: translateY(var(--tt-reel-distance));
   }
 }
 @keyframes tt-token-odometer-away {
   from {
-    filter: blur(0);
     opacity: 1;
     transform: translateY(0);
-  }
-  46% {
-    filter: blur(0.65px);
-    opacity: 1;
   }
   84% {
     opacity: 1;
   }
   to {
-    filter: blur(0);
     opacity: 0;
     transform: translateY(var(--tt-reel-distance));
   }
@@ -938,15 +925,6 @@
   28%,
   100% {
     opacity: 0;
-  }
-}
-@keyframes tt-token-odometer-symbol-in {
-  0%,
-  88% {
-    opacity: 0;
-  }
-  100% {
-    opacity: 1;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -965,10 +943,6 @@
   .tt-token-odometer-reel.is-exiting,
   .tt-token-odometer-symbol.is-old {
     display: none;
-  }
-  .tt-token-odometer-symbol.is-new {
-    animation: none;
-    opacity: 1;
   }
 }
 .tt-b8-cost {
