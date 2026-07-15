@@ -10,7 +10,9 @@ import {
 import { formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
 
 type TokenDisplayMode = 'compact' | 'exact';
-type CounterPlace = number | string;
+type CounterToken =
+  | { kind: 'digit'; place: number }
+  | { kind: 'static'; value: string };
 
 const STORAGE_KEY = 'tokenledger.tokenTotalDisplayMode';
 const MODE_ANIMATION_MS = 1_400;
@@ -51,11 +53,11 @@ function normalizeNearInteger(value: number) {
   return Math.abs(value - nearest) < tolerance ? nearest : value;
 }
 
-function getValueRoundedToPlace(value: number, place: number) {
+function getTruncatedValueAtPlace(value: number, place: number) {
   return Math.floor(normalizeNearInteger(value / place));
 }
 
-function getCounterPlaces(displayValue: string): CounterPlace[] {
+function getCounterTokens(displayValue: string): CounterToken[] {
   const characters = Array.from(displayValue);
   const decimalIndex = characters.indexOf('.');
   let digitsBeforeDecimal = characters.filter(
@@ -67,17 +69,17 @@ function getCounterPlaces(displayValue: string): CounterPlace[] {
   return characters.map((character) => {
     if (!/\d/.test(character)) {
       if (character === '.') pastDecimal = true;
-      return character;
+      return { kind: 'static', value: character };
     }
 
     if (!pastDecimal) {
       const place = 10 ** Math.max(digitsBeforeDecimal - 1, 0);
       digitsBeforeDecimal -= 1;
-      return place;
+      return { kind: 'digit', place };
     }
 
     decimalPlaces += 1;
-    return 10 ** -decimalPlaces;
+    return { kind: 'digit', place: 10 ** -decimalPlaces };
   });
 }
 
@@ -139,7 +141,7 @@ function AnimatedCounterToken({
   place: number;
   value: number;
 }) {
-  const valueRoundedToPlace = getValueRoundedToPlace(value, place);
+  const truncatedValueAtPlace = getTruncatedValueAtPlace(value, place);
   const motionValue = useMotionValue(0);
   const animatedValue = useSpring(motionValue, {
     stiffness: 220,
@@ -148,14 +150,14 @@ function AnimatedCounterToken({
   });
 
   useEffect(() => {
-    motionValue.set(valueRoundedToPlace);
-  }, [motionValue, valueRoundedToPlace]);
+    motionValue.set(truncatedValueAtPlace);
+  }, [motionValue, truncatedValueAtPlace]);
 
   return (
     <span
       data-counter-token="digit"
       data-counter-place={place}
-      data-counter-target={valueRoundedToPlace}
+      data-counter-target={truncatedValueAtPlace}
       className="tt-token-counter-token is-digit"
     >
       {Array.from({ length: 10 }, (_, digit) => (
@@ -166,7 +168,7 @@ function AnimatedCounterToken({
 }
 
 function TokenTrackerCounter({ displayValue }: { displayValue: string }) {
-  const places = useMemo(() => getCounterPlaces(displayValue), [displayValue]);
+  const tokens = useMemo(() => getCounterTokens(displayValue), [displayValue]);
   const shouldReduceMotion = useReducedMotion() ?? false;
   const numericValue = Math.abs(parseAnimatedCounterValue(displayValue) ?? 0);
 
@@ -181,15 +183,15 @@ function TokenTrackerCounter({ displayValue }: { displayValue: string }) {
   return (
     <span data-counter-root="true" className="tt-token-counter-root" aria-hidden="true">
       <span className="tt-token-counter-row">
-        {places.map((place, index) =>
-          typeof place === 'number' ? (
+        {tokens.map((token, index) =>
+          token.kind === 'digit' ? (
             <AnimatedCounterToken
-              key={`${String(place)}-${index}`}
-              place={place}
+              key={`${token.place}-${index}`}
+              place={token.place}
               value={numericValue}
             />
           ) : (
-            <StaticCounterToken key={`${place}-${index}`} token={place} />
+            <StaticCounterToken key={`${token.value}-${index}`} token={token.value} />
           ),
         )}
       </span>
