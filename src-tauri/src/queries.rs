@@ -506,11 +506,10 @@ pub struct CtxResourceCount {
     pub count: i64,
 }
 
-// Distinct resources (skills / MCP servers / agents / memory files) seen in
-// range, per source — the Context Breakdown meta line. Day-granular: the
-// ctx_resources table dedups per local day, so ts bounds map to day strings
-// (end_ts exclusive → day of end_ts − 1s inclusive).
-pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResourceCount>> {
+// Day-granular WHERE for the ctx_* tables (deduped/aggregated per local day):
+// optional source IN plus ts bounds mapped to local-day strings — end_ts
+// exclusive → day of end_ts − 1s inclusive. Empty when unconstrained.
+fn day_where(f: &Filters) -> (String, Vec<Value>) {
     let mut clauses: Vec<String> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
     if !f.tools.is_empty() {
@@ -533,6 +532,13 @@ pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<Ctx
     } else {
         format!("WHERE {}", clauses.join(" AND "))
     };
+    (where_sql, params)
+}
+
+// Distinct resources (skills / MCP servers / agents / memory files) seen in
+// range, per source — the Context Breakdown meta line.
+pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResourceCount>> {
+    let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, kind, COUNT(DISTINCT name) FROM ctx_resources {where_sql} \
          GROUP BY source, kind"
@@ -567,6 +573,11 @@ pub struct CtxBuckets {
 // OUTSIDE the window. A first-cw event outside the range means in-range
 // writes count as history — conservative, never inflates System.
 pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBuckets>> {
+    // A Hermes Usage Record is Session-granularity — one Record stands for a
+    // whole Session of calls — so "first cache-write per session = System
+    // prompt" cannot apply to it; its writes count as history, not System.
+    const FIRST_CW_IS_SYSTEM: &str =
+        "cw_rank = 1 AND session_id IS NOT NULL AND source != 'hermes'";
     let (where_sql, params) = build_where(f);
     let sql = format!(
         "WITH ranked AS ( \
@@ -579,9 +590,9 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
                     ORDER BY timestamp, dedup_key) AS cw_rank \
            FROM events) \
          SELECT source, \
-           SUM(cache_read_tokens) + SUM(CASE WHEN cw > 0 AND NOT (cw_rank = 1 AND session_id IS NOT NULL AND source != 'hermes') THEN cw ELSE 0 END), \
+           SUM(cache_read_tokens) + SUM(CASE WHEN cw > 0 AND NOT ({FIRST_CW_IS_SYSTEM}) THEN cw ELSE 0 END), \
            SUM(input_tokens), \
-           SUM(CASE WHEN cw > 0 AND cw_rank = 1 AND session_id IS NOT NULL AND source != 'hermes' THEN cw END), \
+           SUM(CASE WHEN cw > 0 AND {FIRST_CW_IS_SYSTEM} THEN cw END), \
            SUM(output_tokens), \
            SUM(reasoning_tokens) \
          FROM ranked {where_sql} GROUP BY source ORDER BY source"
@@ -620,27 +631,9 @@ pub struct CtxToolRow {
     pub calls: i64,
 }
 
-// Per-tool weights in range: same day-bounds convention as ctx_resources
-// (end_ts exclusive → day of end_ts − 1s inclusive). Ignores model/project.
+// Per-tool weights in range. Ignores model/project.
 pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxToolRow>> {
-    let mut clauses: Vec<String> = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
-    if !f.tools.is_empty() {
-        let ph = f.tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        clauses.push(format!("source IN ({ph})"));
-        for t in &f.tools {
-            params.push(Value::Text(t.clone()));
-        }
-    }
-    if let Some(s) = f.start_ts {
-        clauses.push("day >= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
-        params.push(Value::Integer(s));
-    }
-    if let Some(e) = f.end_ts {
-        clauses.push("day <= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
-        params.push(Value::Integer(e - 1));
-    }
-    let where_sql = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, name, SUM(est_tokens), SUM(calls) FROM ctx_tools {where_sql} \
          GROUP BY source, name ORDER BY SUM(est_tokens) DESC"
@@ -666,27 +659,9 @@ pub struct CtxExecRow {
     pub calls: i64,
 }
 
-// Bash command facets in range: same tool + day-bounds convention as
-// ctx_tools/ctx_resources. Ignores model/project (table has neither).
+// Bash command facets in range. Ignores model/project (table has neither).
 pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
-    let mut clauses: Vec<String> = Vec::new();
-    let mut params: Vec<Value> = Vec::new();
-    if !f.tools.is_empty() {
-        let ph = f.tools.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        clauses.push(format!("source IN ({ph})"));
-        for t in &f.tools {
-            params.push(Value::Text(t.clone()));
-        }
-    }
-    if let Some(s) = f.start_ts {
-        clauses.push("day >= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
-        params.push(Value::Integer(s));
-    }
-    if let Some(e) = f.end_ts {
-        clauses.push("day <= strftime('%Y-%m-%d', ?, 'unixepoch', 'localtime')".to_string());
-        params.push(Value::Integer(e - 1));
-    }
-    let where_sql = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, kind, exe, cmd, SUM(est_tokens), SUM(calls) FROM ctx_exec {where_sql} \
          GROUP BY source, kind, exe, cmd ORDER BY SUM(est_tokens) DESC"
