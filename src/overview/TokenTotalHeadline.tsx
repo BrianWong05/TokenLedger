@@ -1,38 +1,28 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import {
+  motion,
+  useMotionValue,
+  useReducedMotion,
+  useSpring,
+  useTransform,
+  type MotionValue,
+} from 'motion/react';
 import { formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
 
 type TokenDisplayMode = 'compact' | 'exact';
+type CounterPlace = number | string;
 
 const STORAGE_KEY = 'tokenledger.tokenTotalDisplayMode';
 const MODE_ANIMATION_MS = 1_400;
-const TARGET_STAGE_MS = 160;
-const DIGIT_SETTLE_STAGGER_MS = 55;
-const MIN_DIGIT_ROLL_MS = 320;
+const COUNTER_HEIGHT = '1.0833em';
 
 interface ModeAnimation {
   id: number;
-  from: string;
   to: string;
 }
 
-type OdometerViewportStyle = CSSProperties & {
-  '--tt-from-width': string;
-  '--tt-reel-window': string;
-  '--tt-stage-duration': string;
-  '--tt-to-width': string;
-};
-
-type OdometerReelStyle = CSSProperties & {
-  '--tt-reel-distance': string;
-  '--tt-roll-duration': string;
-};
-
-type OdometerGridStyle = CSSProperties & {
-  '--tt-from-offset': string;
-  '--tt-to-offset': string;
-};
-
 type HeadlineStyle = CSSProperties & {
+  '--tt-counter-height': string;
   '--tt-headline-font-size': string;
 };
 
@@ -40,111 +30,168 @@ function loadDisplayMode(): TokenDisplayMode {
   return localStorage.getItem(STORAGE_KEY) === 'exact' ? 'exact' : 'compact';
 }
 
-function isDigit(character: string) {
-  return character >= '0' && character <= '9';
-}
-
-function centeredCharacters(value: string, length: number) {
-  const characters = Array.from(value);
-  const leftPadding = Math.floor((length - characters.length) / 2);
-  return Array.from({ length }, (_, index) => characters[index - leftPadding] ?? null);
-}
-
-function upwardDigitReel(from: string | null, to: string, extraTurns: number) {
-  const start = from !== null && isDigit(from) ? Number(from) : 0;
-  const target = Number(to);
-  const steps = 10 * (1 + extraTurns) + ((target - start + 10) % 10);
-  return Array.from({ length: steps + 1 }, (_, index) => String((start + index) % 10));
-}
-
-function exitingDigitReel(from: string, extraTurns: number) {
-  const start = Number(from);
-  const steps = 10 * (1 + extraTurns);
-  return Array.from({ length: steps + 1 }, (_, index) => String((start + index) % 10));
-}
-
 function prefersReducedMotion() {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 }
 
-function RollingTokenTotal({ from, to }: { from: string; to: string }) {
-  const slotCount = Math.max(Array.from(from).length, Array.from(to).length);
-  const fromSlots = centeredCharacters(from, slotCount);
-  const toSlots = centeredCharacters(to, slotCount);
-  const rollingSlotIndexes = fromSlots.flatMap((fromCharacter, index) =>
-    (fromCharacter !== null && isDigit(fromCharacter)) ||
-    (toSlots[index] !== null && isDigit(toSlots[index]!))
-      ? [index]
-      : [],
-  );
-  const settleStaggerMs =
-    rollingSlotIndexes.length <= 1
-      ? 0
-      : Math.min(
-          DIGIT_SETTLE_STAGGER_MS,
-          (MODE_ANIMATION_MS - MIN_DIGIT_ROLL_MS) / (rollingSlotIndexes.length - 1),
-        );
-  const firstSettleMs =
-    MODE_ANIMATION_MS - (rollingSlotIndexes.length - 1) * settleStaggerMs;
-  const viewportStyle: OdometerViewportStyle = {
-    overflow: 'hidden',
-    '--tt-from-width': `${Array.from(from).length}ch`,
-    '--tt-reel-window': '1.32em',
-    '--tt-stage-duration': `${TARGET_STAGE_MS}ms`,
-    '--tt-to-width': `${Array.from(to).length}ch`,
+function usesCompactLayout() {
+  return window.matchMedia?.('(max-width: 639px)').matches ?? false;
+}
+
+function parseAnimatedCounterValue(displayValue: string) {
+  const match = displayValue.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeNearInteger(value: number) {
+  const nearest = Math.round(value);
+  const tolerance = 1e-9 * Math.max(1, Math.abs(value));
+  return Math.abs(value - nearest) < tolerance ? nearest : value;
+}
+
+function getValueRoundedToPlace(value: number, place: number) {
+  return Math.floor(normalizeNearInteger(value / place));
+}
+
+function getCounterPlaces(displayValue: string): CounterPlace[] {
+  const characters = Array.from(displayValue);
+  const decimalIndex = characters.indexOf('.');
+  let digitsBeforeDecimal = characters.filter(
+    (character, index) => /\d/.test(character) && (decimalIndex === -1 || index < decimalIndex),
+  ).length;
+  let decimalPlaces = 0;
+  let pastDecimal = false;
+
+  return characters.map((character) => {
+    if (!/\d/.test(character)) {
+      if (character === '.') pastDecimal = true;
+      return character;
+    }
+
+    if (!pastDecimal) {
+      const place = 10 ** Math.max(digitsBeforeDecimal - 1, 0);
+      digitsBeforeDecimal -= 1;
+      return place;
+    }
+
+    decimalPlaces += 1;
+    return 10 ** -decimalPlaces;
+  });
+}
+
+function staticTokenStyle(token: string): CSSProperties {
+  if (token === '.') {
+    return {
+      width: '0.34ch',
+      justifyContent: 'center',
+      marginInline: '-0.04ch',
+    };
+  }
+
+  if (token === ',') {
+    return {
+      width: '0.88ch',
+      justifyContent: 'center',
+      marginInline: '-0.30ch',
+    };
+  }
+
+  return {
+    width: 'auto',
+    justifyContent: 'center',
+    paddingInline: '0.06ch',
   };
-  const gridStyle: OdometerGridStyle = {
-    gridTemplateColumns: `repeat(${slotCount}, 1ch)`,
-    width: `${slotCount}ch`,
-    '--tt-from-offset':
-      (slotCount - Array.from(from).length) % 2 === 0 ? '0ch' : '0.5ch',
-    '--tt-to-offset': (slotCount - Array.from(to).length) % 2 === 0 ? '0ch' : '0.5ch',
-  };
+}
+
+function RollingDigit({ value, digit }: { value: MotionValue<number>; digit: number }) {
+  const y = useTransform(value, (latest) => {
+    const placeValue = ((latest % 10) + 10) % 10;
+    const offset = (10 + digit - placeValue) % 10;
+    const wrappedOffset = offset > 5 ? offset - 10 : offset;
+    return `calc(${wrappedOffset} * var(--tt-counter-height))`;
+  });
 
   return (
-    <span className="tt-token-odometer-viewport" aria-hidden="true" style={viewportStyle}>
-      <span className="tt-token-odometer-grid" style={gridStyle}>
-        {fromSlots.map((fromCharacter, index) => {
-          const toCharacter = toSlots[index];
-          const fromIsDigit = fromCharacter !== null && isDigit(fromCharacter);
-          const toIsDigit = toCharacter !== null && isDigit(toCharacter);
-          const rollingIndex = rollingSlotIndexes.indexOf(index);
-          const duration = firstSettleMs + rollingIndex * settleStaggerMs;
-          const extraTurns = rollingIndex % 2;
+    <motion.span className="tt-token-counter-rolling-digit" style={{ y }}>
+      {digit}
+    </motion.span>
+  );
+}
 
-          let reel: string[] | null = null;
-          if (toIsDigit) {
-            reel = upwardDigitReel(fromCharacter, toCharacter!, extraTurns);
-          } else if (fromIsDigit) {
-            reel = exitingDigitReel(fromCharacter!, extraTurns);
-          }
+function StaticCounterToken({ token }: { token: string }) {
+  return (
+    <span
+      data-counter-token="static"
+      className="tt-token-counter-token is-static"
+      style={staticTokenStyle(token)}
+    >
+      {token}
+    </span>
+  );
+}
 
-          const reelStyle: OdometerReelStyle | undefined = reel
-            ? {
-                '--tt-reel-distance': `${-(reel.length - 1)}em`,
-                '--tt-roll-duration': `${duration}ms`,
-              }
-            : undefined;
-          return (
-            <span className="tt-token-odometer-slot" key={index}>
-              {reel ? (
-                <span
-                  className={`tt-token-odometer-reel${toIsDigit ? '' : ' is-exiting'}`}
-                  style={reelStyle}
-                >
-                  {reel.map((digit, reelIndex) => (
-                    <span key={reelIndex}>{digit}</span>
-                  ))}
-                </span>
-              ) : null}
-              {toCharacter !== null && !toIsDigit ? (
-                <span className="tt-token-odometer-symbol is-static">{toCharacter}</span>
-              ) : fromCharacter !== null && !fromIsDigit ? (
-                <span className="tt-token-odometer-symbol is-old">{fromCharacter}</span>
-              ) : null}
-            </span>
-          );
-        })}
+function AnimatedCounterToken({
+  place,
+  value,
+}: {
+  place: number;
+  value: number;
+}) {
+  const valueRoundedToPlace = getValueRoundedToPlace(value, place);
+  const motionValue = useMotionValue(0);
+  const animatedValue = useSpring(motionValue, {
+    stiffness: 220,
+    damping: 26,
+    mass: 0.8,
+  });
+
+  useEffect(() => {
+    motionValue.set(valueRoundedToPlace);
+  }, [motionValue, valueRoundedToPlace]);
+
+  return (
+    <span
+      data-counter-token="digit"
+      data-counter-place={place}
+      data-counter-target={valueRoundedToPlace}
+      className="tt-token-counter-token is-digit"
+    >
+      {Array.from({ length: 10 }, (_, digit) => (
+        <RollingDigit key={digit} value={animatedValue} digit={digit} />
+      ))}
+    </span>
+  );
+}
+
+function TokenTrackerCounter({ displayValue }: { displayValue: string }) {
+  const places = useMemo(() => getCounterPlaces(displayValue), [displayValue]);
+  const shouldReduceMotion = useReducedMotion() ?? false;
+  const numericValue = Math.abs(parseAnimatedCounterValue(displayValue) ?? 0);
+
+  if (shouldReduceMotion) {
+    return (
+      <span data-counter-root="true" className="tt-token-counter-reduced">
+        {displayValue}
+      </span>
+    );
+  }
+
+  return (
+    <span data-counter-root="true" className="tt-token-counter-root" aria-hidden="true">
+      <span className="tt-token-counter-row">
+        {places.map((place, index) =>
+          typeof place === 'number' ? (
+            <AnimatedCounterToken
+              key={`${String(place)}-${index}`}
+              place={place}
+              value={numericValue}
+            />
+          ) : (
+            <StaticCounterToken key={`${place}-${index}`} token={place} />
+          ),
+        )}
       </span>
     </span>
   );
@@ -164,9 +211,10 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
     width: 'fit-content',
     maxWidth: '100%',
     marginInline: 'auto',
-    height: '1.32em',
+    height: COUNTER_HEIGHT,
     fontSize: 'var(--tt-headline-font-size)',
     whiteSpace: 'nowrap',
+    '--tt-counter-height': COUNTER_HEIGHT,
     '--tt-headline-font-size': responsiveFontSize,
   };
 
@@ -183,9 +231,13 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
     const next = mode === 'compact' ? 'exact' : 'compact';
     const nextDisplay = next === 'exact' ? exact : formatCompactTokenTotal(total);
     localStorage.setItem(STORAGE_KEY, next);
-    if (display !== nextDisplay && !prefersReducedMotion()) {
+    if (
+      display !== nextDisplay &&
+      !prefersReducedMotion() &&
+      !usesCompactLayout()
+    ) {
       animationId.current += 1;
-      setModeAnimation({ id: animationId.current, from: display, to: nextDisplay });
+      setModeAnimation({ id: animationId.current, to: nextDisplay });
     } else {
       setModeAnimation(null);
     }
@@ -203,7 +255,7 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
       style={headlineStyle}
     >
       {modeAnimation ? (
-        <RollingTokenTotal from={modeAnimation.from} to={modeAnimation.to} />
+        <TokenTrackerCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
       ) : (
         display
       )}

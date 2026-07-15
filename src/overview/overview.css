@@ -812,9 +812,9 @@
   border: 0;
   border-radius: 9px;
   background: transparent;
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.03em;
-  line-height: 1.04;
+  line-height: 1;
   margin-top: 6px;
   color: var(--tt-fg);
   font-family: var(--tt-mono);
@@ -829,121 +829,44 @@
   outline: 2px solid rgba(255, 255, 255, 0.62);
   outline-offset: 2px;
 }
-.tt-token-odometer-viewport {
+.tt-token-counter-root {
   position: relative;
-  display: block;
-  height: var(--tt-reel-window);
-  line-height: 1em;
-  width: var(--tt-from-width);
-  animation: tt-token-odometer-width var(--tt-stage-duration)
-    cubic-bezier(0.2, 0.72, 0.18, 1) forwards;
+  display: inline-block;
   pointer-events: none;
 }
-.tt-token-odometer-grid {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  display: grid;
-  height: 1em;
-  animation: tt-token-odometer-align var(--tt-stage-duration)
-    cubic-bezier(0.2, 0.72, 0.18, 1) forwards;
-}
-.tt-token-odometer-slot {
-  position: relative;
-  width: 1ch;
-  height: var(--tt-reel-window);
+.tt-token-counter-row {
+  display: flex;
+  gap: 0;
+  height: var(--tt-counter-height);
   overflow: hidden;
-  text-align: center;
+  border-radius: 4px;
+  line-height: 1;
 }
-.tt-token-odometer-reel {
+.tt-token-counter-token {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: var(--tt-counter-height);
+  font-variant-numeric: tabular-nums;
+}
+.tt-token-counter-token.is-digit {
+  width: 0.88ch;
+  justify-content: center;
+  overflow: hidden;
+}
+.tt-token-counter-rolling-digit {
   position: absolute;
   inset: 0;
   display: flex;
-  flex-direction: column;
-  animation: tt-token-odometer-up var(--tt-roll-duration)
-    cubic-bezier(0.14, 0.7, 0.16, 1) forwards;
+  align-items: center;
+  justify-content: center;
   will-change: transform;
 }
-.tt-token-odometer-reel > span {
-  flex: 0 0 1em;
-  height: 1em;
-  line-height: 1em;
-}
-.tt-token-odometer-reel.is-exiting {
-  animation-name: tt-token-odometer-away;
-}
-.tt-token-odometer-symbol {
-  position: absolute;
-  inset: 0;
-  height: 1em;
-  line-height: 1em;
-}
-.tt-token-odometer-symbol.is-old {
-  animation: tt-token-odometer-symbol-out 1400ms ease forwards;
-}
-@keyframes tt-token-odometer-width {
-  from {
-    width: var(--tt-from-width);
-  }
-  to {
-    width: var(--tt-to-width);
-  }
-}
-@keyframes tt-token-odometer-align {
-  from {
-    transform: translateX(calc(-50% + var(--tt-from-offset)));
-  }
-  to {
-    transform: translateX(calc(-50% + var(--tt-to-offset)));
-  }
-}
-@keyframes tt-token-odometer-up {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(var(--tt-reel-distance));
-  }
-}
-@keyframes tt-token-odometer-away {
-  from {
-    opacity: 1;
-    transform: translateY(0);
-  }
-  84% {
-    opacity: 1;
-  }
-  to {
-    opacity: 0;
-    transform: translateY(var(--tt-reel-distance));
-  }
-}
-@keyframes tt-token-odometer-symbol-out {
-  0% {
-    opacity: 1;
-  }
-  28%,
-  100% {
-    opacity: 0;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tt-token-odometer-viewport {
-    width: var(--tt-to-width);
-    animation: none;
-  }
-  .tt-token-odometer-grid {
-    animation: none;
-    transform: translateX(calc(-50% + var(--tt-to-offset)));
-  }
-  .tt-token-odometer-reel {
-    animation: none;
-    transform: translateY(var(--tt-reel-distance));
-  }
-  .tt-token-odometer-reel.is-exiting,
-  .tt-token-odometer-symbol.is-old {
-    display: none;
-  }
+.tt-token-counter-reduced {
+  display: inline-flex;
+  align-items: center;
+  height: var(--tt-counter-height);
+  line-height: 1;
 }
 .tt-b8-cost {
   font-size: 16px;

@@ -117,19 +117,40 @@ describe('TokenTotalHeadline', () => {
     expect(button.textContent).toBe('4,500,000,000');
   });
 
-  it('uses deterministic non-uniform reel travel across neighboring digits', () => {
+  it('rebuilds immediately into only the target token structure', () => {
     vi.useFakeTimers();
     localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
     const button = renderHeadline(5_841_112_112);
 
     act(() => button.click());
 
-    const reelLengths = Array.from(
-      button.querySelectorAll<HTMLElement>('.tt-token-odometer-reel'),
-      (reel) => reel.childElementCount,
+    const counter = button.querySelector<HTMLElement>('[data-counter-root="true"]')!;
+    const tokens = Array.from(
+      counter.querySelectorAll<HTMLElement>('[data-counter-token]'),
+      (token) => token.dataset.counterToken,
     );
-    expect(Math.min(...reelLengths)).toBeGreaterThanOrEqual(11);
-    expect(Math.max(...reelLengths)).toBeGreaterThanOrEqual(21);
+    expect(tokens).toEqual(['digit', 'static', 'digit', 'digit', 'static']);
+    expect(
+      Array.from(
+        counter.querySelectorAll<HTMLElement>('[data-counter-token="static"]'),
+        (token) => token.textContent,
+      ),
+    ).toEqual(['.', 'B']);
+    expect(counter.textContent).not.toContain(',');
+  });
+
+  it('uses TokenTracker place values for deterministic non-uniform travel', () => {
+    vi.useFakeTimers();
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const targets = Array.from(
+      button.querySelectorAll<HTMLElement>('[data-counter-token="digit"]'),
+      (digit) => Number(digit.dataset.counterTarget),
+    );
+    expect(targets).toEqual([5, 58, 584]);
   });
 
   it('anchors target punctuation and units while the digits roll', () => {
@@ -140,10 +161,22 @@ describe('TokenTotalHeadline', () => {
     act(() => button.click());
 
     const anchoredSymbols = Array.from(
-      button.querySelectorAll<HTMLElement>('.tt-token-odometer-symbol.is-static'),
+      button.querySelectorAll<HTMLElement>('[data-counter-token="static"]'),
       (symbol) => symbol.textContent,
     );
     expect(anchoredSymbols).toEqual(expect.arrayContaining(['.', 'B']));
+  });
+
+  it('uses TokenTracker punctuation widths in the animated row', () => {
+    vi.useFakeTimers();
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const comma = button.querySelector<HTMLElement>('[data-counter-token="static"]')!;
+    expect(comma.textContent).toBe(',');
+    expect(comma.style.width).toBe('0.88ch');
+    expect(comma.style.marginInline).toBe('-0.3ch');
   });
 
   it('uses the settled target font size throughout a mode change', () => {
@@ -158,46 +191,49 @@ describe('TokenTotalHeadline', () => {
     expect(button.getAttribute('style')).toContain('31.000cqi');
   });
 
-  it('forms the target-width stage before the digit reels settle', () => {
+  it('forms the target token row before the digit springs settle', () => {
     vi.useFakeTimers();
     const button = renderHeadline(5_841_112_112);
 
     act(() => button.click());
 
-    const viewport = button.querySelector<HTMLElement>('.tt-token-odometer-viewport')!;
-    const reel = button.querySelector<HTMLElement>('.tt-token-odometer-reel')!;
-    expect(viewport.style.getPropertyValue('--tt-stage-duration')).toBe('160ms');
-    expect(parseFloat(reel.style.getPropertyValue('--tt-roll-duration'))).toBeGreaterThan(160);
+    const counter = button.querySelector<HTMLElement>('[data-counter-root="true"]')!;
+    expect(counter.querySelectorAll('[data-counter-token]').length).toBe(13);
+    expect(counter.querySelectorAll('[data-counter-token="digit"]').length).toBe(10);
+    expect(
+      Array.from(
+        counter.querySelectorAll<HTMLElement>('[data-counter-token="static"]'),
+        (token) => token.textContent,
+      ),
+    ).toEqual([',', ',', ',']);
   });
 
-  it('uses a controlled multi-row window for the digit reels', () => {
+  it('uses TokenTracker ten-glyph columns inside a fixed counter window', () => {
     vi.useFakeTimers();
     const button = renderHeadline(5_841_112_112);
 
     act(() => button.click());
 
-    const viewport = button.querySelector<HTMLElement>('.tt-token-odometer-viewport')!;
-    expect(viewport.style.getPropertyValue('--tt-reel-window')).toBe('1.32em');
+    const digitColumns = Array.from(
+      button.querySelectorAll<HTMLElement>('[data-counter-token="digit"]'),
+    );
+    expect(digitColumns.length).toBeGreaterThan(1);
+    expect(digitColumns.every((digit) => digit.childElementCount === 10)).toBe(true);
+    expect(button.style.getPropertyValue('--tt-counter-height')).toBe('1.0833em');
   });
 
-  it('keeps exact-to-compact motion inside one target-width viewport for 1.4 seconds', () => {
+  it('keeps exact-to-compact motion inside one target-only row for 1.4 seconds', () => {
     vi.useFakeTimers();
     localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
     const button = renderHeadline(5_841_112_112);
 
     act(() => button.click());
 
-    const viewport = button.firstElementChild as HTMLElement;
-    expect(getComputedStyle(viewport).overflow).toBe('hidden');
-    expect(viewport.style.getPropertyValue('--tt-from-width')).toBe('13ch');
-    expect(viewport.style.getPropertyValue('--tt-to-width')).toBe('5ch');
-    expect(viewport.childElementCount).toBe(1);
-    const reels = Array.from(viewport.querySelectorAll<HTMLElement>('.tt-token-odometer-reel'));
-    expect(reels.length).toBeGreaterThan(1);
-    expect(reels.every((reel) => reel.childElementCount >= 11)).toBe(true);
-    expect(
-      parseFloat(reels[reels.length - 1].style.getPropertyValue('--tt-roll-duration')),
-    ).toBeGreaterThan(parseFloat(reels[0].style.getPropertyValue('--tt-roll-duration')));
+    const counter = button.firstElementChild as HTMLElement;
+    expect(counter.dataset.counterRoot).toBe('true');
+    expect(counter.childElementCount).toBe(1);
+    expect(counter.querySelectorAll('[data-counter-token]').length).toBe(5);
+    expect(counter.textContent).not.toContain(',');
 
     act(() => vi.advanceTimersByTime(1_399));
     expect(button.getAttribute('aria-busy')).toBe('true');
