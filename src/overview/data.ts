@@ -1,8 +1,8 @@
 // Real-data layer for the Overview: shared design meta plus pure reshaping of
 // backend responses (SeriesPoint/BreakdownRow) into the shapes the components
 // consume. No fetching here — overviewStore orchestrates the Ledger reads.
-import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
-import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
+import type { BreakdownRow, Filters, SeriesPoint, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
+import { parseLocalDate } from '../lib/dateRange';
 
 export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity';
 
@@ -188,9 +188,17 @@ export interface Window {
   toIso?: string;   // inclusive
 }
 
-// Must agree with rangeToFilters/rangeToBounds: day = today, week = trailing 7
-// local days, month = trailing 30, total = unbounded, custom = [from, to].
-export function windowOf(range: Range8b, customFrom: string, customTo: string, today: Date = new Date()): Window {
+// The single home for the Range8b -> local-day window. Both representations
+// derive from it: windowOf returns the inclusive ISO pair (client-side slicing),
+// rangeToFilters returns the epoch-seconds bounds (Ledger queries).
+//   day = today · week = trailing 7 local days · month = trailing 30 ·
+//   total = unbounded · custom = normalized [lo, hi].
+// LOAD-BEARING: presets leave endTs open (undefined) — the Ledger query gets
+// only a lower bound for day/week/month; 'total' leaves both open. Only a custom
+// range sends an exclusive upper bound: endTs = (toIso + 1 day) local midnight.
+function rangeWindow(
+  range: Range8b, customFrom: string, customTo: string, today: Date,
+): { fromIso?: string; toIso?: string; startTs?: number; endTs?: number } {
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const iso = isoOf(end);
   const back = (n: number) => {
@@ -198,17 +206,27 @@ export function windowOf(range: Range8b, customFrom: string, customTo: string, t
     d.setDate(d.getDate() - n);
     return isoOf(d);
   };
+  const midnightSecs = (isoStr: string, plusDays = 0) => {
+    const d = parseLocalDate(isoStr);
+    d.setDate(d.getDate() + plusDays);
+    return Math.floor(d.getTime() / 1000);
+  };
   switch (range) {
-    case 'day': return { fromIso: iso, toIso: iso };
-    case 'week': return { fromIso: back(6), toIso: iso };
-    case 'month': return { fromIso: back(29), toIso: iso };
+    case 'day': return { fromIso: iso, toIso: iso, startTs: midnightSecs(iso) };
+    case 'week': { const f = back(6); return { fromIso: f, toIso: iso, startTs: midnightSecs(f) }; }
+    case 'month': { const f = back(29); return { fromIso: f, toIso: iso, startTs: midnightSecs(f) }; }
     case 'total': return {};
     case 'custom': {
       const lo = customFrom <= customTo ? customFrom : customTo;
       const hi = customFrom <= customTo ? customTo : customFrom;
-      return { fromIso: lo, toIso: hi };
+      return { fromIso: lo, toIso: hi, startTs: midnightSecs(lo), endTs: midnightSecs(hi, 1) };
     }
   }
+}
+
+export function windowOf(range: Range8b, customFrom: string, customTo: string, today: Date = new Date()): Window {
+  const { fromIso, toIso } = rangeWindow(range, customFrom, customTo, today);
+  return { fromIso, toIso };
 }
 
 export function pointsIn(points: SeriesPoint[], win: Window): SeriesPoint[] {
@@ -218,16 +236,11 @@ export function pointsIn(points: SeriesPoint[], win: Window): SeriesPoint[] {
 }
 
 export function rangeToFilters(range: Range8b, customFrom: string, customTo: string): Filters {
-  if (range === 'custom') {
-    // Normalize a reversed range exactly like windowOf does, so server-fetched
-    // panels (summary, breakdowns) always agree with the client-sliced ones.
-    const lo = customFrom <= customTo ? customFrom : customTo;
-    const hi = customFrom <= customTo ? customTo : customFrom;
-    return { tools: [], models: [], project: null, ...rangeToBounds({ start: lo, end: hi }) };
-  }
-  const dr: DateRange =
-    range === 'day' ? 'today' : range === 'week' ? '7d' : range === 'month' ? '30d' : 'all';
-  return { tools: [], models: [], project: null, ...rangeToBounds(dr) };
+  const { startTs, endTs } = rangeWindow(range, customFrom, customTo, new Date());
+  const f: Filters = { tools: [], models: [], project: null };
+  if (startTs !== undefined) f.startTs = startTs;
+  if (endTs !== undefined) f.endTs = endTs;
+  return f;
 }
 
 // ---- trend buckets ----
