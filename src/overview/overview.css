@@ -804,15 +804,31 @@
 }
 .tt-b8-head {
   text-align: center;
+  container-type: inline-size;
 }
 .tt-b8-total {
-  font-size: 46px;
+  appearance: none;
+  display: inline-block;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1.04;
   margin-top: 6px;
   color: var(--tt-fg);
   font-family: var(--tt-mono);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background 0.16s ease;
+}
+.tt-b8-total:hover {
+  background: rgba(255, 255, 255, 0.055);
+}
+.tt-b8-total:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.62);
+  outline-offset: 2px;
 }
 .tt-b8-cost {
   font-size: 16px;

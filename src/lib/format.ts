@@ -38,15 +38,43 @@ export function formatCost(
   return hasUnpriced ? `≥ ${amount}` : amount;
 }
 
+const TOKEN_UNITS = [
+  { divisor: 1_000_000_000, suffix: 'B' },
+  { divisor: 1_000_000, suffix: 'M' },
+  { divisor: 1_000, suffix: 'K' },
+] as const;
+
+function compactTokenUnit(n: number, rolloverFactor: number) {
+  return TOKEN_UNITS.find(({ divisor }) => n >= divisor * rolloverFactor);
+}
+
+export function formatCompactTokenTotal(total: number): string {
+  const rounded = Math.max(0, Math.round(total));
+  const unit = compactTokenUnit(rounded, 0.999995);
+  if (!unit) return String(rounded);
+
+  return (
+    new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(
+      rounded / unit.divisor,
+    ) + unit.suffix
+  );
+}
+
+export function formatExactTokenTotal(total: number): string {
+  return Math.max(0, Math.round(total)).toLocaleString('en-US');
+}
+
 // Compact token formatter for the Overview design (K/M/B with adaptive precision).
 // Thresholds sit at 999.5 units so a value that toFixed would round up to
 // "1000K"/"1000.0M" rolls over to the next unit instead; sub-1000 values are
 // rounded (averages can be fractional — never render raw float noise).
 export function fmtTok(n: number): string {
-  if (n >= 999.5e6) return (n / 1e9).toFixed(2) + 'B';
-  if (n >= 999.5e3) return (n / 1e6).toFixed(n >= 1e7 ? 1 : 2) + 'M';
-  if (n >= 999.5) return (n / 1e3).toFixed(n >= 1e5 ? 0 : 1) + 'K';
-  return String(Math.round(n));
+  const unit = compactTokenUnit(n, 0.9995);
+  if (!unit) return String(Math.round(n));
+
+  const fractionDigits =
+    unit.suffix === 'B' ? 2 : unit.suffix === 'M' ? (n >= 1e7 ? 1 : 2) : n >= 1e5 ? 0 : 1;
+  return (n / unit.divisor).toFixed(fractionDigits) + unit.suffix;
 }
 export function fmtUSD(n: number): string {
   return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });

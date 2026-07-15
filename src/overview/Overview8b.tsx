@@ -7,6 +7,7 @@ import TokenBreakdown from './TokenBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
 import CostBreakdownModal from './CostBreakdownModal';
+import TokenTotalHeadline from './TokenTotalHeadline';
 import { scan, fetchSeries, fetchSummary, fetchBreakdown, fetchCtxResources, fetchCtxBuckets, fetchCtxTools, fetchCtxExec } from '../api';
 import type { BreakdownRow, SeriesPoint, Summary, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import {
@@ -316,7 +317,7 @@ export default function Overview8b() {
         <div className="tt-b8-body">
           <div className="tt-b8-head">
             <div className="tt-eyebrow">Total tokens · {rangeLabel}</div>
-            <div className="tt-b8-total">{fmtTok(sum?.totalTokens ?? view.total)}</div>
+            <TokenTotalHeadline total={sum?.totalTokens ?? view.total} />
             {canOpenCostBreakdown ? (
               <button
                 ref={setCostBreakdownFocusTarget}
