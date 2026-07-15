@@ -1,4 +1,5 @@
-import { CATEGORIES, type CatTotals, type ToolMeta } from './data';
+import { CATEGORIES, type ToolMeta } from './meta';
+import type { CatTotals } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 
 // Real per-tool token breakdown (8b right column): the four canonical token

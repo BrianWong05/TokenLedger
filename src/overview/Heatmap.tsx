@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { TOOLS, THEMES, THEME_OPTIONS, MONTHS, type Day } from './data';
+import { TOOLS, THEMES, THEME_OPTIONS, MONTHS } from './meta';
+import type { Day } from './data';
 import { fmtTok, fmtDate } from '../lib/format';
 
 type Mode = '2d' | '3d';

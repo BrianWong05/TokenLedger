@@ -237,7 +237,7 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     );
     expect(t).toEqual({ input: 100, output: 50, cacheRead: 200, cacheWrite: 30 });
   });
-  it('rangeToFilters maps presets through rangeToBounds', () => {
+  it('rangeToFilters maps presets through rangeWindow', () => {
     expect(rangeToFilters('total', '', '')).toEqual({ tools: [], models: [], project: null });
     const f = rangeToFilters('custom', '2026-07-01', '2026-07-02');
     expect(f.startTs).toBeDefined();

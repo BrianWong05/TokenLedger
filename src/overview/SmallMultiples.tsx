@@ -1,8 +1,8 @@
-import { smallMultiples } from './data';
+import type { SmallMultipleItem } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 
 // ---- per-tool small multiples (one sparkline per tool) ----
-export default function SmallMultiples({ items, rangeLabel }: { items: ReturnType<typeof smallMultiples>; rangeLabel: string }) {
+export default function SmallMultiples({ items, rangeLabel }: { items: SmallMultipleItem[]; rangeLabel: string }) {
   const W = 100;
   const H = 40;
   return (

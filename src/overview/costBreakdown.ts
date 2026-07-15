@@ -1,6 +1,6 @@
 import type { BreakdownRow, Summary } from '../types';
 import { formatCost } from '../lib/format';
-import { TOOLS } from './data';
+import { TOOLS } from './meta';
 
 interface CostBreakdownModelData {
   name: string;

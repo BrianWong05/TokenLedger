@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { windowOf, rangeToFilters, isoOf } from './data';
-import type { Window, Range8b } from './data';
+import type { Window } from './data';
+import type { Range8b } from './meta';
 import { parseLocalDate } from '../lib/dateRange';
 import type { Filters } from '../types';
 

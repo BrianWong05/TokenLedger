@@ -4,7 +4,6 @@
 // and exposes a useSyncExternalStore-shaped surface. No React here.
 import { tauriLedger, type LedgerPort } from './ledger';
 import {
-  TOOLS,
   isoOf,
   windowOf,
   pointsIn,
@@ -23,10 +22,8 @@ import {
   projectTableRows,
   modelBars,
   ctxMeta,
-  RANGES_8B,
-  type Range8b,
-  type ToolKey,
-  type ToolMeta,
+  bucketView,
+  toolTree,
   type Bucket,
   type Day,
   type Granularity,
@@ -34,7 +31,10 @@ import {
   type CtxTotals,
   type ModelBar,
   type TableRow,
+  type BucketView,
+  type ToolCategory,
 } from './data';
+import { TOOLS, RANGES_8B, type Range8b, type ToolKey, type ToolMeta } from './meta';
 import { fmtIsoDate } from '../lib/format';
 import type {
   Filters,
@@ -330,8 +330,8 @@ export interface OverviewView {
   projectRows: TableRow[];
   rangeLabel: string;
   grand: number;
-  selBuckets: CtxBuckets | null;
-  selToolRows: CtxToolRow[];
+  ctxView: BucketView | null;
+  ctxTree: ToolCategory[];
   selExecRows: CtxExecRow[];
   selMeta: string;
   selModels: ModelBar[];
@@ -367,6 +367,9 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date()): Overvie
       : bucketsFromPoints(rpts, per, winFrom, winTo);
   const total = sumPoints(rpts);
   const toolTotals = toolTotalsOfPoints(rpts);
+  const ctx = ctxTotals(rpts, s.selected);
+  const selBuckets = s.ctxBuckets.find((b) => b.source === s.selected) ?? null;
+  const selToolRows = s.ctxToolRows.filter((r) => r.source === s.selected);
   return {
     rpts,
     total,
@@ -376,7 +379,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date()): Overvie
     modelTool: modelTools(rpts),
     sparks: smallMultiples(trend),
     cats: catTotals(rpts, s.selected),
-    ctx: ctxTotals(rpts, s.selected),
+    ctx,
     dailyRows: dailyTableRows(rpts),
     projectRows: projectTableRows(s.projectRows),
     // Custom shows the entered bounds (s.from/s.to), not the normalized window.
@@ -385,8 +388,10 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date()): Overvie
         ? `${fmtIsoDate(s.from)} – ${fmtIsoDate(s.to)}`
         : RANGES_8B.find((r) => r.key === s.range)!.long,
     grand: total || 1,
-    selBuckets: s.ctxBuckets.find((b) => b.source === s.selected) ?? null,
-    selToolRows: s.ctxToolRows.filter((r) => r.source === s.selected),
+    // Context drill-down derivations, memoized per snapshot here instead of per
+    // render in ContextBreakdown.
+    ctxView: bucketView(selBuckets),
+    ctxTree: toolTree(selToolRows, ctx.toolcalls),
     selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
     selMeta: ctxMeta(s.ctxResources, s.selected),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),

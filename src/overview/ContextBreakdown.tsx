@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { bucketView, toolTree, execFacets, type CtxTotals, type ToolMeta, type ExecFacets } from './data';
-import type { CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
+import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type ToolCategory } from './data';
+import type { ToolMeta } from './meta';
+import type { CtxExecRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
 
 const EST_TIP = 'estimated share of billed context (content bytes ÷ 4)';
@@ -12,15 +13,15 @@ const EST_TIP = 'estimated share of billed context (content bytes ÷ 4)';
 export default function ContextBreakdown({
   tool,
   ctx,
-  buckets,
-  toolRows,
+  view: v,
+  tree,
   meta,
   execRows,
 }: {
   tool: ToolMeta;
   ctx: CtxTotals;
-  buckets: CtxBuckets | null;
-  toolRows: CtxToolRow[];
+  view: BucketView | null;
+  tree: ToolCategory[];
   meta: string;
   execRows: CtxExecRow[];
 }) {
@@ -34,10 +35,8 @@ export default function ContextBreakdown({
       return next;
     });
 
-  const v = bucketView(buckets);
   const hit = ctx.billed > 0 ? ctx.reused / ctx.billed : 0;
   const denom = Math.max(1, v?.total ?? 0);
-  const tree = toolTree(toolRows, ctx.toolcalls);
   const estTip =
     ctx.messages != null && ctx.system != null
       ? `est. content composition: messages ${fmtTok(ctx.messages)} · system ${fmtTok(ctx.system)}`
@@ -122,6 +121,8 @@ export default function ContextBreakdown({
             })}
             {open.has(`cat:${cat.label}`) &&
               cat.tools.map((t) => {
+                // Stays in render (not selectView): its input t.tokens only exists
+                // once the user expands the tree down to the Bash leaf.
                 const facets = t.name === 'Bash' ? execFacets(execRows, t.tokens) : null;
                 return (
                   <div key={`leaf:${t.name}`}>

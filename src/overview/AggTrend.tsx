@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { TOOLS, rankModels, emptyByTool, type Bucket } from './data';
+import { TOOLS, emptyByTool } from './meta';
+import { rankModels, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 
 // ---- aggregate usage-trend bars (no interval toggle; driven by the range) ----

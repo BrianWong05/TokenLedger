@@ -9,7 +9,7 @@ import CostBreakdownModal from './CostBreakdownModal';
 import TokenTotalHeadline from './TokenTotalHeadline';
 import AggTrend from './AggTrend';
 import SmallMultiples from './SmallMultiples';
-import { TOOLS, RANGES_8B, type ToolMeta } from './data';
+import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
 import { TOOL_ICONS } from './icons';
 import { fmtPct, formatCost } from '../lib/format';
 import { REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
@@ -217,8 +217,8 @@ export default function Overview() {
                 <ContextBreakdown
                   tool={panels.context.tool}
                   ctx={panels.context.ctx}
-                  buckets={panels.context.buckets}
-                  toolRows={panels.context.toolRows}
+                  view={panels.context.view}
+                  tree={panels.context.tree}
                   execRows={panels.context.execRows}
                   meta={panels.context.meta}
                 />

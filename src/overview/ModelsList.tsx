@@ -1,4 +1,5 @@
-import { CATEGORIES, type ModelBar, type ToolMeta } from './data';
+import { CATEGORIES, type ToolMeta } from './meta';
+import type { ModelBar } from './data';
 import { fmtTok, fmtPct, formatCost } from '../lib/format';
 
 // Per-model token breakdown for one source. Each bar's filled width is the

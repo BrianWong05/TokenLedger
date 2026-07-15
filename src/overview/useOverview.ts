@@ -12,7 +12,7 @@ import {
 } from './overviewStore';
 import type { LedgerPort } from './ledger';
 import { useAutoRefresh } from './useAutoRefresh';
-import type { Range8b, ToolKey } from './data';
+import type { Range8b, ToolKey } from './meta';
 
 export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) {
   const [store] = useState(() => createOverviewStore(ports));
@@ -90,8 +90,8 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
       context: {
         tool: view.tool,
         ctx: view.ctx,
-        buckets: view.selBuckets,
-        toolRows: view.selToolRows,
+        view: view.ctxView,
+        tree: view.ctxTree,
         execRows: view.selExecRows,
         meta: view.selMeta,
       },
