@@ -1000,7 +1000,7 @@ mod tests {
         std::env::set_var("TZ", "UTC");
         let dir = tempdir().unwrap();
         let conn = db::open_db(&dir.path().join("t.db")).unwrap();
-        crate::adapters::claude_ctx::record_resources(&conn, "claude", &[
+        crate::db::record_resources(&conn, "claude", &[
             ("skill", "graphify".to_string(), DAY1_TS),
             ("skill", "graphify".to_string(), DAY2_TS), // same name, new day: still 1 distinct
             ("skill", "verify".to_string(), DAY2_TS),

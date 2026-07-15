@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde_json::Value;
 
-use super::claude_ctx::est;
+use super::ctx::{self, est};
 use crate::db;
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
@@ -41,35 +41,16 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Returns (events_inserted, lines_skipped) for one file.
-fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
-    let path_str = path.to_string_lossy().to_string();
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    let size = meta.len() as i64;
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+struct ParsedCodexFile {
+    events: Vec<UsageEvent>,
+    tool_rows: Vec<(String, i64, i64, i64)>,
+    skipped: u64,
+}
 
-    // Unchanged file → skip (full re-parse only on change).
-    if let Ok(Some(state)) = db::get_file_state(conn, &path_str) {
-        if state.size == size && state.mtime == mtime {
-            return Ok((0, 0));
-        }
-    }
-
-    // Codex re-parses changed files in full: replace this file's tool rows.
-    db::clear_ctx_tools_for_file(conn, &path_str).map_err(|e| e.to_string())?;
+// Pure parse core (no Connection): codex re-parses each changed file in full.
+fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile {
     let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
     let mut call_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let file_stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
 
     let mut events: Vec<UsageEvent> = Vec::new();
     let mut skipped: u64 = 0;
@@ -216,17 +197,20 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                 let billed = input + cache_read; // codex reports no cache writes
                 let total = msg_est + reas_est;
                 let ctx = if total > 0 && billed > 0 {
-                    let reasoning = billed * reas_est / total;
-                    let messages = billed - reasoning; // partition exact
-                    crate::types::CtxTokens {
-                        messages: Some(messages),
-                        system: None,
-                        reasoning: Some(reasoning),
-                        toolcalls: Some((billed * tool_est / total).min(messages)),
-                        agents: None,
-                        mcp: None,
-                        skills: None,
+                    let mut ctx = ctx::Composition {
+                        msg: msg_est,
+                        tool: tool_est,
+                        reas: reas_est,
+                        ..Default::default()
                     }
+                    .attribute(billed);
+                    // Codex logs cannot observe the system prompt, mcp, or skill
+                    // content: null those categories (None vs Some(0) is
+                    // load-bearing — the e2e suite asserts it).
+                    ctx.system = None;
+                    ctx.mcp = None;
+                    ctx.skills = None;
+                    ctx
                 } else {
                     crate::types::CtxTokens::default()
                 };
@@ -243,8 +227,8 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
                     cache_read_tokens: cache_read,
                     cache_write_5m_tokens: 0,
                     cache_write_1h_tokens: 0,
-                    source_file: path_str.clone(),
-                    session_id: Some(file_stem.clone()),
+                    source_file: path_str.to_string(),
+                    session_id: Some(file_stem.to_string()),
                     reasoning_tokens: reasoning,
                     ctx,
                 });
@@ -253,8 +237,41 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
         }
     }
 
-    let inserted = db::insert_events(conn, &events).map_err(|e| e.to_string())?;
-    db::add_ctx_tool_rows(conn, "codex", &path_str, &tool_rows).map_err(|e| e.to_string())?;
+    ParsedCodexFile { events, tool_rows, skipped }
+}
+
+/// Returns (events_inserted, lines_skipped) for one file.
+fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
+    let path_str = path.to_string_lossy().to_string();
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let size = meta.len() as i64;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Unchanged file → skip (full re-parse only on change).
+    if let Ok(Some(state)) = db::get_file_state(conn, &path_str) {
+        if state.size == size && state.mtime == mtime {
+            return Ok((0, 0));
+        }
+    }
+
+    // Codex re-parses changed files in full: replace this file's tool rows.
+    db::clear_ctx_tools_for_file(conn, &path_str).map_err(|e| e.to_string())?;
+
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let file_stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+
+    let parsed = parse_file(&content, &file_stem, &path_str);
+
+    let inserted = db::insert_events(conn, &parsed.events).map_err(|e| e.to_string())?;
+    db::add_ctx_tool_rows(conn, "codex", &path_str, &parsed.tool_rows).map_err(|e| e.to_string())?;
     db::set_file_state(
         conn,
         &path_str,
@@ -265,7 +282,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
         },
     )
     .map_err(|e| e.to_string())?;
-    Ok((inserted, skipped))
+    Ok((inserted, parsed.skipped))
 }
 
 #[cfg(test)]
@@ -481,5 +498,68 @@ mod tests {
             "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((est2, calls2), (est1, calls1), "re-parse replaced, not doubled");
+    }
+
+    // ---- pure parse_file core (no DB) ----
+
+    #[test]
+    fn parse_file_cumulative_deltas_across_two_token_counts() {
+        let content = [
+            r#"{"type":"event_msg","timestamp":"2026-04-23T12:23:28.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":50,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-23T12:23:35.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":60,"output_tokens":90,"total_tokens":290}}}}"#,
+        ].join("\n") + "\n";
+        let parsed = parse_file(&content, "rollout", "/p/rollout.jsonl");
+        assert_eq!(parsed.events.len(), 2);
+        // Line 1: Δinput 100 − Δcached 20 → input 80, cache_read 20, output 50.
+        assert_eq!(
+            (parsed.events[0].input_tokens, parsed.events[0].cache_read_tokens, parsed.events[0].output_tokens),
+            (80, 20, 50)
+        );
+        // Line 2: Δinput 100 − Δcached 40 → input 60, cache_read 40, output 40.
+        assert_eq!(
+            (parsed.events[1].input_tokens, parsed.events[1].cache_read_tokens, parsed.events[1].output_tokens),
+            (60, 40, 40)
+        );
+    }
+
+    #[test]
+    fn parse_file_zero_delta_line_skipped_reasoning_rides_along() {
+        // Middle line's input/cached/output are unchanged (all-zero delta) but
+        // reasoning advanced: it is skipped as an event, prev_reasoning stays,
+        // and the next token-bearing event books the accumulated reasoning.
+        let content = [
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":10,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"reasoning_output_tokens":25,"total_tokens":150}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:10.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":30,"total_tokens":230}}}}"#,
+        ].join("\n") + "\n";
+        let parsed = parse_file(&content, "rollout", "/p/rollout.jsonl");
+        assert_eq!(parsed.events.len(), 2, "middle zero-delta line skipped");
+        let total_reas: i64 = parsed.events.iter().filter_map(|e| e.reasoning_tokens).sum();
+        assert_eq!(total_reas, 30, "reasoning-only advance rides along to the next event");
+    }
+
+    #[test]
+    fn parse_file_partition_equivalence() {
+        // Nonzero msg/tool/reas ests → the shared math partitions billed exactly
+        // (messages + reasoning), toolcalls ⊆ messages, and the unobservable
+        // categories stay NULL (not Some(0)).
+        let content = [
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:00.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:01.000Z","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:02.000Z","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-01T09:00:03.000Z","payload":{"type":"function_call_output","output":"cccccccccccccccccccccccccccccccccccccccc"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:04.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":50,"total_tokens":950}}}}"#,
+        ].join("\n") + "\n";
+        let parsed = parse_file(&content, "rollout", "/p/rollout.jsonl");
+        assert_eq!(parsed.events.len(), 1);
+        let ctx = parsed.events[0].ctx;
+        let m = ctx.messages.unwrap();
+        let r = ctx.reasoning.unwrap();
+        assert_eq!(m + r, 900, "messages + reasoning == billed (system absorbed)");
+        assert!(r > 0, "reasoning share attributed");
+        assert!(ctx.toolcalls.unwrap() <= m, "toolcalls ⊆ messages");
+        assert_eq!(ctx.system, None, "system unobservable in codex → NULL");
+        assert_eq!(ctx.mcp, None);
+        assert_eq!(ctx.skills, None);
     }
 }

@@ -1,3 +1,4 @@
+use crate::adapters::ctx::Composition;
 use crate::types::{FileState, UsageEvent};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -436,6 +437,52 @@ pub fn add_ctx_exec_rows(
         }
     }
     tx.commit()
+}
+
+// Composition persistence lives here (not in adapters::ctx) so the pure math
+// stays rusqlite-free. The Claude adapter's running composition must survive
+// byte-offset resumes between scans.
+pub fn load_composition(conn: &Connection, session_id: &str) -> rusqlite::Result<Option<Composition>> {
+    conn.query_row(
+        "SELECT msg_est, tool_est, mcp_est, skill_est, reas_est, sys_est, initialized, tainted \
+         FROM session_ctx WHERE session_id = ?1",
+        [session_id],
+        |r| {
+            Ok(Composition {
+                msg: r.get(0)?, tool: r.get(1)?, mcp: r.get(2)?, skill: r.get(3)?,
+                reas: r.get(4)?, sys: r.get(5)?,
+                initialized: r.get::<_, i64>(6)? != 0,
+                tainted: r.get::<_, i64>(7)? != 0,
+            })
+        },
+    )
+    .optional()
+}
+
+pub fn save_composition(conn: &Connection, session_id: &str, c: &Composition) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO session_ctx \
+         (session_id, msg_est, tool_est, mcp_est, skill_est, reas_est, sys_est, initialized, tainted) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![session_id, c.msg, c.tool, c.mcp, c.skill, c.reas, c.sys,
+                c.initialized as i64, c.tainted as i64],
+    )?;
+    Ok(())
+}
+
+pub fn record_resources(
+    conn: &Connection,
+    source: &str,
+    rows: &[(&'static str, String, i64)],
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO ctx_resources (source, kind, name, day) \
+         VALUES (?1, ?2, ?3, strftime('%Y-%m-%d', ?4, 'unixepoch', 'localtime'))",
+    )?;
+    for (kind, name, ts) in rows {
+        stmt.execute(params![source, kind, name, ts])?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1033,5 +1080,29 @@ mod tests {
         clear_ctx_exec_for_file(&conn, "f1.jsonl").unwrap();
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_exec", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 1);
+    }
+
+    #[test]
+    fn composition_roundtrips_through_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        assert!(load_composition(&conn, "s1").unwrap().is_none());
+        let c = Composition { msg: 1, tool: 2, mcp: 3, skill: 4, reas: 5, sys: 6, initialized: true, tainted: true };
+        save_composition(&conn, "s1", &c).unwrap();
+        assert_eq!(load_composition(&conn, "s1").unwrap(), Some(c));
+    }
+
+    #[test]
+    fn record_resources_dedupes_per_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let ts = 1_782_907_200i64; // some day
+        record_resources(&conn, "claude", &[
+            ("skill", "graphify".to_string(), ts),
+            ("skill", "graphify".to_string(), ts + 60), // same local day → deduped
+            ("mcp_server", "pencil".to_string(), ts),
+        ]).unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_resources", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
     }
 }

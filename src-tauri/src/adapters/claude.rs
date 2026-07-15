@@ -35,6 +35,146 @@ fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+struct ParsedClaudeFile {
+    events: Vec<UsageEvent>,
+    comps: HashMap<String, Composition>,
+    resources: Vec<(&'static str, String, i64)>,
+    tool_rows: Vec<(String, i64, i64, i64)>,
+    exec_rows: Vec<(String, String, String, i64, i64, i64)>,
+    consumed: usize,
+    lines_skipped: u64,
+}
+
+// Pure parse core (no Connection): all attribution logic lives here. `prior`
+// supplies the persisted composition on a mid-file resume (start > 0),
+// consulted only on first sight of a session id; a None taints that session so
+// attribution stays NULL instead of guessing.
+fn parse_file(
+    buf: &[u8],
+    start: i64,
+    path_str: &str,
+    encoded_dir: &str,
+    file_stem: &str,
+    mut prior: impl FnMut(&str) -> Option<Composition>,
+) -> ParsedClaudeFile {
+    // Consume only complete newline-terminated lines; a trailing partial line
+    // is left for the next scan.
+    let consumed = buf
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    // Context attribution (spec 2026-07-10): feed every line through the
+    // running composition. Snapshot the composition at first sight of a
+    // dedup_key (content the call produces is its output, not its input),
+    // but split per LINE: proxied models (chatcmpl ids) log partial usage on
+    // early duplicate lines, and the dedup upsert keeps the max-output line —
+    // its ctx must be computed from its own billed or the partition breaks.
+    let is_agent_file = path_str.contains("/subagents/");
+    let mut events = Vec::new();
+    let mut comps: HashMap<String, Composition> = HashMap::new();
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
+    let mut comp_by_key: HashMap<String, Composition> = HashMap::new();
+    let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
+    let mut exec_by_id: HashMap<String, (String, String, String)> = HashMap::new();
+    let mut exec_rows: Vec<(String, String, String, i64, i64, i64)> = Vec::new();
+    let mut lines_skipped: u64 = 0;
+
+    for line in buf[..consumed].split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_slice(line) {
+            Ok(v) => v,
+            Err(_) => {
+                lines_skipped += 1;
+                continue;
+            }
+        };
+        // Session key: per-line sessionId, else the file stem (one session per file).
+        let sid = v
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| file_stem.to_string());
+        if !comps.contains_key(&sid) {
+            // The persisted composition exists only to survive byte-offset resumes.
+            // A full parse from byte 0 rebuilds it from scratch — loading here would
+            // double-count content and make a stale taint permanent.
+            let c = if start > 0 {
+                // Mid-file resume with no persisted state: composition is unknowable —
+                // taint the session so attribution stays NULL instead of guessing.
+                match prior(&sid) {
+                    Some(c) => c,
+                    None => Composition { tainted: true, ..Default::default() },
+                }
+            } else {
+                Composition::default()
+            };
+            comps.insert(sid.clone(), c);
+        }
+        let comp = comps.get_mut(&sid).expect("inserted above");
+        let line_ts = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(crate::time::iso_to_epoch)
+            .unwrap_or(0);
+
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user") => {
+                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut sizes);
+                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
+                collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
+            }
+            Some("system") => {
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
+                    comp.reset_compact();
+                }
+            }
+            Some("assistant") => {
+                if let Some(mut ev) = parse_line_event(&v, path_str, encoded_dir) {
+                    let billed = ev.input_tokens
+                        + ev.cache_read_tokens
+                        + ev.cache_write_5m_tokens
+                        + ev.cache_write_1h_tokens;
+                    comp.init_system(billed);
+                    let snap = *comp_by_key.entry(ev.dedup_key.clone()).or_insert(*comp);
+                    let mut ctx = snap.attribute(billed);
+                    let sidechain = is_agent_file
+                        || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true);
+                    if sidechain {
+                        ctx.agents = Some(billed);
+                    }
+                    // Reasoning share: genuine Anthropic transcripts store thinking
+                    // signature-only (empty text) so the share is 0 — unobservable, NULL.
+                    // Proxied third-party models (e.g. GLM) DO log thinking text; a
+                    // nonzero share is a real observation and must stay, or the primary
+                    // partition loses exactly that amount.
+                    if ctx.reasoning == Some(0) {
+                        ctx.reasoning = None;
+                    }
+                    ev.ctx = ctx;
+                    events.push(ev);
+                }
+                // Attribution first, THEN book this line's own content: what a
+                // call produces is its output, not its input.
+                let mut sink: Vec<(&'static str, String)> = Vec::new();
+                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink, &mut sizes);
+                resources.extend(sink.into_iter().map(|(k, n)| (k, n, line_ts)));
+                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
+                collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
+            }
+            _ => {}
+        }
+    }
+
+    ParsedClaudeFile { events, comps, resources, tool_rows, exec_rows, consumed, lines_skipped }
+}
+
 fn scan_file(
     conn: &mut Connection,
     path: &Path,
@@ -83,139 +223,35 @@ fn scan_file(
         return Ok(());
     }
 
-    // Consume only complete newline-terminated lines; a trailing partial line
-    // is left for the next scan.
-    let consumed = buf
-        .iter()
-        .rposition(|&b| b == b'\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
-
-    // Context attribution (spec 2026-07-10): feed every line through the
-    // running composition. Snapshot the composition at first sight of a
-    // dedup_key (content the call produces is its output, not its input),
-    // but split per LINE: proxied models (chatcmpl ids) log partial usage on
-    // early duplicate lines, and the dedup upsert keeps the max-output line —
-    // its ctx must be computed from its own billed or the partition breaks.
-    let is_agent_file = path_str.contains("/subagents/");
-    let mut events = Vec::new();
-    let mut comps: HashMap<String, Composition> = HashMap::new();
-    let mut tool_names: HashMap<String, String> = HashMap::new();
-    let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
-    let mut comp_by_key: HashMap<String, Composition> = HashMap::new();
-
     // ctx_tools idempotency: a parse from byte 0 rebuilds this file's tool
     // weights from scratch (same rule as the fresh composition).
     if start == 0 {
         crate::db::clear_ctx_tools_for_file(conn, &path_str)?;
         crate::db::clear_ctx_exec_for_file(conn, &path_str)?;
     }
-    let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
-    let mut exec_by_id: HashMap<String, (String, String, String)> = HashMap::new();
-    let mut exec_rows: Vec<(String, String, String, i64, i64, i64)> = Vec::new();
 
-    for line in buf[..consumed].split(|&b| b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let v: serde_json::Value = match serde_json::from_slice(line) {
-            Ok(v) => v,
-            Err(_) => {
-                result.lines_skipped += 1;
-                continue;
-            }
-        };
-        // Session key: per-line sessionId, else the file stem (one session per file).
-        let sid = v
-            .get("sessionId")
-            .and_then(|s| s.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()
-            });
-        if !comps.contains_key(&sid) {
-            // The persisted composition exists only to survive byte-offset resumes.
-            // A full parse from byte 0 rebuilds it from scratch — loading here would
-            // double-count content and make a stale taint permanent.
-            let c = if start > 0 {
-                // Mid-file resume with no persisted state: composition is unknowable —
-                // taint the session so attribution stays NULL instead of guessing.
-                match claude_ctx::load_composition(conn, &sid)? {
-                    Some(c) => c,
-                    None => Composition { tainted: true, ..Default::default() },
-                }
-            } else {
-                Composition::default()
-            };
-            comps.insert(sid.clone(), c);
-        }
-        let comp = comps.get_mut(&sid).expect("inserted above");
-        let line_ts = v
-            .get("timestamp")
-            .and_then(|t| t.as_str())
-            .and_then(crate::time::iso_to_epoch)
-            .unwrap_or(0);
+    let file_stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
 
-        match v.get("type").and_then(|t| t.as_str()) {
-            Some("user") => {
-                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
-                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut sizes);
-                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
-                collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
-            }
-            Some("system") => {
-                if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
-                    comp.reset_compact();
-                }
-            }
-            Some("assistant") => {
-                if let Some(mut ev) = parse_line_event(&v, &path_str, &encoded_dir) {
-                    let billed = ev.input_tokens
-                        + ev.cache_read_tokens
-                        + ev.cache_write_5m_tokens
-                        + ev.cache_write_1h_tokens;
-                    comp.init_system(billed);
-                    let snap = *comp_by_key.entry(ev.dedup_key.clone()).or_insert(*comp);
-                    let mut ctx = snap.attribute(billed);
-                    let sidechain = is_agent_file
-                        || v.get("isSidechain").and_then(|b| b.as_bool()) == Some(true);
-                    if sidechain {
-                        ctx.agents = Some(billed);
-                    }
-                    // Reasoning share: genuine Anthropic transcripts store thinking
-                    // signature-only (empty text) so the share is 0 — unobservable, NULL.
-                    // Proxied third-party models (e.g. GLM) DO log thinking text; a
-                    // nonzero share is a real observation and must stay, or the primary
-                    // partition loses exactly that amount.
-                    if ctx.reasoning == Some(0) {
-                        ctx.reasoning = None;
-                    }
-                    ev.ctx = ctx;
-                    events.push(ev);
-                }
-                // Attribution first, THEN book this line's own content: what a
-                // call produces is its output, not its input.
-                let mut sink: Vec<(&'static str, String)> = Vec::new();
-                let mut sizes: Vec<(String, i64, i64)> = Vec::new();
-                claude_ctx::apply_assistant_content(comp, &v, &mut tool_names, &mut sink, &mut sizes);
-                resources.extend(sink.into_iter().map(|(k, n)| (k, n, line_ts)));
-                tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
-                collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
-            }
-            _ => {}
-        }
-    }
+    // prior lookup for mid-file resumes: a DB read error maps to None (taint),
+    // the same NULL-not-a-guess outcome as a missing row.
+    let parsed = parse_file(&buf, start, &path_str, &encoded_dir, &file_stem, |sid| {
+        crate::db::load_composition(conn, sid).ok().flatten()
+    });
 
-    let inserted = insert_events_keep_max_output(conn, &events)?;
+    result.lines_skipped += parsed.lines_skipped;
+    let inserted = insert_events_keep_max_output(conn, &parsed.events)?;
     result.events_inserted += inserted;
-    for (sid, comp) in &comps {
-        claude_ctx::save_composition(conn, sid, comp)?;
+    for (sid, comp) in &parsed.comps {
+        crate::db::save_composition(conn, sid, comp)?;
     }
-    claude_ctx::record_resources(conn, "claude", &resources)?;
-    crate::db::add_ctx_tool_rows(conn, "claude", &path_str, &tool_rows)?;
-    crate::db::add_ctx_exec_rows(conn, "claude", &path_str, &exec_rows)?;
+    crate::db::record_resources(conn, "claude", &parsed.resources)?;
+    crate::db::add_ctx_tool_rows(conn, "claude", &path_str, &parsed.tool_rows)?;
+    crate::db::add_ctx_exec_rows(conn, "claude", &path_str, &parsed.exec_rows)?;
 
-    let new_offset = start + consumed as i64;
+    let new_offset = start + parsed.consumed as i64;
     set_file_state(conn, &path_str, FileState { size, mtime, byte_offset: new_offset })?;
     Ok(())
 }
@@ -914,5 +950,67 @@ mod tests {
             .query_row("SELECT est_tokens, calls FROM ctx_exec", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
         assert_eq!((est3, calls3), (est1, calls1));
+    }
+
+    // ---- pure parse_file core (no DB) ----
+
+    #[test]
+    fn parse_file_resume_without_prior_taints_ctx_to_null() {
+        // start > 0 and the prior lookup returns None → the session is tainted,
+        // so every event's ctx stays all-NULL (never a guess).
+        let call = r#"{"type":"assistant","sessionId":"s","requestId":"r","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let buf = format!("{call}\n");
+        let parsed = parse_file(buf.as_bytes(), 10, "/p/x/s.jsonl", "enc", "s", |_| None);
+        assert_eq!(parsed.events.len(), 1);
+        assert_eq!(parsed.events[0].ctx.messages, None, "tainted resume → NULL");
+        assert_eq!(parsed.events[0].ctx.system, None);
+    }
+
+    #[test]
+    fn parse_file_resume_with_prior_attributes_from_it() {
+        // start > 0 and the prior lookup returns a known composition → the
+        // event is attributed against it (initialized, so init_system no-ops).
+        let call = r#"{"type":"assistant","sessionId":"s","requestId":"r","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}"#;
+        let buf = format!("{call}\n");
+        let known = Composition { msg: 10, sys: 990, initialized: true, ..Default::default() };
+        let parsed = parse_file(buf.as_bytes(), 10, "/p/x/s.jsonl", "enc", "s", |_| Some(known));
+        assert_eq!(parsed.events.len(), 1);
+        let ctx = parsed.events[0].ctx;
+        // billed 1000, total 1000 → system 990, messages 10.
+        assert_eq!(ctx.system, Some(990));
+        assert_eq!(ctx.messages, Some(10));
+        assert_eq!(ctx.messages.unwrap() + ctx.system.unwrap(), 1000);
+    }
+
+    #[test]
+    fn parse_file_snapshots_composition_at_first_sight_of_dedup_key() {
+        // Two assistant lines share (id, requestId) → one dedup_key. The second
+        // line's ctx uses the FIRST-sight composition (before l1's 400-byte text
+        // was booked) but partitions its OWN billed.
+        let user = r#"{"type":"user","sessionId":"s","timestamp":"2026-07-01T10:00:00.000Z","message":{"role":"user","content":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}"#;
+        let big = "t".repeat(400);
+        let l1 = format!(r#"{{"type":"assistant","sessionId":"s","requestId":"r","timestamp":"2026-07-01T10:00:01.000Z","cwd":"/p/x","message":{{"id":"m","model":"claude-opus-4-8","content":[{{"type":"text","text":"{big}"}}],"usage":{{"input_tokens":100,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":900}}}}}}"#);
+        let l2 = r#"{"type":"assistant","sessionId":"s","requestId":"r","timestamp":"2026-07-01T10:00:02.000Z","cwd":"/p/x","message":{"id":"m","model":"claude-opus-4-8","usage":{"input_tokens":500,"output_tokens":9,"cache_read_input_tokens":1500,"cache_creation_input_tokens":0}}}"#;
+        let buf = format!("{user}\n{l1}\n{l2}\n");
+        let parsed = parse_file(buf.as_bytes(), 0, "/p/x/s.jsonl", "enc", "s", |_| None);
+        assert_eq!(parsed.events.len(), 2);
+        // l2 is the higher-output line; first-sight snapshot ratio (10 msg / 990
+        // sys) × l2 billed 2000 → system 1980, not the live-comp 1800.
+        let e2 = parsed.events.iter().find(|e| e.output_tokens == 9).unwrap();
+        assert_eq!(e2.ctx.system, Some(1980), "first-sight snapshot ratio, not live comp");
+        assert_eq!(e2.ctx.messages, Some(20));
+        assert_eq!(e2.ctx.messages.unwrap() + e2.ctx.system.unwrap(), 2000, "l2 partitions its OWN billed");
+    }
+
+    #[test]
+    fn parse_file_consumed_stops_at_last_newline() {
+        // A trailing partial (unterminated) line is left for the next scan:
+        // consumed ends at the last newline and the partial line is not parsed.
+        let l1 = r#"{"type":"assistant","sessionId":"s","requestId":"r","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/p/x","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":1,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#;
+        let partial = r#"{"type":"assistant","sessionId":"s","requestId":"r2","timestamp":"2026-07-01"#;
+        let buf = format!("{l1}\n{partial}");
+        let parsed = parse_file(buf.as_bytes(), 0, "/p/x/s.jsonl", "enc", "s", |_| None);
+        assert_eq!(parsed.consumed, l1.len() + 1, "consumed ends at the last newline");
+        assert_eq!(parsed.events.len(), 1, "trailing partial line left unparsed");
     }
 }
