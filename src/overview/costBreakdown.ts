@@ -1,27 +1,43 @@
-import type { BreakdownRow } from '../types';
+import type { BreakdownRow, Summary } from '../types';
 import { formatCost } from '../lib/format';
 import { TOOLS } from './data';
 
-export interface CostBreakdownModel {
+interface CostBreakdownModelData {
   name: string;
   cost: number | null;
   cacheEstimated: boolean;
 }
 
-export interface CostBreakdownGroup {
+interface CostBreakdownGroupData {
   sourceKey: string;
   sourceName: string;
-  models: CostBreakdownModel[];
+  models: CostBreakdownModelData[];
   cost: number | null;
   unpricedCount: number;
+}
+
+export interface CostBreakdownView {
+  totalCostLabel: string;
+  note: string | null;
+  groups: Array<{
+    sourceKey: string;
+    sourceName: string;
+    costLabel: string;
+    models: Array<{
+      name: string;
+      costLabel: string;
+      unpriced: boolean;
+      cacheEstimated: boolean;
+    }>;
+  }>;
 }
 
 function getSourceName(sourceKey: string): string {
   return TOOLS.find((tool) => tool.key === sourceKey)?.source ?? sourceKey;
 }
 
-export function buildCostBreakdown(rows: BreakdownRow[]): CostBreakdownGroup[] {
-  const groups = new Map<string, CostBreakdownGroup>();
+function buildCostBreakdownGroups(rows: BreakdownRow[]): CostBreakdownGroupData[] {
+  const groups = new Map<string, CostBreakdownGroupData>();
 
   for (const row of rows) {
     const sourceKey = row.source ?? 'Unknown Source';
@@ -73,4 +89,30 @@ export function formatSourceCost(cost: number | null, unpricedCount: number): st
   if (cost === null) return 'Unpriced';
   if (unpricedCount === 0) return formatBreakdownCost(cost);
   return `${formatBreakdownCost(cost, true)} · ${unpricedCount} unpriced`;
+}
+
+export function buildCostBreakdownView(summary: Summary, rows: BreakdownRow[]): CostBreakdownView {
+  const groups = buildCostBreakdownGroups(rows).map((group) => ({
+    sourceKey: group.sourceKey,
+    sourceName: group.sourceName,
+    costLabel: formatSourceCost(group.cost, group.unpricedCount),
+    models: group.models.map((model) => ({
+      name: model.name,
+      costLabel: formatBreakdownCost(model.cost),
+      unpriced: model.cost === null,
+      cacheEstimated: model.cacheEstimated,
+    })),
+  }));
+
+  return {
+    totalCostLabel: formatBreakdownCost(
+      summary.cost,
+      summary.hasUnpriced && summary.cost !== null,
+    ),
+    note:
+      summary.hasUnpriced && summary.cost !== null
+        ? `Partial Cost · ${summary.unpricedModels.length} Unpriced Model${summary.unpricedModels.length === 1 ? '' : 's'}`
+        : null,
+    groups,
+  };
 }

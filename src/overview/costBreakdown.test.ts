@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { BreakdownRow } from '../types';
-import { buildCostBreakdown, formatBreakdownCost, formatSourceCost } from './costBreakdown';
+import type { BreakdownRow, Summary } from '../types';
+import {
+  buildCostBreakdownView,
+  formatBreakdownCost,
+  formatSourceCost,
+} from './costBreakdown';
 
 function row(overrides: Partial<BreakdownRow>): BreakdownRow {
   return {
@@ -20,60 +24,132 @@ function row(overrides: Partial<BreakdownRow>): BreakdownRow {
   };
 }
 
-describe('buildCostBreakdown', () => {
-  it('groups Models by canonical Source name and orders Sources by subtotal Cost', () => {
-    const groups = buildCostBreakdown([
-      row({ source: 'codex', key: 'gpt-5.4', cost: 2 }),
-      row({ source: 'claude', key: 'claude-opus', cost: 8 }),
-      row({ source: 'claude', key: 'claude-sonnet', cost: 3 }),
-    ]);
+function summary(overrides: Partial<Summary>): Summary {
+  return {
+    inputTokens: 1,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 1,
+    requests: 1,
+    cost: 1,
+    hasUnpriced: false,
+    unpricedModels: [],
+    cacheEstimatedModels: [],
+    cacheHitRate: 0,
+    ...overrides,
+  };
+}
 
-    expect(groups.map((group) => [group.sourceName, group.cost])).toEqual([
-      ['Claude Code', 11],
-      ['Codex', 2],
+describe('buildCostBreakdownView', () => {
+  it('describes an all-Unpriced period without calling it Partial Cost', () => {
+    const view = buildCostBreakdownView(
+      summary({ cost: null, hasUnpriced: true, unpricedModels: ['claude-unknown'] }),
+      [row({ key: 'claude-unknown', cost: null })],
+    );
+
+    expect(view.totalCostLabel).toBe('Unpriced');
+    expect(view.note).toBeNull();
+    expect(view.groups).toEqual([
+      {
+        sourceKey: 'claude',
+        sourceName: 'Claude Code',
+        costLabel: 'Unpriced',
+        models: [
+          {
+            name: 'claude-unknown',
+            costLabel: 'Unpriced',
+            unpriced: true,
+            cacheEstimated: false,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('keeps Cache-Estimated as a Model marker without making Cost Partial', () => {
+    const view = buildCostBreakdownView(
+      summary({ cost: 4, cacheEstimatedModels: ['claude-opus'] }),
+      [row({ key: 'claude-opus', cost: 4, cacheEstimated: true })],
+    );
+
+    expect(view.totalCostLabel).toBe('$4.00');
+    expect(view.note).toBeNull();
+    expect(view.groups[0].costLabel).toBe('$4.00');
+    expect(view.groups[0].models[0].cacheEstimated).toBe(true);
+  });
+});
+
+describe('buildCostBreakdownView grouping', () => {
+  it('groups Models by canonical Source name and orders Sources by subtotal Cost', () => {
+    const { groups } = buildCostBreakdownView(
+      summary({ cost: 13 }),
+      [
+        row({ source: 'codex', key: 'gpt-5.4', cost: 2 }),
+        row({ source: 'claude', key: 'claude-opus', cost: 8 }),
+        row({ source: 'claude', key: 'claude-sonnet', cost: 3 }),
+      ],
+    );
+
+    expect(groups.map((group) => [group.sourceName, group.costLabel])).toEqual([
+      ['Claude Code', '$11.00'],
+      ['Codex', '$2.00'],
     ]);
   });
 
   it('orders priced Models by Cost and keeps Unpriced Models last', () => {
-    const [group] = buildCostBreakdown([
-      row({ key: 'z-unpriced', cost: null }),
-      row({ key: 'cheap', cost: 1 }),
-      row({ key: 'expensive', cost: 4, cacheEstimated: true }),
-      row({ key: 'a-unpriced', cost: null }),
-    ]);
+    const { groups } = buildCostBreakdownView(
+      summary({
+        cost: 5,
+        hasUnpriced: true,
+        unpricedModels: ['z-unpriced', 'a-unpriced'],
+      }),
+      [
+        row({ key: 'z-unpriced', cost: null }),
+        row({ key: 'cheap', cost: 1 }),
+        row({ key: 'expensive', cost: 4, cacheEstimated: true }),
+        row({ key: 'a-unpriced', cost: null }),
+      ],
+    );
+    const [group] = groups;
 
-    expect(group.cost).toBe(5);
-    expect(group.unpricedCount).toBe(2);
+    expect(group.costLabel).toBe('≥ $5.00 · 2 unpriced');
     expect(group.models).toEqual([
-      { name: 'expensive', cost: 4, cacheEstimated: true },
-      { name: 'cheap', cost: 1, cacheEstimated: false },
-      { name: 'a-unpriced', cost: null, cacheEstimated: false },
-      { name: 'z-unpriced', cost: null, cacheEstimated: false },
+      { name: 'expensive', costLabel: '$4.00', unpriced: false, cacheEstimated: true },
+      { name: 'cheap', costLabel: '$1.00', unpriced: false, cacheEstimated: false },
+      { name: 'a-unpriced', costLabel: 'Unpriced', unpriced: true, cacheEstimated: false },
+      { name: 'z-unpriced', costLabel: 'Unpriced', unpriced: true, cacheEstimated: false },
     ]);
   });
 
   it('puts entirely Unpriced Sources after priced Sources', () => {
-    const groups = buildCostBreakdown([
-      row({ source: 'claude', key: 'claude-unknown', cost: null }),
-      row({ source: 'codex', key: 'gpt-5.4', cost: 0 }),
-    ]);
+    const { groups } = buildCostBreakdownView(
+      summary({ cost: 0, hasUnpriced: true, unpricedModels: ['claude-unknown'] }),
+      [
+        row({ source: 'claude', key: 'claude-unknown', cost: null }),
+        row({ source: 'codex', key: 'gpt-5.4', cost: 0 }),
+      ],
+    );
 
-    expect(groups.map((group) => [group.sourceName, group.cost])).toEqual([
-      ['Codex', 0],
-      ['Claude Code', null],
+    expect(groups.map((group) => [group.sourceName, group.costLabel])).toEqual([
+      ['Codex', '$0.00'],
+      ['Claude Code', 'Unpriced'],
     ]);
   });
 
   it('uses alphabetical ties and returns no groups for an empty period', () => {
-    const groups = buildCostBreakdown([
-      row({ source: 'codex', key: 'z-model', cost: 2 }),
-      row({ source: 'codex', key: 'a-model', cost: 2 }),
-      row({ source: 'claude', key: 'claude-model', cost: 4 }),
-    ]);
+    const { groups } = buildCostBreakdownView(
+      summary({ cost: 8 }),
+      [
+        row({ source: 'codex', key: 'z-model', cost: 2 }),
+        row({ source: 'codex', key: 'a-model', cost: 2 }),
+        row({ source: 'claude', key: 'claude-model', cost: 4 }),
+      ],
+    );
 
     expect(groups.map((group) => group.sourceName)).toEqual(['Claude Code', 'Codex']);
     expect(groups[1].models.map((model) => model.name)).toEqual(['a-model', 'z-model']);
-    expect(buildCostBreakdown([])).toEqual([]);
+    expect(buildCostBreakdownView(summary({ cost: null }), []).groups).toEqual([]);
   });
 });
 
