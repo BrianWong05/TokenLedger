@@ -845,28 +845,14 @@
 .tt-token-counter-token {
   position: relative;
   display: inline-flex;
+  flex: 1 1 0;
   align-items: center;
+  justify-content: center;
+  min-width: 0;
   height: var(--tt-counter-height);
   font-variant-numeric: tabular-nums;
 }
-.tt-token-counter-token.is-static {
-  justify-content: center;
-}
-.tt-token-counter-token.is-decimal {
-  width: 0.34ch;
-  margin-inline: -0.04ch;
-}
-.tt-token-counter-token.is-comma {
-  width: 0.88ch;
-  margin-inline: -0.3ch;
-}
-.tt-token-counter-token.is-unit {
-  width: auto;
-  padding-inline: 0.06ch;
-}
 .tt-token-counter-token.is-digit {
-  width: 0.88ch;
-  justify-content: center;
   overflow: hidden;
 }
 .tt-token-counter-rolling-digit {

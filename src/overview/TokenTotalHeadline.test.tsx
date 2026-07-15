@@ -172,7 +172,7 @@ describe('TokenTotalHeadline', () => {
     expect(anchoredSymbols).toEqual(expect.arrayContaining(['.', 'B']));
   });
 
-  it('uses tuned punctuation widths in the animated row', () => {
+  it('classifies punctuation in the animated row', () => {
     vi.useFakeTimers();
     const button = renderHeadline(5_841_112_112);
 
@@ -182,6 +182,25 @@ describe('TokenTotalHeadline', () => {
     expect(comma.textContent).toBe(',');
     expect(comma.classList.contains('is-comma')).toBe(true);
   });
+
+  it.each([
+    { initialMode: 'compact', expectedWidth: 'calc(13ch - 0.39em)' },
+    { initialMode: 'exact', expectedWidth: 'calc(5ch - 0.15em)' },
+  ])(
+    'reserves the settled target width while rolling from $initialMode mode',
+    ({ initialMode, expectedWidth }) => {
+      vi.useFakeTimers();
+      if (initialMode === 'exact') {
+        localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+      }
+      const button = renderHeadline(5_841_112_112);
+
+      act(() => button.click());
+
+      const row = button.querySelector<HTMLElement>('.tt-token-counter-row')!;
+      expect(row.style.width).toBe(expectedWidth);
+    },
+  );
 
   it('uses the settled target font size throughout a mode change', () => {
     vi.useFakeTimers();

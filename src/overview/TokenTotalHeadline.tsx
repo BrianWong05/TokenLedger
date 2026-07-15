@@ -17,6 +17,7 @@ type CounterToken =
 const STORAGE_KEY = 'tokenledger.tokenTotalDisplayMode';
 const MODE_ANIMATION_MS = 1_400;
 const COUNTER_HEIGHT = '1.0833em';
+const HEADLINE_TRACKING_EM = 0.03;
 
 interface ModeAnimation {
   id: number;
@@ -122,6 +123,7 @@ function AnimatedCounterToken({
 function SpringCounter({ displayValue }: { displayValue: string }) {
   const tokens = useMemo(() => getCounterTokens(displayValue), [displayValue]);
   const shouldReduceMotion = useReducedMotion() ?? false;
+  const counterWidth = `calc(${tokens.length}ch - ${(tokens.length * HEADLINE_TRACKING_EM).toFixed(2)}em)`;
 
   if (shouldReduceMotion) {
     return (
@@ -133,7 +135,7 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
 
   return (
     <span data-counter-root="true" className="tt-token-counter-root" aria-hidden="true">
-      <span className="tt-token-counter-row">
+      <span className="tt-token-counter-row" style={{ width: counterWidth }}>
         {tokens.map((token, index) =>
           token.kind === 'digit' ? (
             <AnimatedCounterToken
