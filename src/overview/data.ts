@@ -1,6 +1,6 @@
 // Real-data layer for the Overview: shared design meta plus pure reshaping of
 // backend responses (SeriesPoint/BreakdownRow) into the shapes the components
-// consume. No fetching here — Overview8b orchestrates IPC calls.
+// consume. No fetching here — overviewStore orchestrates the Ledger reads.
 import type { BreakdownRow, Filters, SeriesPoint, DateRange, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { rangeToBounds, parseLocalDate } from '../lib/dateRange';
 

@@ -22,6 +22,13 @@ transcripts after ~30 days), a Usage Record persists in the Ledger after its
 source log is gone; scans only ever add Records, never delete them.
 _Avoid_: Cache, database, store
 
+**Overview**:
+The application's single screen: the presentation of the Ledger over a
+user-selected date window and Source selection — headline token total, Cost,
+usage trends, and per-Source breakdowns. What it shows is always a view of the
+Ledger; it never holds usage data of its own.
+_Avoid_: Dashboard, home screen
+
 ### Sources and granularity
 
 **Source**:
