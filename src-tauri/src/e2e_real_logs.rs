@@ -53,40 +53,11 @@ fn e2e_real_logs() {
     );
 
     // Context attribution invariants (spec 2026-07-10-context-breakdown).
-    // Partition exact where attributed:
-    let bad_partition: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events WHERE ctx_messages IS NOT NULL AND \
-             ctx_messages + COALESCE(ctx_system, 0) + COALESCE(ctx_reasoning, 0) != \
-             input_tokens + cache_read_tokens + cache_write_5m_tokens + cache_write_1h_tokens",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(bad_partition, 0, "primary partition must equal billed context exactly");
-
-    // Secondary ⊆ messages:
-    let bad_subset: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events WHERE \
-             COALESCE(ctx_toolcalls, 0) > COALESCE(ctx_messages, 0) OR \
-             COALESCE(ctx_mcp, 0) > COALESCE(ctx_messages, 0) OR \
-             COALESCE(ctx_skills, 0) > COALESCE(ctx_messages, 0)",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(bad_subset, 0, "secondary categories are subsets of messages");
-
-    // Hermes: no content, everything NULL:
-    let hermes_ctx: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events WHERE source='hermes' AND ctx_messages IS NOT NULL",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(hermes_ctx, 0);
+    // The universal cross-Source invariants live in crate::invariants, shared
+    // with the hermetic six-Source test so both exercise identical SQL.
+    crate::invariants::assert_partition_exact(&conn);
+    crate::invariants::assert_secondary_subset(&conn);
+    crate::invariants::assert_hermes_ctx_null(&conn);
 
     // Claude attributed the bulk of its events (real transcripts on this machine):
     let (claude_total, claude_attr): (i64, i64) = conn
@@ -131,20 +102,9 @@ fn e2e_real_logs() {
 
     // Exact-bucket partition (spec 2026-07-10-context-drilldown): per source,
     // history + new_input + system + response + reasoning == total usage.
+    crate::invariants::assert_bucket_partition_exact(&conn);
     let buckets = queries::ctx_buckets(&conn, &all).unwrap();
     for b in &buckets {
-        let (tot_in, tot_out, tot_cr, tot_cw): (i64, i64, i64, i64) = conn
-            .query_row(
-                "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-                 SUM(cache_write_5m_tokens + cache_write_1h_tokens) FROM events WHERE source = ?1",
-                [&b.source],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .unwrap();
-        let total = tot_in + tot_out + tot_cr + tot_cw;
-        let sum = b.history + b.new_input + b.system.unwrap_or(0) + b.response
-            + b.reasoning.unwrap_or(0);
-        assert_eq!(sum, total, "bucket partition exact for {}", b.source);
         println!(
             "  {:<8} history={} new_input={} system={:?} response={} reasoning={:?}",
             b.source, b.history, b.new_input, b.system, b.response, b.reasoning

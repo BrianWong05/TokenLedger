@@ -15,6 +15,11 @@ mod types;
 #[cfg(test)]
 mod e2e_real_logs;
 
+// Shared cross-Source partition invariants + a hermetic six-Source test that
+// runs them on synthetic logs every `cargo test`. Test-only, like e2e above.
+#[cfg(test)]
+mod invariants;
+
 use std::sync::Mutex;
 
 use rusqlite::Connection;
