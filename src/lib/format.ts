@@ -1,12 +1,5 @@
 import { parseLocalDate } from './dateRange';
 
-// 1234 -> "1,234"; 1_234_567 -> "1.23M"; 1_234_567_890 -> "1.23B".
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'B';
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  return n.toLocaleString('en-US');
-}
-
 interface FormatCostOptions {
   adaptivePrecision?: boolean;
   unpricedLabel?: string;
@@ -75,9 +68,6 @@ export function fmtTok(n: number): string {
   const fractionDigits =
     unit.suffix === 'B' ? 2 : unit.suffix === 'M' ? (n >= 1e7 ? 1 : 2) : n >= 1e5 ? 0 : 1;
   return (n / unit.divisor).toFixed(fractionDigits) + unit.suffix;
-}
-export function fmtUSD(n: number): string {
-  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 export function fmtPct(x: number): string {
   return (x * 100).toFixed(x < 0.1 ? 1 : 0) + '%';

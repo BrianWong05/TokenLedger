@@ -1,7 +1,5 @@
 // Mirrors the Rust IPC structs (serde rename_all = "camelCase"). Do not rename.
 
-export type Tool = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity';
-
 export type RangePreset = 'today' | '7d' | '30d' | 'all';
 
 export interface CustomRange {
@@ -31,16 +29,6 @@ export interface Summary {
   unpricedModels: string[];
   cacheEstimatedModels: string[];
   cacheHitRate: number;     // 0..1
-}
-
-export interface TrendPoint {
-  bucket: string;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  totalTokens: number;
-  cost: number;
 }
 
 export interface SeriesPoint {
@@ -121,11 +109,4 @@ export interface SourceStatus {
 export interface ScanStatus {
   sources: SourceStatus[];
   scannedAt: number;
-}
-
-export interface OverrideRates {
-  input: number | null;      // per token; null = 0
-  output: number | null;
-  cacheRead: number | null;
-  cacheWrite: number | null;
 }
