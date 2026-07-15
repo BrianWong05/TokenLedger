@@ -1,6 +1,7 @@
 use crate::adapters::ctx::Composition;
 use crate::types::{FileState, UsageEvent};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::sync::LazyLock;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -134,30 +135,172 @@ DELETE FROM scanned_files;
 DELETE FROM session_ctx;
 PRAGMA user_version = 5;";
 
-// On dedup conflict, refresh only the append-only columns: token counts are
-// immutable (Ledger), but a backfill re-scan must fill session_id/reasoning/ctx
-// on old rows.
-const INSERT_SQL: &str = "INSERT INTO events \
-(dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, \
-cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, \
-ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) \
-VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) \
-ON CONFLICT(dedup_key) DO UPDATE SET \
-  session_id = COALESCE(excluded.session_id, events.session_id), \
-  reasoning_tokens = COALESCE(excluded.reasoning_tokens, events.reasoning_tokens), \
-  ctx_messages  = COALESCE(excluded.ctx_messages,  events.ctx_messages), \
-  ctx_system    = COALESCE(excluded.ctx_system,    events.ctx_system), \
-  ctx_reasoning = COALESCE(excluded.ctx_reasoning, events.ctx_reasoning), \
-  ctx_toolcalls = COALESCE(excluded.ctx_toolcalls, events.ctx_toolcalls), \
-  ctx_agents    = COALESCE(excluded.ctx_agents,    events.ctx_agents), \
-  ctx_mcp       = COALESCE(excluded.ctx_mcp,       events.ctx_mcp), \
-  ctx_skills    = COALESCE(excluded.ctx_skills,    events.ctx_skills)";
+// One row of Usage-Record column knowledge: the write grammar (column list,
+// placeholders, params binder, and the three conflict bodies) is generated
+// from COLS so a new column is added in exactly one place.
+struct EventCol {
+    name: &'static str,
+    insert: InsertConflict,
+    keep: KeepMax,
+    keep_ord: u8, // emit position within the keep-max SET body (0 = not emitted)
+}
 
-const REPLACE_SQL: &str = "INSERT OR REPLACE INTO events \
-(dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, \
-cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, \
-ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) \
-VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
+// INSERT_SQL's ON CONFLICT: refresh only the append-only columns. Token counts
+// are immutable (Ledger), but a backfill re-scan must fill session_id/reasoning/
+// ctx on old rows, so those COALESCE(excluded, events).
+enum InsertConflict {
+    Immutable,             // never rewritten on conflict
+    BackfillFromExcluded,  // COALESCE(excluded.x, events.x)
+}
+
+// insert_events_keep_max_output's ON CONFLICT. Tie semantics (equal
+// output_tokens): only the first-writer columns backfill, and only where the
+// stored value is NULL. A resumed/forked session copies the same
+// (message.id, requestId) line into a new file with a DIFFERENT sessionId — the
+// tie case must NOT re-attribute the row (session_id/source_file/project stay
+// first-writer-stable across re-scans), it only fills v2 NULLs left by the
+// pre-migration ledger. Hence FirstWriter's COALESCE(events, excluded) argument
+// order is the OPPOSITE of BackfillFromExcluded's, and is load-bearing.
+enum KeepMax {
+    Skip,        // the conflict key; not in the SET body
+    Winner,      // CASE: strictly-greater output_tokens takes excluded, else keeps events
+    FirstWriter, // COALESCE(events.x, excluded.x): fill NULLs, never re-attribute
+    Hybrid,      // winner takes excluded, else COALESCE(events.x, excluded.x)
+}
+
+// Canonical column order: matches the events table and every ?N placeholder.
+const COLS: [EventCol; 21] = {
+    use InsertConflict::*;
+    use KeepMax::*;
+    [
+        EventCol { name: "dedup_key",             insert: Immutable,            keep: Skip,         keep_ord: 0 },
+        EventCol { name: "source",                insert: Immutable,            keep: Winner,       keep_ord: 1 },
+        EventCol { name: "timestamp",             insert: Immutable,            keep: Winner,       keep_ord: 7 },
+        EventCol { name: "model",                 insert: Immutable,            keep: Winner,       keep_ord: 8 },
+        EventCol { name: "project",               insert: Immutable,            keep: Winner,       keep_ord: 6 },
+        EventCol { name: "api_calls",             insert: Immutable,            keep: Winner,       keep_ord: 9 },
+        EventCol { name: "input_tokens",          insert: Immutable,            keep: Winner,       keep_ord: 2 },
+        EventCol { name: "output_tokens",         insert: Immutable,            keep: Winner,       keep_ord: 20 },
+        EventCol { name: "cache_read_tokens",     insert: Immutable,            keep: Winner,       keep_ord: 3 },
+        EventCol { name: "cache_write_5m_tokens", insert: Immutable,            keep: Winner,       keep_ord: 4 },
+        EventCol { name: "cache_write_1h_tokens", insert: Immutable,            keep: Winner,       keep_ord: 5 },
+        EventCol { name: "source_file",           insert: Immutable,            keep: Winner,       keep_ord: 10 },
+        EventCol { name: "session_id",            insert: BackfillFromExcluded, keep: FirstWriter,  keep_ord: 11 },
+        EventCol { name: "reasoning_tokens",      insert: BackfillFromExcluded, keep: FirstWriter,  keep_ord: 12 },
+        EventCol { name: "ctx_messages",          insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 13 },
+        EventCol { name: "ctx_system",            insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 14 },
+        EventCol { name: "ctx_reasoning",         insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 15 },
+        EventCol { name: "ctx_toolcalls",         insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 16 },
+        EventCol { name: "ctx_agents",            insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 17 },
+        EventCol { name: "ctx_mcp",               insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 18 },
+        EventCol { name: "ctx_skills",            insert: BackfillFromExcluded, keep: Hybrid,       keep_ord: 19 },
+    ]
+};
+
+fn cols_csv() -> String {
+    COLS.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
+}
+
+fn placeholders() -> String {
+    (1..=COLS.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",")
+}
+
+// The alignment padding below reproduces the hand-formatted literals byte-for-
+// byte (pinned by generates_byte_identical_sql). ctx_* columns align to width 13
+// with a leading space before "="; the keep-max winner/first-writer block aligns
+// to width 17 and jams "=" (no leading space) so the exactly-17-char
+// cache_read_tokens has none. ponytail: cache_write_*_tokens overrun width 17,
+// so they fall to a single space — the one irregularity worth naming.
+fn insert_backfill_entry(c: &EventCol) -> String {
+    let n = c.name;
+    let w = if n.starts_with("ctx_") { 13 } else { n.len() };
+    let g = " ".repeat(w - n.len() + 1);
+    format!("{n}{g}= COALESCE(excluded.{n},{g}events.{n})")
+}
+
+fn keep_entry(c: &EventCol) -> String {
+    let n = c.name;
+    let len = n.len();
+    match c.keep {
+        KeepMax::Skip => unreachable!("Skip columns are filtered before emission"),
+        KeepMax::Winner => {
+            let eq = " ".repeat(if len <= 17 { 17 - len } else { 1 });
+            let v = " ".repeat(if len < 17 { 17 - len } else { 1 });
+            format!(
+                "{n}{eq}= CASE WHEN excluded.output_tokens > events.output_tokens \
+                 THEN excluded.{n}{v}ELSE events.{n}{v}END"
+            )
+        }
+        KeepMax::FirstWriter => {
+            let g = " ".repeat(17 - len);
+            format!("{n}{g}= COALESCE(events.{n}, excluded.{n})")
+        }
+        KeepMax::Hybrid => {
+            let g = " ".repeat(14 - len);
+            format!(
+                "{n}{g}= CASE WHEN excluded.output_tokens > events.output_tokens \
+                 THEN excluded.{n}{g}ELSE COALESCE(events.{n},{g}excluded.{n}){g}END"
+            )
+        }
+    }
+}
+
+static INSERT_SQL: LazyLock<String> = LazyLock::new(|| {
+    let body = COLS
+        .iter()
+        .filter(|c| matches!(c.insert, InsertConflict::BackfillFromExcluded))
+        .map(insert_backfill_entry)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "INSERT INTO events ({}) VALUES ({}) ON CONFLICT(dedup_key) DO UPDATE SET {}",
+        cols_csv(),
+        placeholders(),
+        body
+    )
+});
+
+static REPLACE_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "INSERT OR REPLACE INTO events ({}) VALUES ({})",
+        cols_csv(),
+        placeholders()
+    )
+});
+
+// UPDATE SET expressions all evaluate against the pre-update row, so the
+// repeated CASE guard reads the original output_tokens consistently.
+static KEEP_MAX_SQL: LazyLock<String> = LazyLock::new(|| {
+    let mut emitted: Vec<&EventCol> = COLS
+        .iter()
+        .filter(|c| !matches!(c.keep, KeepMax::Skip))
+        .collect();
+    emitted.sort_by_key(|c| c.keep_ord);
+    let body = emitted
+        .iter()
+        .map(|c| keep_entry(c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "INSERT INTO events ({}) VALUES ({}) ON CONFLICT(dedup_key) DO UPDATE SET {} \
+         WHERE excluded.output_tokens >= events.output_tokens",
+        cols_csv(),
+        placeholders(),
+        body
+    )
+});
+
+// Binds a UsageEvent to ?1..?21 in COLS order. One binder for all three writes.
+fn event_params(e: &UsageEvent) -> [&dyn rusqlite::ToSql; 21] {
+    [
+        &e.dedup_key, &e.source, &e.timestamp, &e.model, &e.project, &e.api_calls,
+        &e.input_tokens, &e.output_tokens, &e.cache_read_tokens,
+        &e.cache_write_5m_tokens, &e.cache_write_1h_tokens, &e.source_file,
+        &e.session_id, &e.reasoning_tokens,
+        &e.ctx.messages, &e.ctx.system, &e.ctx.reasoning,
+        &e.ctx.toolcalls, &e.ctx.agents, &e.ctx.mcp, &e.ctx.skills,
+    ]
+}
 
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Serialize migrators and re-check the version INSIDE the write lock: two
@@ -207,16 +350,9 @@ pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
     let tx = conn.transaction()?;
     let before: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
     {
-        let mut stmt = tx.prepare(INSERT_SQL)?;
+        let mut stmt = tx.prepare(&INSERT_SQL)?;
         for e in events {
-            stmt.execute(params![
-                e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
-                e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens,
-                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
-                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
-            ])?;
+            stmt.execute(&event_params(e)[..])?;
         }
     }
     let after: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
@@ -227,14 +363,8 @@ pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
 /// Like insert_events but, on dedup_key conflict, keeps the row with the greater
 /// output_tokens. Needed for Claude: one turn is logged as several content-block
 /// lines sharing (message.id, requestId) with a growing output_tokens snapshot;
-/// the final (largest) line carries the true count.
-///
-/// Tie semantics (equal output_tokens): only the v2 columns backfill, and only
-/// where the stored value is NULL. A resumed/forked session copies the same
-/// (message.id, requestId) line into a new file with a DIFFERENT sessionId —
-/// the tie case must NOT re-attribute the row (session_id/source_file/project
-/// stay first-writer-stable across re-scans), it only fills v2 NULLs left by
-/// the pre-migration ledger.
+/// the final (largest) line carries the true count. Conflict-column behavior and
+/// tie semantics live on the KeepMax enum.
 pub fn insert_events_keep_max_output(
     conn: &mut Connection,
     events: &[UsageEvent],
@@ -244,45 +374,9 @@ pub fn insert_events_keep_max_output(
     // inflate the inserted count, so diff COUNT(*) rather than summing changes().
     let before: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
     {
-        // UPDATE SET expressions all evaluate against the pre-update row, so the
-        // repeated CASE guard reads the original output_tokens consistently.
-        let mut stmt = tx.prepare(
-            "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
-             input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, \
-             ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) \
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) \
-             ON CONFLICT(dedup_key) DO UPDATE SET \
-               source           = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source           ELSE events.source           END, \
-               input_tokens     = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.input_tokens     ELSE events.input_tokens     END, \
-               cache_read_tokens= CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_read_tokens ELSE events.cache_read_tokens END, \
-               cache_write_5m_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_5m_tokens ELSE events.cache_write_5m_tokens END, \
-               cache_write_1h_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_1h_tokens ELSE events.cache_write_1h_tokens END, \
-               project          = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.project          ELSE events.project          END, \
-               timestamp        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.timestamp        ELSE events.timestamp        END, \
-               model            = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.model            ELSE events.model            END, \
-               api_calls        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.api_calls        ELSE events.api_calls        END, \
-               source_file      = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source_file      ELSE events.source_file      END, \
-               session_id       = COALESCE(events.session_id, excluded.session_id), \
-               reasoning_tokens = COALESCE(events.reasoning_tokens, excluded.reasoning_tokens), \
-               ctx_messages  = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_messages  ELSE COALESCE(events.ctx_messages,  excluded.ctx_messages)  END, \
-               ctx_system    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_system    ELSE COALESCE(events.ctx_system,    excluded.ctx_system)    END, \
-               ctx_reasoning = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_reasoning ELSE COALESCE(events.ctx_reasoning, excluded.ctx_reasoning) END, \
-               ctx_toolcalls = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_toolcalls ELSE COALESCE(events.ctx_toolcalls, excluded.ctx_toolcalls) END, \
-               ctx_agents    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_agents    ELSE COALESCE(events.ctx_agents,    excluded.ctx_agents)    END, \
-               ctx_mcp       = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_mcp       ELSE COALESCE(events.ctx_mcp,       excluded.ctx_mcp)       END, \
-               ctx_skills    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_skills    ELSE COALESCE(events.ctx_skills,    excluded.ctx_skills)    END, \
-               output_tokens    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.output_tokens    ELSE events.output_tokens    END \
-             WHERE excluded.output_tokens >= events.output_tokens",
-        )?;
+        let mut stmt = tx.prepare(&KEEP_MAX_SQL)?;
         for e in events {
-            stmt.execute(params![
-                e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
-                e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens,
-                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
-                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
-            ])?;
+            stmt.execute(&event_params(e)[..])?;
         }
     }
     let after: i64 = tx.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?;
@@ -293,16 +387,9 @@ pub fn insert_events_keep_max_output(
 pub fn upsert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     {
-        let mut stmt = tx.prepare(REPLACE_SQL)?;
+        let mut stmt = tx.prepare(&REPLACE_SQL)?;
         for e in events {
-            stmt.execute(params![
-                e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
-                e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens,
-                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
-                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
-            ])?;
+            stmt.execute(&event_params(e)[..])?;
         }
     }
     tx.commit()?;
@@ -317,16 +404,9 @@ pub fn replace_file_events(
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM events WHERE source_file = ?1", [source_file])?;
     {
-        let mut stmt = tx.prepare(INSERT_SQL)?;
+        let mut stmt = tx.prepare(&INSERT_SQL)?;
         for e in events {
-            stmt.execute(params![
-                e.dedup_key, e.source, e.timestamp, e.model, e.project, e.api_calls,
-                e.input_tokens, e.output_tokens, e.cache_read_tokens,
-                e.cache_write_5m_tokens, e.cache_write_1h_tokens, e.source_file,
-                e.session_id, e.reasoning_tokens,
-                e.ctx.messages, e.ctx.system, e.ctx.reasoning,
-                e.ctx.toolcalls, e.ctx.agents, e.ctx.mcp, e.ctx.skills
-            ])?;
+            stmt.execute(&event_params(e)[..])?;
         }
     }
     tx.commit()?;
@@ -488,6 +568,25 @@ pub fn record_resources(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // GOLDEN: the three write statements are the spec of the write grammar. These
+    // literals were captured verbatim from the pre-refactor constants; the
+    // generator must reproduce them byte-for-byte (spacing and alignment included).
+    #[test]
+    fn generates_byte_identical_sql() {
+        assert_eq!(
+            INSERT_SQL.as_str(),
+            "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(dedup_key) DO UPDATE SET session_id = COALESCE(excluded.session_id, events.session_id), reasoning_tokens = COALESCE(excluded.reasoning_tokens, events.reasoning_tokens), ctx_messages  = COALESCE(excluded.ctx_messages,  events.ctx_messages), ctx_system    = COALESCE(excluded.ctx_system,    events.ctx_system), ctx_reasoning = COALESCE(excluded.ctx_reasoning, events.ctx_reasoning), ctx_toolcalls = COALESCE(excluded.ctx_toolcalls, events.ctx_toolcalls), ctx_agents    = COALESCE(excluded.ctx_agents,    events.ctx_agents), ctx_mcp       = COALESCE(excluded.ctx_mcp,       events.ctx_mcp), ctx_skills    = COALESCE(excluded.ctx_skills,    events.ctx_skills)"
+        );
+        assert_eq!(
+            REPLACE_SQL.as_str(),
+            "INSERT OR REPLACE INTO events (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)"
+        );
+        assert_eq!(
+            KEEP_MAX_SQL.as_str(),
+            "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(dedup_key) DO UPDATE SET source           = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source           ELSE events.source           END, input_tokens     = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.input_tokens     ELSE events.input_tokens     END, cache_read_tokens= CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_read_tokens ELSE events.cache_read_tokens END, cache_write_5m_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_5m_tokens ELSE events.cache_write_5m_tokens END, cache_write_1h_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_1h_tokens ELSE events.cache_write_1h_tokens END, project          = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.project          ELSE events.project          END, timestamp        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.timestamp        ELSE events.timestamp        END, model            = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.model            ELSE events.model            END, api_calls        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.api_calls        ELSE events.api_calls        END, source_file      = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source_file      ELSE events.source_file      END, session_id       = COALESCE(events.session_id, excluded.session_id), reasoning_tokens = COALESCE(events.reasoning_tokens, excluded.reasoning_tokens), ctx_messages  = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_messages  ELSE COALESCE(events.ctx_messages,  excluded.ctx_messages)  END, ctx_system    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_system    ELSE COALESCE(events.ctx_system,    excluded.ctx_system)    END, ctx_reasoning = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_reasoning ELSE COALESCE(events.ctx_reasoning, excluded.ctx_reasoning) END, ctx_toolcalls = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_toolcalls ELSE COALESCE(events.ctx_toolcalls, excluded.ctx_toolcalls) END, ctx_agents    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_agents    ELSE COALESCE(events.ctx_agents,    excluded.ctx_agents)    END, ctx_mcp       = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_mcp       ELSE COALESCE(events.ctx_mcp,       excluded.ctx_mcp)       END, ctx_skills    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_skills    ELSE COALESCE(events.ctx_skills,    excluded.ctx_skills)    END, output_tokens    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.output_tokens    ELSE events.output_tokens    END WHERE excluded.output_tokens >= events.output_tokens"
+        );
+    }
 
     fn sample_event(dedup_key: &str, source_file: &str) -> UsageEvent {
         UsageEvent {
