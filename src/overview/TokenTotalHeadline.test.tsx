@@ -84,4 +84,10 @@ describe('TokenTotalHeadline', () => {
     expect(button.title).toBe('Show compact token count');
     expect(renderHeadline(1_500).textContent).toBe('1,500');
   });
+
+  it('occupies its own row so estimated Cost renders underneath', () => {
+    const button = renderHeadline(4_500_000_000);
+
+    expect(getComputedStyle(button).display).toBe('block');
+  });
 });

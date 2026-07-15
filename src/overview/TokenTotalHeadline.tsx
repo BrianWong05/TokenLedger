@@ -29,7 +29,14 @@ export default function TokenTotalHeadline({ total }: { total: number }) {
       onClick={toggleMode}
       title={action}
       aria-label={`${exact} total tokens. ${action}`}
-      style={{ fontSize: responsiveFontSize, maxWidth: '100%', whiteSpace: 'nowrap' }}
+      style={{
+        display: 'block',
+        width: 'fit-content',
+        maxWidth: '100%',
+        marginInline: 'auto',
+        fontSize: responsiveFontSize,
+        whiteSpace: 'nowrap',
+      }}
     >
       {display}
     </button>
