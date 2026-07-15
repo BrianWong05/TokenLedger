@@ -50,7 +50,7 @@ describe('TokenTotalHeadline', () => {
     document.body.replaceChildren();
   });
 
-  it('rolls a mode change and settles on the exact total after about 800ms', () => {
+  it('rolls a mode change and settles on the exact total after 1.4 seconds', () => {
     vi.useFakeTimers();
     const button = renderHeadline(4_500_000_000);
 
@@ -61,7 +61,7 @@ describe('TokenTotalHeadline', () => {
       '4,500,000,000 total tokens. Show compact token count',
     );
 
-    act(() => vi.advanceTimersByTime(799));
+    act(() => vi.advanceTimersByTime(1_399));
     expect(button.getAttribute('aria-busy')).toBe('true');
 
     act(() => vi.advanceTimersByTime(1));
@@ -81,7 +81,7 @@ describe('TokenTotalHeadline', () => {
     expect(renderHeadline(4_500_000_000).textContent).toBe('4,500,000,000');
   });
 
-  it('rolls exact mode back into compact mode and settles by 800ms', () => {
+  it('rolls exact mode back into compact mode and settles after 1.4 seconds', () => {
     vi.useFakeTimers();
     localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
     const button = renderHeadline(4_500_000_000);
@@ -94,12 +94,37 @@ describe('TokenTotalHeadline', () => {
     expect(button.getAttribute('aria-label')).toBe(
       '4,500,000,000 total tokens. Show exact token count',
     );
-    act(() => vi.advanceTimersByTime(799));
+    act(() => vi.advanceTimersByTime(1_399));
     expect(button.getAttribute('aria-busy')).toBe('true');
 
     act(() => vi.advanceTimersByTime(1));
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('4.5B');
+  });
+
+  it('keeps exact-to-compact motion inside one clipped viewport for 1.4 seconds', () => {
+    vi.useFakeTimers();
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    const button = renderHeadline(5_841_112_112);
+
+    act(() => button.click());
+
+    const viewport = button.firstElementChild as HTMLElement;
+    expect(getComputedStyle(viewport).overflow).toBe('hidden');
+    expect(viewport.childElementCount).toBe(1);
+    const reels = Array.from(viewport.querySelectorAll<HTMLElement>('.tt-token-odometer-reel'));
+    expect(reels.length).toBeGreaterThan(1);
+    expect(reels.every((reel) => reel.childElementCount >= 11)).toBe(true);
+    expect(
+      parseFloat(reels[reels.length - 1].style.getPropertyValue('--tt-roll-duration')),
+    ).toBeGreaterThan(parseFloat(reels[0].style.getPropertyValue('--tt-roll-duration')));
+
+    act(() => vi.advanceTimersByTime(1_399));
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('5.84B');
   });
 
   it('lets the user switch between compact and exact totals and remembers the choice', () => {
@@ -120,7 +145,7 @@ describe('TokenTotalHeadline', () => {
     expect(button.getAttribute('aria-label')).toBe(
       '4,500,000,000 total tokens. Show compact token count',
     );
-    act(() => vi.advanceTimersByTime(800));
+    act(() => vi.advanceTimersByTime(1_400));
     expect(button.textContent).toBe('4,500,000,000');
 
     const restored = renderHeadline(4_500_000_000);
@@ -143,7 +168,7 @@ describe('TokenTotalHeadline', () => {
     vi.useFakeTimers();
     const button = renderHeadline(4_500_123_456);
     act(() => button.click());
-    act(() => vi.advanceTimersByTime(800));
+    act(() => vi.advanceTimersByTime(1_400));
 
     expect(button.textContent).toBe('4,500,123,456');
     const style = getComputedStyle(button);
