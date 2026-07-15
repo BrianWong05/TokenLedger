@@ -420,7 +420,7 @@ function ToolIcon({ tool }: { tool: ToolMeta }) {
   return (
     <span className="tt-toolicon">
       {src ? (
-        <img src={src} alt="" width={15} height={15} />
+        <img src={src} alt="" width={22} height={22} />
       ) : (
         <b style={{ color: tool.color }}>{tool.label[0]}</b>
       )}

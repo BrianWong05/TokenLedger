@@ -1060,9 +1060,6 @@
 .tt-toolicon {
   width: 24px;
   height: 24px;
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.09);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1071,11 +1068,11 @@
 }
 .tt-toolicon img {
   display: block;
-  width: 15px;
-  height: 15px;
+  width: 22px;
+  height: 22px;
 }
 .tt-toolicon b {
-  font-size: 12px;
+  font-size: 17px;
   font-weight: 800;
   line-height: 1;
 }
