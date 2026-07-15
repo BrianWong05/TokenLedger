@@ -829,6 +829,121 @@
   outline: 2px solid rgba(255, 255, 255, 0.62);
   outline-offset: 2px;
 }
+.tt-token-roll {
+  position: relative;
+  display: inline-block;
+  height: 1em;
+  line-height: 1em;
+  vertical-align: -0.04em;
+}
+.tt-token-roll-old-symbols,
+.tt-token-roll-removed-digits {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  display: flex;
+  width: max-content;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.tt-token-roll-old-symbols {
+  animation: tt-token-symbol-out 240ms ease forwards;
+}
+.tt-token-roll-old-symbols .digit {
+  visibility: hidden;
+}
+.tt-token-roll-removed-digits {
+  height: 1em;
+}
+.tt-token-roll-removed-digits .placeholder {
+  visibility: hidden;
+}
+.tt-token-roll-removed-digits .placeholder.digit {
+  width: 1ch;
+}
+.tt-token-roll-new-value {
+  display: inline-flex;
+  height: 1em;
+  align-items: flex-start;
+}
+.tt-token-roll-digit {
+  display: inline-block;
+  width: 1ch;
+  height: 1em;
+  overflow: hidden;
+}
+.tt-token-roll-track {
+  display: flex;
+  height: 2em;
+  flex-direction: column;
+  animation: tt-token-roll-up var(--tt-roll-duration) cubic-bezier(0.22, 0.75, 0.2, 1)
+    forwards;
+  will-change: transform;
+}
+.tt-token-roll-track > span {
+  height: 1em;
+  line-height: 1em;
+}
+.tt-token-roll-track-away {
+  animation-name: tt-token-roll-away;
+}
+.tt-token-roll-symbol {
+  display: inline-block;
+  animation: tt-token-symbol-in 240ms 220ms ease both;
+}
+@keyframes tt-token-roll-up {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-1em);
+  }
+}
+@keyframes tt-token-roll-away {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  82% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-1em);
+  }
+}
+@keyframes tt-token-symbol-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes tt-token-symbol-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-token-roll-old-symbols {
+    display: none;
+  }
+  .tt-token-roll-removed-digits {
+    display: none;
+  }
+  .tt-token-roll-track {
+    animation: none;
+    transform: translateY(-1em);
+  }
+  .tt-token-roll-symbol {
+    animation: none;
+    opacity: 1;
+  }
+}
 .tt-b8-cost {
   font-size: 16px;
   font-weight: 650;
