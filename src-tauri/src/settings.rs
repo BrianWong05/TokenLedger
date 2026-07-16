@@ -74,20 +74,32 @@ pub fn set_settings(conn: &Connection, s: &Settings) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The updater state the Settings banner renders. `state` is one of
+/// "not-configured" | "up-to-date" | "available" | "downloaded"; `version` is
+/// set only for the last two. The mapping from the plugin's check outcome lives
+/// in `updater.rs`, which keeps the honest-degradation rule: any config,
+/// endpoint, or signature failure becomes "not-configured", never a fake
+/// "up-to-date".
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct UpdateStatus {
-    pub state: String,          // "not-configured"
+    pub state: String,
     pub version: Option<String>,
 }
 
-/// Honest stub: the real Tauri updater plugin is wired in a later wave. Until
-/// then this reports not-configured rather than a fake "up to date".
-pub fn check_updates() -> UpdateStatus {
-    UpdateStatus {
-        state: "not-configured".to_string(),
-        version: None,
+impl UpdateStatus {
+    pub fn not_configured() -> Self {
+        Self { state: "not-configured".to_string(), version: None }
+    }
+    pub fn up_to_date() -> Self {
+        Self { state: "up-to-date".to_string(), version: None }
+    }
+    pub fn available(version: String) -> Self {
+        Self { state: "available".to_string(), version: Some(version) }
+    }
+    pub fn downloaded(version: String) -> Self {
+        Self { state: "downloaded".to_string(), version: Some(version) }
     }
 }
 
@@ -149,9 +161,16 @@ mod tests {
     }
 
     #[test]
-    fn check_updates_reports_not_configured() {
-        let u = check_updates();
-        assert_eq!(u.state, "not-configured");
-        assert_eq!(u.version, None);
+    fn update_status_constructors_carry_the_right_state() {
+        assert_eq!(UpdateStatus::not_configured().state, "not-configured");
+        assert_eq!(UpdateStatus::not_configured().version, None);
+        assert_eq!(UpdateStatus::up_to_date().state, "up-to-date");
+        assert_eq!(UpdateStatus::up_to_date().version, None);
+        let a = UpdateStatus::available("1.5.0".to_string());
+        assert_eq!(a.state, "available");
+        assert_eq!(a.version.as_deref(), Some("1.5.0"));
+        let d = UpdateStatus::downloaded("1.5.0".to_string());
+        assert_eq!(d.state, "downloaded");
+        assert_eq!(d.version.as_deref(), Some("1.5.0"));
     }
 }

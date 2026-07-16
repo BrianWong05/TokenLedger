@@ -5,7 +5,9 @@ mod queries;
 mod scan;
 mod settings;
 mod time;
+mod tray;
 mod types;
+mod updater;
 
 // Task 16 end-to-end verification against the real logs on this machine.
 // ponytail: lives inside the crate (not src-tauri/tests/) because db, scan,
@@ -24,7 +26,8 @@ mod invariants;
 use std::sync::Mutex;
 
 use rusqlite::Connection;
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_autostart::MacosLauncher;
 
 use pricing::{ModelPricing, OverrideRates, RatesPerTok};
 use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
@@ -32,22 +35,36 @@ use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
 use types::ScanStatus;
 
+// The at-login LaunchAgent starts the app with this flag so it comes up hidden
+// (tray only); a normal Dock/Finder launch has no flag and shows the window.
+const HIDDEN_FLAG: &str = "--hidden";
+
 pub struct AppState {
     pub db: Mutex<Connection>,
     pub roots: SourceRoots,
     pub scan_lock: Mutex<()>,
 }
 
-#[tauri::command]
-async fn scan(state: State<'_, AppState>) -> Result<ScanStatus, String> {
-    // Serialize scans: a second caller blocks on scan_lock, then runs its own
-    // incremental scan. That is the coalescing policy.
+// The one scan path, shared by the `scan` command and the tray's "Scan now" so
+// neither duplicates the locking/coalescing policy. Serialize scans: a second
+// caller blocks on scan_lock, then runs its own incremental scan.
+pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
+    let state = app.state::<AppState>();
     let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
-    // ponytail: single Mutex<Connection> per the AppState contract. A scan
-    // briefly blocks reads; incremental scans are cheap, so no separate read
-    // connection. Add one only if UI jank during scans is ever measured.
-    let mut db = state.db.lock().map_err(|e| e.to_string())?;
-    Ok(run_scan(&mut db, &state.roots))
+    let status = {
+        // ponytail: single Mutex<Connection> per the AppState contract. A scan
+        // briefly blocks reads; incremental scans are cheap, so no separate read
+        // connection. Add one only if UI jank during scans is ever measured.
+        let mut db = state.db.lock().map_err(|e| e.to_string())?;
+        run_scan(&mut db, &state.roots)
+    };
+    tray::set_last_scan(app, &status);
+    Ok(status)
+}
+
+#[tauri::command]
+async fn scan(app: AppHandle) -> Result<ScanStatus, String> {
+    scan_now(&app)
 }
 
 #[tauri::command]
@@ -186,14 +203,48 @@ fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), St
 }
 
 #[tauri::command]
-fn check_updates() -> Result<UpdateStatus, String> {
-    Ok(settings::check_updates())
+async fn check_updates(app: AppHandle) -> UpdateStatus {
+    updater::check(&app).await
+}
+
+// User-approved from the Settings banner: downloads and stages the update.
+#[tauri::command]
+async fn download_update(app: AppHandle) -> Result<UpdateStatus, String> {
+    updater::download(&app).await
+}
+
+// Applies a staged update by relaunching. Diverges (never returns).
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    app.restart();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // Launch at login as a LaunchAgent that passes HIDDEN_FLAG, so an
+        // at-login start comes up hidden (tray only) while a manual launch does
+        // not. Enrollment itself is driven from the frontend (first-run dialog +
+        // Settings toggle → startup.ts).
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .macos_launcher(MacosLauncher::LaunchAgent)
+                .args([HIDDEN_FLAG])
+                .build(),
+        )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        // Closing the window must not kill capture (ADR-0005): hide it instead,
+        // keeping the webview (and its auto-refresh scans) alive. Quit lives in
+        // the tray.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -203,6 +254,54 @@ pub fn run() {
                 roots: SourceRoots::default_roots(),
                 scan_lock: Mutex::new(()),
             });
+
+            tray::build(app.handle())?;
+
+            // Hidden at-login start vs. normal launch: the window is created
+            // hidden (tauri.conf.json visible:false) so there is no flash; show
+            // it unless HIDDEN_FLAG is present. Either way the webview loads and
+            // runs its initial scan.
+            if !std::env::args().any(|a| a == HIDDEN_FLAG) {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                }
+            }
+
+            // Auto-check for updates on start (non-blocking), respecting the
+            // saved setting. When an update is found, emit it for a listener to
+            // surface; today the placeholder endpoint 404s so this quietly
+            // no-ops until a signed release exists.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let auto = handle
+                    .state::<AppState>()
+                    .db
+                    .lock()
+                    .ok()
+                    .and_then(|db| settings::get_settings(&db).ok())
+                    .map(|s| s.auto_check_updates)
+                    .unwrap_or(false);
+                if auto {
+                    let status = updater::check(&handle).await;
+                    if status.state == "available" {
+                        let _ = handle.emit("update-available", status.version);
+                    }
+                }
+            });
+            // Resident capture cadence (ADR-0005): scan every few hours so a
+            // hidden app keeps recording even when the machine stays up across
+            // days without a re-login. The on-mount frontend scan covers start;
+            // this thread covers the long tail. Emits prices-rebuilt so a
+            // visible Overview refreshes too.
+            // ponytail: parked thread + 4h sleep, no timer framework needed.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
+                if scan_now(&handle).is_ok() {
+                    let _ = handle.emit("prices-rebuilt", ());
+                }
+            });
+
             // Refresh LiteLLM prices off the main thread; any fetch failure falls
             // back to the cached/bundled snapshot inside load_prices_json. The
             // blocking network fetch runs BEFORE the DB lock so scan/summary/etc.
@@ -237,7 +336,9 @@ pub fn run() {
             delete_model_override,
             get_settings,
             set_settings,
-            check_updates
+            check_updates,
+            download_update,
+            restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

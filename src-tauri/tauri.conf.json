@@ -15,6 +15,7 @@
         "title": "TokenLedger",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "visible": false,
         "width": 1100,
         "height": 780,
         "minWidth": 900,
@@ -23,6 +24,14 @@
     ],
     "security": {
       "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/BrianWong05/TokenLedger/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IFRva2VuTGVkZ2VyIHVwZGF0ZXIgcHVia2V5IC0tIFBMQUNFSE9MREVSLCByZXBsYWNlIGJlZm9yZSByZWxlYXNlCg=="
     }
   },
   "bundle": {

@@ -1,29 +1,31 @@
 // The Settings seam: "remote but owned". Thin adapter over the Tauri IPC fns in
 // src/api.ts, mirroring ledger.ts so a page (and the shell) depends on this port
 // instead of @tauri-apps directly (lets tests swap in settings.fake.ts).
+import { invoke } from '@tauri-apps/api/core';
 import { getSettings, setSettings, checkUpdates } from '../api';
-import type { Settings } from '../types';
+import type { Settings, UpdateStatus } from '../types';
 
-// The updater states the Settings UI renders. types.ts's UpdateStatus (the
-// generated backend contract) only carries 'not-configured' today — the stub
-// backend returns nothing else. The richer states are wired here so the UI is
-// ready when signed releases land; widen types.ts to this union then.
-export type UpdateState = 'not-configured' | 'up-to-date' | 'available' | 'downloaded';
-export interface UpdateStatus {
-  state: UpdateState;
-  version: string | null;
-}
+// Re-exported so the Settings pages keep importing UpdateStatus from this port;
+// the union itself now lives in types.ts (the backend contract).
+export type { UpdateStatus } from '../types';
 
 export interface SettingsPort {
   get(): Promise<Settings>;
   set(s: Settings): Promise<void>;
   checkUpdates(): Promise<UpdateStatus>;
+  // User-approved update actions driven by the Settings banner button.
+  downloadUpdate(): Promise<UpdateStatus>;
+  restartApp(): Promise<void>;
 }
 
 export const tauriSettings: SettingsPort = {
   get: getSettings,
   set: setSettings,
   checkUpdates,
+  // Inlined invoke (not routed through api.ts, which the Overview wave owns);
+  // matches the check_updates command shape in src-tauri.
+  downloadUpdate: () => invoke('download_update'),
+  restartApp: () => invoke('restart_app'),
 };
 
 // The shipped defaults, matching the spec: theme System, launch-at-login and

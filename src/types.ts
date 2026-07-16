@@ -44,6 +44,6 @@ export interface Settings {
 }
 
 export interface UpdateStatus {
-  state: 'not-configured';
+  state: 'not-configured' | 'up-to-date' | 'available' | 'downloaded';
   version: string | null;
 }

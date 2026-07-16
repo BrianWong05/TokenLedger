@@ -115,6 +115,22 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
       .finally(() => setChecking(false));
   }, [port]);
 
+  // The banner button drives the user-approved install: download when an update
+  // is merely available, then restart to apply it once downloaded.
+  const [acting, setActing] = useState(false);
+  const onBannerAction = useCallback(() => {
+    if (status?.state === 'available') {
+      setActing(true);
+      port
+        .downloadUpdate()
+        .then(setStatus)
+        .catch(() => {})
+        .finally(() => setActing(false));
+    } else if (status?.state === 'downloaded') {
+      port.restartApp().catch(() => {});
+    }
+  }, [status?.state, port]);
+
   // Populate the last-known state when the tab opens; the button re-checks.
   useEffect(() => {
     check();
@@ -149,7 +165,12 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
               <span className="set-link">{t('settings.updates.releaseNotes')}</span>
             </div>
           </div>
-          <button type="button" className="set-primary-btn">
+          <button
+            type="button"
+            className="set-primary-btn"
+            onClick={onBannerAction}
+            disabled={acting}
+          >
             {t('settings.updates.restart')}
           </button>
         </div>
