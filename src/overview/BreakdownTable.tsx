@@ -1,17 +1,17 @@
 import { useMemo, useState } from 'react';
 import { type TableRow } from './data';
-import { fmtIsoDate } from '../lib/format';
+import { fmtIsoDateL, useOverviewT, type OverviewKey } from './localize';
 
 type Tab = 'daily' | 'projects';
 type SortKey = keyof TableRow;
 
-const NUMCOLS: { key: SortKey; label: string }[] = [
-  { key: 'total', label: 'Total' },
-  { key: 'input', label: 'Input' },
-  { key: 'output', label: 'Output' },
-  { key: 'cached', label: 'Cached' },
-  { key: 'reasoning', label: 'Reasoning' },
-  { key: 'convs', label: 'Convs' },
+const NUMCOLS: { key: SortKey; labelKey: OverviewKey }[] = [
+  { key: 'total', labelKey: 'overview.col.total' },
+  { key: 'input', labelKey: 'overview.col.input' },
+  { key: 'output', labelKey: 'overview.col.output' },
+  { key: 'cached', labelKey: 'overview.col.cached' },
+  { key: 'reasoning', labelKey: 'overview.col.reasoning' },
+  { key: 'convs', labelKey: 'overview.col.convs' },
 ];
 
 const fmtInt = (n: number) => n.toLocaleString('en-US');
@@ -24,6 +24,7 @@ export default function BreakdownTable({
   dailyRows: TableRow[];
   projectRows: TableRow[];
 }) {
+  const { t, lang } = useOverviewT();
   const [tab, setTab] = useState<Tab>('daily');
   const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'label', dir: 'desc' });
 
@@ -55,8 +56,8 @@ export default function BreakdownTable({
     );
   }
 
-  const cols: { key: SortKey; label: string }[] = [
-    { key: 'label', label: tab === 'daily' ? 'Date' : 'Project' },
+  const cols: { key: SortKey; labelKey: OverviewKey }[] = [
+    { key: 'label', labelKey: tab === 'daily' ? 'overview.col.date' : 'overview.col.project' },
     ...NUMCOLS,
   ];
 
@@ -64,10 +65,10 @@ export default function BreakdownTable({
     <div className="tt-tbl">
       <div className="tt-tbl-tabs">
         <button className={tab === 'daily' ? 'active' : ''} onClick={() => switchTab('daily')}>
-          Daily Breakdown
+          {t('overview.dailyBreakdown')}
         </button>
         <button className={tab === 'projects' ? 'active' : ''} onClick={() => switchTab('projects')}>
-          Project Usage
+          {t('overview.projectUsage')}
         </button>
       </div>
       <div className="tt-tbl-scroll">
@@ -77,16 +78,16 @@ export default function BreakdownTable({
               key={c.key}
               className={sort.key === c.key ? 'active' : ''}
               onClick={() => clickCol(c.key)}
-              title={c.key === 'reasoning' ? 'Claude does not report reasoning separately' : undefined}
+              title={c.key === 'reasoning' ? t('overview.reasoningNote') : undefined}
             >
-              {c.label}
+              {t(c.labelKey)}
               <span className="arrow">{sort.key === c.key ? (sort.dir === 'asc' ? '▲' : '▼') : ''}</span>
             </button>
           ))}
         </div>
         {sorted.map((r, i) => (
           <div className="tt-tbl-grid tt-tbl-row" key={r.label + i}>
-            <span>{tab === 'daily' ? fmtIsoDate(r.label) : r.label}</span>
+            <span>{tab === 'daily' ? fmtIsoDateL(r.label, lang) : r.label}</span>
             <span>{fmtInt(r.total)}</span>
             <span>{fmtInt(r.input)}</span>
             <span>{fmtInt(r.output)}</span>

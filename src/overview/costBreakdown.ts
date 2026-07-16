@@ -1,6 +1,9 @@
-import type { BreakdownRow, Summary } from '../types';
-import { formatCost } from '../lib/format';
+import type { BreakdownRow, Settings, Summary } from '../types';
+import type { Lang } from '../lib/i18n';
+import { formatDisplayCost, overviewT, countLabel, USD_IDENTITY } from './localize';
 import { TOOLS } from './meta';
+
+type CostSettings = Pick<Settings, 'currency' | 'usdRate'>;
 
 interface CostBreakdownModelData {
   name: string;
@@ -81,24 +84,42 @@ function buildCostBreakdownGroups(rows: BreakdownRow[]): CostBreakdownGroupData[
   });
 }
 
-export function formatBreakdownCost(cost: number | null, partial = false): string {
-  return formatCost(cost, partial, { adaptivePrecision: true, unpricedLabel: 'Unpriced' });
+export function formatBreakdownCost(
+  cost: number | null,
+  partial = false,
+  settings: CostSettings = USD_IDENTITY,
+  lang: Lang = 'en',
+): string {
+  return formatDisplayCost(cost, partial, settings, lang, {
+    adaptivePrecision: true,
+    unpricedLabel: overviewT(lang, 'overview.unpricedLabel'),
+  });
 }
 
-export function formatSourceCost(cost: number | null, unpricedCount: number): string {
-  if (cost === null) return 'Unpriced';
-  if (unpricedCount === 0) return formatBreakdownCost(cost);
-  return `${formatBreakdownCost(cost, true)} · ${unpricedCount} unpriced`;
+export function formatSourceCost(
+  cost: number | null,
+  unpricedCount: number,
+  settings: CostSettings = USD_IDENTITY,
+  lang: Lang = 'en',
+): string {
+  if (cost === null) return overviewT(lang, 'overview.unpricedLabel');
+  if (unpricedCount === 0) return formatBreakdownCost(cost, false, settings, lang);
+  return `${formatBreakdownCost(cost, true, settings, lang)} · ${unpricedCount} ${overviewT(lang, 'overview.unpricedMarker')}`;
 }
 
-export function buildCostBreakdownView(summary: Summary, rows: BreakdownRow[]): CostBreakdownView {
+export function buildCostBreakdownView(
+  summary: Summary,
+  rows: BreakdownRow[],
+  settings: CostSettings = USD_IDENTITY,
+  lang: Lang = 'en',
+): CostBreakdownView {
   const groups = buildCostBreakdownGroups(rows).map((group) => ({
     sourceKey: group.sourceKey,
     sourceName: group.sourceName,
-    costLabel: formatSourceCost(group.cost, group.unpricedCount),
+    costLabel: formatSourceCost(group.cost, group.unpricedCount, settings, lang),
     models: group.models.map((model) => ({
       name: model.name,
-      costLabel: formatBreakdownCost(model.cost),
+      costLabel: formatBreakdownCost(model.cost, false, settings, lang),
       unpriced: model.cost === null,
       cacheEstimated: model.cacheEstimated,
     })),
@@ -108,10 +129,12 @@ export function buildCostBreakdownView(summary: Summary, rows: BreakdownRow[]): 
     totalCostLabel: formatBreakdownCost(
       summary.cost,
       summary.hasUnpriced && summary.cost !== null,
+      settings,
+      lang,
     ),
     note:
       summary.hasUnpriced && summary.cost !== null
-        ? `Partial Cost · ${summary.unpricedModels.length} Unpriced Model${summary.unpricedModels.length === 1 ? '' : 's'}`
+        ? `${overviewT(lang, 'overview.partialCost')} · ${countLabel(summary.unpricedModels.length, 'overview.unpricedModelOne', 'overview.unpricedModelMany', lang)}`
         : null,
     groups,
   };

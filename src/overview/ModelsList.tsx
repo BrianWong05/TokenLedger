@@ -1,15 +1,20 @@
 import { CATEGORIES, type ToolMeta } from './meta';
 import type { ModelBar } from './data';
-import { fmtTok, fmtPct, formatCost } from '../lib/format';
+import { fmtTok, fmtPct } from '../lib/format';
+import { CAT_KEY, formatDisplayCost, useOverviewT, USD_IDENTITY } from './localize';
+import type { Settings } from '../types';
 
 // Per-model token breakdown for one source. Each bar's filled width is the
 // model's share of the source; inner segments are the four token categories.
+// Costs render in the Display Currency; settings arrive as a prop (rather than
+// via useSettings) so the Pricing-entry test can mount this component bare.
 export default function ModelsList({
   tool,
   toolTokens,
   models,
   showCost = true,
   onModelClick,
+  settings = USD_IDENTITY,
 }: {
   tool: ToolMeta;
   toolTokens: number;
@@ -18,13 +23,15 @@ export default function ModelsList({
   // When set, a Model row is a button that opens the Override editor in place
   // (the Pricing fix reachable where the "unpriced" symptom shows).
   onModelClick?: (model: string) => void;
+  settings?: Pick<Settings, 'currency' | 'usdRate'>;
 }) {
+  const { t, lang } = useOverviewT();
   return (
     <>
       <div className="tt-models-head">
         <div className="lbl">
           <span className="dot" style={{ background: tool.color }} />
-          Models <span className="count">· {models.length}</span>
+          {t('overview.modelsHead')} <span className="count">· {models.length}</span>
         </div>
         <span className="tot">{fmtTok(toolTokens)}</span>
       </div>
@@ -50,11 +57,11 @@ export default function ModelsList({
           <div className="top">
             <span className="name">
               {m.name}
-              {m.cacheEstimated && <span className="tt-tag">cache est.</span>}
+              {m.cacheEstimated && <span className="tt-tag">{t('overview.cacheEst')}</span>}
             </span>
             <span className="figs">
               <span className="tok">{fmtTok(m.tokens)}</span>
-              {showCost && <span className="cost">{formatCost(m.cost, false)}</span>}
+              {showCost && <span className="cost">{formatDisplayCost(m.cost, false, settings, lang)}</span>}
               <span className="pct">{fmtPct(m.share)}</span>
             </span>
           </div>
@@ -71,7 +78,7 @@ export default function ModelsList({
         {CATEGORIES.map((c) => (
           <span className="item" key={c.key}>
             <span className="sw" style={{ background: c.color }} />
-            {c.label}
+            {t(CAT_KEY[c.key])}
           </span>
         ))}
       </div>

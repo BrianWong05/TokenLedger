@@ -54,8 +54,6 @@ export const RANGES_8B: { key: Range8b; label: string; long: string }[] = [
   { key: 'custom', label: 'Custom', long: 'Custom range' },
 ];
 
-export const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
 export function emptyByTool(): Record<ToolKey, number> {
   return { claude: 0, codex: 0, gemini: 0, hermes: 0, grok: 0, antigravity: 0 };
 }

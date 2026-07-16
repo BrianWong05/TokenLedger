@@ -1,6 +1,8 @@
 import { useLayoutEffect, useMemo, useRef, type RefObject } from 'react';
 import type { BreakdownRow, Summary } from '../types';
 import { buildCostBreakdownView } from './costBreakdown';
+import { useSettings } from '../settings/SettingsContext';
+import { useOverviewT } from './localize';
 
 interface CostBreakdownModalProps {
   summary: Summary;
@@ -24,7 +26,12 @@ export default function CostBreakdownModal({
   returnFocusRef,
   onClose,
 }: CostBreakdownModalProps) {
-  const view = useMemo(() => buildCostBreakdownView(summary, rows), [summary, rows]);
+  const { settings } = useSettings();
+  const { t, lang } = useOverviewT();
+  const view = useMemo(
+    () => buildCostBreakdownView(summary, rows, settings, lang),
+    [summary, rows, settings, lang],
+  );
   const modalRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
@@ -90,20 +97,20 @@ export default function CostBreakdownModal({
         <header className="tt-cost-modal-head">
           <div>
             <div className="tt-cost-modal-eyebrow" id="tt-cost-modal-title">
-              Estimated total Cost
+              {t('overview.estTotalCost')}
             </div>
             <div className="tt-cost-modal-total">
               {view.totalCostLabel}
             </div>
             {view.note && <div className="tt-cost-modal-note">{view.note}</div>}
-            <div className="tt-cost-modal-disclosure">At API list prices — not billed</div>
+            <div className="tt-cost-modal-disclosure">{t('overview.notBilled')}</div>
           </div>
           <button
             ref={closeButtonRef}
             type="button"
             className="tt-cost-modal-close"
             onClick={onClose}
-            aria-label="Close Cost breakdown"
+            aria-label={t('overview.closeCostBreakdown')}
           >
             ×
           </button>
@@ -111,8 +118,8 @@ export default function CostBreakdownModal({
 
         <div className="tt-cost-modal-scroll">
           <div className="tt-cost-modal-columns" aria-hidden="true">
-            <span>Model</span>
-            <span>Cost</span>
+            <span>{t('overview.col.model')}</span>
+            <span>{t('overview.col.cost')}</span>
           </div>
 
           {view.groups.map((group) => (
@@ -126,8 +133,8 @@ export default function CostBreakdownModal({
                   <span className="tt-cost-model-name">
                     {model.name}
                     {model.cacheEstimated && (
-                      <span className="tt-tag" title="Cache-Estimated">
-                        cache est.
+                      <span className="tt-tag" title={t('overview.cacheEstimated')}>
+                        {t('overview.cacheEst')}
                       </span>
                     )}
                   </span>

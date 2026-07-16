@@ -1,15 +1,17 @@
 import type { SmallMultipleItem } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
+import { useOverviewT } from './localize';
 
 // ---- per-tool small multiples (one sparkline per tool) ----
 export default function SmallMultiples({ items, rangeLabel }: { items: SmallMultipleItem[]; rangeLabel: string }) {
+  const { t } = useOverviewT();
   const W = 100;
   const H = 40;
   return (
     <div className="tt-card">
       <div className="tt-head">
         <div>
-          <div className="tt-title">Per-tool trend</div>
+          <div className="tt-title">{t('overview.perToolTrend')}</div>
           <div className="tt-sub">{rangeLabel}</div>
         </div>
       </div>

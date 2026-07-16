@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { TOOLS, emptyByTool } from './meta';
 import { rankModels, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
+import { PER_UNIT_KEY, useOverviewT } from './localize';
 
 // ---- aggregate usage-trend bars (no interval toggle; driven by the range) ----
 const VW = 560;
@@ -12,6 +13,7 @@ const BASE = 176;
 const LABEL_Y = 194;
 
 export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: string; rangeLabel: string; modelTool: Record<string, string> }) {
+  const { t } = useOverviewT();
   const [hover, setHover] = useState<number | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
@@ -57,12 +59,12 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
     <div className="tt-card">
       <div className="tt-head">
         <div>
-          <div className="tt-title">Usage trend</div>
-          <div className="tt-sub">Stacked by model · {rangeLabel}</div>
+          <div className="tt-title">{t('overview.usageTrend')}</div>
+          <div className="tt-sub">{t('overview.stackedByModel')} · {rangeLabel}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div className="tt-read-big">{fmtTok(shown ? shown.total : total)}</div>
-          <div style={{ fontSize: 10.5, color: 'var(--tt-mut3)' }}>{shown ? shown.label : 'total'}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--tt-mut3)' }}>{shown ? shown.label : t('overview.total')}</div>
         </div>
       </div>
       <div style={{ marginTop: 12, position: 'relative' }} onMouseMove={onMove}>
@@ -112,9 +114,9 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
             </div>
             <div className="tt-tip-tok">
               <b>{shown.total.toLocaleString('en-US')}</b>
-              <span>tokens</span>
+              <span>{t('overview.tokens')}</span>
             </div>
-            {tipRows.length > 0 && <div className="tt-tip-sec">Model breakdown</div>}
+            {tipRows.length > 0 && <div className="tt-tip-sec">{t('overview.modelBreakdown')}</div>}
             {tipRows.slice(0, 6).map((r) => (
               <div className="tt-tip-row" key={r.key}>
                 <div className="lab">
@@ -128,8 +130,8 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
                 </div>
               </div>
             ))}
-            {tipMore > 0 && <div className="tt-ctx-meta">+{tipMore} more</div>}
-            {tipRows.length === 0 && <div className="tt-ctx-meta">No activity</div>}
+            {tipMore > 0 && <div className="tt-ctx-meta">+{tipMore} {t('overview.more')}</div>}
+            {tipRows.length === 0 && <div className="tt-ctx-meta">{t('overview.noActivity')}</div>}
           </div>
         )}
       </div>
@@ -137,11 +139,11 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
         <div className="tt-stats">
           <div className="tt-stat">
             <b>{fmtTok(avg)}</b>
-            <span>avg / {per}</span>
+            <span>{t('overview.avg')} / {t(PER_UNIT_KEY[per])}</span>
           </div>
           <div className="tt-stat">
             <b style={{ color: 'var(--tt-green)' }}>{fmtTok(peak.total)}</b>
-            <span>peak · {peak.label}</span>
+            <span>{t('overview.peak')} · {peak.label}</span>
           </div>
         </div>
         <div className="tt-legend">

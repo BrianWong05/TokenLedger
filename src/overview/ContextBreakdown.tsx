@@ -3,8 +3,7 @@ import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type Tool
 import type { ToolMeta } from './meta';
 import type { CtxExecRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
-
-const EST_TIP = 'estimated share of billed context (content bytes ÷ 4)';
+import { useOverviewT } from './localize';
 
 // Context panel v2 (spec 2026-07-10-context-drilldown): exact usage-field
 // primaries with expandable Messages; estimated secondary section with a
@@ -25,6 +24,8 @@ export default function ContextBreakdown({
   meta: string;
   execRows: CtxExecRow[];
 }) {
+  const { t } = useOverviewT();
+  const estShareTip = t('overview.estTip');
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [execTab, setExecTab] = useState<'type' | 'exe' | 'cmd'>('type');
   const toggle = (k: string) =>
@@ -39,7 +40,7 @@ export default function ContextBreakdown({
   const denom = Math.max(1, v?.total ?? 0);
   const estTip =
     ctx.messages != null && ctx.system != null
-      ? `est. content composition: messages ${fmtTok(ctx.messages)} · system ${fmtTok(ctx.system)}`
+      ? `${t('overview.estComposition')} ${t('overview.messagesWord')} ${fmtTok(ctx.messages)} · ${t('overview.systemWord')} ${fmtTok(ctx.system)}`
       : undefined;
 
   const row = (
@@ -80,36 +81,36 @@ export default function ContextBreakdown({
     <>
       <div className="tt-ctx-title">
         <span className="dot" style={{ background: tool.color }} />
-        {tool.source} Context Breakdown
+        {tool.source} {t('overview.contextBreakdown')}
       </div>
       <div className="tt-ctx-sub">
-        Cache hit rate <b>{fmtPct(hit)}</b> · <b>{fmtTok(ctx.reused)}</b> reused /{' '}
-        <b>{fmtTok(ctx.billed)}</b> input
+        {t('overview.cacheHitRate')} <b>{fmtPct(hit)}</b> · <b>{fmtTok(ctx.reused)}</b> {t('overview.reused')} /{' '}
+        <b>{fmtTok(ctx.billed)}</b> {t('overview.ctxInputWord')}
       </div>
 
-      {row('messages', 'Messages', v ? v.messages : null, { pct: true, expandable: !!v, info: estTip })}
+      {row('messages', t('overview.messages'), v ? v.messages : null, { pct: true, expandable: !!v, info: estTip })}
       {v && open.has('messages') && (
         <>
-          {row('history', 'Conversation history', v.history, { indent: 1 })}
-          {row('newInput', 'New input', v.newInput, {
+          {row('history', t('overview.convHistory'), v.history, { indent: 1 })}
+          {row('newInput', t('overview.newInput'), v.newInput, {
             indent: 1,
-            info: 'uncached input for the newest turn — user text and fresh tool results',
+            info: t('overview.newInputInfo'),
           })}
-          {row('response', 'Assistant response', v.response, { indent: 1 })}
+          {row('response', t('overview.assistantResponse'), v.response, { indent: 1 })}
         </>
       )}
-      {row('system', 'System prompt', v ? v.system : null, {
+      {row('system', t('overview.systemPrompt'), v ? v.system : null, {
         pct: true,
-        info: 'first cache write of each session',
+        info: t('overview.systemInfo'),
       })}
-      {row('reasoning', 'Reasoning', v ? v.reasoning : null, { pct: true })}
+      {row('reasoning', t('overview.reasoning'), v ? v.reasoning : null, { pct: true })}
 
       <div style={{ height: 1, background: 'rgba(255,255,255,.06)', margin: '8px 4px' }} />
 
-      {row('toolcalls', 'Tool calls', ctx.toolcalls, {
+      {row('toolcalls', t('overview.toolCalls'), ctx.toolcalls, {
         muted: true,
         expandable: tree.length > 0,
-        info: EST_TIP,
+        info: estShareTip,
       })}
       {open.has('toolcalls') &&
         tree.map((cat) => (
@@ -120,19 +121,19 @@ export default function ContextBreakdown({
               expandable: cat.tools.length > 0,
             })}
             {open.has(`cat:${cat.label}`) &&
-              cat.tools.map((t) => {
-                // Stays in render (not selectView): its input t.tokens only exists
+              cat.tools.map((leaf) => {
+                // Stays in render (not selectView): its input leaf.tokens only exists
                 // once the user expands the tree down to the Bash leaf.
-                const facets = t.name === 'Bash' ? execFacets(execRows, t.tokens) : null;
+                const facets = leaf.name === 'Bash' ? execFacets(execRows, leaf.tokens) : null;
                 return (
-                  <div key={`leaf:${t.name}`}>
-                    {row(`tool:${t.name}`, t.name, t.tokens, {
+                  <div key={`leaf:${leaf.name}`}>
+                    {row(`tool:${leaf.name}`, leaf.name, leaf.tokens, {
                       muted: true,
                       indent: 2,
-                      info: `${t.calls} calls`,
+                      info: `${leaf.calls} ${t('overview.calls')}`,
                       expandable: !!facets,
                     })}
-                    {facets && open.has(`tool:${t.name}`) && (
+                    {facets && open.has(`tool:${leaf.name}`) && (
                       <ExecTable facets={facets} tab={execTab} onTab={setExecTab} />
                     )}
                   </div>
@@ -140,9 +141,9 @@ export default function ContextBreakdown({
               })}
           </div>
         ))}
-      {row('agents', 'Custom agents', ctx.agents, { muted: true, info: EST_TIP })}
-      {row('mcp', 'MCP servers', ctx.mcp, { muted: true, info: EST_TIP })}
-      {row('skills', 'Skills', ctx.skills, { muted: true, info: EST_TIP })}
+      {row('agents', t('overview.customAgents'), ctx.agents, { muted: true, info: estShareTip })}
+      {row('mcp', t('overview.mcpServers'), ctx.mcp, { muted: true, info: estShareTip })}
+      {row('skills', t('overview.skills'), ctx.skills, { muted: true, info: estShareTip })}
 
       {meta && <div className="tt-ctx-meta">{meta}</div>}
     </>
@@ -150,9 +151,9 @@ export default function ContextBreakdown({
 }
 
 const EXEC_TABS = [
-  { key: 'type', label: 'By type' },
-  { key: 'exe', label: 'Executable' },
-  { key: 'cmd', label: 'Command' },
+  { key: 'type', labelKey: 'overview.exec.byType' },
+  { key: 'exe', labelKey: 'overview.exec.executable' },
+  { key: 'cmd', labelKey: 'overview.exec.command' },
 ] as const;
 const EXEC_TOP_N = 20;
 
@@ -165,6 +166,7 @@ function ExecTable({
   tab: 'type' | 'exe' | 'cmd';
   onTab: (t: 'type' | 'exe' | 'cmd') => void;
 }) {
+  const { t } = useOverviewT();
   const rows =
     tab === 'type' ? facets.byType : tab === 'exe' ? facets.byExecutable : facets.byCommand;
   const shown = rows.slice(0, EXEC_TOP_N);
@@ -172,21 +174,21 @@ function ExecTable({
   return (
     <div className="tt-exec">
       <div className="tt-exec-tabs">
-        {EXEC_TABS.map((t) => (
+        {EXEC_TABS.map((opt) => (
           <button
-            key={t.key}
-            className={t.key === tab ? 'active' : ''}
-            onClick={() => onTab(t.key)}
+            key={opt.key}
+            className={opt.key === tab ? 'active' : ''}
+            onClick={() => onTab(opt.key)}
           >
-            {t.label}
+            {t(opt.labelKey)}
           </button>
         ))}
       </div>
       <div className="tt-exec-table">
         <div className="hd">
-          <span>Type</span>
-          <span>Calls</span>
-          <span>Total</span>
+          <span>{t('overview.exec.type')}</span>
+          <span>{t('overview.exec.calls')}</span>
+          <span>{t('overview.exec.total')}</span>
         </div>
         {shown.map((r) => (
           <div className="tr" key={r.key}>
@@ -195,7 +197,7 @@ function ExecTable({
             <span>{fmtTok(r.tokens)}</span>
           </div>
         ))}
-        {hidden > 0 && <div className="more">+{hidden} more</div>}
+        {hidden > 0 && <div className="more">+{hidden} {t('overview.more')}</div>}
       </div>
     </div>
   );

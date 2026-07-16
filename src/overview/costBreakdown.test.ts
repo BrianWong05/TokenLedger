@@ -67,6 +67,23 @@ describe('buildCostBreakdownView', () => {
     ]);
   });
 
+  it('converts every Cost to the Display Currency while keeping the ≥ / unpriced markers', () => {
+    const view = buildCostBreakdownView(
+      summary({ cost: 5, hasUnpriced: true, unpricedModels: ['z', 'a'] }),
+      [row({ key: 'z', cost: null }), row({ key: 'cheap', cost: 5 }), row({ key: 'a', cost: null })],
+      { currency: 'HKD', usdRate: 7.8 }, // fixed HKD rate; stored figures stay USD
+      'en',
+    );
+
+    // 5 USD → HK$39.00, with the ≥ Partial-Cost prefix and Unpriced count intact.
+    expect(view.totalCostLabel).toBe('≥ HK$39.00');
+    expect(view.note).toBe('Partial Cost · 2 Unpriced Models');
+    expect(view.groups[0].costLabel).toBe('≥ HK$39.00 · 2 unpriced');
+    expect(view.groups[0].models.find((m) => m.name === 'cheap')!.costLabel).toBe('HK$39.00');
+    // A null Cost stays "Unpriced" — never a converted HK$0.00.
+    expect(view.groups[0].models.find((m) => m.unpriced)!.costLabel).toBe('Unpriced');
+  });
+
   it('keeps Cache-Estimated as a Model marker without making Cost Partial', () => {
     const view = buildCostBreakdownView(
       summary({ cost: 4, cacheEstimatedModels: ['claude-opus'] }),

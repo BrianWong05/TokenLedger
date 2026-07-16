@@ -11,7 +11,9 @@ import AggTrend from './AggTrend';
 import SmallMultiples from './SmallMultiples';
 import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
 import { TOOL_ICONS } from './icons';
-import { fmtPct, formatCost } from '../lib/format';
+import { fmtPct } from '../lib/format';
+import { formatDisplayCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
+import { useSettings } from '../settings/SettingsContext';
 import { REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 import { useOverview } from './useOverview';
 import type { LedgerPort } from './ledger';
@@ -28,6 +30,8 @@ import type { ModelPricing } from '../types';
 // renders the model the hook hands back. The window header (wordmark, tab nav,
 // Rescan) is owned by the app shell; this tab renders only its own toolbar.
 export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort } } = {}) {
+  const { settings } = useSettings();
+  const { t, lang } = useOverviewT();
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
 
   // Model-selection entry point into the shared Override editor: fetch a fresh
@@ -50,7 +54,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
   const {
     loading, scanError, fetchError,
-    refresh, refreshing, refreshSec, setRefreshSec,
+    refreshSec, setRefreshSec,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
     sel, setSel,
@@ -61,13 +65,13 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
   const headlineCost = (
     <>
-      {summary ? formatCost(summary.cost, summary.hasUnpriced) : '…'} est.
+      {summary ? formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang) : '…'} {t('overview.est')}
       {summary?.hasUnpriced && (
-        <span title={summary.unpricedModels.join(', ')}> · {summary.unpricedModels.length} unpriced</span>
+        <span title={summary.unpricedModels.join(', ')}> · {summary.unpricedModels.length} {t('overview.unpricedMarker')}</span>
       )}
       {summary && summary.cacheEstimatedModels.length > 0 && (
         <span title={summary.cacheEstimatedModels.join(', ')}>
-          {' '}· {summary.cacheEstimatedModels.length} cache est.
+          {' '}· {summary.cacheEstimatedModels.length} {t('overview.cacheEst')}
         </span>
       )}
     </>
@@ -81,7 +85,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
             <div className="tt-seg">
               {RANGES_8B.map((r) => (
                 <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
-                  {r.label}
+                  {t(RANGE_LABEL_KEY[r.key])}
                 </button>
               ))}
             </div>
@@ -89,43 +93,18 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               <div className="tt-select-wrap">
                 <select
                   className="tt-select"
-                  aria-label="Auto-refresh interval"
+                  aria-label={t('overview.autoRefresh')}
                   value={refreshSec}
                   onChange={(e) => setRefreshSec(Number(e.target.value) as RefreshSec)}
                 >
                   {REFRESH_PRESETS.map((p) => (
                     <option key={p.sec} value={p.sec}>
-                      {p.sec === 0 ? 'Off' : p.label}
+                      {p.sec === 0 ? t('overview.off') : p.label}
                     </option>
                   ))}
                 </select>
                 <i>▼</i>
               </div>
-              <button
-                type="button"
-                className={'tt-refresh-btn' + (refreshing ? ' spinning' : '')}
-                onClick={() => void refresh()}
-                disabled={refreshing}
-                aria-label="Refresh"
-                aria-busy={refreshing}
-                title="Refresh"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <path
-                    d="M21 12a9 9 0 1 1-2.64-6.36"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                  />
-                  <path
-                    d="M21 3v6h-6"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
             </div>
             <span className="tt-avatar">BW</span>
           </div>
@@ -139,7 +118,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
         {range === 'custom' && (
           <div className="tt-custom-row">
-            <span className="lbl">Custom range</span>
+            <span className="lbl">{t('overview.customRange')}</span>
             <input
               type="date"
               value={from}
@@ -147,7 +126,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               max={to}
               onChange={(e) => e.target.value && setCustomRange(e.target.value, customTo)}
             />
-            <span className="to">to</span>
+            <span className="to">{t('overview.to')}</span>
             <input
               type="date"
               value={to}
@@ -160,7 +139,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
         <div className="tt-b8-body">
           <div className="tt-b8-head">
-            <div className="tt-eyebrow">Total tokens · {rangeLabel}</div>
+            <div className="tt-eyebrow">{t('overview.totalTokens')} · {rangeLabel}</div>
             <TokenTotalHeadline
               total={headline.total}
               summaryReady={headline.summaryReady}
@@ -172,7 +151,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 className="tt-b8-cost tt-b8-cost-button"
                 onClick={() => setCostBreakdownOpen(true)}
                 aria-haspopup="dialog"
-                title="Show Cost breakdown"
+                title={t('overview.showCostBreakdown')}
               >
                 {headlineCost}
               </button>
@@ -184,27 +163,31 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           </div>
 
           <div className="tt-split">
-            {TOOLS.map((t) => (
-              <div key={t.key} style={{ width: fmtPct(toolTotals[t.key] / grand), background: t.color }} />
+            {TOOLS.map((tl) => (
+              <div key={tl.key} style={{ width: fmtPct(toolTotals[tl.key] / grand), background: tl.color }} />
             ))}
           </div>
 
           <div className="tt-toolcards">
-            {visibleTools.map((t) => {
-              const active = t.key === sel;
+            {visibleTools.map((tl) => {
+              const active = tl.key === sel;
               return (
                 <button
-                  key={t.key}
+                  key={tl.key}
                   className={'tt-toolcard' + (active ? ' active' : '')}
-                  onClick={() => setSel(t.key)}
-                  style={active ? { borderColor: t.color, background: t.color + '1e' } : undefined}
+                  onClick={() => setSel(tl.key)}
+                  style={active ? { borderColor: tl.color, background: tl.color + '1e' } : undefined}
                 >
                   <div className="lbl">
-                    <ToolIcon tool={t} />
-                    {t.label}
+                    <ToolIcon tool={tl} />
+                    {tl.label}
                   </div>
-                  <div className="num">{fmtPct(toolTotals[t.key] / grand)}</div>
-                  {t.nModels > 0 && <div className="sub">{t.nModels} model{t.nModels === 1 ? '' : 's'}</div>}
+                  <div className="num">{fmtPct(toolTotals[tl.key] / grand)}</div>
+                  {tl.nModels > 0 && (
+                    <div className="sub">
+                      {tl.nModels} {t(tl.nModels === 1 ? 'overview.modelOne' : 'overview.modelMany')}
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -236,6 +219,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                   tool={tool}
                   toolTokens={panels.models.toolTokens}
                   models={panels.models.models}
+                  settings={settings}
                   onModelClick={(name) => openPricing(name, tool.key)}
                 />
               </div>

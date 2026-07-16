@@ -4,7 +4,9 @@
 // CATEGORIES, themes, ranges, types) lives in ./meta.
 import type { BreakdownRow, Filters, SeriesPoint, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { parseLocalDate } from '../lib/dateRange';
-import { TOOLS, CATEGORIES, MONTHS, emptyByTool, type ToolKey, type ToolMeta, type Range8b } from './meta';
+import { TOOLS, CATEGORIES, emptyByTool, type ToolKey, type ToolMeta, type Range8b } from './meta';
+import type { Lang } from '../lib/i18n';
+import { monthShortL, overviewT, type OverviewKey } from './localize';
 
 // Models present in the buckets, ordered by window total descending.
 export function rankModels(bks: Bucket[]): string[] {
@@ -234,6 +236,7 @@ export function bucketsFromPoints(
   per: Granularity,
   fromIso?: string,
   toIso?: string,
+  lang: Lang = 'en',
 ): Bucket[] {
   const keyOf = (p: SeriesPoint) =>
     per === 'hour' ? p.bucket
@@ -251,7 +254,7 @@ export function bucketsFromPoints(
   const labelOf = (k: string) =>
     per === 'hour' ? String(parseInt(k.slice(11, 13), 10))
     : per === 'day' ? String(parseInt(k.slice(8, 10), 10))
-    : per === 'month' ? MONTHS[parseInt(k.slice(5, 7), 10) - 1]
+    : per === 'month' ? monthShortL(parseInt(k.slice(5, 7), 10) - 1, lang)
     : k; // week: placeholder, renumbered below
   // Zero-fill the whole window when its bounds are known; fall back to
   // data-present keys otherwise.
@@ -422,18 +425,19 @@ export function ctxTotals(pts: SeriesPoint[], tool: ToolKey): CtxTotals {
   return t;
 }
 
-const CTX_KINDS: { kind: string; label: string }[] = [
-  { kind: 'skill', label: 'skill' },
-  { kind: 'mcp_server', label: 'MCP server' },
-  { kind: 'agent', label: 'agent' },
-  { kind: 'memory_file', label: 'memory file' },
+const CTX_KINDS: { kind: string; key: OverviewKey }[] = [
+  { kind: 'skill', key: 'overview.kind.skill' },
+  { kind: 'mcp_server', key: 'overview.kind.mcpServer' },
+  { kind: 'agent', key: 'overview.kind.agent' },
+  { kind: 'memory_file', key: 'overview.kind.memoryFile' },
 ];
 
-export function ctxMeta(res: CtxResourceCount[], tool: ToolKey): string {
+export function ctxMeta(res: CtxResourceCount[], tool: ToolKey, lang: Lang = 'en'): string {
   const bits: string[] = [];
-  for (const { kind, label } of CTX_KINDS) {
+  for (const { kind, key } of CTX_KINDS) {
     const n = res.find((r) => r.source === tool && r.kind === kind)?.count ?? 0;
-    if (n > 0) bits.push(`${n} ${label}${n === 1 ? '' : 's'}`);
+    // English pluralises the kind word; Chinese has no plural.
+    if (n > 0) bits.push(`${n} ${overviewT(lang, key)}${lang === 'zh-Hant' ? '' : n === 1 ? '' : 's'}`);
   }
   return bits.join(' · ');
 }

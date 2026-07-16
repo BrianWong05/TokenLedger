@@ -34,8 +34,9 @@ import {
   type BucketView,
   type ToolCategory,
 } from './data';
-import { TOOLS, RANGES_8B, type Range8b, type ToolKey, type ToolMeta } from './meta';
-import { fmtIsoDate } from '../lib/format';
+import { TOOLS, type Range8b, type ToolKey, type ToolMeta } from './meta';
+import type { Lang } from '../lib/i18n';
+import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
 import type {
   Filters,
   ScanStatus,
@@ -353,7 +354,7 @@ export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()):
   return TOOLS.filter((t) => totals[t.key] > 0);
 }
 
-export function selectView(s: OverviewSnapshot, now: Date = new Date()): OverviewView {
+export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: Lang = 'en'): OverviewView {
   const pts = s.allPoints ?? [];
   const win = windowOf(s.range, s.from, s.to, now);
   const rpts = pointsIn(pts, win);
@@ -363,8 +364,8 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date()): Overvie
   const per = granularityOf(s.range, calendarSpan(winFrom, winTo));
   const trend =
     per === 'hour'
-      ? bucketsFromPoints(s.hourPoints, 'hour', winFrom, winTo)
-      : bucketsFromPoints(rpts, per, winFrom, winTo);
+      ? bucketsFromPoints(s.hourPoints, 'hour', winFrom, winTo, lang)
+      : bucketsFromPoints(rpts, per, winFrom, winTo, lang);
   const total = sumPoints(rpts);
   const toolTotals = toolTotalsOfPoints(rpts);
   const ctx = ctxTotals(rpts, s.selected);
@@ -385,15 +386,15 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date()): Overvie
     // Custom shows the entered bounds (s.from/s.to), not the normalized window.
     rangeLabel:
       s.range === 'custom'
-        ? `${fmtIsoDate(s.from)} – ${fmtIsoDate(s.to)}`
-        : RANGES_8B.find((r) => r.key === s.range)!.long,
+        ? `${fmtIsoDateL(s.from, lang)} – ${fmtIsoDateL(s.to, lang)}`
+        : overviewT(lang, RANGE_LONG_KEY[s.range]),
     grand: total || 1,
     // Context drill-down derivations, memoized per snapshot here instead of per
     // render in ContextBreakdown.
     ctxView: bucketView(selBuckets),
     ctxTree: toolTree(selToolRows, ctx.toolcalls),
     selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
-    selMeta: ctxMeta(s.ctxResources, s.selected),
+    selMeta: ctxMeta(s.ctxResources, s.selected, lang),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: TOOLS.find((t) => t.key === s.selected)!,
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },

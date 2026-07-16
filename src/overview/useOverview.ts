@@ -13,9 +13,11 @@ import {
 import type { LedgerPort } from './ledger';
 import { useAutoRefresh } from './useAutoRefresh';
 import type { Range8b, ToolKey } from './meta';
+import { useT } from '../lib/i18n';
 
 export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) {
   const [store] = useState(() => createOverviewStore(ports));
+  const { lang } = useT();
 
   const snap = useSyncExternalStore(
     useCallback((cb: () => void) => store.subscribe(cb), [store]),
@@ -38,7 +40,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   // allPoints's reference stable across range/selection, so this never
   // recomputes on those.
   const days = useMemo(() => selectDays(snap), [snap.allPoints]);
-  const view = useMemo(() => selectView(snap), [snap]);
+  const view = useMemo(() => selectView(snap, undefined, lang), [snap, lang]);
   const visibleTools = useMemo(
     () =>
       selectVisibleTools(snap).map((t) => ({

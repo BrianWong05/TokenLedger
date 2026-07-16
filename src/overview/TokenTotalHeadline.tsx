@@ -8,6 +8,7 @@ import {
   type MotionValue,
 } from 'motion/react';
 import { formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
+import { useOverviewT } from './localize';
 
 type TokenDisplayMode = 'compact' | 'exact';
 type CounterToken =
@@ -166,6 +167,7 @@ export default function TokenTotalHeadline({
   total,
   summaryReady,
 }: TokenTotalHeadlineProps) {
+  const { t } = useOverviewT();
   const [mode, setMode] = useState<TokenDisplayMode>(loadDisplayMode);
   const [modeAnimation, setModeAnimation] = useState<ModeAnimation | null>(null);
   const [awaitingInitialLoad, setAwaitingInitialLoad] = useState(
@@ -181,7 +183,7 @@ export default function TokenTotalHeadline({
   const revealImmediately = summaryReady && prefersReducedMotion();
   const restingDisplay =
     awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
-  const action = mode === 'exact' ? 'Show compact token count' : 'Show exact token count';
+  const action = mode === 'exact' ? t('overview.showCompact') : t('overview.showExact');
   const layoutLength = modeAnimation ? modeAnimation.to.length : restingDisplay.length;
   const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 46px)`;
   const headlineStyle: HeadlineStyle = {
@@ -237,7 +239,7 @@ export default function TokenTotalHeadline({
       className="tt-b8-total"
       onClick={toggleMode}
       title={action}
-      aria-label={`${exact} total tokens. ${action}`}
+      aria-label={`${exact} ${t('overview.totalTokensAria')} ${action}`}
       aria-busy={modeAnimation ? true : undefined}
       style={headlineStyle}
     >

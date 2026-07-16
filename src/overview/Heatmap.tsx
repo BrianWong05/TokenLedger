@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { TOOLS, THEMES, THEME_OPTIONS, MONTHS } from './meta';
+import { TOOLS, THEMES, THEME_OPTIONS } from './meta';
 import type { Day } from './data';
-import { fmtTok, fmtDate } from '../lib/format';
+import { fmtTok } from '../lib/format';
+import { fmtDateL, fmtWeekdayDateL, monthShortL, THEME_KEY, useOverviewT } from './localize';
 
 type Mode = '2d' | '3d';
 
@@ -27,6 +28,7 @@ const poly = (pts: [number, number][]) =>
   'M' + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join('L') + 'Z';
 
 export default function Heatmap({ days, compact = false }: { days: Day[]; compact?: boolean }) {
+  const { t, lang } = useOverviewT();
   const [mode, setMode] = useState<Mode>('2d');
   const [theme, setTheme] = useState('ocean');
   const [yaw, setYaw] = useState(-0.14);
@@ -56,12 +58,12 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
     for (const d of days) {
       const m = d.date.getMonth();
       if (d.date.getDate() <= 7 && m !== last) {
-        out.push({ x: d.col * STEP, label: MONTHS[m] });
+        out.push({ x: d.col * STEP, label: monthShortL(m, lang) });
         last = m;
       }
     }
     return out;
-  }, [days]);
+  }, [days, lang]);
 
   const view2d = `0 0 ${cols * STEP} ${TOP + 7 * STEP}`;
 
@@ -173,14 +175,14 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
     <div className="tt-card heat">
       <div className="tt-head">
         <div>
-          <div className="tt-title">Activity</div>
+          <div className="tt-title">{t('overview.activity')}</div>
           <div className="tt-sub">
             {compact ? (
-              mode === '3d' ? 'drag to rotate' : 'hover a day'
+              mode === '3d' ? t('overview.dragRotate') : t('overview.hoverDay')
             ) : (
               <>
-                <span style={{ color: accent, fontWeight: 650 }}>{fmtTok(stats.totalTokens)}</span> tokens ·
-                {mode === '3d' ? ' drag to rotate' : ' hover a day'}
+                <span style={{ color: accent, fontWeight: 650 }}>{fmtTok(stats.totalTokens)}</span> {t('overview.tokens')} ·
+                {mode === '3d' ? ' ' + t('overview.dragRotate') : ' ' + t('overview.hoverDay')}
               </>
             )}
           </div>
@@ -199,7 +201,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
               <select className="tt-select" value={theme} onChange={(e) => setTheme(e.target.value)}>
                 {THEME_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>
-                    {o.label}
+                    {t(THEME_KEY[o.value])}
                   </option>
                 ))}
               </select>
@@ -267,12 +269,12 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
             }}
           >
             <div className="tt-tip-head">
-              <b>{hover.date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</b>
+              <b>{fmtWeekdayDateL(hover.date, lang)}</b>
               <span className="tt-tip-badge">Lv {hover.level}</span>
             </div>
             <div className="tt-tip-tok">
               <b>{fmtTok(hover.tokens)}</b>
-              <span>tokens</span>
+              <span>{t('overview.tokens')}</span>
             </div>
             {tipRows.map((r) => (
               <div className="tt-tip-row" key={r.key}>
@@ -285,7 +287,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
                 </div>
               </div>
             ))}
-            {tipRows.length === 0 && <div className="tt-ctx-meta">No activity</div>}
+            {tipRows.length === 0 && <div className="tt-ctx-meta">{t('overview.noActivity')}</div>}
           </div>
         )}
       </div>
@@ -294,25 +296,25 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
         <div className="tt-stats">
           <div className="tt-stat">
             <b>{stats.activeDays}</b>
-            <span>active days</span>
+            <span>{t('overview.activeDays')}</span>
           </div>
           <div className="tt-stat">
             <b style={{ color: accent }}>{stats.streak}</b>
-            <span>day streak</span>
+            <span>{t('overview.dayStreak')}</span>
           </div>
           {!compact && (
             <div className="tt-stat">
               <b>{fmtTok(stats.bestDay.tokens)}</b>
-              <span>best · {fmtDate(stats.bestDay.date)}</span>
+              <span>{t('overview.best')} · {fmtDateL(stats.bestDay.date, lang)}</span>
             </div>
           )}
         </div>
         <div className="tt-heat-legend">
-          <span>Less</span>
+          <span>{t('overview.heatLess')}</span>
           {ramp.map((c, i) => (
             <span key={i} className="cell" style={{ background: c }} />
           ))}
-          <span>More</span>
+          <span>{t('overview.heatMore')}</span>
         </div>
       </div>
     </div>
