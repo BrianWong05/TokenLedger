@@ -31,20 +31,6 @@ export const CATEGORIES = [
   { key: 'cacheWrite', label: 'Cache write', color: '#f0a03c' },
 ] as const;
 
-// Heatmap ramps: index 0 = empty cell, 1..4 = ascending intensity.
-export const THEMES: Record<string, string[]> = {
-  ocean: ['#12161f', '#173a63', '#1f5aa6', '#2f80ed', '#63a4ff'],
-  emerald: ['#12161f', '#14503a', '#1a7d55', '#25a56f', '#4ad991'],
-  neon: ['#12161f', '#312a63', '#4b3aa6', '#6d4fed', '#9a7cff'],
-  amber: ['#12161f', '#5a4114', '#8a6417', '#c98f25', '#f0b84a'],
-};
-export const THEME_OPTIONS = [
-  { value: 'ocean', label: 'Blue' },
-  { value: 'emerald', label: 'Green' },
-  { value: 'neon', label: 'Violet' },
-  { value: 'amber', label: 'Amber' },
-];
-
 export type Range8b = 'day' | 'week' | 'month' | 'total' | 'custom';
 export const RANGES_8B: { key: Range8b; label: string; long: string }[] = [
   { key: 'day', label: 'Day', long: 'Today' },

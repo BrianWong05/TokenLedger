@@ -40,10 +40,6 @@ export const overview = {
     'overview.best': 'best',
     'overview.heatLess': 'Less',
     'overview.heatMore': 'More',
-    'overview.theme.blue': 'Blue',
-    'overview.theme.green': 'Green',
-    'overview.theme.violet': 'Violet',
-    'overview.theme.amber': 'Amber',
 
     // trend + small multiples
     'overview.usageTrend': 'Usage over time',
@@ -170,10 +166,6 @@ export const overview = {
     'overview.best': '最高',
     'overview.heatLess': '較少',
     'overview.heatMore': '較多',
-    'overview.theme.blue': '藍色',
-    'overview.theme.green': '綠色',
-    'overview.theme.violet': '紫色',
-    'overview.theme.amber': '琥珀色',
 
     'overview.usageTrend': '使用量趨勢',
     'overview.stackedByTool': '依工具堆疊',

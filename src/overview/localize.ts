@@ -78,14 +78,6 @@ export const CAT_KEY: Record<string, OverviewKey> = {
   cacheWrite: 'overview.cat.cacheWrite',
 };
 
-// Heatmap ramp value -> its colour-name label key.
-export const THEME_KEY: Record<string, OverviewKey> = {
-  ocean: 'overview.theme.blue',
-  emerald: 'overview.theme.green',
-  neon: 'overview.theme.violet',
-  amber: 'overview.theme.amber',
-};
-
 // Granularity ('hour'|'day'|'week'|'month') -> the "avg / {unit}" word.
 export const PER_UNIT_KEY: Record<string, OverviewKey> = {
   hour: 'overview.per.hour',

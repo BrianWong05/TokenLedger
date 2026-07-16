@@ -170,9 +170,3 @@
 .tl-page {
   min-height: 240px;
 }
-
-/* The Overview keeps its own toolbar; drop its sticky so it doesn't fight the
-   sidebar's scroll model (the sidebar is the sticky element now). */
-.tt-top-toolbar {
-  position: static;
-}
