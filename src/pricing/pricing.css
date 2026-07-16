@@ -1,51 +1,31 @@
 /* Pricing tab — screens 1a (dark) / 1g (light) / 1c (loading+empty) / 1b (editor).
-   Layout reads the shell's shared tokens (--card/--border/--text/--muted/--accent);
-   the amber (unpriced/estimated) and violet (override) tints the design uses aren't
-   in the shared palette, so they live here as component-scoped vars with a light
-   override block, mirroring index.css. */
+   Layout reads the shell's shared tokens (--card/--border/--text/--muted/--accent).
+   The amber (unpriced/cache-estimated → warning family) and violet (override →
+   accent family) roles now point at the DS semantic tokens in index.css, so the
+   light/dark deltas come from there — no local [data-theme] block. The four
+   color-mix tints are the only component-specific values (no single DS token fits);
+   each is a theme-aware mix over a DS token, so it adapts per theme on its own. */
 .tl-page-pricing {
-  --pr-faint: #4a4a55;
-  --pr-amber: #f0a03c;
-  --pr-amber-fg: #e09b3a;
-  --pr-amber-badge-bg: rgba(240, 160, 60, 0.1);
-  --pr-amber-badge-bd: rgba(240, 160, 60, 0.38);
-  --pr-amber-row: rgba(240, 160, 60, 0.04);
-  --pr-amber-dash: rgba(240, 160, 60, 0.4);
-  --pr-banner-bg: rgba(240, 160, 60, 0.06);
-  --pr-banner-bd: rgba(240, 160, 60, 0.28);
-  --pr-violet-fg: #a78bfa;
-  --pr-violet-bg: rgba(124, 92, 255, 0.13);
-  --pr-violet-bd: rgba(124, 92, 255, 0.38);
-  --pr-violet-act-bg: rgba(124, 92, 255, 0.1);
-  --pr-neu-bg: #1c1c22;
-  --pr-neu-bd: #2e2e38;
-  --pr-neu-fg: #9a9aa4;
-  --pr-skel: #1c1c22;
-  --pr-chip-bg: #1a1a20;
-  --pr-chip-bd: #2a2a34;
-  --pr-seg-active: #26262e;
-}
-:root[data-theme='light'] .tl-page-pricing {
-  --pr-faint: #b4b4c0;
-  --pr-amber: #c07a1e;
-  --pr-amber-fg: #9a6215;
-  --pr-amber-badge-bg: rgba(176, 108, 18, 0.07);
-  --pr-amber-badge-bd: rgba(176, 108, 18, 0.32);
-  --pr-amber-row: rgba(176, 108, 18, 0.035);
-  --pr-amber-dash: rgba(176, 108, 18, 0.4);
-  --pr-banner-bg: rgba(176, 108, 18, 0.06);
-  --pr-banner-bd: rgba(176, 108, 18, 0.3);
-  --pr-violet-fg: #6c4cf2;
-  --pr-violet-bg: rgba(108, 76, 242, 0.07);
-  --pr-violet-bd: rgba(108, 76, 242, 0.3);
-  --pr-violet-act-bg: rgba(108, 76, 242, 0.06);
-  --pr-neu-bg: #f4f4f6;
-  --pr-neu-bd: #e2e2ea;
-  --pr-neu-fg: #6e6e7a;
-  --pr-skel: #ececf1;
-  --pr-chip-bg: #f4f4f6;
-  --pr-chip-bd: #e4e4ea;
-  --pr-seg-active: #ffffff;
+  --pr-faint: var(--text-disabled);
+  --pr-amber: var(--warning);
+  --pr-amber-fg: var(--warning-text);
+  --pr-amber-badge-bg: var(--warning-subtle);
+  --pr-amber-badge-bd: color-mix(in srgb, var(--warning) 38%, transparent);
+  --pr-amber-row: color-mix(in srgb, var(--warning) 5%, transparent);
+  --pr-amber-dash: color-mix(in srgb, var(--warning) 40%, transparent);
+  --pr-banner-bg: var(--warning-subtle);
+  --pr-banner-bd: color-mix(in srgb, var(--warning) 32%, transparent);
+  --pr-violet-fg: var(--text-accent);
+  --pr-violet-bg: var(--accent-subtle);
+  --pr-violet-bd: var(--accent-border);
+  --pr-violet-act-bg: var(--accent-subtle);
+  --pr-neu-bg: var(--bg-inset);
+  --pr-neu-bd: var(--border-subtle);
+  --pr-neu-fg: var(--text-secondary);
+  --pr-skel: var(--bg-hover);
+  --pr-chip-bg: var(--bg-inset);
+  --pr-chip-bd: var(--border-default);
+  --pr-seg-active: var(--bg-raised);
 }
 
 .tl-page-pricing {
@@ -316,7 +296,8 @@
 }
 .tl-pr-act.override {
   background: transparent;
-  border-color: var(--pr-neu-bd);
+  /* action outline is border-default; the neutral badge stays on --pr-neu-bd (border-subtle) */
+  border-color: var(--border-default);
   color: var(--pr-neu-fg);
 }
 .tl-pr-act.edit {
@@ -327,7 +308,7 @@
 .tl-pr-act.set {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--text-on-accent);
 }
 
 /* footer */
@@ -430,7 +411,7 @@
 .tl-pr-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -607,7 +588,7 @@
   background: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 8px;
-  color: #fff;
+  color: var(--text-on-accent);
   padding: 8px 16px;
   font-size: 13px;
   font-weight: 600;
