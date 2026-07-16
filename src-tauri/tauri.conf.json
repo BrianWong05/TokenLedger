@@ -31,7 +31,7 @@
       "endpoints": [
         "https://github.com/BrianWong05/TokenLedger/releases/latest/download/latest.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IFRva2VuTGVkZ2VyIHVwZGF0ZXIgcHVia2V5IC0tIFBMQUNFSE9MREVSLCByZXBsYWNlIGJlZm9yZSByZWxlYXNlCg=="
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM0MzA4ODA2NDYxMjBEQkMKUldTOERSSkdCb2d3TkZWUDIya1A5ZlVyazZpVXBUd0IwZGpYc2ZmSkNSNFA4dllXQ0E2dTlhK3EK"
     }
   },
   "bundle": {
@@ -43,6 +43,7 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true
   }
 }

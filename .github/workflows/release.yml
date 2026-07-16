@@ -1,0 +1,49 @@
+# Release: push a v* tag to build, sign, and publish a macOS release whose
+# latest.json feeds the in-app updater (endpoint: releases/latest/download/
+# latest.json — see src-tauri/tauri.conf.json).
+#
+# One-time setup: `gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/tokenledger.key`
+# (the key has no password, so TAURI_SIGNING_PRIVATE_KEY_PASSWORD stays empty).
+#
+# Cut a release:
+#   1. bump "version" in src-tauri/tauri.conf.json
+#   2. git tag vX.Y.Z && git push origin vX.Y.Z
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    # ponytail: arm64 macOS only — the only platform TokenLedger targets today.
+    # Add matrix targets when another platform is real.
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'TokenLedger ${{ github.ref_name }}'
+          releaseBody: 'See the commit log for changes.'
