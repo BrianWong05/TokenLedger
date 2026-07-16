@@ -11,7 +11,6 @@ export type { CtxToolRow } from './bindings/CtxToolRow';
 export type { CtxExecRow } from './bindings/CtxExecRow';
 export type { SourceStatus } from './bindings/SourceStatus';
 export type { ScanStatus } from './bindings/ScanStatus';
-export type { OverrideRates } from './bindings/OverrideRates';
 
 // ---- App-shell contract (hand-written to match the parallel backend wave) ----
 // ts-rs bindings for these land later; when they do, swap these for the imports.

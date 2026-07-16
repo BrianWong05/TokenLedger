@@ -29,7 +29,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::MacosLauncher;
 
-use pricing::{ModelPricing, OverrideRates, RatesPerTok};
+use pricing::{ModelPricing, RatesPerTok};
 use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
@@ -137,22 +137,6 @@ fn ctx_exec(
 ) -> Result<Vec<CtxExecRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn set_price_override(
-    state: State<'_, AppState>,
-    model: String,
-    rates: OverrideRates,
-) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    pricing::set_override(&db, &model, rates).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_price_override(state: State<'_, AppState>, model: String) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    pricing::delete_override(&db, &model).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -329,8 +313,6 @@ pub fn run() {
             ctx_buckets,
             ctx_tools,
             ctx_exec,
-            set_price_override,
-            delete_price_override,
             model_pricing,
             set_model_override,
             delete_model_override,

@@ -222,9 +222,7 @@ pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, St
     rebuild_prices(conn, &json)
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
+#[derive(Debug, Clone, Copy)]
 pub struct OverrideRates {
     pub input: Option<f64>,
     pub output: Option<f64>,
