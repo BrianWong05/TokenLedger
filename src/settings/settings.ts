@@ -2,7 +2,17 @@
 // src/api.ts, mirroring ledger.ts so a page (and the shell) depends on this port
 // instead of @tauri-apps directly (lets tests swap in settings.fake.ts).
 import { getSettings, setSettings, checkUpdates } from '../api';
-import type { Settings, UpdateStatus } from '../types';
+import type { Settings } from '../types';
+
+// The updater states the Settings UI renders. types.ts's UpdateStatus (the
+// generated backend contract) only carries 'not-configured' today — the stub
+// backend returns nothing else. The richer states are wired here so the UI is
+// ready when signed releases land; widen types.ts to this union then.
+export type UpdateState = 'not-configured' | 'up-to-date' | 'available' | 'downloaded';
+export interface UpdateStatus {
+  state: UpdateState;
+  version: string | null;
+}
 
 export interface SettingsPort {
   get(): Promise<Settings>;

@@ -1,0 +1,384 @@
+/* Settings tab + first-run disclosure (design 1d/1h/1e). Surfaces reuse the
+   shell tokens from index.css (--card/--border/--text/--muted/--accent); the
+   design's extra surfaces (subtle row separators, inset control backgrounds,
+   toggle track, violet banner) are settings-scoped vars so both themes work.
+   Scoped to both the page and the dialog backdrop since the dialog mounts
+   outside the page subtree. */
+
+.tl-page-settings,
+.set-firstrun-backdrop {
+  --set-row-border: #1f1f26;
+  --set-inset-bg: #0f0f13;
+  --set-seg-track: #0f0f13;
+  --set-seg-on-bg: #26262e;
+  --set-seg-shadow: none;
+  --set-toggle-off: #2e2e38;
+  --set-banner-bg: rgba(124, 92, 255, 0.08);
+  --set-banner-border: rgba(124, 92, 255, 0.3);
+  --set-footer: #54545e;
+  --set-dialog-bg: #1c1c22;
+  --set-dialog-border: #3a3a44;
+  --set-dialog-inset: #131318;
+  --set-dialog-body: #c7c7d1;
+}
+
+:root[data-theme='light'] :is(.tl-page-settings, .set-firstrun-backdrop) {
+  --set-row-border: #f0f0f4;
+  --set-inset-bg: #ffffff;
+  --set-seg-track: #ececf1;
+  --set-seg-on-bg: #ffffff;
+  --set-seg-shadow: 0 1px 2px rgba(16, 16, 24, 0.12);
+  --set-toggle-off: #d8d8e0;
+  --set-banner-bg: rgba(108, 76, 242, 0.06);
+  --set-banner-border: rgba(108, 76, 242, 0.28);
+  --set-footer: #9a9aa6;
+  --set-dialog-bg: #ffffff;
+  --set-dialog-border: #e4e4ea;
+  --set-dialog-inset: #f4f4f6;
+  --set-dialog-body: #3f3f48;
+}
+
+/* ---- page layout ---- */
+
+.tl-page-settings {
+  display: flex;
+  justify-content: center;
+  padding: 26px 24px 30px;
+}
+
+.set-col {
+  width: 620px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---- card group ---- */
+
+.set-group {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.set-group-label {
+  padding: 12px 18px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 13px 18px;
+  border-top: 1px solid var(--set-row-border);
+}
+
+.set-row-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.set-row-caption {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.set-ok {
+  color: var(--green);
+}
+
+/* ---- segmented control (theme) ---- */
+
+.set-seg {
+  display: inline-flex;
+  flex: none;
+  background: var(--set-seg-track);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.set-seg button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 13px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.set-seg button.active {
+  background: var(--set-seg-on-bg);
+  color: var(--text);
+  box-shadow: var(--set-seg-shadow);
+}
+
+.set-seg button:focus-visible,
+.set-select:focus-visible,
+.set-btn:focus-visible,
+.set-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--nav-focus-ring);
+}
+
+/* ---- selects (language, currency) ---- */
+
+.set-select {
+  flex: none;
+  background: var(--set-inset-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ---- exchange rate ---- */
+
+.set-rate {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.set-rate-side {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.set-rate-input {
+  width: 74px;
+  background: var(--set-inset-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  text-align: right;
+  outline: none;
+}
+
+.set-rate-input:focus {
+  border-color: var(--accent);
+}
+
+/* ---- toggle ---- */
+
+.set-toggle {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  border: none;
+  background: var(--set-toggle-off);
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+  flex: none;
+  transition: background 0.18s;
+}
+
+.set-toggle.on {
+  background: var(--accent);
+}
+
+.set-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.18s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.set-toggle.on .set-toggle-knob {
+  left: 19px;
+}
+
+/* ---- buttons ---- */
+
+.set-btn {
+  flex: none;
+  background: var(--set-inset-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.set-btn:hover:not(:disabled) {
+  border-color: var(--rescan-hover-border);
+}
+
+.set-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.set-primary-btn {
+  flex: none;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: #fff;
+  padding: 7px 13px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ---- update banner ---- */
+
+.set-banner {
+  margin: 4px 18px 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--set-banner-bg);
+  border: 1px solid var(--set-banner-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.set-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.set-banner-text {
+  flex: 1;
+}
+
+.set-banner-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.set-banner-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.set-link {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.set-link:hover {
+  text-decoration: underline;
+}
+
+/* ---- footer line ---- */
+
+.set-footer-note {
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--set-footer);
+  padding-top: 2px;
+}
+
+/* ---- first-run disclosure (design 1e) ---- */
+
+.set-firstrun-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 4, 8, 0.62);
+}
+
+.set-firstrun {
+  width: 424px;
+  max-width: 100%;
+  background: var(--set-dialog-bg);
+  border: 1px solid var(--set-dialog-border);
+  border-radius: 14px;
+  padding: 26px 26px 22px;
+  text-align: center;
+  box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.85);
+}
+
+.set-firstrun-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #8d70ff, #6a48e8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.set-firstrun-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-top: 15px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.set-firstrun-body {
+  font-size: 13px;
+  color: var(--set-dialog-body);
+  line-height: 1.6;
+  margin-top: 9px;
+}
+
+.set-firstrun-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: var(--set-dialog-inset);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 18px;
+  text-align: left;
+}
+
+.set-firstrun-ok {
+  width: 100%;
+  height: 38px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  margin-top: 14px;
+}
+
+.set-firstrun-footnote {
+  font-size: 11.5px;
+  color: var(--set-footer);
+  margin-top: 11px;
+}

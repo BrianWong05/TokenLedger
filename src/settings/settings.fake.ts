@@ -1,7 +1,7 @@
 // In-memory SettingsPort for tests: a get/set round-trip over one held Settings
 // value, a call log, per-method failNext, and a canned checkUpdates.
-import { DEFAULT_SETTINGS, type SettingsPort } from './settings';
-import type { Settings, UpdateStatus } from '../types';
+import { DEFAULT_SETTINGS, type SettingsPort, type UpdateStatus } from './settings';
+import type { Settings } from '../types';
 
 export interface FakeSettings extends SettingsPort {
   value: Settings;
