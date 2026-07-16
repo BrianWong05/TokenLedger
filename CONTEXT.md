@@ -1,7 +1,8 @@
 # TokenLedger
 
-The domain of TokenLedger: a personal tool that reads the local logs of AI
-coding tools and reports how many tokens were consumed and what that usage is
+The domain of TokenLedger: a desktop app — distributed to end users, one
+install per machine — that reads the local logs of AI coding tools on that
+machine and reports how many tokens were consumed and what that usage is
 worth at public list prices. This glossary is the ubiquitous language — the
 precise meaning of each domain term, independent of how the code implements it.
 
@@ -23,11 +24,19 @@ source log is gone; scans only ever add Records, never delete them.
 _Avoid_: Cache, database, store
 
 **Overview**:
-The application's single screen: the presentation of the Ledger over a
+The application's home tab: the presentation of the Ledger over a
 user-selected date window and Source selection — headline token total, Cost,
 usage trends, and per-Source breakdowns. What it shows is always a view of the
-Ledger; it never holds usage data of its own.
+Ledger; it never holds usage data of its own. Usage data appears on no other
+tab.
 _Avoid_: Dashboard, home screen
+
+**Pricing**:
+The tab that presents rates, never usage: every Model seen in the Ledger with
+its resolved List Price, the catalog it came from, its Override if any, and
+its pricing state (Unpriced or Cache-Estimated). The one place rates are
+edited — selecting a Model in the Overview opens this same editor in place.
+_Avoid_: Rate card, price list, models tab
 
 ### Sources and granularity
 
@@ -108,6 +117,13 @@ would have cost at pay-as-you-go API rates. It is not money that was billed:
 every Source here is subscription, free-tier, or self-hosted, so TokenLedger
 never sees a real invoice. Surfaced in the UI as "Est. cost".
 _Avoid_: Spend, actual cost, bill
+
+**Display Currency**:
+The currency Cost figures are rendered in. Every stored rate and Cost — List
+Prices, Overrides, all catalog data — is denominated in USD; a user-supplied
+fixed exchange rate converts figures at display time only. Nothing stored
+ever leaves USD, so changing Display Currency rewrites no data.
+_Avoid_: Local currency, FX conversion
 
 **List Price**:
 The public per-token rate for a Model, taken from a price catalog (a published
