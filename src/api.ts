@@ -9,6 +9,10 @@ import type {
   CtxToolRow,
   CtxExecRow,
   Filters,
+  ModelPricing,
+  RatesPerTok,
+  Settings,
+  UpdateStatus,
 } from './types';
 
 export function scan(): Promise<ScanStatus> {
@@ -47,4 +51,32 @@ export function fetchCtxTools(filters: Filters): Promise<CtxToolRow[]> {
 
 export function fetchCtxExec(filters: Filters): Promise<CtxExecRow[]> {
   return invoke('ctx_exec', { filters });
+}
+
+// ---- Pricing ----
+
+export function modelPricing(): Promise<ModelPricing[]> {
+  return invoke('model_pricing');
+}
+
+export function setModelOverride(model: string, rates: RatesPerTok): Promise<void> {
+  return invoke('set_model_override', { model, rates });
+}
+
+export function deleteModelOverride(model: string): Promise<void> {
+  return invoke('delete_model_override', { model });
+}
+
+// ---- Settings ----
+
+export function getSettings(): Promise<Settings> {
+  return invoke('get_settings');
+}
+
+export function setSettings(settings: Settings): Promise<void> {
+  return invoke('set_settings', { settings });
+}
+
+export function checkUpdates(): Promise<UpdateStatus> {
+  return invoke('check_updates');
 }

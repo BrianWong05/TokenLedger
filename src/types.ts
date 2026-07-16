@@ -12,3 +12,38 @@ export type { CtxExecRow } from './bindings/CtxExecRow';
 export type { SourceStatus } from './bindings/SourceStatus';
 export type { ScanStatus } from './bindings/ScanStatus';
 export type { OverrideRates } from './bindings/OverrideRates';
+
+// ---- App-shell contract (hand-written to match the parallel backend wave) ----
+// ts-rs bindings for these land later; when they do, swap these for the imports.
+// Field casing follows the existing bindings (camelCase Rust->TS, e.g. cacheRead).
+
+// USD per token; null = no rate for that bucket.
+export interface RatesPerTok {
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
+}
+
+// One Model seen in the Ledger, its Override (if any) and resolved catalog rate.
+export interface ModelPricing {
+  model: string;
+  tool: string;
+  overrideRates: RatesPerTok | null;
+  catalog: { origin: 'litellm' | 'openrouter'; rates: RatesPerTok } | null;
+}
+
+export interface Settings {
+  theme: 'system' | 'light' | 'dark';
+  language: 'en' | 'zh-Hant';
+  currency: string;
+  usdRate: number;
+  launchAtLogin: boolean;
+  autoCheckUpdates: boolean;
+  firstRunDone: boolean;
+}
+
+export interface UpdateStatus {
+  state: 'not-configured';
+  version: string | null;
+}

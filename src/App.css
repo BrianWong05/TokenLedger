@@ -1,0 +1,129 @@
+/* App shell chrome — the persistent window header + tab body. Values are the
+   design's (screens 1a/1d for the header, 1i for the nav states); colors come
+   from the themeable tokens in index.css so light/dark both work. */
+
+.tl-shell {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+}
+
+/* ---- persistent header (design 1a/1d) ---- */
+
+.tl-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--header-border);
+  background: var(--bg);
+}
+
+/* traffic-light spacing — reserves the macOS window buttons' strip */
+.tl-traffic {
+  width: 58px; /* native macOS traffic lights overlay this gap */
+  flex: none;
+}
+
+.tl-wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: 6px;
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.tl-wordmark svg {
+  color: var(--accent);
+  display: block;
+}
+
+/* ---- tab nav (design 1i) ---- */
+
+.tl-nav {
+  display: flex;
+  gap: 2px;
+  margin-left: 10px;
+}
+.tl-nav button {
+  border: none;
+  background: transparent;
+  padding: 6px 13px;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--nav-fg);
+  cursor: pointer;
+}
+.tl-nav button:hover {
+  background: var(--nav-hover-bg);
+  color: var(--nav-hover-fg);
+}
+.tl-nav button.active {
+  background: var(--nav-active-bg);
+  color: var(--nav-active-fg);
+  font-weight: 600;
+}
+.tl-nav button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--nav-focus-ring);
+}
+
+.tl-spacer {
+  flex: 1;
+}
+
+.tl-lastscan {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tl-rescan {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--rescan-bg);
+  border: 1px solid var(--rescan-border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 7px 13px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.tl-rescan:hover:not(:disabled) {
+  background: var(--rescan-hover-bg);
+  border-color: var(--rescan-hover-border);
+}
+.tl-rescan:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.tl-rescan:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--nav-focus-ring);
+}
+.tl-rescan-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* ---- tab body ---- */
+
+.tl-page {
+  min-height: 240px;
+}
+
+/* The Overview keeps its own toolbar; drop its sticky so it doesn't fight the
+   shell's sticky header (they'd both pin to top:0). */
+.tt-top-toolbar {
+  position: static;
+}

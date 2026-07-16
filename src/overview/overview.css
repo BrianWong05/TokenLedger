@@ -796,7 +796,8 @@
   padding: 6px 10px;
   font: inherit;
   font-size: 12.5px;
-  color-scheme: dark;
+  /* follow the app theme (set on :root) instead of pinning dark */
+  color-scheme: inherit;
 }
 
 .tt-b8-body {

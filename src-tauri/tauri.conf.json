@@ -13,6 +13,8 @@
     "windows": [
       {
         "title": "TokenLedger",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "width": 1100,
         "height": 780,
         "minWidth": 900,

@@ -14,16 +14,16 @@ import { TOOL_ICONS } from './icons';
 import { fmtPct, formatCost } from '../lib/format';
 import { REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 import { useOverview } from './useOverview';
-
-const NAV = ['Overview', 'Insights', 'Models', 'Settings'];
+import type { LedgerPort } from './ledger';
+import type { ClockPort } from './overviewStore';
 
 // "App · Overview", wired to the real Ledger through useOverview(): one
 // unbounded daily series powers heatmap/trends/tables via client-side slicing;
 // summary and breakdowns re-fetch per range; an hourly series serves the Day
 // view. All data derivation lives in the store/selectors — this shell only
-// renders the model the hook hands back.
-export default function Overview() {
-  const [nav, setNav] = useState('Overview');
+// renders the model the hook hands back. The window header (wordmark, tab nav,
+// Rescan) is owned by the app shell; this tab renders only its own toolbar.
+export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort } } = {}) {
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
   const costBreakdownFocusTargetRef = useRef<HTMLElement | null>(null);
   const setCostBreakdownFocusTarget = useCallback((element: HTMLElement | null) => {
@@ -39,7 +39,7 @@ export default function Overview() {
     rangeLabel, tool, grand, toolTotals, visibleTools,
     summary, modelRows, canOpenCostBreakdown, headline,
     panels,
-  } = useOverview();
+  } = useOverview(ports);
 
   const headlineCost = (
     <>
@@ -58,20 +58,7 @@ export default function Overview() {
   return (
     <div className="tt">
       <div className={'tt-app' + (loading ? ' tt-loading' : '')}>
-        <div className="tt-top">
-          <div className="tt-brand">
-            <div className="tt-logo">
-              <i>T</i>
-              <b>tokentracker</b>
-            </div>
-            <div className="tt-nav">
-              {NAV.map((n) => (
-                <button key={n} className={n === nav ? 'active' : ''} onClick={() => setNav(n)}>
-                  {n}
-                </button>
-              ))}
-            </div>
-          </div>
+        <div className="tt-top tt-top-toolbar">
           <div className="tt-top-right">
             <div className="tt-seg">
               {RANGES_8B.map((r) => (
