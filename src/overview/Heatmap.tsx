@@ -9,8 +9,8 @@ type Mode = '2d' | '3d';
 
 // DS violet intensity ramp (index 0 = empty cell, 1..4 ascending). WebKit can't
 // resolve var() in SVG fills, so these mirror the DS tokens per theme.
-const HEAT_DARK = ['#1C1C21', '#3D3288', '#5243B4', '#7C6BF2', '#9C8DFA'];
-const HEAT_LIGHT = ['#EDEDF0', '#DDD8FF', '#C0B7FF', '#9C8DFA', '#6555D6'];
+const HEAT_DARK = ['#1c1f27', '#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa'];
+const HEAT_LIGHT = ['#EDEDF0', '#bfdbfe', '#93c5fd', '#3b82f6', '#1d4ed8'];
 
 // ---- 2D grid geometry ----
 const S = 13; // cell size
@@ -293,7 +293,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
             <span>{t('overview.activeDays')}</span>
           </div>
           <div className="tt-stat">
-            <b style={{ color: accent }}>{stats.streak}</b>
+            <b style={{ color: ramp[4] }}>{stats.streak}</b>
             <span>{t('overview.dayStreak')}</span>
           </div>
           {!compact && (
