@@ -138,6 +138,23 @@ DELETE FROM scanned_files;
 DELETE FROM session_ctx;
 PRAGMA user_version = 5;";
 
+// v6: user settings. A single-row table (id pinned to 1) holding the app
+// shell's five Settings plus the launch/first-run flags. No scan-state clear:
+// this is user config with no backfill from logs — an empty table just means
+// defaults (settings::get_settings). No BEGIN/COMMIT: migrate() wraps the batch.
+const SCHEMA_V6: &str = "\
+CREATE TABLE IF NOT EXISTS settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  theme TEXT NOT NULL,
+  language TEXT NOT NULL,
+  currency TEXT NOT NULL,
+  usd_rate REAL NOT NULL,
+  launch_at_login INTEGER NOT NULL,
+  auto_check_updates INTEGER NOT NULL,
+  first_run_done INTEGER NOT NULL
+);
+PRAGMA user_version = 6;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -310,7 +327,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 5) and no-ops.
+    // the committed user_version (currently 6) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -328,6 +345,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 5 {
             conn.execute_batch(SCHEMA_V5)?;
+        }
+        if version < 6 {
+            conn.execute_batch(SCHEMA_V6)?;
         }
         Ok(())
     };
@@ -623,8 +643,8 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec"] {
+        assert_eq!(version, 6);
+        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -653,7 +673,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
     }
 
     #[test]
@@ -681,7 +701,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -812,7 +832,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -899,8 +919,8 @@ mod tests {
 
     #[test]
     fn concurrent_opens_of_v1_db_both_succeed() {
-        // Two processes racing the v1->v5 migration: the loser of the
-        // BEGIN IMMEDIATE lock must see user_version=5 and no-op, not die on
+        // Two processes racing the v1->v6 migration: the loser of the
+        // BEGIN IMMEDIATE lock must see user_version=6 and no-op, not die on
         // "duplicate column name".
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
@@ -918,7 +938,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
     }
 
     #[test]
@@ -1079,7 +1099,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1144,7 +1164,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 5);
+        assert_eq!(v, 6);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1157,6 +1177,44 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
             .unwrap();
         assert_eq!(files, 0, "scan state cleared for the one-time backfill re-scan");
+    }
+
+    #[test]
+    fn v5_db_migrates_to_v6_with_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // Build a genuine v5 database by hand, plus one event: the v6 migration
+        // only adds the settings table and must not clear scan state or touch
+        // the Ledger (settings needs no backfill).
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 6);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // Scan state preserved: v6 is not a backfill migration.
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 1, "settings migration must not clear scan state");
     }
 
     #[test]

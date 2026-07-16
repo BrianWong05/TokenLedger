@@ -61,6 +61,22 @@ impl Rates {
             || (w5 > 0 && self.cache_write_5m == 0.0)
             || (w1 > 0 && self.cache_write_1h == 0.0)
     }
+
+    /// Project onto the frontend's per-token shape. A 0.0 rate maps to None so
+    /// the Pricing tab can render "no rate" (the Cache-Estimated signal) — same
+    /// "absent == 0.0" convention prices already store under (see cache_gap).
+    /// The single cache_write is the 5m/base rate (1h mirrors it at write time).
+    fn to_per_tok(self) -> RatesPerTok {
+        fn opt(v: f64) -> Option<f64> {
+            (v != 0.0).then_some(v)
+        }
+        RatesPerTok {
+            input: opt(self.input),
+            output: opt(self.output),
+            cache_read: opt(self.cache_read),
+            cache_write: opt(self.cache_write_5m),
+        }
+    }
 }
 
 /// A candidate price row with Option fields so merges can honor
@@ -216,6 +232,56 @@ pub struct OverrideRates {
     pub cache_write: Option<f64>,
 }
 
+/// Per-token USD rates as the frontend edits/displays them: nullable fields, a
+/// single cache_write (applied to both TTLs at write time). Structurally the
+/// same as OverrideRates; kept distinct because it is the IPC contract the
+/// Pricing tab consumes (override_rates, catalog rates, and set_model_override).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct RatesPerTok {
+    pub input: Option<f64>,
+    pub output: Option<f64>,
+    pub cache_read: Option<f64>,
+    pub cache_write: Option<f64>,
+}
+
+impl From<RatesPerTok> for OverrideRates {
+    fn from(r: RatesPerTok) -> Self {
+        OverrideRates {
+            input: r.input,
+            output: r.output,
+            cache_read: r.cache_read,
+            cache_write: r.cache_write,
+        }
+    }
+}
+
+/// A catalog List Price match: which catalog it came from (ADR-0003) and its
+/// rates. `origin` is "litellm" | "openrouter"; v1 only reads LiteLLM.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct CatalogRates {
+    pub origin: String,
+    pub rates: RatesPerTok,
+}
+
+/// One row of the Pricing tab: a Model seen in the Ledger, the Source it came
+/// from, its raw Override (if any), and its best catalog match resolved WITHOUT
+/// the Override. The frontend derives Unpriced/Cache-Estimated/override states
+/// from this shape (no state enum): Unpriced = neither field set; Cache-Estimated
+/// = catalog priced for input/output but cache rates null.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct ModelPricing {
+    pub model: String,
+    pub tool: String,
+    pub override_rates: Option<RatesPerTok>,
+    pub catalog: Option<CatalogRates>,
+}
+
 pub fn set_override(conn: &Connection, model: &str, rates: OverrideRates) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO price_overrides \
@@ -295,11 +361,87 @@ impl RateMap {
         if let Some(r) = self.overrides.get(raw_model) {
             return Some(*r);
         }
-        if let Some(r) = self.prices.get(raw_model) {
-            return Some(*r);
-        }
-        self.prices.get(&normalize_model(raw_model)).copied()
+        self.resolve_catalog(raw_model).map(|(_, r)| r)
     }
+
+    /// The catalog tier of `resolve`, ignoring overrides: exact raw key ->
+    /// normalized key, reporting which catalog matched. v1 reads only LiteLLM
+    /// (ADR-0003), so a hit is always "litellm"; the OpenRouter fallback tier
+    /// plugs in right here when it lands.
+    /// ponytail: origin hardcoded "litellm" until the prices table carries a
+    /// per-row source column — add that column with the OpenRouter tier.
+    pub fn resolve_catalog(&self, raw_model: &str) -> Option<(&'static str, Rates)> {
+        if let Some(r) = self.prices.get(raw_model) {
+            return Some(("litellm", *r));
+        }
+        self.prices
+            .get(&normalize_model(raw_model))
+            .map(|r| ("litellm", *r))
+    }
+}
+
+/// Raw Overrides straight from price_overrides (nulls preserved, unlike
+/// RateMap which zero-fills), keyed by raw Model name — what the Pricing editor
+/// shows/edits.
+fn load_overrides_raw(conn: &Connection) -> rusqlite::Result<HashMap<String, RatesPerTok>> {
+    let mut stmt = conn.prepare(
+        "SELECT model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_per_tok \
+         FROM price_overrides",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            RatesPerTok {
+                input: r.get(1)?,
+                output: r.get(2)?,
+                cache_read: r.get(3)?,
+                cache_write: r.get(4)?,
+            },
+        ))
+    })?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let (m, rt) = row?;
+        map.insert(m, rt);
+    }
+    Ok(map)
+}
+
+/// Every distinct Model in the Ledger with its Source, raw Override, and best
+/// catalog match (resolved without the Override). Lists Models regardless of
+/// pricing state — including Unpriced ones with no tokens priced.
+pub fn model_pricing(conn: &Connection) -> rusqlite::Result<Vec<ModelPricing>> {
+    let rates = RateMap::load(conn)?;
+    let overrides = load_overrides_raw(conn)?;
+
+    // Order so the first row per model is the most-frequent Source (the `tool`);
+    // grouping by model keeps a model's rows contiguous for the first-wins scan.
+    let mut stmt = conn.prepare(
+        "SELECT model, source, COUNT(*) AS c FROM events \
+         GROUP BY model, source ORDER BY model, c DESC, source ASC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+
+    let mut out: Vec<ModelPricing> = Vec::new();
+    for row in rows {
+        let (model, source) = row?;
+        if out.last().map(|m| m.model.as_str()) == Some(model.as_str()) {
+            continue; // already recorded this model with its most-frequent Source
+        }
+        let catalog = rates.resolve_catalog(&model).map(|(origin, rt)| CatalogRates {
+            origin: origin.to_string(),
+            rates: rt.to_per_tok(),
+        });
+        out.push(ModelPricing {
+            override_rates: overrides.get(&model).copied(),
+            tool: source,
+            model,
+            catalog,
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -452,5 +594,126 @@ mod tests {
         delete_override(&conn, "gemini-2.5-flash").unwrap();
         let rm2 = RateMap::load(&conn).unwrap();
         assert_eq!(rm2.resolve("gemini-2.5-flash").unwrap().input, 3e-07);
+    }
+
+    // Catalog with two priced models: one full (input/output/cache), one with
+    // input/output only (missing cache -> Cache-Estimated signal).
+    const MP_FIXTURE: &str = r#"{
+      "priced-full": {
+        "input_cost_per_token": 3e-06,
+        "output_cost_per_token": 6e-06,
+        "cache_read_input_token_cost": 3e-07,
+        "cache_creation_input_token_cost": 3.75e-06,
+        "litellm_provider": "anthropic"
+      },
+      "priced-no-cache": {
+        "input_cost_per_token": 1e-06,
+        "output_cost_per_token": 2e-06,
+        "litellm_provider": "openai"
+      }
+    }"#;
+
+    // model_pricing only reads (model, source) from events; tokens are filler and
+    // default to 0. Unique dedup_key per call so repeats aren't deduped away.
+    fn seed_event(conn: &Connection, model: &str, source: &str) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let k = N.fetch_add(1, Ordering::Relaxed);
+        conn.execute(
+            "INSERT INTO events (dedup_key, source, timestamp, model, source_file) \
+             VALUES (?1, ?2, 0, ?3, 'f')",
+            rusqlite::params![format!("k{k}"), source, model],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn model_pricing_splits_override_and_catalog() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        seed_event(&conn, "priced-no-cache", "codex");
+        seed_event(&conn, "priced-full", "claude");
+        seed_event(&conn, "unpriced-x", "grok");
+        // Multi-source model: gemini x2 beats codex x1 for the `tool` pick.
+        seed_event(&conn, "multi", "gemini");
+        seed_event(&conn, "multi", "gemini");
+        seed_event(&conn, "multi", "codex");
+        // An Override on a catalogued model: both override_rates and catalog set.
+        set_override(
+            &conn,
+            "priced-full",
+            OverrideRates { input: Some(9e-06), output: None, cache_read: None, cache_write: Some(1e-06) },
+        )
+        .unwrap();
+
+        let list = model_pricing(&conn).unwrap();
+        let get = |name: &str| list.iter().find(|m| m.model == name).unwrap();
+        // Every distinct Model is listed, regardless of pricing state.
+        for m in ["priced-no-cache", "priced-full", "unpriced-x", "multi"] {
+            assert!(list.iter().any(|r| r.model == m), "missing {m}");
+        }
+
+        // Unpriced: neither override nor catalog.
+        let u = get("unpriced-x");
+        assert!(u.override_rates.is_none());
+        assert!(u.catalog.is_none());
+        assert_eq!(u.tool, "grok");
+
+        // Catalog with missing cache rates: input/output Some, cache None.
+        let nc = get("priced-no-cache");
+        assert!(nc.override_rates.is_none());
+        let cat = nc.catalog.as_ref().unwrap();
+        assert_eq!(cat.origin, "litellm");
+        assert_eq!(cat.rates.input, Some(1e-06));
+        assert_eq!(cat.rates.output, Some(2e-06));
+        assert_eq!(cat.rates.cache_read, None);
+        assert_eq!(cat.rates.cache_write, None);
+        assert_eq!(nc.tool, "codex");
+
+        // Overridden model: raw Override (nulls preserved) AND catalog resolved
+        // WITHOUT the override.
+        let ov = get("priced-full");
+        let orr = ov.override_rates.unwrap();
+        assert_eq!(orr.input, Some(9e-06));
+        assert_eq!(orr.output, None); // raw null kept, not zero-filled
+        assert_eq!(orr.cache_write, Some(1e-06));
+        let ocat = ov.catalog.as_ref().unwrap();
+        assert_eq!(ocat.rates.input, Some(3e-06)); // catalog, not the 9e-06 override
+        assert_eq!(ocat.rates.cache_read, Some(3e-07));
+
+        // Most-frequent Source wins the `tool`.
+        assert_eq!(get("multi").tool, "gemini");
+    }
+
+    #[test]
+    fn override_set_delete_roundtrip_via_model_pricing() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        seed_event(&conn, "priced-full", "claude");
+
+        let find = |list: &[ModelPricing]| {
+            list.iter().find(|m| m.model == "priced-full").cloned().unwrap()
+        };
+
+        // No override initially; catalog present.
+        let before = find(&model_pricing(&conn).unwrap());
+        assert!(before.override_rates.is_none());
+        assert!(before.catalog.is_some());
+
+        // Set (the core the set_model_override command wraps).
+        set_override(
+            &conn,
+            "priced-full",
+            OverrideRates { input: Some(5e-06), output: Some(5e-06), cache_read: None, cache_write: None },
+        )
+        .unwrap();
+        let mid = find(&model_pricing(&conn).unwrap());
+        assert_eq!(mid.override_rates.unwrap().input, Some(5e-06));
+
+        // Delete -> falls back to the catalog List Price.
+        delete_override(&conn, "priced-full").unwrap();
+        let after = find(&model_pricing(&conn).unwrap());
+        assert!(after.override_rates.is_none());
+        assert!(after.catalog.is_some());
     }
 }

@@ -3,6 +3,7 @@ mod db;
 mod pricing;
 mod queries;
 mod scan;
+mod settings;
 mod time;
 mod types;
 
@@ -25,9 +26,10 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use tauri::{Emitter, Manager, State};
 
-use pricing::OverrideRates;
+use pricing::{ModelPricing, OverrideRates, RatesPerTok};
 use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
 use scan::{run_scan, SourceRoots};
+use settings::{Settings, UpdateStatus};
 use types::ScanStatus;
 
 pub struct AppState {
@@ -136,6 +138,58 @@ fn delete_price_override(state: State<'_, AppState>, model: String) -> Result<()
     pricing::delete_override(&db, &model).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricing>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    pricing::model_pricing(&db).map_err(|e| e.to_string())
+}
+
+// The Pricing tab's Override mutations. Both emit the SAME prices-rebuilt event
+// the price refresh emits, so the Overview recomputes Cost without a restart.
+#[tauri::command]
+fn set_model_override(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    model: String,
+    rates: RatesPerTok,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        pricing::set_override(&db, &model, rates.into()).map_err(|e| e.to_string())?;
+    }
+    app.emit("prices-rebuilt", ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_model_override(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    model: String,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        pricing::delete_override(&db, &model).map_err(|e| e.to_string())?;
+    }
+    app.emit("prices-rebuilt", ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    settings::get_settings(&db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    settings::set_settings(&db, &settings).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn check_updates() -> Result<UpdateStatus, String> {
+    Ok(settings::check_updates())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -177,7 +231,13 @@ pub fn run() {
             ctx_tools,
             ctx_exec,
             set_price_override,
-            delete_price_override
+            delete_price_override,
+            model_pricing,
+            set_model_override,
+            delete_model_override,
+            get_settings,
+            set_settings,
+            check_updates
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
