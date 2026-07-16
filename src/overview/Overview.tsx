@@ -9,6 +9,7 @@ import TokenTotalHeadline from './TokenTotalHeadline';
 import AggTrend from './AggTrend';
 import SmallMultiples from './SmallMultiples';
 import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
+import { REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 import { TOOL_ICONS } from './icons';
 import { fmtPct } from '../lib/format';
 import { formatDisplayCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
@@ -53,6 +54,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
   const {
     loading, scanError, fetchError, scanSources,
+    refreshSec, setRefreshSec,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
     sel, setSel,
@@ -67,7 +69,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   const headlineCost = (
     <>
       {summary ? formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang) : '…'}
-      <span className="tt-b8-cost-note"> {t('overview.costNote')}</span>
+      <span className="tt-b8-cost-note" title={t('overview.notBilled')}> {t('overview.costNote')}</span>
       {summary?.hasUnpriced && (
         <span className="tt-b8-cost-mark" title={summary.unpricedModels.join(', ')}> · {summary.unpricedModels.length} {t('overview.unpricedMarker')}</span>
       )}
@@ -79,8 +81,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
   return (
     <div className={'tt' + (loading ? ' tt-loading' : '')}>
-      <div className="tt-ov-head">
-        <h1 className="tt-h1">{t('overview.title')}</h1>
+      <div className="tt-toolbar">
         <div className="tt-seg">
           {RANGES_8B.map((r) => (
             <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
@@ -88,6 +89,21 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
             </button>
           ))}
         </div>
+        <span className="tt-refresh">
+          <select
+            aria-label={t('overview.autoRefresh')}
+            value={refreshSec}
+            onChange={(e) => setRefreshSec(Number(e.target.value) as RefreshSec)}
+          >
+            {REFRESH_PRESETS.map((p) => (
+              <option key={p.sec} value={p.sec}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+          <span className="chev" aria-hidden="true">▾</span>
+        </span>
+        <span className="tt-avatar" aria-hidden="true">BW</span>
       </div>
 
       {range === 'custom' && (
@@ -111,6 +127,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
         </div>
       )}
 
+      <div className="tt-body">
       {(scanError || fetchError) && (
         <div className="tt-error">
           {scanError && fetchError ? `${scanError} · ${fetchError}` : scanError || fetchError}
@@ -216,6 +233,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           ))}
         </div>
       )}
+      </div>
 
       {costBreakdownOpen && summary && (
         <CostBreakdownModal

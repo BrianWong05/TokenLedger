@@ -8,6 +8,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Overview from './Overview';
+import { RANGES_8B } from './meta';
+import { REFRESH_PRESETS, STORAGE_KEY } from './useAutoRefresh';
 import { systemClock } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
 import { makeFakePricing } from '../pricing/pricing.fake';
@@ -141,5 +143,44 @@ describe('Overview presentation', () => {
     const foot = c.querySelector('.tt-scan-foot')!.textContent ?? '';
     expect(foot).toContain('claude: 412 in / 0 skipped');
     expect(foot).toContain('codex: 88 in / 2 skipped');
+  });
+
+  it('renders the toolbar: range control, auto-refresh select, and avatar', async () => {
+    const c = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+    });
+
+    const toolbar = c.querySelector('.tt-toolbar')!;
+    // range segmented control (one button per preset)
+    expect(toolbar.querySelectorAll('.tt-seg button').length).toBe(RANGES_8B.length);
+    // auto-refresh select carrying the REFRESH_PRESETS options
+    const select = toolbar.querySelector('select')!;
+    expect(Array.from(select.options, (o) => o.textContent)).toEqual(
+      REFRESH_PRESETS.map((p) => p.label),
+    );
+    // BW avatar, and the old page title is gone
+    expect(c.querySelector('.tt-avatar')?.textContent).toBe('BW');
+    expect(c.querySelector('.tt-h1')).toBeNull();
+  });
+
+  it('persists the auto-refresh interval when the select changes', async () => {
+    localStorage.removeItem(STORAGE_KEY);
+    const c = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+    });
+
+    const select = c.querySelector<HTMLSelectElement>('.tt-toolbar select')!;
+    expect(select.value).toBe('0'); // Off by default
+
+    await act(async () => {
+      select.value = '30';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    // onChange → setRefreshSec(30) drives the controlled value and persists it
+    expect(select.value).toBe('30');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('30');
   });
 });

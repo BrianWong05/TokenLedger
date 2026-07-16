@@ -2,15 +2,18 @@
    index.css (dark default, [data-theme="light"] switches), so the Overview
    themes with the rest of the app and sits flush on --bg-app (no distinct
    panel). Chart SVG fills that can't read var() under WebKit come from
-   src/lib/chartColors.ts instead. Numbers align via tabular-nums (no mono). */
+   src/lib/chartColors.ts instead. Numeric VALUES render in --tt-mono (per-rule,
+   below); labels stay in the UI font. Both align via tabular-nums. */
 
-/* ---- root: the design's <main> content, a flush flex column ---- */
+/* ---- root: the design's flex:1 content, a flush flex column. Its direct
+   children (toolbar, custom row, body) stack flush — each bar owns its border
+   and padding — so no gap here; .tt-body owns the content's inner gap. ---- */
 .tt {
   display: flex;
   flex-direction: column;
-  gap: 16px;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
+  --tt-mono: ui-monospace, 'SF Mono', Menlo, monospace;
 }
 /* First-load state: dim until the initial series arrives. */
 .tt-loading {
@@ -18,20 +21,61 @@
   pointer-events: none;
 }
 
-/* ---- header row: h1 + range segmented control ---- */
-.tt-ov-head {
+/* ---- toolbar: full-bleed bar (range seg + auto-refresh + avatar) ---- */
+.tt-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  flex-wrap: wrap;
+  gap: 16px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.tt-h1 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+/* auto-refresh interval select — native chevron hidden, custom ▾ overlaid */
+.tt-refresh {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.tt-refresh select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
   color: var(--text-primary);
+  padding: 7px 26px 7px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: var(--tt-mono);
+  cursor: pointer;
+}
+.tt-refresh select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+.tt-refresh .chev {
+  position: absolute;
+  right: 10px;
+  pointer-events: none;
+  color: var(--text-secondary);
+  font-size: 9px;
+}
+/* user avatar chip, pinned to the toolbar's right edge */
+.tt-avatar {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--success), var(--success-text));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  /* theme-inverting: near-black on the light-green dark-theme chip, white on the
+     darker-green light-theme chip — legible either way, no hardcoded hex */
+  color: var(--bg-surface);
 }
 
 /* segmented control — shared by the range toggle and the heatmap 2D/3D toggle */
@@ -63,13 +107,15 @@
   box-shadow: var(--focus-shadow);
 }
 
-/* custom-range row (appears only when Custom is active) */
+/* custom-range row (appears only when Custom is active) — full-bleed bar
+   directly below the toolbar, its own border-bottom */
 .tt-custom-row {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: -6px;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 12.5px;
   color: var(--text-secondary);
 }
@@ -91,6 +137,14 @@
   /* follow the app theme (set on :root) instead of pinning dark */
   color-scheme: inherit;
   outline: none;
+}
+
+/* ---- body: padded content column below the full-bleed toolbar/custom row ---- */
+.tt-body {
+  padding: 30px 26px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
 /* scan/query failure line */
@@ -139,6 +193,7 @@
   letter-spacing: -0.02em;
   line-height: 1.1;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 
 /* ---- shared footer (stats + legend) ---- */
@@ -161,6 +216,7 @@
   font-weight: 600;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-stat span {
   font-size: 10px;
@@ -219,6 +275,7 @@
   line-height: 1.05;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
   cursor: pointer;
   transition: background 0.16s ease;
 }
@@ -251,6 +308,7 @@
   min-width: 0;
   height: var(--tt-counter-height);
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-token-counter-token.is-digit {
   overflow: hidden;
@@ -278,6 +336,7 @@
   font-weight: 600;
   color: var(--success-text);
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-b8-cost-note {
   font-size: 11px;
@@ -321,10 +380,11 @@
   transition: width 0.4s ease;
 }
 
-/* per-source cards (6-up); click selects the source that drives the Overview */
+/* per-source cards (4-up; the 6 sources wrap 4+2); click selects the source
+   that drives the Overview */
 .tt-toolcards {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 .tt-toolcard {
@@ -387,6 +447,7 @@
   color: var(--text-primary);
   margin-top: 8px;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-toolcard .sub {
   font-size: 11px;
@@ -470,6 +531,7 @@
   font-weight: 600;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-tip-tok span {
   font-size: 9px;
@@ -505,6 +567,7 @@
   color: var(--text-primary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-tip-row .track {
   height: 3px;
@@ -578,6 +641,7 @@
   color: var(--text-primary);
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 
 /* ---- context / token breakdown ---- */
@@ -664,6 +728,7 @@
   color: var(--text-primary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-ctx-row.muted .val {
   color: var(--text-secondary);
@@ -675,6 +740,7 @@
   width: 44px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-ctx-meta {
   font-size: 11.5px;
@@ -763,6 +829,7 @@
   font-size: 12px;
   color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-model {
   padding: 9px 0;
@@ -793,6 +860,7 @@
   color: var(--text-secondary);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-model .cost {
   font-size: 11.5px;
@@ -800,6 +868,7 @@
   width: 54px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-model .pct {
   font-size: 12.5px;
@@ -808,6 +877,7 @@
   width: 44px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-model .track {
   height: 8px;
@@ -917,6 +987,7 @@
   color: var(--text-secondary);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -986,6 +1057,7 @@
   line-height: 1.05;
   letter-spacing: -0.035em;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-cost-modal-note {
   margin-top: 8px;
@@ -1058,6 +1130,7 @@
 .tt-cost-group-head span:last-child {
   text-align: right;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-cost-model {
   margin-top: 8px;
@@ -1065,6 +1138,7 @@
   font-size: 12px;
   line-height: 1.35;
   font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
 .tt-cost-model > span:last-child {
   color: var(--text-primary);

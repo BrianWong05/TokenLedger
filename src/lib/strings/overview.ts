@@ -9,8 +9,11 @@ export const overview = {
     'overview.title': 'Overview',
     'overview.customRange': 'Custom range',
     'overview.to': 'to',
+    'overview.autoRefresh': 'Auto-refresh',
     'overview.totalTokens': 'Total tokens',
-    'overview.costNote': 'est. at list prices — not billed',
+    // short visible note; the full "not billed" caveat rides as a title tooltip
+    // (overview.notBilled) so the ADR-0002 honesty survives the shortening
+    'overview.costNote': 'est.',
     'overview.unpricedMarker': 'unpriced',
     'overview.cacheEst': 'cache est.',
     'overview.showCostBreakdown': 'Show Cost breakdown',
@@ -137,8 +140,9 @@ export const overview = {
     'overview.title': '總覽',
     'overview.customRange': '自訂範圍',
     'overview.to': '至',
+    'overview.autoRefresh': '自動重新整理',
     'overview.totalTokens': '總 token 數',
-    'overview.costNote': '預估（依 API 列表價，非實際帳單）',
+    'overview.costNote': '估算',
     'overview.unpricedMarker': '未定價',
     'overview.cacheEst': '快取估算',
     'overview.showCostBreakdown': '顯示成本明細',

@@ -158,13 +158,12 @@
 .tl-main {
   flex: 1;
   min-width: 0;
-  max-width: 1180px;
-  margin: 0 auto;
-  /* flush top — content starts at the window edge, no dead band above it */
-  padding: 0 28px 28px;
+  /* fills the space right of the sidebar (design's flex:1); each page owns its
+     own padding — Overview via its full-bleed toolbar + .tt-body, Pricing and
+     Settings via .tl-page-pricing / .tl-page-settings */
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
 }
 
 .tl-page {
