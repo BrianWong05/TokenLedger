@@ -3,6 +3,7 @@ import { TOOLS, emptyByTool } from './meta';
 import { rankModels, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
+import { useChartColors } from '../lib/chartColors';
 
 // ---- aggregate usage-trend bars (no interval toggle; driven by the range) ----
 const VW = 560;
@@ -14,6 +15,7 @@ const LABEL_Y = 194;
 
 export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: string; rangeLabel: string; modelTool: Record<string, string> }) {
   const { t } = useOverviewT();
+  const colors = useChartColors();
   const [hover, setHover] = useState<number | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
@@ -60,19 +62,19 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
       <div className="tt-head">
         <div>
           <div className="tt-title">{t('overview.usageTrend')}</div>
-          <div className="tt-sub">{t('overview.stackedByModel')} · {rangeLabel}</div>
+          <div className="tt-sub">{t('overview.stackedByTool')} · {rangeLabel}</div>
         </div>
         <div style={{ textAlign: 'right' }}>
           <div className="tt-read-big">{fmtTok(shown ? shown.total : total)}</div>
-          <div style={{ fontSize: 10.5, color: 'var(--tt-mut3)' }}>{shown ? shown.label : t('overview.total')}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>{shown ? shown.label : t('overview.total')}</div>
         </div>
       </div>
       <div style={{ marginTop: 12, position: 'relative' }} onMouseMove={onMove}>
         <svg viewBox={`0 0 ${VW} 200`} preserveAspectRatio="xMidYMid meet" onMouseLeave={() => setHover(null)} style={{ width: '100%', display: 'block' }}>
           {grid.map((g, i) => (
             <g key={i}>
-              <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke="rgba(255,255,255,.06)" strokeWidth={1} />
-              <text x={PL} y={g.y} dy={-4} fill="#5f6880" fontSize={9} fontFamily="ui-monospace,monospace">
+              <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke={colors.grid} strokeWidth={1} />
+              <text x={PL} y={g.y} dy={-4} fontSize={9} style={{ fill: 'var(--text-tertiary)' }}>
                 {g.label}
               </text>
             </g>
@@ -95,7 +97,7 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
             <rect key={'h' + i} x={PL + i * slot} y={PT} width={slot} height={BASE - PT} fill="transparent" onMouseEnter={() => setHover(i)} style={{ cursor: 'pointer' }} />
           ))}
           {data.map((b, i) => (
-            <text key={'x' + i} x={PL + i * slot + slot / 2} y={LABEL_Y} fill="#6d7793" fontSize={9} fontFamily="ui-monospace,monospace" textAnchor="middle">
+            <text key={'x' + i} x={PL + i * slot + slot / 2} y={LABEL_Y} fontSize={9} textAnchor="middle" style={{ fill: 'var(--text-tertiary)' }}>
               {dense && i % 2 ? '' : b.label}
             </text>
           ))}
@@ -142,7 +144,7 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
             <span>{t('overview.avg')} / {t(PER_UNIT_KEY[per])}</span>
           </div>
           <div className="tt-stat">
-            <b style={{ color: 'var(--tt-green)' }}>{fmtTok(peak.total)}</b>
+            <b style={{ color: 'var(--success-text)' }}>{fmtTok(peak.total)}</b>
             <span>{t('overview.peak')} · {peak.label}</span>
           </div>
         </div>

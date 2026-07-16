@@ -40,6 +40,7 @@ import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
 import type {
   Filters,
   ScanStatus,
+  SourceStatus,
   SeriesPoint,
   Summary,
   BreakdownRow,
@@ -77,6 +78,7 @@ export interface OverviewSnapshot {
   ctxBuckets: CtxBuckets[];
   ctxToolRows: CtxToolRow[];
   ctxExecRows: CtxExecRow[];
+  scanSources: SourceStatus[]; // per-source scan stats (eventsInserted / linesSkipped) for the footer
   scanError: string | null;
   fetchError: string | null;
   range: Range8b;
@@ -110,7 +112,7 @@ type State = Omit<
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'modelRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxExecRows',
-  'scanError', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
+  'scanSources', 'scanError', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading',
 ];
 
@@ -122,7 +124,7 @@ class Store implements OverviewStore {
   private state: State = {
     allPoints: null, hourPoints: [], summary: null, modelRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxExecRows: [],
-    scanError: null, fetchError: null,
+    scanSources: [], scanError: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: 'claude',
   };
   private snapshot: OverviewSnapshot;
@@ -154,6 +156,7 @@ class Store implements OverviewStore {
       this.publish();
       return; // scan threw: do not proceed to the series reload
     }
+    this.state.scanSources = status.sources;
     const errs = status.sources
       .filter((s) => s.error)
       .map((s) => `${s.source}: ${s.error}`);

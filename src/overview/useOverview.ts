@@ -59,6 +59,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
 
   return {
     loading: snap.loading,
+    scanSources: snap.scanSources,
     scanError: snap.scanError,
     fetchError: snap.fetchError,
     refresh,

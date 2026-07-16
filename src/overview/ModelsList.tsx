@@ -74,7 +74,7 @@ export default function ModelsList({
           </div>
         </div>
       ))}
-      <div className="tt-legend" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,.06)' }}>
+      <div className="tt-legend" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
         {CATEGORIES.map((c) => (
           <span className="item" key={c.key}>
             <span className="sw" style={{ background: c.color }} />
