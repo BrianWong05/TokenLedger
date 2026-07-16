@@ -1,72 +1,63 @@
-/* TokenLedger — themeable CSS-variable palettes. Dark is the default (:root);
-   the light palette below overrides on :root[data-theme='light'] (see
-   src/lib/theme.ts). The Overview keeps its own dark-pinned --tt-* palette for
-   now; only the shell chrome and later tabs read these tokens. */
+/* TokenLedger — design-system color tokens. The DS palette below is the verbatim
+   ground truth (dark is the default :root; [data-theme="light"] on the root — set
+   by src/lib/theme.ts — switches). The legacy-alias block underneath keeps the
+   pre-DS component CSS (the .hero/.stat/table styles in this file, plus pricing.css,
+   settings.css, overview.css) working unchanged by pointing the old var names at
+   their DS equivalents. Chart hexes live in src/lib/chartColors.ts — WebKit (Tauri's
+   macOS webview) does not resolve var() in SVG presentation attributes. */
 
+/* ── design-system tokens (verbatim; see scratchpad/ds-colors.css) ── */
+:root{color-scheme:dark;
+--violet-200:#DDD8FF;--violet-300:#C0B7FF;--violet-400:#9C8DFA;--violet-500:#7C6BF2;--violet-600:#6555D6;--violet-700:#5243B4;--violet-800:#3D3288;
+--ink-950:#09090B;--ink-900:#0D0D10;--ink-800:#151519;--ink-700:#1C1C21;--ink-600:#26262C;--ink-500:#35353C;--ink-400:#52525A;
+--paper-0:#FFFFFF;--paper-100:#F7F7F8;--paper-200:#EDEDF0;--paper-300:#DEDEE2;--paper-400:#C5C5CC;
+--bg-app:var(--ink-900);--bg-surface:var(--ink-800);--bg-raised:var(--ink-700);--bg-inset:var(--ink-950);--bg-hover:rgba(244,244,248,.06);
+--overlay:rgba(0,0,0,.6);
+--border-subtle:#222228;--border-default:#2C2C33;--border-strong:#3F3F47;
+--text-primary:#F2F2F5;--text-secondary:#A3A3AB;--text-tertiary:#6E6E76;--text-disabled:#4A4A52;
+--accent:var(--violet-500);--accent-hover:var(--violet-400);--accent-pressed:var(--violet-600);--accent-subtle:rgba(124,107,242,.15);--accent-border:rgba(124,107,242,.4);
+--text-accent:#A99DFF;--text-on-accent:#FFFFFF;
+--focus-ring:var(--violet-500);--focus-shadow:0 0 0 3px rgba(124,107,242,.25);
+--success:#4CBE8A;--success-text:#7BD3AA;--success-subtle:rgba(76,190,138,.13);
+--warning:#E2B34E;--warning-text:#E8C476;--warning-subtle:rgba(226,179,78,.13);
+--danger:#E06C6C;--danger-hover:#EB8282;--danger-pressed:#C95555;--danger-text:#F09090;--danger-subtle:rgba(224,108,108,.13);
+--info:#5FA8E0;--info-text:#85BEE9;--info-subtle:rgba(95,168,224,.13);
+--chart-1:#7C6BF2;--chart-2:#45C4D6;--chart-3:#4EA8E8;--chart-4:#4CBE8A;--chart-5:#C77BE0;--chart-grid:#222228;
+--tooltip-bg:#2E2E36;--tooltip-text:#F2F2F5;--switch-thumb:#FFFFFF;
+}
+[data-theme="light"]{color-scheme:light;
+--bg-app:var(--paper-100);--bg-surface:var(--paper-0);--bg-raised:var(--paper-0);--bg-inset:var(--paper-200);--bg-hover:rgba(23,23,27,.05);
+--overlay:rgba(23,23,27,.4);
+--border-subtle:#E8E8EC;--border-default:#DCDCE1;--border-strong:#BBBBC3;
+--text-primary:#17171B;--text-secondary:#55555C;--text-tertiary:#84848C;--text-disabled:#B2B2BA;
+--accent:var(--violet-600);--accent-hover:var(--violet-700);--accent-pressed:var(--violet-800);--accent-subtle:rgba(101,85,214,.11);--accent-border:rgba(101,85,214,.35);
+--text-accent:var(--violet-600);
+--focus-ring:var(--violet-600);--focus-shadow:0 0 0 3px rgba(101,85,214,.2);
+--success:#1E9E62;--success-text:#0F7A48;--success-subtle:rgba(30,158,98,.11);
+--warning:#B07C14;--warning-text:#8A600D;--warning-subtle:rgba(176,124,20,.12);
+--danger:#CC4949;--danger-hover:#B93B3B;--danger-pressed:#A33232;--danger-text:#B23535;--danger-subtle:rgba(204,73,73,.1);
+--info:#2E7CC4;--info-text:#22639F;--info-subtle:rgba(46,124,196,.11);
+--chart-1:#6555D6;--chart-2:#1FA3B5;--chart-3:#2B7FC7;--chart-4:#1E9E62;--chart-5:#A94FC7;--chart-grid:#E8E8EC;
+--tooltip-bg:#1E1E24;--tooltip-text:#F5F5F8;--switch-thumb:#FFFFFF;
+}
+
+/* ── legacy aliases: old var names → DS tokens (theme-aware, resolved at use) ── */
 :root {
-  color-scheme: dark;
-
-  /* surface + text (design 1a — dark) */
-  --bg: #0a0a0c;
-  --card: #131318;
-  --border: #26262e;
-  --text: #e8e8ee;
-  --muted: #8b8b96;
-
-  /* brand */
-  --accent: #7c5cff;
-  --green: #2fbf71;
-  --cost: #ff5c7a;
-
-  /* shell header + tab nav (design 1a/1d/1i — dark) */
-  --header-border: #26262e;
-  --nav-fg: #8b8b96;
-  --nav-hover-bg: #131318;
-  --nav-hover-fg: #c7c7d1;
-  --nav-active-bg: #1e1e26;
-  --nav-active-fg: #e8e8ee;
-  --nav-focus-ring: rgba(124, 92, 255, 0.55);
-  --rescan-bg: #131318;
-  --rescan-border: #26262e;
-  --rescan-hover-bg: #1a1a20;
-  --rescan-hover-border: #3a3a44;
-
-  /* chart palette — documentation only; TrendChart.tsx hardcodes these same
-     hex values because WebKit (Tauri's macOS webview) does not resolve
-     var() in SVG presentation attributes. Keep in sync with CHART there. */
-  --chart-input: #7c5cff;
-  --chart-output: #2fbf71;
-  --chart-cache-read: #3aa0ff;
-  --chart-cache-write: #f0a03c;
-  --chart-cost: #ff5c7a;
+  --bg: var(--bg-app);
+  --card: var(--bg-surface);
+  --border: var(--border-subtle);
+  --text: var(--text-primary);
+  --muted: var(--text-secondary);
+  /* --accent is itself a DS token now (violet-500 dark / violet-600 light) */
+  --green: var(--success);
+  --cost: var(--danger-text);
+  /* the only old nav/rescan vars still read outside App.css (settings.css) */
+  --nav-focus-ring: var(--focus-ring);
+  --rescan-hover-border: var(--border-strong);
 
   --radius: 10px;
   --font: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
-}
-
-/* Light palette — design's derived light token set (screens 1g/1h/1i). */
-:root[data-theme="light"] {
-  color-scheme: light;
-
-  --bg: #f4f4f6;
-  --card: #ffffff;
-  --border: #e4e4ea;
-  --text: #1a1a20;
-  --muted: #6e6e7a;
-  --accent: #6c4cf2;
-
-  --header-border: #e4e4ea;
-  --nav-fg: #6e6e7a;
-  --nav-hover-bg: #ececf1;
-  --nav-hover-fg: #3f3f48;
-  --nav-active-bg: #e7e7ee;
-  --nav-active-fg: #1a1a20;
-  --nav-focus-ring: rgba(108, 76, 242, 0.45);
-  --rescan-bg: #ffffff;
-  --rescan-border: #e0e0e8;
-  --rescan-hover-bg: #f6f6f9;
-  --rescan-hover-border: #c9c9d4;
 }
 
 * {
