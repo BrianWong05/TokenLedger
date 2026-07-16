@@ -16,6 +16,10 @@ import { REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 import { useOverview } from './useOverview';
 import type { LedgerPort } from './ledger';
 import type { ClockPort } from './overviewStore';
+import { tauriPricing, type PricingPort } from '../pricing/pricing';
+import type { SettingsPort } from '../settings/settings';
+import OverrideEditor from '../pricing/OverrideEditor';
+import type { ModelPricing } from '../types';
 
 // "App · Overview", wired to the real Ledger through useOverview(): one
 // unbounded daily series powers heatmap/trends/tables via client-side slicing;
@@ -23,8 +27,22 @@ import type { ClockPort } from './overviewStore';
 // view. All data derivation lives in the store/selectors — this shell only
 // renders the model the hook hands back. The window header (wordmark, tab nav,
 // Rescan) is owned by the app shell; this tab renders only its own toolbar.
-export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort } } = {}) {
+export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort } } = {}) {
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
+
+  // Model-selection entry point into the shared Override editor: fetch a fresh
+  // ModelPricing list on open (the Overview may show a Model absent from a stale
+  // list, so we always re-list), then open the same editor the Pricing tab uses.
+  const pricing = ports?.pricing ?? tauriPricing;
+  const [pricingEditor, setPricingEditor] = useState<ModelPricing | null>(null);
+  const openPricing = useCallback(
+    (name: string, toolKey: string) => {
+      pricing.list()
+        .then((list) => setPricingEditor(list.find((m) => m.model === name) ?? { model: name, tool: toolKey, overrideRates: null, catalog: null }))
+        .catch(() => setPricingEditor({ model: name, tool: toolKey, overrideRates: null, catalog: null }));
+    },
+    [pricing],
+  );
   const costBreakdownFocusTargetRef = useRef<HTMLElement | null>(null);
   const setCostBreakdownFocusTarget = useCallback((element: HTMLElement | null) => {
     costBreakdownFocusTargetRef.current = element;
@@ -218,6 +236,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                   tool={tool}
                   toolTokens={panels.models.toolTokens}
                   models={panels.models.models}
+                  onModelClick={(name) => openPricing(name, tool.key)}
                 />
               </div>
             </div>
@@ -232,6 +251,14 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           rows={modelRows}
           returnFocusRef={costBreakdownFocusTargetRef}
           onClose={() => setCostBreakdownOpen(false)}
+        />
+      )}
+      {pricingEditor && (
+        <OverrideEditor
+          model={pricingEditor}
+          pricing={pricing}
+          settings={ports?.settings}
+          onClose={() => setPricingEditor(null)}
         />
       )}
     </div>

@@ -9,11 +9,15 @@ export default function ModelsList({
   toolTokens,
   models,
   showCost = true,
+  onModelClick,
 }: {
   tool: ToolMeta;
   toolTokens: number;
   models: ModelBar[];
   showCost?: boolean;
+  // When set, a Model row is a button that opens the Override editor in place
+  // (the Pricing fix reachable where the "unpriced" symptom shows).
+  onModelClick?: (model: string) => void;
 }) {
   return (
     <>
@@ -25,7 +29,24 @@ export default function ModelsList({
         <span className="tot">{fmtTok(toolTokens)}</span>
       </div>
       {models.map((m) => (
-        <div className="tt-model" key={m.name}>
+        <div
+          className="tt-model"
+          key={m.name}
+          role={onModelClick ? 'button' : undefined}
+          tabIndex={onModelClick ? 0 : undefined}
+          style={onModelClick ? { cursor: 'pointer' } : undefined}
+          onClick={onModelClick ? () => onModelClick(m.name) : undefined}
+          onKeyDown={
+            onModelClick
+              ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onModelClick(m.name);
+                  }
+                }
+              : undefined
+          }
+        >
           <div className="top">
             <span className="name">
               {m.name}

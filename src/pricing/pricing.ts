@@ -17,10 +17,13 @@ export const tauriPricing: PricingPort = {
   setOverride: setModelOverride,
   deleteOverride: deleteModelOverride,
   onPricesRebuilt(cb) {
-    // listen() is async; the unsubscribe resolves later, so teardown must await it.
+    // listen() is async; the unsubscribe resolves later, so teardown must await
+    // it. Swallow a rejected setup (e.g. no Tauri runtime under test, where the
+    // shell mounts this port-less) so it never surfaces as an unhandled rejection.
     const un = listen('prices-rebuilt', () => cb());
+    un.catch(() => {});
     return () => {
-      un.then((f) => f());
+      un.then((f) => f()).catch(() => {});
     };
   },
 };
