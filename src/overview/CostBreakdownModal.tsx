@@ -37,28 +37,36 @@ export default function CostBreakdownModal({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // Pinned group context while scrolling. Sticky inside the scroller flashes
-  // (WebKit repaints sticky a frame late during momentum scroll), so instead a
-  // fixed overlay OUTSIDE the scroll layer shows the current group's head once
-  // its real head has scrolled past. Overlay content is plain chrome — it
-  // cannot tear at any scroll speed.
+  // The current group lives in permanent chrome outside the scroller. Keeping
+  // that row mounted makes its geometry stable in WebKit; the first in-list
+  // group head is omitted so the source name is never duplicated.
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [pinnedIdx, setPinnedIdx] = useState(-1);
+  const [pinnedIdx, setPinnedIdx] = useState(0);
   const handleScroll = useCallback(() => {
     const scroller = scrollRef.current;
     if (!scroller) return;
-    const top = scroller.scrollTop;
-    let current = -1;
+    const viewportTop = scroller.getBoundingClientRect().top;
+    let current = 0;
     const sections = scroller.querySelectorAll<HTMLElement>('.tt-cost-group');
     sections.forEach((section, i) => {
-      // pin once the group's real head starts leaving the viewport top
-      if (section.offsetTop < top - 1) current = i;
+      if (i === 0) return;
+      const head = section.querySelector<HTMLElement>('.tt-cost-group-head');
+      // Switch only after the incoming real head leaves the viewport, avoiding
+      // a duplicate source name at the handoff.
+      if (head && head.getBoundingClientRect().bottom <= viewportTop) current = i;
     });
     setPinnedIdx(current);
   }, []);
-  const pinned = pinnedIdx >= 0 ? view.groups[pinnedIdx] : null;
+  const pinned = view.groups[pinnedIdx] ?? view.groups[0] ?? null;
 
   useLayoutEffect(() => {
+    const pageRoot = document.documentElement;
+    const pageBody = document.body;
+    const previousRootOverflow = pageRoot.style.overflow;
+    const previousBodyOverflow = pageBody.style.overflow;
+    pageRoot.style.overflow = 'hidden';
+    pageBody.style.overflow = 'hidden';
+
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const modal = modalRef.current;
     (closeButtonRef.current ?? modal)?.focus();
@@ -95,6 +103,8 @@ export default function CostBreakdownModal({
     document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
+      pageRoot.style.overflow = previousRootOverflow;
+      pageBody.style.overflow = previousBodyOverflow;
       const focusTarget = returnFocusRef.current ?? previouslyFocused;
       if (focusTarget?.isConnected) focusTarget.focus();
     };
@@ -146,18 +156,20 @@ export default function CostBreakdownModal({
 
         <div className="tt-cost-list">
           {pinned && (
-            <div className="tt-cost-pinned-head" aria-hidden="true">
+            <div className="tt-cost-pinned-head">
               <span>{pinned.sourceName}</span>
               <span>{pinned.costLabel}</span>
             </div>
           )}
           <div className="tt-cost-modal-scroll" ref={scrollRef} onScroll={handleScroll}>
-          {view.groups.map((group) => (
+          {view.groups.map((group, groupIndex) => (
             <section className="tt-cost-group" key={group.sourceKey}>
-              <div className="tt-cost-group-head">
-                <span>{group.sourceName}</span>
-                <span>{group.costLabel}</span>
-              </div>
+              {groupIndex > 0 && (
+                <div className="tt-cost-group-head">
+                  <span>{group.sourceName}</span>
+                  <span>{group.costLabel}</span>
+                </div>
+              )}
               {group.models.map((model) => (
                 <div className="tt-cost-model" key={model.name}>
                   <span className="tt-cost-model-name">
