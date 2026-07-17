@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, type RefObject } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { BreakdownRow, Summary } from '../types';
 import { buildCostBreakdownView } from './costBreakdown';
 import { useSettings } from '../settings/SettingsContext';
@@ -36,6 +36,27 @@ export default function CostBreakdownModal({
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  // Pinned group context while scrolling. Sticky inside the scroller flashes
+  // (WebKit repaints sticky a frame late during momentum scroll), so instead a
+  // fixed overlay OUTSIDE the scroll layer shows the current group's head once
+  // its real head has scrolled past. Overlay content is plain chrome — it
+  // cannot tear at any scroll speed.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [pinnedIdx, setPinnedIdx] = useState(-1);
+  const handleScroll = useCallback(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const top = scroller.scrollTop;
+    let current = -1;
+    const sections = scroller.querySelectorAll<HTMLElement>('.tt-cost-group');
+    sections.forEach((section, i) => {
+      // pin once the group's real head starts leaving the viewport top
+      if (section.offsetTop < top - 1) current = i;
+    });
+    setPinnedIdx(current);
+  }, []);
+  const pinned = pinnedIdx >= 0 ? view.groups[pinnedIdx] : null;
 
   useLayoutEffect(() => {
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -116,12 +137,21 @@ export default function CostBreakdownModal({
           </button>
         </header>
 
-        <div className="tt-cost-modal-scroll">
-          <div className="tt-cost-modal-columns" aria-hidden="true">
-            <span>{t('overview.col.model')}</span>
-            <span>{t('overview.col.cost')}</span>
-          </div>
+        {/* fixed chrome: always pinned right under the title block, outside the
+            scroller so it can never flash or scroll away */}
+        <div className="tt-cost-modal-columns" aria-hidden="true">
+          <span>{t('overview.col.model')}</span>
+          <span>{t('overview.col.cost')}</span>
+        </div>
 
+        <div className="tt-cost-list">
+          {pinned && (
+            <div className="tt-cost-pinned-head" aria-hidden="true">
+              <span>{pinned.sourceName}</span>
+              <span>{pinned.costLabel}</span>
+            </div>
+          )}
+          <div className="tt-cost-modal-scroll" ref={scrollRef} onScroll={handleScroll}>
           {view.groups.map((group) => (
             <section className="tt-cost-group" key={group.sourceKey}>
               <div className="tt-cost-group-head">
@@ -143,6 +173,7 @@ export default function CostBreakdownModal({
               ))}
             </section>
           ))}
+          </div>
         </div>
       </section>
     </div>

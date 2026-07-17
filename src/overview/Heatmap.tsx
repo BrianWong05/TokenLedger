@@ -1,10 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { TOOLS, THEMES, THEME_OPTIONS } from './meta';
+import { TOOLS } from './meta';
 import type { Day } from './data';
 import { fmtTok } from '../lib/format';
-import { fmtDateL, fmtWeekdayDateL, monthShortL, THEME_KEY, useOverviewT } from './localize';
+import { fmtDateL, fmtWeekdayDateL, monthShortL, useOverviewT } from './localize';
+import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 
 type Mode = '2d' | '3d';
+
+// DS violet intensity ramp (index 0 = empty cell, 1..4 ascending). WebKit can't
+// resolve var() in SVG fills, so these mirror the DS tokens per theme.
+const HEAT_DARK = ['#1c1f27', '#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa'];
+const HEAT_LIGHT = ['#EDEDF0', '#bfdbfe', '#93c5fd', '#3b82f6', '#1d4ed8'];
 
 // ---- 2D grid geometry ----
 const S = 13; // cell size
@@ -30,13 +36,15 @@ const poly = (pts: [number, number][]) =>
 export default function Heatmap({ days, compact = false }: { days: Day[]; compact?: boolean }) {
   const { t, lang } = useOverviewT();
   const [mode, setMode] = useState<Mode>('2d');
-  const [theme, setTheme] = useState('ocean');
   const [yaw, setYaw] = useState(-0.14);
   const [hover, setHover] = useState<Day | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
   const wrap = useRef<HTMLDivElement>(null);
 
-  const ramp = THEMES[theme];
+  // Theme-aware ramp: useChartColors returns the exact CHART_LIGHT/CHART_DARK
+  // constant, so reference equality tells us which theme is live.
+  const colors = useChartColors();
+  const ramp = colors === CHART_LIGHT ? HEAT_LIGHT : HEAT_DARK;
   const accent = ramp[3];
 
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
@@ -187,27 +195,13 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
             )}
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-          <div className="tt-seg">
-            <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>
-              2D
-            </button>
-            <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>
-              3D
-            </button>
-          </div>
-          {!compact && (
-            <div className="tt-select-wrap">
-              <select className="tt-select" value={theme} onChange={(e) => setTheme(e.target.value)}>
-                {THEME_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {t(THEME_KEY[o.value])}
-                  </option>
-                ))}
-              </select>
-              <i>▼</i>
-            </div>
-          )}
+        <div className="tt-seg">
+          <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>
+            2D
+          </button>
+          <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>
+            3D
+          </button>
         </div>
       </div>
 
@@ -221,7 +215,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
         {mode === '2d' ? (
           <svg viewBox={view2d} preserveAspectRatio="xMidYMid meet">
             {monthLabels.map((m, i) => (
-              <text key={i} x={m.x} y={11} fill="#6d7793" fontSize="10" fontFamily="ui-monospace,monospace">
+              <text key={i} x={m.x} y={11} fontSize="10" style={{ fill: 'var(--text-secondary)' }}>
                 {m.label}
               </text>
             ))}
@@ -234,7 +228,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
                 height={S}
                 rx={2.5}
                 fill={ramp[d.level]}
-                stroke="rgba(255,255,255,.04)"
+                stroke={colors.grid}
                 style={{ cursor: 'pointer' }}
                 onMouseEnter={enter(d)}
               />
@@ -299,7 +293,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
             <span>{t('overview.activeDays')}</span>
           </div>
           <div className="tt-stat">
-            <b style={{ color: accent }}>{stats.streak}</b>
+            <b style={{ color: ramp[4] }}>{stats.streak}</b>
             <span>{t('overview.dayStreak')}</span>
           </div>
           {!compact && (

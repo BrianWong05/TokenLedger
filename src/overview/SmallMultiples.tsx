@@ -39,7 +39,7 @@ export default function SmallMultiples({ items, rangeLabel }: { items: SmallMult
               <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: 44, display: 'block', marginTop: 6 }}>
                 <path d={area} fill={it.color} opacity={0.14} />
                 <path d={line} fill="none" stroke={it.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-                <circle cx={peak[0]} cy={peak[1]} r={3} fill={it.color} stroke="#0b0d15" strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
+                <circle cx={peak[0]} cy={peak[1]} r={3} fill={it.color} strokeWidth={1.4} vectorEffect="non-scaling-stroke" style={{ stroke: 'var(--bg-inset)' }} />
               </svg>
             </div>
           );

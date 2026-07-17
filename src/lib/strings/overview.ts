@@ -5,13 +5,15 @@
 // are interpolated in the components (English pluralises with a one/many key).
 export const overview = {
   en: {
-    // toolbar + headline
-    'overview.autoRefresh': 'Auto-refresh interval',
-    'overview.off': 'Off',
+    // header + headline
+    'overview.title': 'Overview',
     'overview.customRange': 'Custom range',
     'overview.to': 'to',
+    'overview.autoRefresh': 'Auto-refresh',
     'overview.totalTokens': 'Total tokens',
-    'overview.est': 'est.',
+    // short visible note; the full "not billed" caveat rides as a title tooltip
+    // (overview.notBilled) so the ADR-0002 honesty survives the shortening
+    'overview.costNote': 'est.',
     'overview.unpricedMarker': 'unpriced',
     'overview.cacheEst': 'cache est.',
     'overview.showCostBreakdown': 'Show Cost breakdown',
@@ -41,14 +43,10 @@ export const overview = {
     'overview.best': 'best',
     'overview.heatLess': 'Less',
     'overview.heatMore': 'More',
-    'overview.theme.blue': 'Blue',
-    'overview.theme.green': 'Green',
-    'overview.theme.violet': 'Violet',
-    'overview.theme.amber': 'Amber',
 
     // trend + small multiples
-    'overview.usageTrend': 'Usage trend',
-    'overview.stackedByModel': 'Stacked by model',
+    'overview.usageTrend': 'Usage over time',
+    'overview.stackedByTool': 'Stacked by tool',
     'overview.total': 'total',
     'overview.modelBreakdown': 'Model breakdown',
     'overview.more': 'more',
@@ -114,6 +112,10 @@ export const overview = {
     'overview.projectUsage': 'Project Usage',
     'overview.reasoningNote': 'Claude does not report reasoning separately',
 
+    // scan footer
+    'overview.scanIn': 'in',
+    'overview.scanSkipped': 'skipped',
+
     // models list
     'overview.modelsHead': 'Models',
 
@@ -135,12 +137,12 @@ export const overview = {
     'overview.totalTokensAria': 'total tokens.',
   },
   'zh-Hant': {
-    'overview.autoRefresh': '自動重新整理間隔',
-    'overview.off': '關閉',
+    'overview.title': '總覽',
     'overview.customRange': '自訂範圍',
     'overview.to': '至',
+    'overview.autoRefresh': '自動重新整理',
     'overview.totalTokens': '總 token 數',
-    'overview.est': '預估',
+    'overview.costNote': '估算',
     'overview.unpricedMarker': '未定價',
     'overview.cacheEst': '快取估算',
     'overview.showCostBreakdown': '顯示成本明細',
@@ -168,13 +170,9 @@ export const overview = {
     'overview.best': '最高',
     'overview.heatLess': '較少',
     'overview.heatMore': '較多',
-    'overview.theme.blue': '藍色',
-    'overview.theme.green': '綠色',
-    'overview.theme.violet': '紫色',
-    'overview.theme.amber': '琥珀色',
 
-    'overview.usageTrend': '使用趨勢',
-    'overview.stackedByModel': '依模型堆疊',
+    'overview.usageTrend': '使用量趨勢',
+    'overview.stackedByTool': '依工具堆疊',
     'overview.total': '總計',
     'overview.modelBreakdown': '模型明細',
     'overview.more': '更多',
@@ -235,6 +233,9 @@ export const overview = {
     'overview.dailyBreakdown': '每日明細',
     'overview.projectUsage': '專案用量',
     'overview.reasoningNote': 'Claude 不會單獨回報推理',
+
+    'overview.scanIn': '匯入',
+    'overview.scanSkipped': '略過',
 
     'overview.modelsHead': '模型',
 

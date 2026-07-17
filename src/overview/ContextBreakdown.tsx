@@ -59,7 +59,7 @@ export default function ContextBreakdown({
       title={opts.info}
     >
       <span className="name">
-        <span className="dot" style={{ background: opts.muted ? '#4a5262' : tool.color }} />
+        <span className="dot" style={{ background: opts.muted ? 'var(--border-strong)' : tool.color }} />
         {label}
         {opts.expandable && <span className="aff">{open.has(key) ? '▾' : '›'}</span>}
         {opts.info && !opts.expandable && <span className="aff">ⓘ</span>}
@@ -105,7 +105,7 @@ export default function ContextBreakdown({
       })}
       {row('reasoning', t('overview.reasoning'), v ? v.reasoning : null, { pct: true })}
 
-      <div style={{ height: 1, background: 'rgba(255,255,255,.06)', margin: '8px 4px' }} />
+      <div style={{ height: 1, background: 'var(--border-subtle)', margin: '8px 4px' }} />
 
       {row('toolcalls', t('overview.toolCalls'), ctx.toolcalls, {
         muted: true,

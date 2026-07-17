@@ -1,41 +1,25 @@
 /* Settings tab + first-run disclosure (design 1d/1h/1e). Surfaces reuse the
    shell tokens from index.css (--card/--border/--text/--muted/--accent); the
    design's extra surfaces (subtle row separators, inset control backgrounds,
-   toggle track, violet banner) are settings-scoped vars so both themes work.
-   Scoped to both the page and the dialog backdrop since the dialog mounts
-   outside the page subtree. */
+   toggle track, accent banner, first-run dialog) now point at the DS semantic
+   tokens, so the light/dark deltas come from index.css — no local [data-theme]
+   block. Still scoped to both the page and the dialog backdrop since the dialog
+   mounts outside the page subtree. */
 
 .tl-page-settings,
 .set-firstrun-backdrop {
-  --set-row-border: #1f1f26;
-  --set-inset-bg: #0f0f13;
-  --set-seg-track: #0f0f13;
-  --set-seg-on-bg: #26262e;
-  --set-seg-shadow: none;
-  --set-toggle-off: #2e2e38;
-  --set-banner-bg: rgba(124, 92, 255, 0.08);
-  --set-banner-border: rgba(124, 92, 255, 0.3);
-  --set-footer: #54545e;
-  --set-dialog-bg: #1c1c22;
-  --set-dialog-border: #3a3a44;
-  --set-dialog-inset: #131318;
-  --set-dialog-body: #c7c7d1;
-}
-
-:root[data-theme='light'] :is(.tl-page-settings, .set-firstrun-backdrop) {
-  --set-row-border: #f0f0f4;
-  --set-inset-bg: #ffffff;
-  --set-seg-track: #ececf1;
-  --set-seg-on-bg: #ffffff;
-  --set-seg-shadow: 0 1px 2px rgba(16, 16, 24, 0.12);
-  --set-toggle-off: #d8d8e0;
-  --set-banner-bg: rgba(108, 76, 242, 0.06);
-  --set-banner-border: rgba(108, 76, 242, 0.28);
-  --set-footer: #9a9aa6;
-  --set-dialog-bg: #ffffff;
-  --set-dialog-border: #e4e4ea;
-  --set-dialog-inset: #f4f4f6;
-  --set-dialog-body: #3f3f48;
+  --set-row-border: var(--border-subtle);
+  --set-inset-bg: var(--bg-inset);
+  --set-seg-track: var(--bg-inset);
+  --set-seg-on-bg: var(--bg-raised);
+  --set-toggle-off: var(--border-strong);
+  --set-banner-bg: var(--accent-subtle);
+  --set-banner-border: var(--accent-border);
+  --set-footer: var(--text-tertiary);
+  --set-dialog-bg: var(--bg-raised);
+  --set-dialog-border: var(--border-strong);
+  --set-dialog-inset: var(--bg-inset);
+  --set-dialog-body: var(--text-secondary);
 }
 
 /* ---- page layout ---- */
@@ -124,7 +108,8 @@
 .set-seg button.active {
   background: var(--set-seg-on-bg);
   color: var(--text);
-  box-shadow: var(--set-seg-shadow);
+  /* subtle lift on the active segment (design --shadow-sm); invisible on dark surfaces */
+  box-shadow: 0 1px 2px rgba(16, 16, 24, 0.12);
 }
 
 .set-seg button:focus-visible,
@@ -206,7 +191,7 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--switch-thumb);
   transition: left 0.18s;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
@@ -244,7 +229,7 @@
   background: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 8px;
-  color: #fff;
+  color: var(--text-on-accent);
   padding: 7px 13px;
   font: inherit;
   font-size: 12.5px;
@@ -317,7 +302,7 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(4, 4, 8, 0.62);
+  background: var(--overlay);
 }
 
 .set-firstrun {
@@ -335,7 +320,7 @@
   width: 48px;
   height: 48px;
   border-radius: 12px;
-  background: linear-gradient(135deg, #8d70ff, #6a48e8);
+  background: var(--accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
