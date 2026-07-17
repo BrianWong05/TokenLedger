@@ -185,7 +185,7 @@ export default function TokenTotalHeadline({
     awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
   const action = mode === 'exact' ? t('overview.showCompact') : t('overview.showExact');
   const layoutLength = modeAnimation ? modeAnimation.to.length : restingDisplay.length;
-  const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 46px)`;
+  const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 48px)`;
   const headlineStyle: HeadlineStyle = {
     display: 'block',
     width: 'fit-content',
