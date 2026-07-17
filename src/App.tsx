@@ -1,7 +1,8 @@
 // The app shell: one persistent 232px sidebar (traffic-light clearance strip,
-// wordmark, three-tab icon nav, then last-scan + full-width Rescan pinned to the
-// bottom) owned here, per the dashboard-v2 design, plus the settings + theme + i18n
-// providers. Tabs are plain React state — no router. Overview stays mounted (hidden)
+// wordmark, three-tab icon nav) owned here, per the dashboard-v2 design, plus the
+// settings + theme + i18n providers. Last-scan status + Rescan live in the Overview
+// toolbar (dashboard-v2), not the sidebar. Tabs are plain React state — no router.
+// Overview stays mounted (hidden)
 // across tab switches so its data survives; the Pricing and Settings pages mount on
 // demand. Settings state is owned by SettingsProvider so theme + language changes
 // take effect live app-wide.
@@ -94,26 +95,6 @@ function Shell({ ports }: { ports?: AppPorts }) {
   const [tab, setTab] = useState<Tab>('overview');
   const ledger = ports?.ledger ?? tauriLedger;
   const settingsPort = ports?.settings ?? tauriSettings;
-  const [scanning, setScanning] = useState(false);
-  const [lastScanAt, setLastScanAt] = useState<number | null>(null);
-
-  // ponytail: the sidebar Rescan drives a standalone Ledger scan — the distributed
-  // app's always-present scan trigger. The Overview keeps its own refresh until
-  // the Overview-retrofit wave consolidates the two scan paths.
-  const rescan = () => {
-    if (scanning) return;
-    setScanning(true);
-    ledger.scan()
-      .then((s) => setLastScanAt(s.scannedAt || Date.now()))
-      .catch(() => {})
-      .finally(() => setScanning(false));
-  };
-
-  const scanLabel = scanning
-    ? t('header.scanning')
-    : lastScanAt
-      ? `${t('header.lastScan')} · ${new Date(lastScanAt).toLocaleTimeString()}`
-      : t('header.notScanned');
 
   return (
     <div className="tl-shell">
@@ -146,24 +127,6 @@ function Shell({ ports }: { ports?: AppPorts }) {
           ))}
         </nav>
         <span className="tl-nav-spacer" data-tauri-drag-region />
-        <div className="tl-scanbox">
-          <span className="tl-lastscan">{scanLabel}</span>
-          <button
-            type="button"
-            className="tl-rescan"
-            onClick={rescan}
-            disabled={scanning}
-            aria-busy={scanning}
-          >
-            <svg className="tl-rescan-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-              <path d="M21 3v5h-5" />
-              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-              <path d="M8 16H3v5" />
-            </svg>
-            {t('header.rescan')}
-          </button>
-        </div>
       </aside>
 
       <main className="tl-main">

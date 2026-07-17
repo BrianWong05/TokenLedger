@@ -9,7 +9,6 @@ export const overview = {
     'overview.title': 'Overview',
     'overview.customRange': 'Custom range',
     'overview.to': 'to',
-    'overview.autoRefresh': 'Auto-refresh',
     'overview.totalTokens': 'Total tokens',
     // short visible note; the full "not billed" caveat rides as a title tooltip
     // (overview.notBilled) so the ADR-0002 honesty survives the shortening
@@ -140,7 +139,6 @@ export const overview = {
     'overview.title': '總覽',
     'overview.customRange': '自訂範圍',
     'overview.to': '至',
-    'overview.autoRefresh': '自動重新整理',
     'overview.totalTokens': '總 token 數',
     'overview.costNote': '估算',
     'overview.unpricedMarker': '未定價',

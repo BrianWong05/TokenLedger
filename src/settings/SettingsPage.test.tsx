@@ -9,6 +9,7 @@ import { SettingsProvider, useSettings } from './SettingsContext';
 import { makeFakeSettings, type FakeSettings } from './settings.fake';
 import { setLaunchAtLogin } from './startup';
 import { I18nProvider } from '../lib/i18n';
+import { STORAGE_KEY } from '../overview/useAutoRefresh';
 import type { UpdateStatus } from './settings';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn().mockResolvedValue('1.4.2') }));
@@ -97,7 +98,10 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const seg = (c: HTMLElement) => Array.from(c.querySelectorAll('.set-seg button')) as HTMLButtonElement[];
+const seg = (c: HTMLElement) =>
+  Array.from(c.querySelectorAll('.set-seg[aria-label="Theme"] button')) as HTMLButtonElement[];
+const refreshSeg = (c: HTMLElement) =>
+  Array.from(c.querySelectorAll('.set-seg-mono button')) as HTMLButtonElement[];
 const q = <T extends Element>(c: ParentNode, s: string) => c.querySelector(s) as T | null;
 
 describe('SettingsPage', () => {
@@ -120,6 +124,21 @@ describe('SettingsPage', () => {
     expect(text).toContain('Version 1.4.2');
     expect(text).toContain('Check for updates');
     expect(text).toContain('Nothing leaves this Mac.');
+  });
+
+  it('renders the Scanning group and persists the auto-refresh interval', async () => {
+    localStorage.removeItem(STORAGE_KEY);
+    const port = makeFakeSettings({ firstRunDone: true });
+    const c = await mount(port);
+
+    // Four mono segments; 30s active by default (parseRefreshSec fallback).
+    expect(refreshSeg(c).map((b) => b.textContent)).toEqual(['10s', '30s', '60s', '5m']);
+    expect(refreshSeg(c).find((b) => b.classList.contains('active'))?.textContent).toBe('30s');
+
+    await click(refreshSeg(c).find((b) => b.textContent === '60s')!);
+
+    expect(refreshSeg(c).find((b) => b.classList.contains('active'))?.textContent).toBe('60s');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('60');
   });
 
   it('theme segment click persists and applies data-theme immediately', async () => {

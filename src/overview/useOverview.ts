@@ -28,7 +28,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   useEffect(() => store.start(), [store]);
 
   const refreshImpl = useCallback(() => store.refresh(), [store]);
-  const { refreshSec, setRefreshSec, refresh, refreshing } = useAutoRefresh(refreshImpl);
+  const { refresh, refreshing } = useAutoRefresh(refreshImpl);
 
   // Initial scan + load once on mount (same path as manual/auto refresh).
   useEffect(() => {
@@ -64,8 +64,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     fetchError: snap.fetchError,
     refresh,
     refreshing,
-    refreshSec,
-    setRefreshSec,
+    scanAt: snap.scanAt,
     range: snap.range,
     setRange,
     from: snap.from,

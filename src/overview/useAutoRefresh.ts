@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
-export type RefreshSec = 0 | 30 | 60 | 300;
+export type RefreshSec = 10 | 30 | 60 | 300;
 
 export const REFRESH_PRESETS: ReadonlyArray<{ label: string; sec: RefreshSec }> = [
-  { label: 'Off', sec: 0 },
+  { label: '10s', sec: 10 },
   { label: '30s', sec: 30 },
-  { label: '1m', sec: 60 },
+  { label: '60s', sec: 60 },
   { label: '5m', sec: 300 },
 ];
 
 export const STORAGE_KEY = 'tokenledger.refreshSec';
 
-const ALLOWED = new Set<number>([0, 30, 60, 300]);
+const ALLOWED = new Set<number>([10, 30, 60, 300]);
 
 export function parseRefreshSec(raw: string | null): RefreshSec {
-  if (raw == null || raw === '') return 0;
+  if (raw == null || raw === '') return 30;
   const n = Number(raw);
-  return ALLOWED.has(n) ? (n as RefreshSec) : 0;
+  return ALLOWED.has(n) ? (n as RefreshSec) : 30;
 }
 
 export function loadRefreshSec(
@@ -40,9 +40,27 @@ export function scheduleAutoRefresh(
     clearInterval: typeof clearInterval;
   } = globalThis,
 ): () => void {
-  if (sec === 0) return () => {};
   const id = timers.setInterval(tick, sec * 1000);
   return () => timers.clearInterval(id);
+}
+
+// Shared cross-component store (localStorage is the store) so the Settings
+// control and the Overview's schedule stay in sync while the Overview stays
+// mounted across tab switches.
+const listeners = new Set<() => void>();
+function subscribeRefreshSec(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+export function setRefreshSec(sec: RefreshSec): void {
+  saveRefreshSec(sec);
+  listeners.forEach((l) => l());
+}
+export function useRefreshSec(): [RefreshSec, (sec: RefreshSec) => void] {
+  const sec = useSyncExternalStore(subscribeRefreshSec, () => loadRefreshSec());
+  return [sec, setRefreshSec];
 }
 
 export function createRefreshGate(onRefresh: () => Promise<void>): {
@@ -65,21 +83,14 @@ export function createRefreshGate(onRefresh: () => Promise<void>): {
 }
 
 export function useAutoRefresh(onRefresh: () => Promise<void>): {
-  refreshSec: RefreshSec;
-  setRefreshSec: (sec: RefreshSec) => void;
   refresh: () => Promise<void>;
   refreshing: boolean;
 } {
-  const [refreshSec, setRefreshSecState] = useState<RefreshSec>(() => loadRefreshSec());
+  const [refreshSec] = useRefreshSec();
   const [refreshing, setRefreshing] = useState(false);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
   const busyRef = useRef(false);
-
-  const setRefreshSec = useCallback((sec: RefreshSec) => {
-    setRefreshSecState(sec);
-    saveRefreshSec(sec);
-  }, []);
 
   const refresh = useCallback(async () => {
     if (busyRef.current) return;
@@ -99,5 +110,5 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
     });
   }, [refreshSec, refresh]);
 
-  return { refreshSec, setRefreshSec, refresh, refreshing };
+  return { refresh, refreshing };
 }

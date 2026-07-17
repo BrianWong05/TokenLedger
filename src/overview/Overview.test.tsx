@@ -9,9 +9,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Overview from './Overview';
 import { RANGES_8B } from './meta';
-import { REFRESH_PRESETS, STORAGE_KEY } from './useAutoRefresh';
 import { systemClock } from './overviewStore';
-import { makeFakeLedger } from './ledger.fake';
+import { makeFakeLedger, type FakeLedger } from './ledger.fake';
 import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
@@ -60,7 +59,9 @@ async function settle(times = 4) {
   }
 }
 
-async function mount(seed: Parameters<typeof makeFakeLedger>[0]) {
+async function mount(
+  seed: Parameters<typeof makeFakeLedger>[0],
+): Promise<{ container: HTMLElement; ledger: FakeLedger }> {
   const ledger = makeFakeLedger(seed);
   const container = document.createElement('div');
   document.body.append(container);
@@ -74,7 +75,7 @@ async function mount(seed: Parameters<typeof makeFakeLedger>[0]) {
     );
   });
   await settle();
-  return container;
+  return { container, ledger };
 }
 
 afterEach(() => {
@@ -85,7 +86,7 @@ afterEach(() => {
 describe('Overview presentation', () => {
   it('sizes the hero proportion bar by each source token share', async () => {
     // claude 300 + codex 100 = 400 → 75% / 25%; the other four sources are 0.
-    const c = await mount({
+    const { container: c } = await mount({
       dayPoints: [
         pt({ source: 'claude', totalTokens: 300 }),
         pt({ source: 'codex', totalTokens: 100 }),
@@ -104,7 +105,7 @@ describe('Overview presentation', () => {
   });
 
   it('drives the rest of the Overview when a source card is selected', async () => {
-    const c = await mount({
+    const { container: c } = await mount({
       dayPoints: [
         pt({ source: 'claude', totalTokens: 300 }),
         pt({ source: 'codex', totalTokens: 100 }),
@@ -134,7 +135,7 @@ describe('Overview presentation', () => {
         { source: 'codex', eventsInserted: 88, linesSkipped: 2, error: null },
       ],
     };
-    const c = await mount({
+    const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,
       scan,
@@ -145,8 +146,8 @@ describe('Overview presentation', () => {
     expect(foot).toContain('codex: 88 in / 2 skipped');
   });
 
-  it('renders the toolbar: range control, auto-refresh select, and avatar', async () => {
-    const c = await mount({
+  it('renders the toolbar: range control, last-scan status, and Rescan (no select/avatar)', async () => {
+    const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,
     });
@@ -154,33 +155,30 @@ describe('Overview presentation', () => {
     const toolbar = c.querySelector('.tt-toolbar')!;
     // range segmented control (one button per preset)
     expect(toolbar.querySelectorAll('.tt-seg button').length).toBe(RANGES_8B.length);
-    // auto-refresh select carrying the REFRESH_PRESETS options
-    const select = toolbar.querySelector('select')!;
-    expect(Array.from(select.options, (o) => o.textContent)).toEqual(
-      REFRESH_PRESETS.map((p) => p.label),
-    );
-    // BW avatar, and the old page title is gone
-    expect(c.querySelector('.tt-avatar')?.textContent).toBe('BW');
+    // last-scan status + Rescan replace the old auto-refresh select + avatar
+    expect(toolbar.querySelector('.tt-lastscan')).not.toBeNull();
+    const rescan = toolbar.querySelector('.tt-rescan');
+    expect(rescan).not.toBeNull();
+    expect(rescan!.textContent).toContain('Rescan');
+    expect(toolbar.querySelector('select')).toBeNull();
+    expect(c.querySelector('.tt-avatar')).toBeNull();
     expect(c.querySelector('.tt-h1')).toBeNull();
   });
 
-  it('persists the auto-refresh interval when the select changes', async () => {
-    localStorage.removeItem(STORAGE_KEY);
-    const c = await mount({
+  it('re-runs the scan when the toolbar Rescan is clicked', async () => {
+    const { container: c, ledger } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,
     });
 
-    const select = c.querySelector<HTMLSelectElement>('.tt-toolbar select')!;
-    expect(select.value).toBe('0'); // Off by default
+    // The initial mount load already ran one scan through the same refresh path.
+    expect(ledger.calls.scan.length).toBe(1);
 
-    await act(async () => {
-      select.value = '30';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
+    const rescan = c.querySelector<HTMLButtonElement>('.tt-rescan')!;
+    await act(async () => rescan.click());
+    await settle();
 
-    // onChange → setRefreshSec(30) drives the controlled value and persists it
-    expect(select.value).toBe('30');
-    expect(localStorage.getItem(STORAGE_KEY)).toBe('30');
+    expect(ledger.calls.scan.length).toBe(2);
+    expect(c.querySelector('.tt-lastscan')?.textContent).toMatch(/^last scan/);
   });
 });

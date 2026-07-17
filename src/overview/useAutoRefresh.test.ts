@@ -19,21 +19,22 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe('parseRefreshSec / load / save', () => {
-  it('accepts only 0, 30, 60, 300', () => {
-    expect(parseRefreshSec('0')).toBe(0);
+  it('accepts only 10, 30, 60, 300; everything else → 30', () => {
+    expect(parseRefreshSec('10')).toBe(10);
     expect(parseRefreshSec('30')).toBe(30);
     expect(parseRefreshSec('60')).toBe(60);
     expect(parseRefreshSec('300')).toBe(300);
-    expect(parseRefreshSec(null)).toBe(0);
-    expect(parseRefreshSec('')).toBe(0);
-    expect(parseRefreshSec('15')).toBe(0);
-    expect(parseRefreshSec('nope')).toBe(0);
+    expect(parseRefreshSec(null)).toBe(30);
+    expect(parseRefreshSec('')).toBe(30);
+    expect(parseRefreshSec('0')).toBe(30);
+    expect(parseRefreshSec('15')).toBe(30);
+    expect(parseRefreshSec('nope')).toBe(30);
   });
 
-  it('loadRefreshSec reads storage; invalid → 0', () => {
-    expect(loadRefreshSec(memoryStorage())).toBe(0);
+  it('loadRefreshSec reads storage; invalid → 30', () => {
+    expect(loadRefreshSec(memoryStorage())).toBe(30);
     expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '60' }))).toBe(60);
-    expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '99' }))).toBe(0);
+    expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '99' }))).toBe(30);
   });
 
   it('saveRefreshSec writes the string value', () => {
@@ -51,11 +52,15 @@ describe('scheduleAutoRefresh', () => {
     vi.useRealTimers();
   });
 
-  it('Off → never ticks', () => {
+  it('10s → ticks once per interval', () => {
     const tick = vi.fn();
-    const stop = scheduleAutoRefresh(0, tick);
-    vi.advanceTimersByTime(60_000);
+    const stop = scheduleAutoRefresh(10, tick);
+    vi.advanceTimersByTime(9_999);
     expect(tick).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(tick).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(10_000);
+    expect(tick).toHaveBeenCalledTimes(2);
     stop();
   });
 

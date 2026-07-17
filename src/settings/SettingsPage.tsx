@@ -7,6 +7,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
 import { setLaunchAtLogin } from './startup';
+import { REFRESH_PRESETS, useRefreshSec } from '../overview/useAutoRefresh';
 import type { SettingsPort, UpdateStatus } from './settings';
 import type { Settings } from '../types';
 import './settings.css';
@@ -206,6 +207,7 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
 export default function SettingsPage({ port }: { port: SettingsPort }) {
   const { t } = useT();
   const { settings, update } = useSettings();
+  const [refreshSec, setRefreshSec] = useRefreshSec();
 
   return (
     <div className="tl-page tl-page-settings">
@@ -287,6 +289,29 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
                 setLaunchAtLogin(next);
               }}
             />
+          </div>
+        </section>
+
+        <section className="set-group">
+          <div className="set-group-label">{t('settings.scanning')}</div>
+          <div className="set-row">
+            <div className="set-row-text">
+              <div className="set-row-title">{t('settings.refresh')}</div>
+              <div className="set-row-caption">{t('settings.refresh.caption')}</div>
+            </div>
+            <div className="set-seg set-seg-mono" role="group" aria-label={t('settings.refresh')}>
+              {REFRESH_PRESETS.map((p) => (
+                <button
+                  key={p.sec}
+                  type="button"
+                  className={refreshSec === p.sec ? 'active' : ''}
+                  aria-pressed={refreshSec === p.sec}
+                  onClick={() => setRefreshSec(p.sec)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
         </section>
 

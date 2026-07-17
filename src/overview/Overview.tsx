@@ -9,10 +9,10 @@ import TokenTotalHeadline from './TokenTotalHeadline';
 import AggTrend from './AggTrend';
 import SmallMultiples from './SmallMultiples';
 import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
-import { REFRESH_PRESETS, type RefreshSec } from './useAutoRefresh';
 import { TOOL_ICONS } from './icons';
 import { fmtPct } from '../lib/format';
 import { formatDisplayCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
+import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
 import type { LedgerPort } from './ledger';
@@ -27,11 +27,14 @@ import type { ModelPricing } from '../types';
 // heatmap/trends/tables via client-side slicing; summary and breakdowns re-fetch
 // per range; an hourly series serves the Day view. All data derivation lives in
 // the store/selectors — this shell only renders the model the hook hands back.
-// The window chrome (sidebar wordmark, tab nav, Rescan) is owned by the app
-// shell; this tab renders only the design's <main> content, flush on --bg-app.
+// The window chrome (sidebar wordmark, tab nav) is owned by the app shell; the
+// last-scan status + Rescan live in this tab's toolbar (dashboard-v2). This tab
+// renders the design's <main> content, flush on --bg-app.
 export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort } } = {}) {
   const { settings } = useSettings();
   const { t, lang } = useOverviewT();
+  // header.* strings (Rescan, last-scan status) live in the shared shell dictionary.
+  const { t: tShell } = useT();
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
 
   // Model-selection entry point into the shared Override editor: fetch a fresh
@@ -54,7 +57,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
   const {
     loading, scanError, fetchError, scanSources,
-    refreshSec, setRefreshSec,
+    refresh, refreshing, scanAt,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
     sel, setSel,
@@ -62,6 +65,12 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
     summary, modelRows, canOpenCostBreakdown, headline,
     panels,
   } = useOverview(ports);
+
+  const scanLabel = refreshing
+    ? tShell('header.scanning')
+    : scanAt
+      ? `${tShell('header.lastScan')} · ${new Date(scanAt).toLocaleTimeString()}`
+      : tShell('header.notScanned');
 
   // Cost routes through the Display Currency; the ≥ (Partial Cost) prefix and the
   // unpriced / cache-estimated markers stay verbatim. "est. at list prices — not
@@ -91,21 +100,22 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
             </button>
           ))}
         </div>
-        <span className="tt-refresh">
-          <select
-            aria-label={t('overview.autoRefresh')}
-            value={refreshSec}
-            onChange={(e) => setRefreshSec(Number(e.target.value) as RefreshSec)}
-          >
-            {REFRESH_PRESETS.map((p) => (
-              <option key={p.sec} value={p.sec}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          <span className="chev" aria-hidden="true">▾</span>
-        </span>
-        <span className="tt-avatar" aria-hidden="true">BW</span>
+        <span className="tt-lastscan">{scanLabel}</span>
+        <button
+          type="button"
+          className="tt-rescan"
+          onClick={() => void refresh()}
+          disabled={refreshing}
+          aria-busy={refreshing}
+        >
+          <svg className="tt-rescan-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+            <path d="M8 16H3v5" />
+          </svg>
+          {tShell('header.rescan')}
+        </button>
       </div>
 
       {range === 'custom' && (

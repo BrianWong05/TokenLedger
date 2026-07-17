@@ -22,6 +22,10 @@ export const settings = {
     'settings.launch': 'Launch at login',
     'settings.launch.caption': 'Keeps recording before tools delete their logs (~30 days)',
 
+    'settings.scanning': 'Scanning',
+    'settings.refresh': 'Auto-refresh interval',
+    'settings.refresh.caption': 'How often usage data is re-read from disk',
+
     'settings.updates': 'Updates',
     'settings.autoCheck': 'Check for updates automatically',
     'settings.autoCheck.caption': 'Once a day, in the background',
@@ -64,6 +68,10 @@ export const settings = {
     'settings.startup': '啟動',
     'settings.launch': '登入時啟動',
     'settings.launch.caption': '在工具刪除記錄檔（約 30 天）之前持續記錄',
+
+    'settings.scanning': '掃描',
+    'settings.refresh': '自動重新整理間隔',
+    'settings.refresh.caption': '多久從磁碟重新讀取一次使用資料',
 
     'settings.updates': '更新',
     'settings.autoCheck': '自動檢查更新',

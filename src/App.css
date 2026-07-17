@@ -99,60 +99,6 @@
   flex: 1;
 }
 
-/* ---- bottom scan section ---- */
-
-.tl-scanbox {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 10px 0;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.tl-lastscan {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.tl-rescan {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 13px;
-  background: transparent;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.tl-rescan:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-.tl-rescan:disabled {
-  cursor: default;
-  opacity: 0.7;
-}
-.tl-rescan:focus-visible {
-  outline: none;
-  box-shadow: var(--focus-shadow);
-}
-.tl-rescan-icon {
-  display: block;
-}
-.tl-rescan[aria-busy='true'] .tl-rescan-icon {
-  animation: tl-spin 0.8s linear infinite;
-}
-@keyframes tl-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* ---- main content area (design's <main>, line 68) ---- */
 
 .tl-main {

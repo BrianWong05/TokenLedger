@@ -80,6 +80,7 @@ export interface OverviewSnapshot {
   ctxExecRows: CtxExecRow[];
   scanSources: SourceStatus[]; // per-source scan stats (eventsInserted / linesSkipped) for the footer
   scanError: string | null;
+  scanAt: number | null; // epoch ms of the last successful scan; drives the toolbar's last-scan label
   fetchError: string | null;
   range: Range8b;
   customFrom: string;
@@ -112,7 +113,7 @@ type State = Omit<
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'modelRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxExecRows',
-  'scanSources', 'scanError', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
+  'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading',
 ];
 
@@ -124,7 +125,7 @@ class Store implements OverviewStore {
   private state: State = {
     allPoints: null, hourPoints: [], summary: null, modelRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxExecRows: [],
-    scanSources: [], scanError: null, fetchError: null,
+    scanSources: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: 'claude',
   };
   private snapshot: OverviewSnapshot;
@@ -161,6 +162,7 @@ class Store implements OverviewStore {
       .filter((s) => s.error)
       .map((s) => `${s.source}: ${s.error}`);
     this.state.scanError = errs.length ? errs.join(' · ') : null;
+    this.state.scanAt = status.scannedAt || this.clock.now().getTime();
     this.publish();
 
     try {
