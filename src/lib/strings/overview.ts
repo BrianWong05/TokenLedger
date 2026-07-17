@@ -43,6 +43,17 @@ export const overview = {
     'overview.heatLess': 'Less',
     'overview.heatMore': 'More',
 
+    // activity enlarge (full-screen 3D landscape)
+    'overview.enlarge': 'Enlarge',
+    'overview.close': 'Close',
+    'overview.insight3d': '3D Insight',
+    'overview.token3dPerspective': 'Token 3D perspective',
+    'overview.resetView': 'Reset view',
+    'overview.estCost': 'Est. cost',
+    'overview.longestStreak': 'Longest streak',
+    'overview.peakDay': 'Peak day',
+    'overview.daysUnit': 'days',
+
     // trend + small multiples
     'overview.usageTrend': 'Usage over time',
     'overview.stackedByTool': 'Stacked by tool',
@@ -168,6 +179,17 @@ export const overview = {
     'overview.best': '最高',
     'overview.heatLess': '較少',
     'overview.heatMore': '較多',
+
+    // activity enlarge (full-screen 3D landscape)
+    'overview.enlarge': '放大',
+    'overview.close': '關閉',
+    'overview.insight3d': '3D 洞察',
+    'overview.token3dPerspective': 'Token 3D 透視',
+    'overview.resetView': '重設視角',
+    'overview.estCost': '預估成本',
+    'overview.longestStreak': '最長連續',
+    'overview.peakDay': '最高峰日',
+    'overview.daysUnit': '天',
 
     'overview.usageTrend': '使用量趨勢',
     'overview.stackedByTool': '依工具堆疊',

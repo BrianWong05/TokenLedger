@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
 import {
   seriesToDays,
+  heatStats,
+  heatCost,
   windowOf,
   pointsIn,
   bucketsFromPoints,
@@ -84,6 +86,34 @@ describe('seriesToDays', () => {
     const active = days.filter((d) => d.tokens > 0);
     expect(active).toHaveLength(3);
     expect(active.every((d) => d.level === 4)).toBe(true);
+  });
+});
+
+describe('heatStats', () => {
+  it('sums tokens, counts active days, longest streak, and picks the peak', () => {
+    const pts = [
+      pt({ bucket: '2026-07-06', totalTokens: 100 }),
+      pt({ bucket: '2026-07-07', totalTokens: 900 }), // peak
+      pt({ bucket: '2026-07-08', totalTokens: 200 }),
+      // gap on 07-09
+      pt({ bucket: '2026-07-10', totalTokens: 300 }),
+    ];
+    const s = heatStats(seriesToDays(pts, TODAY));
+    expect(s.totalTokens).toBe(1500);
+    expect(s.activeDays).toBe(4);
+    expect(s.streak).toBe(3); // 07-06..07-08, broken by the 07-09 gap
+    expect(s.bestDay.iso).toBe('2026-07-07');
+  });
+});
+
+describe('heatCost', () => {
+  it('sums cost within the trailing 365 days and excludes older points', () => {
+    const pts = [
+      pt({ bucket: '2026-07-09', cost: 1.5 }),
+      pt({ bucket: '2026-07-10', cost: 2.5 }),
+      pt({ bucket: '2020-01-01', cost: 99 }), // before the window
+    ];
+    expect(heatCost(pts, TODAY)).toBeCloseTo(4);
   });
 });
 

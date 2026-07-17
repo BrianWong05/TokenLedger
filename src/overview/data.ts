@@ -130,6 +130,40 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
   return days;
 }
 
+// Cost over the same trailing-365-day window seriesToDays covers, so the
+// enlarge's Est. cost lines up with its annual token/day stats (unpriced models
+// contribute 0 — pair with the Summary's hasUnpriced for the ≥ marker).
+export function heatCost(points: SeriesPoint[], today: Date = new Date()): number {
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const start = new Date(end);
+  start.setDate(start.getDate() - 364);
+  const fromIso = isoOf(start);
+  const toIso = isoOf(end);
+  let cost = 0;
+  for (const p of points) if (p.bucket >= fromIso && p.bucket <= toIso) cost += p.cost;
+  return cost;
+}
+
+export interface HeatStats {
+  totalTokens: number;
+  activeDays: number;
+  streak: number; // longest run of consecutive active days
+  bestDay: Day; // busiest day (peak)
+}
+
+// Aggregate read-outs over the heatmap's 365 days — shared by the Activity card
+// and its full-screen enlarge so both report identical figures.
+export function heatStats(days: Day[]): HeatStats {
+  const totalTokens = days.reduce((a, d) => a + d.tokens, 0);
+  const activeDays = days.filter((d) => d.tokens > 0).length;
+  let streak = 0, run = 0;
+  for (const d of days) {
+    if (d.tokens > 0) { run += 1; streak = Math.max(streak, run); } else run = 0;
+  }
+  const bestDay = days.reduce((a, d) => (d.tokens > a.tokens ? d : a), days[0]);
+  return { totalTokens, activeDays, streak, bestDay };
+}
+
 // ---- range windows over series points ----
 
 export interface Window {

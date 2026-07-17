@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useRef, useState } from 'react';
 import './overview.css';
 import Heatmap from './Heatmap';
+import HeatmapModal from './HeatmapModal';
 import ContextBreakdown from './ContextBreakdown';
 import ModelsList from './ModelsList';
 import BreakdownTable from './BreakdownTable';
@@ -36,6 +37,11 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   // header.* strings (Rescan, last-scan status) live in the shared shell dictionary.
   const { t: tShell } = useT();
   const [costBreakdownOpen, setCostBreakdownOpen] = useState(false);
+  const [heatModalOpen, setHeatModalOpen] = useState(false);
+  const heatEnlargeRef = useRef<HTMLElement | null>(null);
+  const setHeatEnlargeTarget = useCallback((el: HTMLButtonElement | null) => {
+    heatEnlargeRef.current = el;
+  }, []);
 
   // Model-selection entry point into the shared Override editor: fetch a fresh
   // ModelPricing list on open (the Overview may show a Model absent from a stale
@@ -203,7 +209,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
       <div className="tt-b8-grid">
         <div className="tt-b8-col">
-          <Heatmap days={panels.heatmap.days} compact />
+          <Heatmap days={panels.heatmap.days} compact onEnlarge={() => setHeatModalOpen(true)} enlargeRef={setHeatEnlargeTarget} />
           <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} />
           {panels.sparks.length > 0 && <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />}
         </div>
@@ -253,6 +259,15 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           rows={modelRows}
           returnFocusRef={costBreakdownFocusTargetRef}
           onClose={() => setCostBreakdownOpen(false)}
+        />
+      )}
+      {heatModalOpen && (
+        <HeatmapModal
+          days={panels.heatmap.days}
+          cost={panels.heatmap.cost}
+          hasUnpriced={panels.heatmap.hasUnpriced}
+          returnFocusRef={heatEnlargeRef}
+          onClose={() => setHeatModalOpen(false)}
         />
       )}
       {pricingEditor && (

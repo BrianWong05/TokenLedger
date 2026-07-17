@@ -11,6 +11,7 @@ import {
   type ClockPort,
 } from './overviewStore';
 import type { LedgerPort } from './ledger';
+import { heatCost as heatCostOf } from './data';
 import { useAutoRefresh } from './useAutoRefresh';
 import type { Range8b, ToolKey } from './meta';
 import { useT } from '../lib/i18n';
@@ -40,6 +41,8 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   // allPoints's reference stable across range/selection, so this never
   // recomputes on those.
   const days = useMemo(() => selectDays(snap), [snap.allPoints]);
+  // Annual cost over the same 365-day window as the heatmap (for the enlarge).
+  const heatCost = useMemo(() => heatCostOf(snap.allPoints ?? []), [snap.allPoints]);
   const view = useMemo(() => selectView(snap, undefined, lang), [snap, lang]);
   const visibleTools = useMemo(
     () =>
@@ -86,7 +89,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     canOpenCostBreakdown: view.canOpenCostBreakdown,
     headline: view.headline,
     panels: {
-      heatmap: { days },
+      heatmap: { days, cost: heatCost, hasUnpriced: snap.summary?.hasUnpriced ?? false },
       trend: { data: view.trend, per: view.per, modelTool: view.modelTool },
       sparks: view.sparks,
       context: {
