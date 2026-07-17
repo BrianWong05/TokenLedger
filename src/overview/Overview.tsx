@@ -81,7 +81,9 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
   return (
     <div className={'tt' + (loading ? ' tt-loading' : '')}>
-      <div className="tt-toolbar">
+      {/* the toolbar's empty stretch is a window-drag handle (frameless window);
+          mousedown on the child controls does not start a drag */}
+      <div className="tt-toolbar" data-tauri-drag-region>
         <div className="tt-seg">
           {RANGES_8B.map((r) => (
             <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>

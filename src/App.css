@@ -27,9 +27,9 @@
 }
 
 /* clearance strip for the native macOS traffic lights (they overlay the top-left);
-   this height + the wordmark's top margin push the wordmark clear of them */
+   full titlebar height so it doubles as a real window-drag target */
 .tl-traffic {
-  height: 12px;
+  height: 30px;
   flex: none;
 }
 
@@ -38,7 +38,7 @@
   align-items: center;
   gap: 9px;
   padding: 0 10px;
-  margin: 22px 0 18px;
+  margin: 4px 0 18px;
   font-size: 14.5px;
   font-weight: 600;
   letter-spacing: -0.01em;

@@ -117,7 +117,10 @@ function Shell({ ports }: { ports?: AppPorts }) {
 
   return (
     <div className="tl-shell">
-      <aside className="tl-sidebar">
+      {/* the sidebar's own background and its empty stretches double as window
+          drag handles (frameless window; drag-region only fires on the exact
+          element, so each empty surface carries the attribute) */}
+      <aside className="tl-sidebar" data-tauri-drag-region>
         {/* clearance for the native macOS traffic lights (titleBarStyle Overlay);
             also the window's drag handle now that the title bar is hidden */}
         <span className="tl-traffic" aria-hidden="true" data-tauri-drag-region />
@@ -142,7 +145,7 @@ function Shell({ ports }: { ports?: AppPorts }) {
             </button>
           ))}
         </nav>
-        <span className="tl-nav-spacer" />
+        <span className="tl-nav-spacer" data-tauri-drag-region />
         <div className="tl-scanbox">
           <span className="tl-lastscan">{scanLabel}</span>
           <button
