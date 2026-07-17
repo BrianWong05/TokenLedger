@@ -1097,12 +1097,41 @@
   outline: none;
   box-shadow: var(--focus-shadow);
 }
+/* wrapper so the pinned-head overlay can sit OVER the scroller as fixed
+   chrome (outside the scroll layer — cannot tear during momentum scroll) */
+.tt-cost-list {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .tt-cost-modal-scroll {
   min-height: 0;
   overflow-y: auto;
   padding: 0 26px 26px;
 }
+.tt-cost-pinned-head {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  padding: 4px 26px 6px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+  text-transform: uppercase;
+}
+.tt-cost-pinned-head span:last-child {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
+}
 .tt-cost-modal-columns,
+.tt-cost-pinned-head,
 .tt-cost-group-head,
 .tt-cost-model {
   display: grid;
