@@ -1131,14 +1131,11 @@
 .tt-cost-group:first-child {
   margin-top: 0;
 }
+/* plain row — nothing inside the scroller is sticky (WebKit lags sticky
+   repaints during momentum scroll, flashing slivers); the fixed MODEL/COST
+   chrome above provides the pinned context, and rows clip flush at the edge */
 .tt-cost-group-head {
-  /* pins at the top while its group scrolls (grouped-list sticky) — never a
-     half-clipped header at any scroll offset */
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 6px 0;
-  background: var(--bg-surface);
+  padding: 4px 0;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 700;
