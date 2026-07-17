@@ -1109,6 +1109,8 @@
   min-height: 0;
   overflow-y: auto;
   padding: 0 26px 26px;
+  /* own compositor layer: async scrolling repaints stay inside it */
+  transform: translateZ(0);
 }
 .tt-cost-pinned-head {
   position: absolute;
@@ -1124,6 +1126,10 @@
   font-weight: 700;
   letter-spacing: 0.015em;
   text-transform: uppercase;
+  /* own compositor layer ABOVE the scrolling layer — without this WebKit
+     composites the overlay a beat late and row fragments bleed at its edges */
+  transform: translateZ(0);
+  will-change: transform;
 }
 .tt-cost-pinned-head span:last-child {
   text-align: right;
