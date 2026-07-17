@@ -1109,19 +1109,16 @@
   align-items: baseline;
   gap: 20px;
 }
+/* decorative column labels (aria-hidden); scrolls away — the pinned group
+   heads are the one sticky layer, so scroll/bounce never stacks two */
 .tt-cost-modal-columns {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   padding: 9px 0 8px;
   border-bottom: 1px solid var(--border-default);
-  background: var(--bg-surface);
   color: var(--text-secondary);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  line-height: 12px; /* fixed: group heads pin right below (30px = 9+12+8+1) */
 }
 .tt-cost-modal-columns span:last-child {
   text-align: right;
@@ -1130,12 +1127,12 @@
   margin-top: 19px;
 }
 .tt-cost-group-head {
-  /* pins just under the columns bar while its group scrolls (grouped-list
-     sticky) — never a half-clipped header at any scroll offset */
+  /* pins at the top while its group scrolls (grouped-list sticky) — never a
+     half-clipped header at any scroll offset */
   position: sticky;
-  top: 30px;
+  top: 0;
   z-index: 1;
-  padding: 4px 0;
+  padding: 6px 0;
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: 13px;
