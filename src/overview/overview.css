@@ -1097,27 +1097,23 @@
   outline: none;
   box-shadow: var(--focus-shadow);
 }
-/* wrapper so the pinned-head overlay can sit OVER the scroller as fixed
-   chrome (outside the scroll layer — cannot tear during momentum scroll) */
+/* Keep pinned chrome and scrolling content as separate flex rows. Nothing
+   overlaps the async scroll layer, so WebKit has no boundary to composite. */
 .tt-cost-list {
   position: relative;
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 .tt-cost-modal-scroll {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
   padding: 0 26px 26px;
-  /* own compositor layer: async scrolling repaints stay inside it */
-  transform: translateZ(0);
 }
 .tt-cost-pinned-head {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1;
+  flex: none;
   padding: 4px 26px 6px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border-subtle);
@@ -1126,10 +1122,6 @@
   font-weight: 700;
   letter-spacing: 0.015em;
   text-transform: uppercase;
-  /* own compositor layer ABOVE the scrolling layer — without this WebKit
-     composites the overlay a beat late and row fragments bleed at its edges */
-  transform: translateZ(0);
-  will-change: transform;
 }
 .tt-cost-pinned-head span:last-child {
   text-align: right;
