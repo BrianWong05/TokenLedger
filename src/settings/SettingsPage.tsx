@@ -7,7 +7,12 @@ import { getVersion } from '@tauri-apps/api/app';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
 import { setLaunchAtLogin } from './startup';
-import { REFRESH_PRESETS, useRefreshSec } from '../overview/useAutoRefresh';
+import {
+  MAX_REFRESH_SEC,
+  MIN_REFRESH_SEC,
+  REFRESH_PRESETS,
+  useRefreshSec,
+} from '../overview/useAutoRefresh';
 import type { SettingsPort, UpdateStatus } from './settings';
 import type { Settings } from '../types';
 import './settings.css';
@@ -79,6 +84,39 @@ function RateRow({ code }: { code: string }) {
           onChange={(e) => onChange(e.target.value)}
         />
         <span className="set-rate-side">{code}</span>
+      </div>
+    </div>
+  );
+}
+
+// Mounted only while the Custom refresh segment is active, so its text state
+// re-seeds from the stored seconds each time it appears (RateRow's contract).
+// Invalid input stays editable but is never persisted.
+function CustomIntervalRow({ sec, onCommit }: { sec: number; onCommit: (n: number) => void }) {
+  const { t } = useT();
+  const [text, setText] = useState(String(sec));
+
+  const onChange = (v: string) => {
+    setText(v);
+    const n = Number(v);
+    if (Number.isInteger(n) && n >= MIN_REFRESH_SEC && n <= MAX_REFRESH_SEC) onCommit(n);
+  };
+
+  return (
+    <div className="set-row">
+      <div className="set-row-text">
+        <div className="set-row-title">{t('settings.refreshCustom')}</div>
+        <div className="set-row-caption">{t('settings.refreshCustom.caption')}</div>
+      </div>
+      <div className="set-rate">
+        <input
+          className="set-rate-input"
+          inputMode="numeric"
+          aria-label={t('settings.refreshCustom')}
+          value={text}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <span className="set-rate-side">{t('settings.refreshCustom.unit')}</span>
       </div>
     </div>
   );
@@ -208,6 +246,11 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
   const { t } = useT();
   const { settings, update } = useSettings();
   const [refreshSec, setRefreshSec] = useRefreshSec();
+  // A custom value can equal a preset, so a view-local flag disambiguates which
+  // segment is active; Custom is also active whenever the value isn't a preset.
+  const isPreset = REFRESH_PRESETS.some((p) => p.sec === refreshSec);
+  const [customOpen, setCustomOpen] = useState(false);
+  const customActive = customOpen || !isPreset;
 
   return (
     <div className="tl-page tl-page-settings">
@@ -300,19 +343,34 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-caption">{t('settings.refresh.caption')}</div>
             </div>
             <div className="set-seg set-seg-mono" role="group" aria-label={t('settings.refresh')}>
-              {REFRESH_PRESETS.map((p) => (
-                <button
-                  key={p.sec}
-                  type="button"
-                  className={refreshSec === p.sec ? 'active' : ''}
-                  aria-pressed={refreshSec === p.sec}
-                  onClick={() => setRefreshSec(p.sec)}
-                >
-                  {p.label}
-                </button>
-              ))}
+              {REFRESH_PRESETS.map((p) => {
+                const active = refreshSec === p.sec && !customActive;
+                return (
+                  <button
+                    key={p.sec}
+                    type="button"
+                    className={active ? 'active' : ''}
+                    aria-pressed={active}
+                    onClick={() => {
+                      setRefreshSec(p.sec);
+                      setCustomOpen(false);
+                    }}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                className={customActive ? 'active' : ''}
+                aria-pressed={customActive}
+                onClick={() => setCustomOpen(true)}
+              >
+                {t('settings.refresh.custom')}
+              </button>
             </div>
           </div>
+          {customActive && <CustomIntervalRow sec={refreshSec} onCommit={setRefreshSec} />}
         </section>
 
         <UpdatesGroup port={port} />

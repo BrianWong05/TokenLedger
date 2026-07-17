@@ -19,22 +19,33 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe('parseRefreshSec / load / save', () => {
-  it('accepts only 10, 30, 60, 300; everything else → 30', () => {
+  it('accepts any integer in [5, 86400]; everything else → 30', () => {
+    // Presets still parse unchanged.
     expect(parseRefreshSec('10')).toBe(10);
     expect(parseRefreshSec('30')).toBe(30);
     expect(parseRefreshSec('60')).toBe(60);
     expect(parseRefreshSec('300')).toBe(300);
+    // Arbitrary integers within bounds are accepted verbatim.
+    expect(parseRefreshSec('90')).toBe(90);
+    expect(parseRefreshSec('5')).toBe(5);
+    expect(parseRefreshSec('86400')).toBe(86400);
+    expect(parseRefreshSec('1e3')).toBe(1000); // Number('1e3') === 1000, an integer
+    // Out of range, non-integer, or unparseable → 30.
+    expect(parseRefreshSec('4')).toBe(30);
+    expect(parseRefreshSec('0')).toBe(30);
+    expect(parseRefreshSec('-30')).toBe(30);
+    expect(parseRefreshSec('86401')).toBe(30);
+    expect(parseRefreshSec('45.5')).toBe(30);
+    expect(parseRefreshSec('nope')).toBe(30);
     expect(parseRefreshSec(null)).toBe(30);
     expect(parseRefreshSec('')).toBe(30);
-    expect(parseRefreshSec('0')).toBe(30);
-    expect(parseRefreshSec('15')).toBe(30);
-    expect(parseRefreshSec('nope')).toBe(30);
   });
 
   it('loadRefreshSec reads storage; invalid → 30', () => {
     expect(loadRefreshSec(memoryStorage())).toBe(30);
     expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '60' }))).toBe(60);
-    expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '99' }))).toBe(30);
+    expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '90' }))).toBe(90);
+    expect(loadRefreshSec(memoryStorage({ [STORAGE_KEY]: '4' }))).toBe(30);
   });
 
   it('saveRefreshSec writes the string value', () => {

@@ -25,6 +25,10 @@ export const settings = {
     'settings.scanning': 'Scanning',
     'settings.refresh': 'Auto-refresh interval',
     'settings.refresh.caption': 'How often usage data is re-read from disk',
+    'settings.refresh.custom': 'Custom',
+    'settings.refreshCustom': 'Custom interval',
+    'settings.refreshCustom.caption': 'Any whole number of seconds, 5 s – 24 h',
+    'settings.refreshCustom.unit': 'seconds',
 
     'settings.updates': 'Updates',
     'settings.autoCheck': 'Check for updates automatically',
@@ -72,6 +76,10 @@ export const settings = {
     'settings.scanning': '掃描',
     'settings.refresh': '自動重新整理間隔',
     'settings.refresh.caption': '多久從磁碟重新讀取一次使用資料',
+    'settings.refresh.custom': '自訂',
+    'settings.refreshCustom': '自訂間隔',
+    'settings.refreshCustom.caption': '任意整數秒數，5 秒至 24 小時',
+    'settings.refreshCustom.unit': '秒',
 
     'settings.updates': '更新',
     'settings.autoCheck': '自動檢查更新',

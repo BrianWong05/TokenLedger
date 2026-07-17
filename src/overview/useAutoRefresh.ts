@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
-export type RefreshSec = 10 | 30 | 60 | 300;
+export type RefreshSec = number;
 
 export const REFRESH_PRESETS: ReadonlyArray<{ label: string; sec: RefreshSec }> = [
   { label: '10s', sec: 10 },
@@ -11,12 +11,14 @@ export const REFRESH_PRESETS: ReadonlyArray<{ label: string; sec: RefreshSec }> 
 
 export const STORAGE_KEY = 'tokenledger.refreshSec';
 
-const ALLOWED = new Set<number>([10, 30, 60, 300]);
+export const MIN_REFRESH_SEC = 5;
+export const MAX_REFRESH_SEC = 86_400;
 
 export function parseRefreshSec(raw: string | null): RefreshSec {
   if (raw == null || raw === '') return 30;
   const n = Number(raw);
-  return ALLOWED.has(n) ? (n as RefreshSec) : 30;
+  if (Number.isInteger(n) && n >= MIN_REFRESH_SEC && n <= MAX_REFRESH_SEC) return n;
+  return 30;
 }
 
 export function loadRefreshSec(

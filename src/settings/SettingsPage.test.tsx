@@ -131,14 +131,44 @@ describe('SettingsPage', () => {
     const port = makeFakeSettings({ firstRunDone: true });
     const c = await mount(port);
 
-    // Four mono segments; 30s active by default (parseRefreshSec fallback).
-    expect(refreshSeg(c).map((b) => b.textContent)).toEqual(['10s', '30s', '60s', '5m']);
+    // Four presets + Custom; 30s active by default (parseRefreshSec fallback).
+    expect(refreshSeg(c).map((b) => b.textContent)).toEqual(['10s', '30s', '60s', '5m', 'Custom']);
     expect(refreshSeg(c).find((b) => b.classList.contains('active'))?.textContent).toBe('30s');
 
     await click(refreshSeg(c).find((b) => b.textContent === '60s')!);
 
     expect(refreshSeg(c).find((b) => b.classList.contains('active'))?.textContent).toBe('60s');
     expect(localStorage.getItem(STORAGE_KEY)).toBe('60');
+  });
+
+  it('opens a custom interval row that persists an in-range integer', async () => {
+    localStorage.removeItem(STORAGE_KEY);
+    const port = makeFakeSettings({ firstRunDone: true });
+    const c = await mount(port);
+
+    const custom = () => refreshSeg(c).find((b) => b.textContent === 'Custom')!;
+    const input = () => q<HTMLInputElement>(c, 'input[aria-label="Custom interval"]');
+
+    // No custom row until Custom is chosen.
+    expect(input()).toBeNull();
+
+    await click(custom());
+    expect(custom().classList.contains('active')).toBe(true);
+    expect(input()?.value).toBe('30'); // seeded from the stored seconds
+
+    await setValue(input()!, '90');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('90');
+    expect(custom().classList.contains('active')).toBe(true); // stays active
+
+    // Invalid text stays editable but is never persisted.
+    await setValue(input()!, 'abc');
+    expect(input()?.value).toBe('abc');
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('90');
+
+    // Choosing a preset closes the row and persists the preset.
+    await click(refreshSeg(c).find((b) => b.textContent === '30s')!);
+    expect(input()).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('30');
   });
 
   it('theme segment click persists and applies data-theme immediately', async () => {
