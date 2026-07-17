@@ -205,7 +205,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
         <div className="tt-b8-col">
           <Heatmap days={panels.heatmap.days} compact />
           <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} />
-          <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />
+          {panels.sparks.length > 0 && <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />}
         </div>
 
         <div className="tt-b8-col">

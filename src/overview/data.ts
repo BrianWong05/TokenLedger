@@ -296,7 +296,7 @@ export function smallMultiples(bks: Bucket[]): SmallMultipleItem[] {
   const totals = emptyByTool();
   for (const b of bks) for (const t of TOOLS) totals[t.key] += b.byTool[t.key];
   const grand = (Object.values(totals) as number[]).reduce((a, b) => a + b, 0) || 1;
-  return TOOLS.map((t) => ({
+  return TOOLS.filter((t) => totals[t.key] > 0).map((t) => ({
     ...t,
     total: totals[t.key],
     share: totals[t.key] / grand,

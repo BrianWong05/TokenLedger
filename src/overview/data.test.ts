@@ -5,6 +5,7 @@ import {
   windowOf,
   pointsIn,
   bucketsFromPoints,
+  smallMultiples,
   rankModels,
   modelTools,
   calendarSpan,
@@ -157,6 +158,18 @@ describe('bucketsFromPoints', () => {
     );
     expect(bks[0].key).toBe('2026-07-09');
     expect(bks[0].byModel).toEqual({ 'claude-fable-5': 300, 'claude-opus-4-8': 80, 'gpt-5.6-sol': 50 });
+  });
+});
+
+describe('smallMultiples', () => {
+  it('omits tools with zero usage in the period', () => {
+    const bks = bucketsFromPoints(
+      [pt({ bucket: '2026-07-09', source: 'claude', totalTokens: 10 }),
+       pt({ bucket: '2026-07-09', source: 'codex', totalTokens: 5 })],
+      'day',
+    );
+    const items = smallMultiples(bks);
+    expect(items.map((it) => it.key)).toEqual(['claude', 'codex']);
   });
 });
 
