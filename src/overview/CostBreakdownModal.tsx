@@ -116,12 +116,14 @@ export default function CostBreakdownModal({
           </button>
         </header>
 
-        <div className="tt-cost-modal-scroll">
-          <div className="tt-cost-modal-columns" aria-hidden="true">
-            <span>{t('overview.col.model')}</span>
-            <span>{t('overview.col.cost')}</span>
-          </div>
+        {/* fixed chrome: always pinned right under the title block, outside the
+            scroller so it can never flash or scroll away */}
+        <div className="tt-cost-modal-columns" aria-hidden="true">
+          <span>{t('overview.col.model')}</span>
+          <span>{t('overview.col.cost')}</span>
+        </div>
 
+        <div className="tt-cost-modal-scroll">
           {view.groups.map((group) => (
             <section className="tt-cost-group" key={group.sourceKey}>
               <div className="tt-cost-group-head">

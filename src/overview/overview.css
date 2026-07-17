@@ -1048,7 +1048,8 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
-  padding: 26px 26px 20px;
+  /* tight bottom — the columns bar attaches directly beneath the title block */
+  padding: 26px 26px 10px;
 }
 .tt-cost-modal-eyebrow {
   color: var(--text-secondary);
@@ -1109,10 +1110,11 @@
   align-items: baseline;
   gap: 20px;
 }
-/* decorative column labels (aria-hidden); scrolls away — the pinned group
-   heads are the one sticky layer, so scroll/bounce never stacks two */
+/* decorative column labels (aria-hidden) — fixed modal chrome pinned between
+   the title block and the scroller, so it is always visible and never part of
+   the scroll compositing (the group heads inside stay the one sticky layer) */
 .tt-cost-modal-columns {
-  padding: 9px 0 8px;
+  padding: 0 26px 8px;
   border-bottom: 1px solid var(--border-default);
   color: var(--text-secondary);
   font-size: 10px;
@@ -1124,7 +1126,10 @@
   text-align: right;
 }
 .tt-cost-group {
-  margin-top: 19px;
+  margin-top: 14px;
+}
+.tt-cost-group:first-child {
+  margin-top: 0;
 }
 .tt-cost-group-head {
   /* pins at the top while its group scrolls (grouped-list sticky) — never a
