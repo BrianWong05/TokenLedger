@@ -426,25 +426,20 @@
   white-space: nowrap;
   overflow: hidden;
 }
+/* bare brand mark — no chip box, larger glyph */
 .tt-toolicon {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-default);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: none;
-  overflow: hidden;
 }
 .tt-toolicon img {
   display: block;
-  width: 13px;
-  height: 13px;
+  width: 20px;
+  height: 20px;
 }
 .tt-toolicon b {
-  font-size: 12px;
+  font-size: 17px;
   font-weight: 800;
   line-height: 1;
 }
