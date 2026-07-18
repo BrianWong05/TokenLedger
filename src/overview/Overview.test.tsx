@@ -152,6 +152,36 @@ describe('Overview presentation', () => {
     expect(ctxTitle()).toContain('Codex');
   });
 
+  it('renders the 2D activity grid as a fixed-pitch scrollable calendar', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+    });
+
+    // Weekday rail: Monday-first, 7 rows.
+    const rail = Array.from(c.querySelectorAll('.tt-heat2d-days span'), (s) => s.textContent);
+    expect(rail).toHaveLength(7);
+    expect(rail[0]).toBe('Mon');
+    expect(rail[6]).toBe('Sun');
+
+    // Fixed-pitch grid inside a horizontal scroller: 365 day cells and an
+    // explicit pixel width far wider than the card (22px per week column).
+    const svg = c.querySelector<SVGSVGElement>('.tt-heat2d-scroll svg')!;
+    const cells = svg.querySelectorAll('rect');
+    expect(cells).toHaveLength(365);
+    expect(Number(svg.getAttribute('width'))).toBeGreaterThan(52 * 22);
+
+    // Month labels ride above the columns (single-column edge months are skipped).
+    expect(c.querySelectorAll('.tt-heat2d-month').length).toBeGreaterThanOrEqual(10);
+
+    // Hovering a day adds the outline rect and the cell-anchored tooltip.
+    await act(async () => {
+      cells[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(svg.querySelectorAll('rect')).toHaveLength(366);
+    expect(c.querySelector('.tt-tip')).not.toBeNull();
+  });
+
   it('renders a static 3D landscape on the Activity card', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
