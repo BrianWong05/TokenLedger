@@ -149,7 +149,7 @@ function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: s
           </div>
         </div>
         <div className="tt-legend">
-          {TOOLS.map((t) => (
+          {TOOLS.filter((t) => data.some((b) => b.byTool[t.key] > 0)).map((t) => (
             <span className="item" key={t.key}>
               <span className="sw" style={{ background: t.color }} />
               {t.label}
