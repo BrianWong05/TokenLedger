@@ -46,6 +46,11 @@ export function monthShortL(monthIndex: number, lang: Lang): string {
 export function fmtWeekdayDateL(d: Date, lang: Lang): string {
   return d.toLocaleDateString(localeOf(lang), { weekday: 'short', month: 'short', day: 'numeric' });
 }
+// Short weekday name for a 0-based day index (0 = Sun) — the 2D heatmap row rail.
+export function weekdayShortL(dow: number, lang: Lang): string {
+  // 2023-01-01 was a Sunday
+  return new Date(2023, 0, 1 + dow).toLocaleDateString(localeOf(lang), { weekday: 'short' });
+}
 
 // "N word": English pluralises via the one/many key; Chinese has no plural, so
 // both keys carry the same measure phrase and the count leads unchanged.

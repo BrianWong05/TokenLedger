@@ -1,8 +1,8 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { TOOLS } from './meta';
 import { heatStats, type Day } from './data';
 import { fmtTok } from '../lib/format';
-import { fmtDateL, fmtWeekdayDateL, monthShortL, useOverviewT } from './localize';
+import { fmtDateL, fmtWeekdayDateL, monthShortL, weekdayShortL, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import Landscape3D from './Landscape3D';
 
@@ -13,10 +13,14 @@ type Mode = '2d' | '3d';
 export const HEAT_DARK = ['#1c1f27', '#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa'];
 export const HEAT_LIGHT = ['#EDEDF0', '#bfdbfe', '#93c5fd', '#3b82f6', '#1d4ed8'];
 
-// ---- 2D grid geometry ----
-const S = 13; // cell size
-const STEP = 16; // cell + gap
-const TOP = 16; // room for month labels
+// ---- 2D grid geometry (design v2: fixed pitch, horizontal scroll) ----
+const C2 = 22; // cell pitch
+const CELL = 18; // cell size (pitch minus gap)
+const OX = 2; // left inset
+const OY = 26; // room for month labels
+
+// Monday-first row for the 2D grid (Day.row stays Sunday-first for the 3D scene).
+const row2d = (d: Day) => (d.weekday + 6) % 7;
 
 function Heatmap({
   days,
@@ -33,6 +37,8 @@ function Heatmap({
   const [mode, setMode] = useState<Mode>('2d');
   const [hover, setHover] = useState<Day | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
+  const [pos2, setPos2] = useState<{ x: number; y: number; w: number }>({ x: 0, y: 0, w: 1 });
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   // Theme-aware ramp: useChartColors returns the exact CHART_LIGHT/CHART_DARK
   // constant, so reference equality tells us which theme is live.
@@ -43,28 +49,52 @@ function Heatmap({
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
   const stats = useMemo(() => heatStats(days), [days]);
 
-  // month label columns for 2D
+  // month labels sit above each month's first column; months squeezed into a
+  // single column (window edges) stay unlabeled
   const monthLabels = useMemo(() => {
-    const out: { x: number; label: string }[] = [];
-    let last = -1;
+    const starts: { c: number; m: number }[] = [];
+    let prevCol = -1;
+    let lastM = -1;
     for (const d of days) {
+      if (d.col === prevCol) continue;
+      prevCol = d.col;
       const m = d.date.getMonth();
-      if (d.date.getDate() <= 7 && m !== last) {
-        out.push({ x: d.col * STEP, label: monthShortL(m, lang) });
-        last = m;
+      if (m !== lastM) {
+        starts.push({ c: d.col, m });
+        lastM = m;
       }
     }
-    return out;
-  }, [days, lang]);
+    return starts.flatMap((s, i) => {
+      const end = i + 1 < starts.length ? starts[i + 1].c : cols;
+      return end - s.c >= 2 ? [{ x: OX + s.c * C2, label: monthShortL(s.m, lang) }] : [];
+    });
+  }, [days, cols, lang]);
 
-  const view2d = `0 0 ${cols * STEP} ${TOP + 7 * STEP}`;
+  const dayLabels = useMemo(() => [1, 2, 3, 4, 5, 6, 0].map((dow) => weekdayShortL(dow, lang)), [lang]);
+
+  const pxW = OX + cols * C2 + 4;
+  const pxH = OY + 7 * C2 + 2;
+
+  // open on the most recent weeks; stable identity so re-renders keep scroll
+  const scrollInit = useCallback((el: HTMLDivElement | null) => {
+    if (el) el.scrollLeft = el.scrollWidth;
+  }, []);
 
   function onMove(e: React.MouseEvent<HTMLDivElement>) {
     const w = e.currentTarget.clientWidth;
     setPos({ x: e.nativeEvent.offsetX, y: e.nativeEvent.offsetY, flip: e.nativeEvent.offsetX > w * 0.58 });
   }
 
-  const enter = (d: Day) => () => setHover(d);
+  // 2D tooltip anchors to the hovered cell (in wrap coordinates), not the mouse
+  const enter2d = (d: Day) => (e: React.MouseEvent<SVGRectElement>) => {
+    const host = wrapRef.current;
+    if (host) {
+      const r = e.currentTarget.getBoundingClientRect();
+      const hb = host.getBoundingClientRect();
+      setPos2({ x: r.left + r.width / 2 - hb.left, y: r.top - hb.top, w: hb.width });
+    }
+    setHover(d);
+  };
   const leave = () => setHover(null);
 
   // tooltip per-tool rows for the hovered day
@@ -76,6 +106,12 @@ function Heatmap({
     : [];
   const tipMax = Math.max(1, ...tipRows.map((r) => r.val));
 
+  const hint = mode === '2d' ? t('overview.fullYearScroll') : t('overview.hoverDay');
+  // WebKit can't resolve var() in SVG strokes either — pick the outline per theme.
+  const outline = ramp === HEAT_LIGHT ? '#12151b' : '#e8ecf4';
+  const lf = pos2.w ? pos2.x / pos2.w : 0.5;
+  const tip2dTransform = `translate(${lf < 0.14 ? '-8%' : lf > 0.86 ? '-92%' : '-50%'}, ${pos2.y < 96 ? '30px' : '-116%'})`;
+
   return (
     <div className="tt-card heat">
       <div className="tt-head">
@@ -83,10 +119,10 @@ function Heatmap({
           <div className="tt-title">{t('overview.activity')}</div>
           <div className="tt-sub">
             {compact ? (
-              t('overview.hoverDay')
+              hint
             ) : (
               <>
-                <span style={{ color: accent, fontWeight: 650 }}>{fmtTok(stats.totalTokens)}</span> {t('overview.tokens')} · {t('overview.hoverDay')}
+                <span style={{ color: accent, fontWeight: 650 }}>{fmtTok(stats.totalTokens)}</span> {t('overview.tokens')} · {hint}
               </>
             )}
           </div>
@@ -114,33 +150,57 @@ function Heatmap({
       </div>
 
       <div
+        ref={wrapRef}
         className="tt-heat-wrap"
-        onMouseMove={onMove}
+        onMouseMove={mode === '3d' ? onMove : undefined}
         onMouseLeave={leave}
         style={compact ? { height: 186 } : undefined}
       >
         {mode === '2d' ? (
-          <svg viewBox={view2d} preserveAspectRatio="xMidYMid meet">
-            {monthLabels.map((m, i) => (
-              <text key={i} x={m.x} y={11} fontSize="10" style={{ fill: 'var(--text-secondary)' }}>
-                {m.label}
-              </text>
-            ))}
-            {days.map((d) => (
-              <rect
-                key={d.index}
-                x={d.col * STEP}
-                y={TOP + d.row * STEP}
-                width={S}
-                height={S}
-                rx={2.5}
-                fill={ramp[d.level]}
-                stroke={colors.grid}
-                style={{ cursor: 'pointer' }}
-                onMouseEnter={enter(d)}
-              />
-            ))}
-          </svg>
+          <div className="tt-heat2d">
+            <div className="tt-heat2d-days">
+              {dayLabels.map((l, i) => (
+                <span key={i}>{l}</span>
+              ))}
+            </div>
+            <div className="tt-heat2d-scroll" ref={scrollInit}>
+              <div className="tt-heat2d-inner" style={{ width: pxW }}>
+                {monthLabels.map((m, i) => (
+                  <span key={i} className="tt-heat2d-month" style={{ left: m.x }}>
+                    {m.label}
+                  </span>
+                ))}
+                <svg width={pxW} height={pxH} viewBox={`0 0 ${pxW} ${pxH}`}>
+                  {days.map((d) => (
+                    <rect
+                      key={d.index}
+                      x={OX + d.col * C2}
+                      y={OY + row2d(d) * C2}
+                      width={CELL}
+                      height={CELL}
+                      rx={4.5}
+                      fill={ramp[d.level]}
+                      style={{ cursor: 'pointer' }}
+                      onMouseEnter={enter2d(d)}
+                    />
+                  ))}
+                  {hover && (
+                    <rect
+                      x={OX + hover.col * C2}
+                      y={OY + row2d(hover) * C2}
+                      width={CELL}
+                      height={CELL}
+                      rx={4.5}
+                      fill="none"
+                      stroke={outline}
+                      strokeWidth={1.5}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
+                </svg>
+              </div>
+            </div>
+          </div>
         ) : (
           <Landscape3D days={days} ramp={ramp} onHoverDay={setHover} />
         )}
@@ -148,11 +208,15 @@ function Heatmap({
         {hover && (
           <div
             className="tt-tip"
-            style={{
-              left: pos.x,
-              top: pos.y,
-              transform: `translate(${pos.flip ? 'calc(-100% - 14px)' : '14px'}, -50%)`,
-            }}
+            style={
+              mode === '2d'
+                ? { left: pos2.x, top: pos2.y, transform: tip2dTransform }
+                : {
+                    left: pos.x,
+                    top: pos.y,
+                    transform: `translate(${pos.flip ? 'calc(-100% - 14px)' : '14px'}, -50%)`,
+                  }
+            }
           >
             <div className="tt-tip-head">
               <b>{fmtWeekdayDateL(hover.date, lang)}</b>

@@ -34,6 +34,7 @@ export const overview = {
     // heatmap
     'overview.activity': 'Activity',
     'overview.hoverDay': 'hover a day',
+    'overview.fullYearScroll': 'full year · scroll ⟷ · hover a day',
     'overview.tokens': 'tokens',
     'overview.noActivity': 'No activity',
     'overview.activeDays': 'active days',
@@ -171,6 +172,7 @@ export const overview = {
 
     'overview.activity': '活動',
     'overview.hoverDay': '將游標移到日期上',
+    'overview.fullYearScroll': '全年 · 左右捲動 · 將游標移到日期上',
     'overview.tokens': 'tokens',
     'overview.noActivity': '沒有活動',
     'overview.activeDays': '活躍天數',
