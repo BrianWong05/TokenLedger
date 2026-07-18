@@ -154,7 +154,7 @@ describe('Overview presentation', () => {
 
   it('renders the 2D activity grid as a fixed-pitch scrollable calendar', async () => {
     const { container: c } = await mount({
-      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      dayPoints: [pt({ source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],
       summary,
     });
 
@@ -174,12 +174,19 @@ describe('Overview presentation', () => {
     // Month labels ride above the columns (single-column edge months are skipped).
     expect(c.querySelectorAll('.tt-heat2d-month').length).toBeGreaterThanOrEqual(10);
 
-    // Hovering a day adds the outline rect and the cell-anchored tooltip.
+    // Hovering the seeded day adds the outline rect and a cell-anchored
+    // tooltip listing tokens per MODEL (not per tool). Cell index mirrors
+    // seriesToDays: index 364 is today, one per calendar day back from there.
+    const today = new Date();
+    const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const seeded = 364 - Math.round((midnight.getTime() - new Date(2026, 6, 16).getTime()) / 86_400_000);
     await act(async () => {
-      cells[0].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      cells[seeded].dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
     expect(svg.querySelectorAll('rect')).toHaveLength(366);
-    expect(c.querySelector('.tt-tip')).not.toBeNull();
+    const tip = c.querySelector('.tt-tip')!;
+    expect(tip.textContent).toContain('claude-opus-4-8');
+    expect(tip.textContent).not.toContain('Claude Code');
   });
 
   it('renders a static 3D landscape on the Activity card', async () => {

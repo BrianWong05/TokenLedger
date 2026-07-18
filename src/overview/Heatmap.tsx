@@ -1,5 +1,4 @@
 import { memo, useCallback, useMemo, useRef, useState } from 'react';
-import { TOOLS } from './meta';
 import { heatStats, type Day } from './data';
 import { fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, monthShortL, weekdayShortL, useOverviewT } from './localize';
@@ -97,9 +96,10 @@ function Heatmap({
   };
   const leave = () => setHover(null);
 
-  // tooltip per-tool rows for the hovered day
+  // tooltip per-model rows for the hovered day
   const tipRows = hover
-    ? TOOLS.map((t) => ({ ...t, val: hover.byTool[t.key] }))
+    ? Object.entries(hover.byModel)
+        .map(([model, val]) => ({ key: model, label: model, val }))
         .filter((r) => r.val > 0)
         .sort((a, b) => b.val - a.val)
         .slice(0, 3)

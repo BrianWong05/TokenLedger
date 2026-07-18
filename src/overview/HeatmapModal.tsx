@@ -53,9 +53,10 @@ export default function HeatmapModal({
   const costLabel =
     summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
 
-  // tooltip per-tool rows for the hovered day (mirrors the card)
+  // tooltip per-model rows for the hovered day (mirrors the card)
   const tipRows = hover
-    ? TOOLS.map((tl) => ({ ...tl, val: hover.byTool[tl.key] }))
+    ? Object.entries(hover.byModel)
+        .map(([model, val]) => ({ key: model, label: model, val }))
         .filter((r) => r.val > 0)
         .sort((a, b) => b.val - a.val)
         .slice(0, 3)
