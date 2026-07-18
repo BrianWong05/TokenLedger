@@ -33,7 +33,6 @@ export const overview = {
 
     // heatmap
     'overview.activity': 'Activity',
-    'overview.dragRotate': 'drag to rotate',
     'overview.hoverDay': 'hover a day',
     'overview.tokens': 'tokens',
     'overview.noActivity': 'No activity',
@@ -171,7 +170,6 @@ export const overview = {
     'overview.range.custom.long': '自訂範圍',
 
     'overview.activity': '活動',
-    'overview.dragRotate': '拖曳旋轉',
     'overview.hoverDay': '將游標移到日期上',
     'overview.tokens': 'tokens',
     'overview.noActivity': '沒有活動',

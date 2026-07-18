@@ -152,6 +152,33 @@ describe('Overview presentation', () => {
     expect(ctxTitle()).toContain('Codex');
   });
 
+  it('renders a static 3D landscape on the Activity card', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+    });
+
+    const threeD = Array.from(c.querySelectorAll<HTMLButtonElement>('.tt-seg button')).find(
+      (b) => b.textContent === '3D',
+    )!;
+    await act(async () => threeD.click());
+
+    // The landscape draws (a top face per day at minimum) and is static:
+    // no grab cursor, and a drag must not change the geometry.
+    const svg = c.querySelector<SVGSVGElement>('.tt-heat-wrap svg')!;
+    expect(svg.querySelectorAll('path').length).toBeGreaterThanOrEqual(365);
+    expect(svg.classList.contains('grab')).toBe(false);
+
+    const shape = () => svg.querySelector('path')!.getAttribute('d');
+    const before = shape();
+    await act(async () => {
+      svg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 300 }));
+      window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 400 }));
+      window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    });
+    expect(shape()).toBe(before);
+  });
+
   it('lists per-source scan stats in the footer', async () => {
     const scan: ScanStatus = {
       scannedAt: 0,

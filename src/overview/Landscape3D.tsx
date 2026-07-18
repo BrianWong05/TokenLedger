@@ -111,6 +111,38 @@ export function visibleWalls(yaw: number): { x: 'east' | 'west'; y: 'south' | 'n
   return { x: cos + sin > 0 ? 'east' : 'west', y: cos - sin > 0 ? 'south' : 'north' };
 }
 
+// Tight bounds for one fixed view: project every corner at that exact angle.
+// The static card uses this — it never rotates, so it doesn't reserve the
+// rotation-sweep room and its scene fills the frame.
+export function fitBounds(
+  days: Pick<Day, 'col' | 'row' | 'level'>[],
+  view: View3D = INITIAL_VIEW,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const cols = Math.max(1, ...days.map((d) => d.col)) + 1;
+  const cx = cols / 2;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const d of days) {
+    for (const [gx, gy] of [
+      [d.col, d.row],
+      [d.col + TILE, d.row],
+      [d.col + TILE, d.row + TILE],
+      [d.col, d.row + TILE],
+    ]) {
+      for (const z of [0, d.level * ZUNIT]) {
+        const [sx, sy] = projectPoint(gx - cx, gy - CY, z, view.yaw, view.pitch);
+        minX = Math.min(minX, sx);
+        maxX = Math.max(maxX, sx);
+        minY = Math.min(minY, sy);
+        maxY = Math.max(maxY, sy);
+      }
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 // Camera bounds that contain the scene at EVERY yaw for the given pitch: the
 // projection of a point of grid radius ρ stays within ±√2·ρ on both pre-scale
 // axes, so the sweep of the whole rotation fits in the circumscribed-circle
@@ -144,26 +176,28 @@ export function sceneBounds(
 export default function Landscape3D({
   days,
   ramp,
-  view,
+  view = INITIAL_VIEW,
   onView,
   zoomable = false,
   onHoverDay,
 }: {
   days: Day[];
   ramp: string[];
-  view: View3D;
-  onView: (v: View3D) => void;
+  view?: View3D;
+  onView?: (v: View3D) => void; // omit for a static landscape (the card)
   zoomable?: boolean; // wheel zoom — only where the page can't scroll (the enlarge)
   onHoverDay?: (d: Day | null) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
   const { yaw, pitch, zoom, tx, ty } = view;
+  const interactive = !!onView;
 
   // The viewport rescales around the base box's fixed center as the zoom
-  // changes; the wheel handler needs that center to anchor its math.
+  // changes; the wheel handler needs that center to anchor its math. A static
+  // landscape fits its one angle tightly instead of the rotation-sweep box.
   const camera = useMemo(() => {
-    const b = sceneBounds(days, pitch);
+    const b = interactive ? sceneBounds(days, pitch) : fitBounds(days, view);
     const pad = 10;
     const w = b.maxX - b.minX + pad * 2;
     const h = b.maxY - b.minY + pad * 2;
@@ -174,7 +208,7 @@ export default function Landscape3D({
       center: c,
       viewBox: `${(c[0] - zw / 2).toFixed(1)} ${(c[1] - zh / 2).toFixed(1)} ${zw.toFixed(1)} ${zh.toFixed(1)}`,
     };
-  }, [days, pitch, zoom]);
+  }, [days, view, interactive, pitch, zoom]);
   const boxCenterRef = useRef(camera.center);
   boxCenterRef.current = camera.center;
 
@@ -238,7 +272,8 @@ export default function Landscape3D({
   const draggingRef = useRef(false);
   useEffect(() => {
     const svg = svgRef.current;
-    if (!svg) return;
+    // A static landscape (no onView at mount) attaches no listeners at all.
+    if (!svg || !onViewRef.current) return;
     let startX = 0;
     let startY = 0;
     let start: View3D = INITIAL_VIEW;
@@ -253,7 +288,7 @@ export default function Landscape3D({
     };
     const move = (e: MouseEvent) => {
       if (!draggingRef.current) return;
-      onViewRef.current({
+      onViewRef.current?.({
         ...start,
         // minus: the front of the landscape follows the cursor; no clamp —
         // the spin is free and the trig wraps the angle.
@@ -279,7 +314,7 @@ export default function Landscape3D({
             return [pt.x, pt.y];
           })()
         : boxCenterRef.current;
-      onViewRef.current(
+      onViewRef.current?.(
         zoomView(viewRef.current, Math.exp(-e.deltaY * 0.0015), anchor, boxCenterRef.current),
       );
     };
@@ -296,7 +331,7 @@ export default function Landscape3D({
   }, []);
 
   return (
-    <svg ref={svgRef} className="grab" viewBox={camera.viewBox} preserveAspectRatio="xMidYMid meet">
+    <svg ref={svgRef} className={interactive ? 'grab' : undefined} viewBox={camera.viewBox} preserveAspectRatio="xMidYMid meet">
       {cells.map((c) => (
         <g key={c.d.index}>
           {c.d.level > 0 && <path d={c.xWall} fill={c.xFill} />}
