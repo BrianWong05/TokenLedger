@@ -1400,18 +1400,23 @@
 [data-theme='light'] .tt-heat-modal-canvas {
   background: var(--bg-inset);
 }
-.tt-heat-modal-canvas svg {
+/* The landscape svg (direct child — the legend/hint icons must not match).
+   Explicit width/height, not inset-stretching: WebKit sizes an absolutely
+   positioned replaced element from its intrinsic aspect ratio when height is
+   auto, ignoring the over-constrained bottom inset — the svg then overflows
+   and the scene renders low and clipped. */
+.tt-heat-modal-canvas > svg {
   position: absolute;
   top: 44px;
-  right: 52px;
-  bottom: 64px;
   left: 52px;
+  width: calc(100% - 104px);
+  height: calc(100% - 108px);
   display: block;
 }
-.tt-heat-modal-canvas svg.grab {
+.tt-heat-modal-canvas > svg.grab {
   cursor: grab;
 }
-.tt-heat-modal-canvas svg.grabbing {
+.tt-heat-modal-canvas > svg.grabbing {
   cursor: grabbing;
 }
 .tt-heat-modal-legend {
