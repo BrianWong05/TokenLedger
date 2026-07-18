@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useMemo, useRef, useState, type RefObject } from 'react';
 import type { Summary } from '../types';
 import { heatStats, type Day } from './data';
 import { TOOLS } from './meta';
@@ -8,15 +8,7 @@ import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import Landscape3D, { INITIAL_YAW } from './Landscape3D';
 import { HEAT_DARK, HEAT_LIGHT } from './Heatmap';
-
-const FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  '[href]',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
+import { useDialogChrome } from './useDialogChrome';
 
 // Design 3a — the Activity card's full-screen enlarge. A centered dialog at 80%
 // of the viewport: a top command band (title + scene controls), a stats band of
@@ -45,8 +37,7 @@ export default function HeatmapModal({
 
   const modalRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useDialogChrome({ modalRef, initialFocusRef: closeButtonRef, returnFocusRef, onClose });
   // A drag that starts on the landscape and releases over the dimmed margin
   // makes the backdrop the click target (click fires on the common ancestor of
   // mousedown/mouseup) — only close when the press also began on the backdrop.
@@ -70,57 +61,6 @@ export default function HeatmapModal({
         .slice(0, 3)
     : [];
   const tipMax = Math.max(1, ...tipRows.map((r) => r.val));
-
-  // Scroll lock + focus trap + Esc + return-focus (mirrors CostBreakdownModal).
-  useLayoutEffect(() => {
-    const pageRoot = document.documentElement;
-    const pageBody = document.body;
-    const previousRootOverflow = pageRoot.style.overflow;
-    const previousBodyOverflow = pageBody.style.overflow;
-    pageRoot.style.overflow = 'hidden';
-    pageBody.style.overflow = 'hidden';
-
-    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const modal = modalRef.current;
-    (closeButtonRef.current ?? modal)?.focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== 'Tab' || !modal) return;
-      const focusable = Array.from(modal.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
-      if (focusable.length === 0) {
-        event.preventDefault();
-        modal.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      const focusIsOutside = !active || !modal.contains(active);
-      if (event.shiftKey && (active === first || focusIsOutside)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (active === last || focusIsOutside)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      pageRoot.style.overflow = previousRootOverflow;
-      pageBody.style.overflow = previousBodyOverflow;
-      // WebKit doesn't focus buttons on click, so activeElement-at-open is
-      // usually <body> — the explicit opener ref is the reliable target.
-      const focusTarget = returnFocusRef.current ?? previouslyFocused;
-      if (focusTarget?.isConnected) focusTarget.focus();
-    };
-  }, []);
 
   function onMove(e: React.MouseEvent<HTMLDivElement>) {
     const w = e.currentTarget.clientWidth;
