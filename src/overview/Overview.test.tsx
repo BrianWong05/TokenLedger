@@ -174,6 +174,21 @@ describe('Overview presentation', () => {
     // Month labels ride above the columns (single-column edge months are skipped).
     expect(c.querySelectorAll('.tt-heat2d-month').length).toBeGreaterThanOrEqual(10);
 
+    // Calendar integrity: cells render in day order, so across the grid the
+    // column may never decrease, and within a column each next day must sit on
+    // a lower row — a Sunday filed into the wrong week (Sunday-start columns
+    // under Monday-first rows) breaks this and leaves a hole in the grid.
+    let px = -1;
+    let py = -1;
+    for (const cell of cells) {
+      const x = Number(cell.getAttribute('x'));
+      const y = Number(cell.getAttribute('y'));
+      expect(x).toBeGreaterThanOrEqual(px);
+      if (x === px) expect(y).toBeGreaterThan(py);
+      px = x;
+      py = y;
+    }
+
     // Hovering the seeded day adds the outline rect and a cell-anchored
     // tooltip listing tokens per MODEL (not per tool). Cell index mirrors
     // seriesToDays: index 364 is today, one per calendar day back from there.
