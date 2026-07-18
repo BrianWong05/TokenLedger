@@ -14,7 +14,7 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import { isoOf } from './data';
-import type { SeriesPoint, Summary } from '../types';
+import type { Filters, SeriesPoint, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -66,13 +66,14 @@ async function settle(times = 4) {
   }
 }
 
-async function mount(): Promise<HTMLElement> {
+async function mount(): Promise<{ container: HTMLElement; ledger: ReturnType<typeof makeFakeLedger> }> {
+  // Point costs are deliberately zero: the enlarge's Cost must come from the
+  // year-window Summary fetch, never from summing series points.
   const ledger = makeFakeLedger({
-    // Point costs sum to $1.50 — the enlarge's Cost is the year-window sum.
     dayPoints: [
-      pt({ bucket: daysAgo(2), source: 'claude', totalTokens: 400, cost: 0.5 }),
-      pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 100, cost: 0.25 }),
-      pt({ bucket: daysAgo(1), source: 'codex', totalTokens: 200, cost: 0.75 }),
+      pt({ bucket: daysAgo(2), source: 'claude', totalTokens: 400 }),
+      pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 100 }),
+      pt({ bucket: daysAgo(1), source: 'codex', totalTokens: 200 }),
     ],
     summary,
   });
@@ -88,7 +89,7 @@ async function mount(): Promise<HTMLElement> {
     );
   });
   await settle();
-  return container;
+  return { container, ledger };
 }
 
 afterEach(() => {
@@ -109,7 +110,7 @@ async function open(c: HTMLElement): Promise<HTMLElement> {
 
 describe('Activity Enlarge', () => {
   it('opens a dialog with the 3D perspective title and the year stats', async () => {
-    const c = await mount();
+    const { container: c } = await mount();
     const modal = await open(c);
 
     expect(modal.getAttribute('role')).toBe('dialog');
@@ -119,7 +120,8 @@ describe('Activity Enlarge', () => {
     );
 
     // Stats derive from the seeded series: 700 tokens over 2 active days,
-    // a 2-day streak, peak day of 400 tokens; Cost from the Summary.
+    // a 2-day streak, peak day of 400 tokens; Cost from the year-window
+    // Summary fetch (seeded points carry zero cost).
     const stats = modal.querySelector('.tt-heat-modal-stats')!.textContent!;
     expect(stats).toContain('700');
     expect(stats).toContain('$1.50');
@@ -130,7 +132,7 @@ describe('Activity Enlarge', () => {
   });
 
   it('locks page scroll while open and unlocks on close', async () => {
-    const c = await mount();
+    const { container: c } = await mount();
     await open(c);
     expect(document.documentElement.style.overflow).toBe('hidden');
     expect(document.body.style.overflow).toBe('hidden');
@@ -144,7 +146,7 @@ describe('Activity Enlarge', () => {
   });
 
   it('closes on Escape and returns focus to the Enlarge control', async () => {
-    const c = await mount();
+    const { container: c } = await mount();
     await open(c);
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -154,7 +156,7 @@ describe('Activity Enlarge', () => {
   });
 
   it('closes on the ✕ button and on a backdrop click, but not on clicks inside', async () => {
-    const c = await mount();
+    const { container: c } = await mount();
     const modal = await open(c);
 
     // A click inside the panel must NOT close it.
@@ -176,7 +178,7 @@ describe('Activity Enlarge', () => {
   });
 
   it('does not dismiss when a rotate drag is released over the backdrop', async () => {
-    const c = await mount();
+    const { container: c } = await mount();
     const modal = await open(c);
     const svg = modal.querySelector<SVGSVGElement>('.tt-heat-modal-canvas svg')!;
 
@@ -192,7 +194,7 @@ describe('Activity Enlarge', () => {
   });
 
   it('keeps rotating across commits during a drag and suppresses the hover inspector', async () => {
-    const c = await mount();
+    const { container: c } = await mount();
     const modal = await open(c);
     const svg = modal.querySelector<SVGSVGElement>('.tt-heat-modal-canvas svg')!;
     const topPath = () =>
@@ -237,5 +239,80 @@ describe('Activity Enlarge', () => {
       topPath().dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
     });
     expect(tip()).not.toBeNull();
+  });
+
+  it('requests a Summary for the trailing-365-day window at the port when opened', async () => {
+    const { container: c, ledger } = await mount();
+    const before = ledger.calls.summary.length;
+    await open(c);
+    await settle(1);
+
+    expect(ledger.calls.summary.length).toBe(before + 1);
+    const [filters] = ledger.calls.summary[before] as [Filters];
+    // The displayed window: [local midnight 364 days ago, midnight after today).
+    const midnight = (offsetDays: number) => {
+      const now = new Date();
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays);
+      return Math.floor(d.getTime() / 1000);
+    };
+    expect(filters.startTs).toBe(midnight(-364));
+    expect(filters.endTs).toBe(midnight(1));
+    expect(filters.tools).toEqual([]);
+    expect(filters.models).toEqual([]);
+    expect(filters.project).toBeNull();
+  });
+
+  it('shows a placeholder until the year Summary lands, then its ≥-marked figure', async () => {
+    const { container: c, ledger } = await mount();
+    ledger.hold('summary');
+    const modal = await open(c);
+    const stats = () => modal.querySelector('.tt-heat-modal-stats')!.textContent!;
+
+    // Held fetch → placeholder, never the range-scoped Summary's figure.
+    expect(stats()).toContain('…');
+    expect(stats()).not.toContain('$');
+
+    await act(async () => {
+      ledger.resolveHeld('summary', 0, {
+        ...summary,
+        cost: 9.99,
+        hasUnpriced: true,
+        unpricedModels: ['self-hosted-x'],
+      });
+    });
+    await settle(1);
+
+    // Figure, ≥ Partial Cost marker, and Unpriced count all from the year window.
+    expect(stats()).toContain('≥ $9.99');
+    expect(stats()).toContain('1 unpriced');
+    expect(stats()).not.toContain('…');
+  });
+
+  it('ignores a stale year Summary from a previous open after a quick reopen', async () => {
+    const { container: c, ledger } = await mount();
+    ledger.hold('summary');
+
+    // Open (fetch #1 held), close, reopen (fetch #2 held).
+    await open(c);
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    const modal = await open(c);
+    const stats = () => modal.querySelector('.tt-heat-modal-stats')!.textContent!;
+
+    // The abandoned first fetch resolving must not replace the placeholder…
+    await act(async () => {
+      ledger.resolveHeld('summary', 0, { ...summary, cost: 111.11 });
+    });
+    await settle(1);
+    expect(stats()).toContain('…');
+    expect(stats()).not.toContain('$111.11');
+
+    // …only the reopen's own fetch may land.
+    await act(async () => {
+      ledger.resolveHeld('summary', 1, { ...summary, cost: 2.22 });
+    });
+    await settle(1);
+    expect(stats()).toContain('$2.22');
   });
 });

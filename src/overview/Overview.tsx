@@ -16,18 +16,21 @@ import { formatDisplayCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
-import type { LedgerPort } from './ledger';
+import { tauriLedger, type LedgerPort } from './ledger';
 import type { ClockPort } from './overviewStore';
+import { heatFilters } from './data';
 import { tauriPricing, type PricingPort } from '../pricing/pricing';
 import type { SettingsPort } from '../settings/settings';
 import OverrideEditor from '../pricing/OverrideEditor';
-import type { ModelPricing } from '../types';
+import type { ModelPricing, Summary } from '../types';
 
 // "App · Overview", rebuilt to the dashboard-v2 design and wired to the real
 // Ledger through useOverview(): one unbounded daily series powers
 // heatmap/trends/tables via client-side slicing; summary and breakdowns re-fetch
 // per range; an hourly series serves the Day view. All data derivation lives in
-// the store/selectors — this shell only renders the model the hook hands back.
+// the store/selectors — this shell only renders the model the hook hands back,
+// plus two on-open fetches it owns directly: the Pricing list for the Override
+// editor and the year-window Summary for the Activity enlarge.
 // The window chrome (sidebar wordmark, tab nav) is owned by the app shell; the
 // last-scan status + Rescan live in this tab's toolbar (dashboard-v2). This tab
 // renders the design's <main> content, flush on --bg-app.
@@ -42,6 +45,27 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   const setHeatEnlargeTarget = useCallback((el: HTMLButtonElement | null) => {
     heatEnlargeRef.current = el;
   }, []);
+
+  // The enlarge's Cost describes exactly its trailing-365-day window, so it
+  // gets its own Summary fetched per open (the page Summary is range-scoped
+  // and would mis-mark Partial Cost). null renders as a placeholder; a failed
+  // fetch just leaves it. The epoch guards a quick close→reopen: only the
+  // latest open's response may land, so a stale fetch can't replace the
+  // placeholder or outlive a newer answer.
+  const ledger = ports?.ledger ?? tauriLedger;
+  const [heatSummary, setHeatSummary] = useState<Summary | null>(null);
+  const heatFetchEpoch = useRef(0);
+  const openHeatModal = useCallback(() => {
+    setHeatSummary(null);
+    setHeatModalOpen(true);
+    const epoch = ++heatFetchEpoch.current;
+    ledger.summary(heatFilters()).then(
+      (s) => {
+        if (heatFetchEpoch.current === epoch) setHeatSummary(s);
+      },
+      () => {},
+    );
+  }, [ledger]);
 
   // Model-selection entry point into the shared Override editor: fetch a fresh
   // ModelPricing list on open (the Overview may show a Model absent from a stale
@@ -209,7 +233,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
       <div className="tt-b8-grid">
         <div className="tt-b8-col">
-          <Heatmap days={panels.heatmap.days} compact onEnlarge={() => setHeatModalOpen(true)} enlargeRef={setHeatEnlargeTarget} />
+          <Heatmap days={panels.heatmap.days} compact onEnlarge={openHeatModal} enlargeRef={setHeatEnlargeTarget} />
           <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} />
           {panels.sparks.length > 0 && <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />}
         </div>
@@ -264,8 +288,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       {heatModalOpen && (
         <HeatmapModal
           days={panels.heatmap.days}
-          cost={panels.heatmap.cost}
-          hasUnpriced={panels.heatmap.hasUnpriced}
+          summary={heatSummary}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />

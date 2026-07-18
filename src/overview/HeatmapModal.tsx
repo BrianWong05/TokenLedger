@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import type { Summary } from '../types';
 import { heatStats, type Day } from './data';
 import { TOOLS } from './meta';
 import { fmtPct, fmtTok } from '../lib/format';
@@ -23,14 +24,12 @@ const FOCUSABLE_SELECTOR = [
 // canvas below. Numbers come from the same heatStats + Summary the card shows.
 export default function HeatmapModal({
   days,
-  cost,
-  hasUnpriced,
+  summary,
   returnFocusRef,
   onClose,
 }: {
   days: Day[];
-  cost: number | null;
-  hasUnpriced: boolean;
+  summary: Summary | null; // year-window Summary; null while it loads
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
@@ -60,7 +59,8 @@ export default function HeatmapModal({
     for (const d of days) for (const tl of TOOLS) totals.set(tl.key, (totals.get(tl.key) ?? 0) + d.byTool[tl.key]);
     return TOOLS.filter((tl) => (totals.get(tl.key) ?? 0) > 0);
   }, [days]);
-  const costLabel = formatDisplayCost(cost, hasUnpriced, settings, lang);
+  const costLabel =
+    summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
 
   // tooltip per-tool rows for the hovered day (mirrors the card)
   const tipRows = hover
@@ -197,7 +197,14 @@ export default function HeatmapModal({
           <span className="sep" />
           <div className="stat" title={t('overview.notBilled')}>
             <span className="lbl">{t('overview.estCost')}</span>
-            <span className="val cost">{costLabel}</span>
+            <span className="val cost">
+              {costLabel}
+              {summary?.hasUnpriced && (
+                <span className="muted" title={summary.unpricedModels.join(', ')}>
+                  {' '}· {summary.unpricedModels.length} {t('overview.unpricedMarker')}
+                </span>
+              )}
+            </span>
           </div>
           <span className="sep" />
           <div className="stat">

@@ -3,7 +3,7 @@ import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRo
 import {
   seriesToDays,
   heatStats,
-  heatCost,
+  heatFilters,
   windowOf,
   pointsIn,
   bucketsFromPoints,
@@ -106,14 +106,16 @@ describe('heatStats', () => {
   });
 });
 
-describe('heatCost', () => {
-  it('sums cost within the trailing 365 days and excludes older points', () => {
-    const pts = [
-      pt({ bucket: '2026-07-09', cost: 1.5 }),
-      pt({ bucket: '2026-07-10', cost: 2.5 }),
-      pt({ bucket: '2020-01-01', cost: 99 }), // before the window
-    ];
-    expect(heatCost(pts, TODAY)).toBeCloseTo(4);
+describe('heatFilters', () => {
+  it('bounds the trailing-365-day window in epoch seconds, unfiltered otherwise', () => {
+    const f = heatFilters(TODAY);
+    // TODAY is 2026-07-10 local; the window's days match seriesToDays:
+    // first day 2025-07-11, exclusive end at midnight 2026-07-11.
+    expect(f.startTs).toBe(Math.floor(new Date(2025, 6, 11).getTime() / 1000));
+    expect(f.endTs).toBe(Math.floor(new Date(2026, 6, 11).getTime() / 1000));
+    expect(f.tools).toEqual([]);
+    expect(f.models).toEqual([]);
+    expect(f.project).toBeNull();
   });
 });
 

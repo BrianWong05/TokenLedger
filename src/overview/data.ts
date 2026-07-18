@@ -130,18 +130,21 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
   return days;
 }
 
-// Cost over the same trailing-365-day window seriesToDays covers, so the
-// enlarge's Est. cost lines up with its annual token/day stats (unpriced models
-// contribute 0 — pair with the Summary's hasUnpriced for the ≥ marker).
-export function heatCost(points: SeriesPoint[], today: Date = new Date()): number {
+// Filters for the heatmap's trailing-365-day window (the same days
+// seriesToDays fills), as epoch-second bounds: [midnight 364 days ago,
+// midnight after today). The enlarge fetches its Summary with these so the
+// Cost figure and its Partial-Cost marker describe exactly the days shown.
+export function heatFilters(today: Date = new Date()): Filters {
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const start = new Date(end);
   start.setDate(start.getDate() - 364);
-  const fromIso = isoOf(start);
-  const toIso = isoOf(end);
-  let cost = 0;
-  for (const p of points) if (p.bucket >= fromIso && p.bucket <= toIso) cost += p.cost;
-  return cost;
+  const next = new Date(end);
+  next.setDate(next.getDate() + 1);
+  return {
+    tools: [], models: [], project: null,
+    startTs: Math.floor(start.getTime() / 1000),
+    endTs: Math.floor(next.getTime() / 1000),
+  };
 }
 
 export interface HeatStats {
