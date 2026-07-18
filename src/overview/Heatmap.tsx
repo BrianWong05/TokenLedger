@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { heatStats, type Day } from './data';
 import { fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, monthShortL, weekdayShortL, useOverviewT } from './localize';
@@ -36,7 +36,7 @@ function Heatmap({
   const [mode, setMode] = useState<Mode>('2d');
   const [hover, setHover] = useState<Day | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
-  const [pos2, setPos2] = useState<{ x: number; y: number; w: number }>({ x: 0, y: 0, w: 1 });
+  const [pos2, setPos2] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const wrapRef = useRef<HTMLDivElement>(null);
 
   // Theme-aware ramp: useChartColors returns the exact CHART_LIGHT/CHART_DARK
@@ -90,11 +90,31 @@ function Heatmap({
     if (host) {
       const r = e.currentTarget.getBoundingClientRect();
       const hb = host.getBoundingClientRect();
-      setPos2({ x: r.left + r.width / 2 - hb.left, y: r.top - hb.top, w: hb.width });
+      setPos2({ x: r.left + r.width / 2 - hb.left, y: r.top - hb.top });
     }
     setHover(d);
   };
   const leave = () => setHover(null);
+
+  // Place the 2D tooltip above the cell (below when there's no room), then
+  // clamp it inside the card so it never spills past the card edges. Measured
+  // after render but before paint, so no unclamped frame is visible.
+  const tipRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = tipRef.current;
+    const host = wrapRef.current;
+    const card = host?.closest('.tt-card');
+    if (!el || !host || !card || mode !== '2d' || !hover) return;
+    const hb = host.getBoundingClientRect();
+    const cb = card.getBoundingClientRect();
+    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
+    const left = clamp(pos2.x - el.offsetWidth / 2, cb.left - hb.left + 8, cb.right - hb.left - el.offsetWidth - 8);
+    let top = pos2.y - el.offsetHeight - 8;
+    if (top < cb.top - hb.top + 8) top = pos2.y + CELL + 8;
+    top = clamp(top, cb.top - hb.top + 8, cb.bottom - hb.top - el.offsetHeight - 8);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  }, [mode, hover, pos2]);
 
   // tooltip per-model rows for the hovered day
   const tipRows = hover
@@ -109,8 +129,6 @@ function Heatmap({
   const hint = mode === '2d' ? t('overview.fullYearScroll') : t('overview.hoverDay');
   // WebKit can't resolve var() in SVG strokes either — pick the outline per theme.
   const outline = ramp === HEAT_LIGHT ? '#12151b' : '#e8ecf4';
-  const lf = pos2.w ? pos2.x / pos2.w : 0.5;
-  const tip2dTransform = `translate(${lf < 0.14 ? '-8%' : lf > 0.86 ? '-92%' : '-50%'}, ${pos2.y < 96 ? '30px' : '-116%'})`;
 
   return (
     <div className="tt-card heat">
@@ -207,10 +225,11 @@ function Heatmap({
 
         {hover && (
           <div
+            ref={tipRef}
             className="tt-tip"
             style={
               mode === '2d'
-                ? { left: pos2.x, top: pos2.y, transform: tip2dTransform }
+                ? { left: pos2.x, top: pos2.y }
                 : {
                     left: pos.x,
                     top: pos.y,
