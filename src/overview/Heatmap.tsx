@@ -45,7 +45,13 @@ function Heatmap({
   const ramp = colors === CHART_LIGHT ? HEAT_LIGHT : HEAT_DARK;
   const accent = ramp[3];
 
-  const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
+  // Monday-START column to match the Monday-first rows. Day.col is a
+  // Sunday-start week (kept for the 3D scene) — using it here would file each
+  // Sunday one column right of its Mon–Sun week and leave a hole in the first
+  // column whenever the 365-day window opens mid-week.
+  const off = days.length ? (days[0].weekday + 6) % 7 : 0;
+  const col2d = (d: Day) => Math.floor((d.index + off) / 7);
+  const cols = days.length ? col2d(days[days.length - 1]) + 1 : 1;
   const stats = useMemo(() => heatStats(days), [days]);
 
   // month labels sit above each month's first column; months squeezed into a
@@ -55,11 +61,12 @@ function Heatmap({
     let prevCol = -1;
     let lastM = -1;
     for (const d of days) {
-      if (d.col === prevCol) continue;
-      prevCol = d.col;
+      const c = col2d(d);
+      if (c === prevCol) continue;
+      prevCol = c;
       const m = d.date.getMonth();
       if (m !== lastM) {
-        starts.push({ c: d.col, m });
+        starts.push({ c, m });
         lastM = m;
       }
     }
@@ -67,7 +74,7 @@ function Heatmap({
       const end = i + 1 < starts.length ? starts[i + 1].c : cols;
       return end - s.c >= 2 ? [{ x: OX + s.c * C2, label: monthShortL(s.m, lang) }] : [];
     });
-  }, [days, cols, lang]);
+  }, [days, cols, lang]); // off/col2d derive from days
 
   const dayLabels = useMemo(() => [1, 2, 3, 4, 5, 6, 0].map((dow) => weekdayShortL(dow, lang)), [lang]);
 
@@ -194,7 +201,7 @@ function Heatmap({
                   {days.map((d) => (
                     <rect
                       key={d.index}
-                      x={OX + d.col * C2}
+                      x={OX + col2d(d) * C2}
                       y={OY + row2d(d) * C2}
                       width={CELL}
                       height={CELL}
@@ -206,7 +213,7 @@ function Heatmap({
                   ))}
                   {hover && (
                     <rect
-                      x={OX + hover.col * C2}
+                      x={OX + col2d(hover) * C2}
                       y={OY + row2d(hover) * C2}
                       width={CELL}
                       height={CELL}
