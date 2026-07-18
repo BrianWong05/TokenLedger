@@ -146,6 +146,19 @@ describe('Overview presentation', () => {
     expect(foot).toContain('codex: 88 in / 2 skipped');
   });
 
+  it('renders the last-scan label at the scan wall-clock time (backend sends epoch seconds)', async () => {
+    const scannedAtSec = 1_780_300_000; // 2026-06-01T… — any real epoch-second instant
+    const scan: ScanStatus = { scannedAt: scannedAtSec, sources: [] };
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+      scan,
+    });
+
+    const label = c.querySelector('.tt-lastscan')!.textContent ?? '';
+    expect(label).toContain(new Date(scannedAtSec * 1000).toLocaleTimeString());
+  });
+
   it('renders the toolbar: range control, last-scan status, and Rescan (no select/avatar)', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],

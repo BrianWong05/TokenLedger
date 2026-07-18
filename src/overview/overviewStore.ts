@@ -162,7 +162,8 @@ class Store implements OverviewStore {
       .filter((s) => s.error)
       .map((s) => `${s.source}: ${s.error}`);
     this.state.scanError = errs.length ? errs.join(' · ') : null;
-    this.state.scanAt = status.scannedAt || this.clock.now().getTime();
+    // Backend reports epoch seconds (scan.rs as_secs); scanAt is epoch ms.
+    this.state.scanAt = status.scannedAt ? status.scannedAt * 1000 : this.clock.now().getTime();
     this.publish();
 
     // Idle tick: nothing ingested, no source errored, data already on screen —

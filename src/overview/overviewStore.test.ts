@@ -92,6 +92,15 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().fetchError).toBeNull();
   });
 
+  it('backend scannedAt arrives in epoch seconds and is stored as epoch ms', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      scan: { scannedAt: 1_780_300_000, sources: [] },
+    });
+    const store = await boot(ledger, clock);
+    expect(store.getSnapshot().scanAt).toBe(1_780_300_000_000);
+  });
+
   it('an idle rescan (no errors, zero inserted) skips the series+reload fan-out', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger();
