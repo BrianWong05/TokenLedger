@@ -130,6 +130,43 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
   return days;
 }
 
+// Filters for the heatmap's trailing-365-day window (the same days
+// seriesToDays fills), as epoch-second bounds: [midnight 364 days ago,
+// midnight after today). The enlarge fetches its Summary with these so the
+// Cost figure and its Partial-Cost marker describe exactly the days shown.
+export function heatFilters(today: Date = new Date()): Filters {
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const start = new Date(end);
+  start.setDate(start.getDate() - 364);
+  const next = new Date(end);
+  next.setDate(next.getDate() + 1);
+  return {
+    tools: [], models: [], project: null,
+    startTs: Math.floor(start.getTime() / 1000),
+    endTs: Math.floor(next.getTime() / 1000),
+  };
+}
+
+export interface HeatStats {
+  totalTokens: number;
+  activeDays: number;
+  streak: number; // longest run of consecutive active days
+  bestDay: Day; // busiest day (peak)
+}
+
+// Aggregate read-outs over the heatmap's 365 days — shared by the Activity card
+// and its full-screen enlarge so both report identical figures.
+export function heatStats(days: Day[]): HeatStats {
+  const totalTokens = days.reduce((a, d) => a + d.tokens, 0);
+  const activeDays = days.filter((d) => d.tokens > 0).length;
+  let streak = 0, run = 0;
+  for (const d of days) {
+    if (d.tokens > 0) { run += 1; streak = Math.max(streak, run); } else run = 0;
+  }
+  const bestDay = days.reduce((a, d) => (d.tokens > a.tokens ? d : a), days[0]);
+  return { totalTokens, activeDays, streak, bestDay };
+}
+
 // ---- range windows over series points ----
 
 export interface Window {

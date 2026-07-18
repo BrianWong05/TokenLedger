@@ -1197,6 +1197,260 @@
   overflow-wrap: anywhere;
 }
 
+/* ---- Activity card header actions + enlarge control ---- */
+.tt-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tt-heat-enlarge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-inset);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tt-heat-enlarge:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.tt-heat-enlarge:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+
+/* ---- Activity enlarge — full-screen 3D landscape (design 3a) ---- */
+.tt-heat-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--overlay);
+  backdrop-filter: blur(6px);
+}
+.tt-heat-modal {
+  width: min(1480px, 90vw);
+  height: min(900px, 86vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(120, 150, 220, 0.16);
+  border-radius: 16px;
+  /* night-sky panel in dark theme; the light override drops to a plain surface */
+  background: radial-gradient(120% 90% at 55% -8%, #101a30 0%, #0b0f1a 58%, #090b12 100%);
+  color: var(--text-primary);
+  box-shadow: 0 40px 120px -30px rgba(0, 0, 0, 0.8);
+}
+[data-theme='light'] .tt-heat-modal {
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+}
+
+/* command band */
+.tt-heat-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 24px;
+}
+.tt-heat-modal-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--success-text);
+}
+.tt-heat-modal-eyebrow .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 8px currentColor;
+}
+.tt-heat-modal-title {
+  margin-top: 5px;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.tt-heat-modal-spacer {
+  flex: 1;
+}
+.tt-heat-modal-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-hover);
+}
+.tt-heat-modal-controls .tool {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.tt-heat-modal-controls .div {
+  width: 1px;
+  height: 15px;
+  background: var(--border-strong);
+}
+.tt-heat-modal-controls .reset {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tt-heat-modal-controls .reset:hover {
+  color: var(--text-primary);
+}
+.tt-heat-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tt-heat-modal-close:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.tt-heat-modal-controls .reset:focus-visible,
+.tt-heat-modal-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+
+/* stats band */
+.tt-heat-modal-stats {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 14px 28px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.tt-heat-modal-stats .stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tt-heat-modal-stats .lbl {
+  font-size: 9.5px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.tt-heat-modal-stats .val {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
+}
+.tt-heat-modal-stats .val.cost {
+  color: var(--success-text);
+}
+.tt-heat-modal-stats .val.streak {
+  color: var(--warning-text);
+}
+.tt-heat-modal-stats .val .muted {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.tt-heat-modal-stats .val .unit {
+  font-size: 12px;
+}
+.tt-heat-modal-stats .sep {
+  width: 1px;
+  height: 30px;
+  background: var(--border-subtle);
+}
+
+/* canvas */
+.tt-heat-modal-canvas {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 60%, #0d151a 0%, #0a0d11 60%, #080a0e 100%);
+}
+[data-theme='light'] .tt-heat-modal-canvas {
+  background: var(--bg-inset);
+}
+.tt-heat-modal-canvas svg {
+  position: absolute;
+  top: 44px;
+  right: 52px;
+  bottom: 64px;
+  left: 52px;
+  display: block;
+}
+.tt-heat-modal-canvas svg.grab {
+  cursor: grab;
+}
+.tt-heat-modal-canvas svg.grabbing {
+  cursor: grabbing;
+}
+.tt-heat-modal-legend {
+  position: absolute;
+  bottom: 22px;
+  left: 26px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.tt-heat-modal-legend .cap {
+  margin-right: 4px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.tt-heat-modal-legend .cell {
+  width: 14px;
+  height: 8px;
+  border-radius: 2px;
+}
+.tt-heat-modal-hint {
+  position: absolute;
+  bottom: 22px;
+  right: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+
 /* ---- narrow fallback (desktop Tauri window can be resized) ---- */
 @media (max-width: 860px) {
   .tt-b8-grid {

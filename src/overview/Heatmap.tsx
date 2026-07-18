@@ -1,45 +1,39 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { TOOLS } from './meta';
-import type { Day } from './data';
+import { heatStats, type Day } from './data';
 import { fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, monthShortL, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
+import Landscape3D, { INITIAL_YAW } from './Landscape3D';
 
 type Mode = '2d' | '3d';
 
 // DS violet intensity ramp (index 0 = empty cell, 1..4 ascending). WebKit can't
 // resolve var() in SVG fills, so these mirror the DS tokens per theme.
-const HEAT_DARK = ['#1c1f27', '#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa'];
-const HEAT_LIGHT = ['#EDEDF0', '#bfdbfe', '#93c5fd', '#3b82f6', '#1d4ed8'];
+export const HEAT_DARK = ['#1c1f27', '#1e3a8a', '#2563eb', '#3b82f6', '#60a5fa'];
+export const HEAT_LIGHT = ['#EDEDF0', '#bfdbfe', '#93c5fd', '#3b82f6', '#1d4ed8'];
 
 // ---- 2D grid geometry ----
 const S = 13; // cell size
 const STEP = 16; // cell + gap
 const TOP = 16; // room for month labels
 
-// ---- 3D isometric geometry ----
-const TILE = 0.86;
-const AX = 10; // iso x scale
-const BY = 5.4; // iso tilt scale
-const ZUNIT = 8; // extruded height per level
-
-function shade(hex: string, f: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  const r = Math.round(((n >> 16) & 255) * f);
-  const g = Math.round(((n >> 8) & 255) * f);
-  const b = Math.round((n & 255) * f);
-  return `rgb(${r},${g},${b})`;
-}
-const poly = (pts: [number, number][]) =>
-  'M' + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join('L') + 'Z';
-
-export default function Heatmap({ days, compact = false }: { days: Day[]; compact?: boolean }) {
+export default function Heatmap({
+  days,
+  compact = false,
+  onEnlarge,
+  enlargeRef,
+}: {
+  days: Day[];
+  compact?: boolean;
+  onEnlarge?: () => void;
+  enlargeRef?: (el: HTMLButtonElement | null) => void;
+}) {
   const { t, lang } = useOverviewT();
   const [mode, setMode] = useState<Mode>('2d');
-  const [yaw, setYaw] = useState(-0.14);
+  const [yaw, setYaw] = useState(INITIAL_YAW);
   const [hover, setHover] = useState<Day | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
-  const wrap = useRef<HTMLDivElement>(null);
 
   // Theme-aware ramp: useChartColors returns the exact CHART_LIGHT/CHART_DARK
   // constant, so reference equality tells us which theme is live.
@@ -48,16 +42,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
   const accent = ramp[3];
 
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
-  const stats = useMemo(() => {
-    const totalTokens = days.reduce((a, d) => a + d.tokens, 0);
-    const activeDays = days.filter((d) => d.tokens > 0).length;
-    let streak = 0, run = 0;
-    for (const d of days) {
-      if (d.tokens > 0) { run += 1; streak = Math.max(streak, run); } else run = 0;
-    }
-    const bestDay = days.reduce((a, d) => (d.tokens > a.tokens ? d : a), days[0]);
-    return { totalTokens, activeDays, streak, bestDay };
-  }, [days]);
+  const stats = useMemo(() => heatStats(days), [days]);
 
   // month label columns for 2D
   const monthLabels = useMemo(() => {
@@ -74,93 +59,6 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
   }, [days, lang]);
 
   const view2d = `0 0 ${cols * STEP} ${TOP + 7 * STEP}`;
-
-  // 3D faces, depth-sorted back-to-front, plus a fitted viewBox
-  const three = useMemo(() => {
-    const cos = Math.cos(yaw);
-    const sin = Math.sin(yaw);
-    const cx = cols / 2;
-    const cy = 3.5;
-    const proj = (gx: number, gy: number, z: number): [number, number] => {
-      const x = gx - cx;
-      const y = gy - cy;
-      const rx = x * cos - y * sin;
-      const ry = x * sin + y * cos;
-      return [(rx - ry) * AX, (rx + ry) * BY - z];
-    };
-    const depth = (gx: number, gy: number) => {
-      const x = gx - cx;
-      const y = gy - cy;
-      return x * sin + y * cos; // larger = nearer
-    };
-
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    const track = (p: [number, number]) => {
-      minX = Math.min(minX, p[0]);
-      maxX = Math.max(maxX, p[0]);
-      minY = Math.min(minY, p[1]);
-      maxY = Math.max(maxY, p[1]);
-    };
-
-    const cells = days.map((d) => {
-      const c = d.col;
-      const r = d.row;
-      const z = d.level * ZUNIT;
-      const g = [proj(c, r, 0), proj(c + TILE, r, 0), proj(c + TILE, r + TILE, 0), proj(c, r + TILE, 0)];
-      const t = [proj(c, r, z), proj(c + TILE, r, z), proj(c + TILE, r + TILE, z), proj(c, r + TILE, z)];
-      [...g, ...t].forEach(track);
-      const top = ramp[d.level];
-      return {
-        d,
-        depth: depth(c + TILE / 2, r + TILE / 2),
-        top: poly([t[0], t[1], t[2], t[3]]),
-        right: poly([g[1], g[2], t[2], t[1]]),
-        front: poly([g[3], g[2], t[2], t[3]]),
-        topFill: top,
-        rightFill: shade(top, 0.62),
-        frontFill: shade(top, 0.8),
-      };
-    }).sort((a, b) => a.depth - b.depth);
-
-    const pad = 10;
-    const viewBox = `${(minX - pad).toFixed(1)} ${(minY - pad).toFixed(1)} ${(maxX - minX + pad * 2).toFixed(1)} ${(maxY - minY + pad * 2).toFixed(1)}`;
-    return { cells, viewBox };
-  }, [yaw, ramp, days, cols]);
-
-  // drag-to-rotate (3D only)
-  useEffect(() => {
-    if (mode !== '3d') return;
-    let startX = 0;
-    let startYaw = yaw;
-    let dragging = false;
-    const svg = wrap.current?.querySelector('svg');
-    const down = (e: MouseEvent) => {
-      dragging = true;
-      startX = e.clientX;
-      startYaw = yaw;
-      (svg as SVGElement)?.classList.add('grabbing');
-    };
-    const move = (e: MouseEvent) => {
-      if (!dragging) return;
-      const next = startYaw + (e.clientX - startX) * 0.005;
-      setYaw(Math.max(-0.5, Math.min(0.4, next)));
-    };
-    const up = () => {
-      dragging = false;
-      (svg as SVGElement)?.classList.remove('grabbing');
-    };
-    svg?.addEventListener('mousedown', down);
-    window.addEventListener('mousemove', move);
-    window.addEventListener('mouseup', up);
-    return () => {
-      svg?.removeEventListener('mousedown', down);
-      window.removeEventListener('mousemove', move);
-      window.removeEventListener('mouseup', up);
-    };
-  }, [mode, yaw]);
 
   function onMove(e: React.MouseEvent<HTMLDivElement>) {
     const w = e.currentTarget.clientWidth;
@@ -195,19 +93,30 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
             )}
           </div>
         </div>
-        <div className="tt-seg">
-          <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>
-            2D
-          </button>
-          <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>
-            3D
-          </button>
+        <div className="tt-head-actions">
+          <div className="tt-seg">
+            <button className={mode === '2d' ? 'active' : ''} onClick={() => setMode('2d')}>
+              2D
+            </button>
+            <button className={mode === '3d' ? 'active' : ''} onClick={() => setMode('3d')}>
+              3D
+            </button>
+          </div>
+          {onEnlarge && (
+            <button ref={enlargeRef} type="button" className="tt-heat-enlarge" onClick={onEnlarge} title={t('overview.enlarge')} aria-label={t('overview.enlarge')}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M15 3h6v6" />
+                <path d="M9 21H3v-6" />
+                <path d="m21 3-7 7" />
+                <path d="m3 21 7-7" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
 
       <div
         className="tt-heat-wrap"
-        ref={wrap}
         onMouseMove={onMove}
         onMouseLeave={leave}
         style={compact ? { height: 186 } : undefined}
@@ -235,22 +144,7 @@ export default function Heatmap({ days, compact = false }: { days: Day[]; compac
             ))}
           </svg>
         ) : (
-          <svg className="grab" viewBox={three.viewBox} preserveAspectRatio="xMidYMid meet">
-            {three.cells.map((c) => (
-              <g key={c.d.index}>
-                {c.d.level > 0 && <path d={c.right} fill={c.rightFill} />}
-                {c.d.level > 0 && <path d={c.front} fill={c.frontFill} />}
-                <path
-                  d={c.top}
-                  fill={c.topFill}
-                  stroke="rgba(0,0,0,.25)"
-                  strokeWidth={0.4}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={enter(c.d)}
-                />
-              </g>
-            ))}
-          </svg>
+          <Landscape3D days={days} ramp={ramp} yaw={yaw} onYaw={setYaw} onHoverDay={setHover} />
         )}
 
         {hover && (

@@ -1,7 +1,8 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useCallback, useMemo, useRef, useState, type RefObject } from 'react';
 import type { BreakdownRow, Summary } from '../types';
 import { buildCostBreakdownView } from './costBreakdown';
 import { useSettings } from '../settings/SettingsContext';
+import { useDialogChrome } from './useDialogChrome';
 import { useOverviewT } from './localize';
 
 interface CostBreakdownModalProps {
@@ -10,15 +11,6 @@ interface CostBreakdownModalProps {
   returnFocusRef: RefObject<HTMLElement>;
   onClose: () => void;
 }
-
-const FOCUSABLE_SELECTOR = [
-  'button:not([disabled])',
-  '[href]',
-  'input:not([disabled])',
-  'select:not([disabled])',
-  'textarea:not([disabled])',
-  '[tabindex]:not([tabindex="-1"])',
-].join(',');
 
 export default function CostBreakdownModal({
   summary,
@@ -34,8 +26,7 @@ export default function CostBreakdownModal({
   );
   const modalRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useDialogChrome({ modalRef, initialFocusRef: closeButtonRef, returnFocusRef, onClose });
 
   // The current group lives in permanent chrome outside the scroller. Keeping
   // that row mounted makes its geometry stable in WebKit; the first in-list
@@ -58,57 +49,6 @@ export default function CostBreakdownModal({
     setPinnedIdx(current);
   }, []);
   const pinned = view.groups[pinnedIdx] ?? view.groups[0] ?? null;
-
-  useLayoutEffect(() => {
-    const pageRoot = document.documentElement;
-    const pageBody = document.body;
-    const previousRootOverflow = pageRoot.style.overflow;
-    const previousBodyOverflow = pageBody.style.overflow;
-    pageRoot.style.overflow = 'hidden';
-    pageBody.style.overflow = 'hidden';
-
-    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const modal = modalRef.current;
-    (closeButtonRef.current ?? modal)?.focus();
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== 'Tab' || !modal) return;
-
-      const focusable = Array.from(modal.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
-      if (focusable.length === 0) {
-        event.preventDefault();
-        modal.focus();
-        return;
-      }
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      const focusIsOutside = !active || !modal.contains(active);
-
-      if (event.shiftKey && (active === first || focusIsOutside)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (active === last || focusIsOutside)) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('keydown', handleKeyDown);
-      pageRoot.style.overflow = previousRootOverflow;
-      pageBody.style.overflow = previousBodyOverflow;
-      const focusTarget = returnFocusRef.current ?? previouslyFocused;
-      if (focusTarget?.isConnected) focusTarget.focus();
-    };
-  }, []);
 
   return (
     <div

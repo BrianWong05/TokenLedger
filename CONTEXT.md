@@ -26,10 +26,19 @@ _Avoid_: Cache, database, store
 **Overview**:
 The application's home tab: the presentation of the Ledger over a
 user-selected date window and Source selection — headline token total, Cost,
-usage trends, and per-Source breakdowns. What it shows is always a view of the
-Ledger; it never holds usage data of its own. Usage data appears on no other
-tab.
+usage trends, and per-Source breakdowns. Activity is the one part of the tab
+that ignores that selection. What it shows is always a view of the Ledger; it
+never holds usage data of its own. Usage data appears on no other tab.
 _Avoid_: Dashboard, home screen
+
+**Activity**:
+The Overview's fixed-window view of the Ledger: token activity per calendar
+day over the trailing 12 months, across all Sources, deliberately independent
+of the Overview's date window and Source selection. Presented as a heatmap
+card and, via its Enlarge control, as a full-screen rotatable 3D perspective;
+every figure it reports — including its Cost — describes that same fixed
+window, never the selected range.
+_Avoid_: Heatmap, contribution graph, calendar
 
 **Pricing**:
 The tab that presents rates, never usage: every Model seen in the Ledger with

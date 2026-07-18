@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
 import {
   seriesToDays,
+  heatStats,
+  heatFilters,
   windowOf,
   pointsIn,
   bucketsFromPoints,
@@ -84,6 +86,36 @@ describe('seriesToDays', () => {
     const active = days.filter((d) => d.tokens > 0);
     expect(active).toHaveLength(3);
     expect(active.every((d) => d.level === 4)).toBe(true);
+  });
+});
+
+describe('heatStats', () => {
+  it('sums tokens, counts active days, longest streak, and picks the peak', () => {
+    const pts = [
+      pt({ bucket: '2026-07-06', totalTokens: 100 }),
+      pt({ bucket: '2026-07-07', totalTokens: 900 }), // peak
+      pt({ bucket: '2026-07-08', totalTokens: 200 }),
+      // gap on 07-09
+      pt({ bucket: '2026-07-10', totalTokens: 300 }),
+    ];
+    const s = heatStats(seriesToDays(pts, TODAY));
+    expect(s.totalTokens).toBe(1500);
+    expect(s.activeDays).toBe(4);
+    expect(s.streak).toBe(3); // 07-06..07-08, broken by the 07-09 gap
+    expect(s.bestDay.iso).toBe('2026-07-07');
+  });
+});
+
+describe('heatFilters', () => {
+  it('bounds the trailing-365-day window in epoch seconds, unfiltered otherwise', () => {
+    const f = heatFilters(TODAY);
+    // TODAY is 2026-07-10 local; the window's days match seriesToDays:
+    // first day 2025-07-11, exclusive end at midnight 2026-07-11.
+    expect(f.startTs).toBe(Math.floor(new Date(2025, 6, 11).getTime() / 1000));
+    expect(f.endTs).toBe(Math.floor(new Date(2026, 6, 11).getTime() / 1000));
+    expect(f.tools).toEqual([]);
+    expect(f.models).toEqual([]);
+    expect(f.project).toBeNull();
   });
 });
 
