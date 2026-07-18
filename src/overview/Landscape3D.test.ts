@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { projectPoint, visibleWalls, sceneBounds, TILE, ZUNIT, INITIAL_VIEW } from './Landscape3D';
+import {
+  projectPoint,
+  unprojectGround,
+  visibleWalls,
+  sceneBounds,
+  zoomView,
+  TILE,
+  ZUNIT,
+  INITIAL_VIEW,
+} from './Landscape3D';
 import { seriesToDays } from './data';
 import type { SeriesPoint } from '../types';
 
@@ -78,6 +87,17 @@ describe('projectPoint', () => {
     }
   });
 
+  it('unprojectGround inverts the ground-plane projection at any angle', () => {
+    for (const yaw of [0, 0.7, -1.3, 2.9]) {
+      for (const pitch of [0.3, INITIAL_VIEW.pitch, 1.15]) {
+        const [sx, sy] = projectPoint(7.5, -2.25, 0, yaw, pitch);
+        const [x, y] = unprojectGround(sx, sy, yaw, pitch);
+        expect(x).toBeCloseTo(7.5, 8);
+        expect(y).toBeCloseTo(-2.25, 8);
+      }
+    }
+  });
+
   it('tilting toward top-down grows the ground and shortens the bars', () => {
     const flat = 0.35;
     const steep = 1.1;
@@ -118,5 +138,37 @@ describe('sceneBounds', () => {
         }
       }
     }
+  });
+});
+
+describe('zoomView', () => {
+  const box: [number, number] = [0, -19];
+  const view = { yaw: 0.6, pitch: 0.8, zoom: 2, tx: 3, ty: -1 };
+
+  it('keeps the grid point under the cursor fixed while zooming', () => {
+    const anchor: [number, number] = [120, -60];
+    // The grid point currently under the anchor.
+    const [gx, gy] = unprojectGround(anchor[0], anchor[1], view.yaw, view.pitch);
+    const g: [number, number] = [gx + view.tx, gy + view.ty];
+
+    const next = zoomView(view, 1.5, anchor, box);
+    expect(next.zoom).toBeCloseTo(3, 8);
+    // Where that same grid point projects now…
+    const [sx, sy] = projectPoint(g[0] - next.tx, g[1] - next.ty, 0, view.yaw, view.pitch);
+    // …must be the anchor's viewBox coordinate after the viewport rescaled
+    // around its fixed center (same screen pixel).
+    const shrink = view.zoom / next.zoom;
+    expect(sx).toBeCloseTo((anchor[0] - box[0]) * shrink + box[0], 6);
+    expect(sy).toBeCloseTo((anchor[1] - box[1]) * shrink + box[1], 6);
+  });
+
+  it('clamps at the top and snaps the target home at zoom 1', () => {
+    expect(zoomView({ ...view, zoom: 8 }, 2, [0, 0], box).zoom).toBe(8);
+    const out = zoomView(view, 0.1, [50, 50], box);
+    expect(out.zoom).toBe(1);
+    expect(out.tx).toBe(0);
+    expect(out.ty).toBe(0);
+    // No-op factor at the clamp returns the same view object.
+    expect(zoomView(out, 0.5, [50, 50], box)).toBe(out);
   });
 });

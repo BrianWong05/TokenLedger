@@ -170,7 +170,7 @@ export default function HeatmapModal({
         </div>
 
         <div className="tt-heat-modal-canvas" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-          <Landscape3D days={days} ramp={ramp} view={view} onView={setView} onHoverDay={setHover} />
+          <Landscape3D days={days} ramp={ramp} view={view} onView={setView} zoomable onHoverDay={setHover} />
 
           {hover && (
             <div
@@ -218,7 +218,7 @@ export default function HeatmapModal({
               <path d="M12 16v-4" />
               <path d="M12 8h.01" />
             </svg>
-            {t('overview.dragRotate')}
+            {t('overview.zoomRotate')}
           </div>
         </div>
       </section>

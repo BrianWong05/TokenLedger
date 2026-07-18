@@ -36,11 +36,19 @@ function shade(hex: string, f: number): string {
 const poly = (pts: [number, number][]) =>
   'M' + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join('L') + 'Z';
 
+// The camera: yaw/pitch orbit around a look-at target (tx, ty — grid coords
+// relative to the scene center); zoom scales the viewport. Zooming at the
+// cursor walks the target toward the point under it, so rotation pivots
+// around what you zoomed into; zooming back out to 1 recenters.
 export interface View3D {
   yaw: number;
   pitch: number;
+  zoom: number;
+  tx: number;
+  ty: number;
 }
-export const INITIAL_VIEW: View3D = { yaw: -0.14, pitch: Math.asin(BY / AX) };
+export const INITIAL_VIEW: View3D = { yaw: -0.14, pitch: Math.asin(BY / AX), zoom: 1, tx: 0, ty: 0 };
+const ZOOM_MAX = 8;
 
 // The orbit projection, in grid coordinates centered on the scene
 // (x = col - cols/2, y = row - CY). Screen y grows downward; z subtracts,
@@ -57,6 +65,41 @@ export function projectPoint(
   const rx = x * cos - y * sin;
   const ry = x * sin + y * cos;
   return [(rx - ry) * AX, (rx + ry) * AX * Math.sin(pitch) - z * ZSCALE * Math.cos(pitch)];
+}
+
+// Ground-plane (z = 0) inverse of projectPoint — the projection restricted to
+// the ground is linear and invertible at any pitch inside the clamp.
+export function unprojectGround(sx: number, sy: number, yaw: number, pitch: number): [number, number] {
+  const u = sx / AX;
+  const w = sy / (AX * Math.sin(pitch));
+  const rx = (u + w) / 2;
+  const ry = (w - u) / 2;
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  return [rx * cos + ry * sin, ry * cos - rx * sin];
+}
+
+// One wheel step: scale the zoom by `factor`, keeping the grid point under
+// `anchor` (viewBox coords; `boxCenter` is the viewport's fixed center) exactly
+// under the cursor — the look-at target absorbs the difference, so the
+// rotation pivot converges on the spot being zoomed into. Zoom is clamped to
+// [1, ZOOM_MAX]; arriving back at 1 snaps the target home to the scene center.
+export function zoomView(
+  view: View3D,
+  factor: number,
+  anchor: [number, number],
+  boxCenter: [number, number],
+): View3D {
+  const zoom = Math.min(ZOOM_MAX, Math.max(1, view.zoom * factor));
+  if (zoom === view.zoom) return view;
+  if (zoom === 1) return { ...view, zoom, tx: 0, ty: 0 };
+  // The cursor's viewBox coordinate after the viewport rescales around its
+  // fixed center; the target shifts by the ground-plane preimage of the gap.
+  const shrink = view.zoom / zoom;
+  const dvx = (anchor[0] - boxCenter[0]) * shrink + boxCenter[0] - anchor[0];
+  const dvy = (anchor[1] - boxCenter[1]) * shrink + boxCenter[1] - anchor[1];
+  const [gx, gy] = unprojectGround(dvx, dvy, view.yaw, view.pitch);
+  return { ...view, zoom, tx: view.tx - gx, ty: view.ty - gy };
 }
 
 // Which two of a bar's four side walls face the camera at this yaw: a wall is
@@ -103,30 +146,45 @@ export default function Landscape3D({
   ramp,
   view,
   onView,
+  zoomable = false,
   onHoverDay,
 }: {
   days: Day[];
   ramp: string[];
   view: View3D;
   onView: (v: View3D) => void;
+  zoomable?: boolean; // wheel zoom — only where the page can't scroll (the enlarge)
   onHoverDay?: (d: Day | null) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
-  const { yaw, pitch } = view;
+  const { yaw, pitch, zoom, tx, ty } = view;
 
-  const viewBox = useMemo(() => {
+  // The viewport rescales around the base box's fixed center as the zoom
+  // changes; the wheel handler needs that center to anchor its math.
+  const camera = useMemo(() => {
     const b = sceneBounds(days, pitch);
     const pad = 10;
-    return `${(b.minX - pad).toFixed(1)} ${(b.minY - pad).toFixed(1)} ${(b.maxX - b.minX + pad * 2).toFixed(1)} ${(b.maxY - b.minY + pad * 2).toFixed(1)}`;
-  }, [days, pitch]);
+    const w = b.maxX - b.minX + pad * 2;
+    const h = b.maxY - b.minY + pad * 2;
+    const c: [number, number] = [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
+    const zw = w / zoom;
+    const zh = h / zoom;
+    return {
+      center: c,
+      viewBox: `${(c[0] - zw / 2).toFixed(1)} ${(c[1] - zh / 2).toFixed(1)} ${zw.toFixed(1)} ${zh.toFixed(1)}`,
+    };
+  }, [days, pitch, zoom]);
+  const boxCenterRef = useRef(camera.center);
+  boxCenterRef.current = camera.center;
 
   // Faces at the current angles, depth-sorted back-to-front. Ground edges of
   // the visible walls: east x = col+TILE, west x = col; south y = row+TILE,
   // north y = row. x-walls shade darker than y-walls at any angle.
   const cells = useMemo(() => {
     const cx = cols / 2;
-    const p = (gx: number, gy: number, z: number) => projectPoint(gx - cx, gy - CY, z, yaw, pitch);
+    const p = (gx: number, gy: number, z: number) =>
+      projectPoint(gx - cx - tx, gy - CY - ty, z, yaw, pitch);
     // Painter's order: a tile whose ground center projects lower on screen
     // (larger screen y) is nearer the camera and must draw later.
     const depth = (gx: number, gy: number) => p(gx, gy, 0)[1];
@@ -164,7 +222,7 @@ export default function Landscape3D({
         };
       })
       .sort((a, b) => a.depth - b.depth);
-  }, [yaw, pitch, ramp, days, cols]);
+  }, [yaw, pitch, tx, ty, ramp, days, cols]);
 
   // drag-to-orbit: listeners attach once, with the live view/onView riding in
   // refs — depending on the view would tear the listeners down on the first
@@ -175,6 +233,8 @@ export default function Landscape3D({
   onViewRef.current = onView;
   const onHoverDayRef = useRef(onHoverDay);
   onHoverDayRef.current = onHoverDay;
+  const zoomableRef = useRef(zoomable);
+  zoomableRef.current = zoomable;
   const draggingRef = useRef(false);
   useEffect(() => {
     const svg = svgRef.current;
@@ -194,6 +254,7 @@ export default function Landscape3D({
     const move = (e: MouseEvent) => {
       if (!draggingRef.current) return;
       onViewRef.current({
+        ...start,
         // minus: the front of the landscape follows the cursor; no clamp —
         // the spin is free and the trig wraps the angle.
         yaw: start.yaw - (e.clientX - startX) * 0.005,
@@ -205,18 +266,37 @@ export default function Landscape3D({
       draggingRef.current = false;
       svg.classList.remove('grabbing');
     };
+    // Wheel zoom at the cursor. getScreenCTM maps client px into viewBox
+    // coords through the meet letterboxing; without layout (jsdom) fall back
+    // to zooming about the viewport center.
+    const wheel = (e: WheelEvent) => {
+      if (!zoomableRef.current) return;
+      e.preventDefault();
+      const ctm = svg.getScreenCTM?.();
+      const anchor: [number, number] = ctm
+        ? (() => {
+            const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+            return [pt.x, pt.y];
+          })()
+        : boxCenterRef.current;
+      onViewRef.current(
+        zoomView(viewRef.current, Math.exp(-e.deltaY * 0.0015), anchor, boxCenterRef.current),
+      );
+    };
     svg.addEventListener('mousedown', down);
+    svg.addEventListener('wheel', wheel, { passive: false });
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', up);
     return () => {
       svg.removeEventListener('mousedown', down);
+      svg.removeEventListener('wheel', wheel);
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
     };
   }, []);
 
   return (
-    <svg ref={svgRef} className="grab" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
+    <svg ref={svgRef} className="grab" viewBox={camera.viewBox} preserveAspectRatio="xMidYMid meet">
       {cells.map((c) => (
         <g key={c.d.index}>
           {c.d.level > 0 && <path d={c.xWall} fill={c.xFill} />}

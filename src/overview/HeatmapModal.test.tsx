@@ -256,6 +256,26 @@ describe('Activity Enlarge', () => {
     expect(tip()).not.toBeNull();
   });
 
+  it('zooms the landscape on wheel and zooms back out to the fitted view', async () => {
+    const { container: c } = await mount();
+    const modal = await open(c);
+    const svg = modal.querySelector<SVGSVGElement>('.tt-heat-modal-canvas svg')!;
+    const vbWidth = () => Number(svg.getAttribute('viewBox')!.split(' ')[2]);
+
+    const fitted = vbWidth();
+    await act(async () => {
+      svg.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -400 }));
+    });
+    await settle(1);
+    expect(vbWidth()).toBeLessThan(fitted); // zoomed in — narrower viewport
+
+    await act(async () => {
+      svg.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 4000 }));
+    });
+    await settle(1);
+    expect(vbWidth()).toBeCloseTo(fitted, 5); // clamped back to the fit
+  });
+
   it('requests a Summary for the trailing-365-day window at the port when opened', async () => {
     const { container: c, ledger } = await mount();
     const before = ledger.calls.summary.length;
