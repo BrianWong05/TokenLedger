@@ -170,7 +170,8 @@
 }
 .tt-card.heat {
   position: relative;
-  overflow: hidden;
+  /* no overflow clip: the day tooltip is allowed to extend past the card
+     (border-radius alone rounds the gradient; the 2D scroller clips itself) */
   /* night-sky glow behind the activity heatmap (design); light theme stays a
      plain surface card via the override below */
   background: radial-gradient(120% 120% at 60% -10%, #101a30 0%, #0b0f1a 60%, #090b12 100%);
