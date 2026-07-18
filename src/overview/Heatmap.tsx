@@ -4,7 +4,7 @@ import { heatStats, type Day } from './data';
 import { fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, monthShortL, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
-import Landscape3D, { INITIAL_YAW } from './Landscape3D';
+import Landscape3D, { INITIAL_VIEW } from './Landscape3D';
 
 type Mode = '2d' | '3d';
 
@@ -31,7 +31,7 @@ export default function Heatmap({
 }) {
   const { t, lang } = useOverviewT();
   const [mode, setMode] = useState<Mode>('2d');
-  const [yaw, setYaw] = useState(INITIAL_YAW);
+  const [view, setView] = useState(INITIAL_VIEW);
   const [hover, setHover] = useState<Day | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
 
@@ -144,7 +144,7 @@ export default function Heatmap({
             ))}
           </svg>
         ) : (
-          <Landscape3D days={days} ramp={ramp} yaw={yaw} onYaw={setYaw} onHoverDay={setHover} />
+          <Landscape3D days={days} ramp={ramp} view={view} onView={setView} onHoverDay={setHover} />
         )}
 
         {hover && (

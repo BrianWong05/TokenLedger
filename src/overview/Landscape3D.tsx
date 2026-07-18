@@ -3,19 +3,28 @@ import type { Day } from './data';
 
 // Isometric activity landscape: each day is an extruded tile whose height tracks
 // its intensity level. Shared by the Activity card's 3D mode and the full-screen
-// enlarge — it owns the view angle and drag-to-rotate; the parent renders any
+// enlarge — it owns the view angles and drag-to-rotate; the parent renders any
 // tooltip via onHoverDay so hover stays consistent with the 2D grid.
 //
-// Rotation is a full free spin: yaw is unbounded (trig wraps it), each bar
-// renders the two side walls that face the camera at the current angle, and
-// the camera is fixed to bounds that hold at every angle — so dragging turns
-// a rigid object instead of re-fitting the scene per frame.
+// The drag orbits on both axes: horizontal spins (yaw — unbounded, trig wraps
+// it), vertical tilts (pitch — the camera's elevation, clamped so the scene
+// never degenerates to a line or pure top-down). Each bar renders the two side
+// walls that face the camera at the current yaw, with bar heights foreshortened
+// by the pitch. The camera holds rigid bounds across the whole yaw circle and
+// re-fits smoothly as the pitch changes.
 
 export const TILE = 0.86;
 const AX = 10; // iso x scale
-const BY = 5.4; // iso tilt scale
+const BY = 5.4; // iso tilt scale at the default pitch
 export const ZUNIT = 8; // extruded height per level
 const CY = 3.5; // grid vertical center (7 weekday rows)
+
+// Pitch is the camera's elevation angle: asin(BY/AX) reproduces the original
+// fixed tilt exactly; ZSCALE keeps bar heights identical at that default while
+// foreshortening them physically (·cos pitch) as the view tilts top-down.
+const PITCH_MIN = 0.3; // ~17° — near-horizon
+const PITCH_MAX = 1.15; // ~66° — near top-down
+const ZSCALE = 1 / Math.cos(Math.asin(BY / AX));
 
 function shade(hex: string, f: number): string {
   const n = parseInt(hex.slice(1), 16);
@@ -27,16 +36,27 @@ function shade(hex: string, f: number): string {
 const poly = (pts: [number, number][]) =>
   'M' + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join('L') + 'Z';
 
-export const INITIAL_YAW = -0.14;
+export interface View3D {
+  yaw: number;
+  pitch: number;
+}
+export const INITIAL_VIEW: View3D = { yaw: -0.14, pitch: Math.asin(BY / AX) };
 
-// The oblique projection, in grid coordinates centered on the scene
-// (x = col - cols/2, y = row - CY). Screen y grows downward; z subtracts.
-export function projectPoint(x: number, y: number, z: number, yaw: number): [number, number] {
+// The orbit projection, in grid coordinates centered on the scene
+// (x = col - cols/2, y = row - CY). Screen y grows downward; z subtracts,
+// foreshortened by the pitch.
+export function projectPoint(
+  x: number,
+  y: number,
+  z: number,
+  yaw: number,
+  pitch: number = INITIAL_VIEW.pitch,
+): [number, number] {
   const cos = Math.cos(yaw);
   const sin = Math.sin(yaw);
   const rx = x * cos - y * sin;
   const ry = x * sin + y * cos;
-  return [(rx - ry) * AX, (rx + ry) * BY - z];
+  return [(rx - ry) * AX, (rx + ry) * AX * Math.sin(pitch) - z * ZSCALE * Math.cos(pitch)];
 }
 
 // Which two of a bar's four side walls face the camera at this yaw: a wall is
@@ -48,12 +68,13 @@ export function visibleWalls(yaw: number): { x: 'east' | 'west'; y: 'south' | 'n
   return { x: cos + sin > 0 ? 'east' : 'west', y: cos - sin > 0 ? 'south' : 'north' };
 }
 
-// Fixed-camera bounds that contain the scene at EVERY yaw: the projection of a
-// point of grid radius ρ stays within ±√2·ρ on both pre-scale axes, so the
-// sweep of the whole rotation fits in the circumscribed-circle box (plus the
-// tallest bar's extrusion above the ground plane).
+// Camera bounds that contain the scene at EVERY yaw for the given pitch: the
+// projection of a point of grid radius ρ stays within ±√2·ρ on both pre-scale
+// axes, so the sweep of the whole rotation fits in the circumscribed-circle
+// box (plus the tallest bar's pitch-foreshortened extrusion above the ground).
 export function sceneBounds(
   days: Pick<Day, 'col' | 'row' | 'level'>[],
+  pitch: number = INITIAL_VIEW.pitch,
 ): { minX: number; minY: number; maxX: number; maxY: number } {
   const cols = Math.max(1, ...days.map((d) => d.col)) + 1;
   const cx = cols / 2;
@@ -73,37 +94,39 @@ export function sceneBounds(
     maxZ = Math.max(maxZ, d.level * ZUNIT);
   }
   const r = Math.sqrt(r2) * Math.SQRT2;
-  return { minX: -r * AX, minY: -r * BY - maxZ, maxX: r * AX, maxY: r * BY };
+  const ry = r * AX * Math.sin(pitch);
+  return { minX: -r * AX, minY: -ry - maxZ * ZSCALE * Math.cos(pitch), maxX: r * AX, maxY: ry };
 }
 
 export default function Landscape3D({
   days,
   ramp,
-  yaw,
-  onYaw,
+  view,
+  onView,
   onHoverDay,
 }: {
   days: Day[];
   ramp: string[];
-  yaw: number;
-  onYaw: (y: number) => void;
+  view: View3D;
+  onView: (v: View3D) => void;
   onHoverDay?: (d: Day | null) => void;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
+  const { yaw, pitch } = view;
 
   const viewBox = useMemo(() => {
-    const b = sceneBounds(days);
+    const b = sceneBounds(days, pitch);
     const pad = 10;
     return `${(b.minX - pad).toFixed(1)} ${(b.minY - pad).toFixed(1)} ${(b.maxX - b.minX + pad * 2).toFixed(1)} ${(b.maxY - b.minY + pad * 2).toFixed(1)}`;
-  }, [days]);
+  }, [days, pitch]);
 
-  // Faces at the current angle, depth-sorted back-to-front. Ground edges of
+  // Faces at the current angles, depth-sorted back-to-front. Ground edges of
   // the visible walls: east x = col+TILE, west x = col; south y = row+TILE,
   // north y = row. x-walls shade darker than y-walls at any angle.
   const cells = useMemo(() => {
     const cx = cols / 2;
-    const p = (gx: number, gy: number, z: number) => projectPoint(gx - cx, gy - CY, z, yaw);
+    const p = (gx: number, gy: number, z: number) => projectPoint(gx - cx, gy - CY, z, yaw, pitch);
     // Painter's order: a tile whose ground center projects lower on screen
     // (larger screen y) is nearer the camera and must draw later.
     const depth = (gx: number, gy: number) => p(gx, gy, 0)[1];
@@ -141,15 +164,15 @@ export default function Landscape3D({
         };
       })
       .sort((a, b) => a.depth - b.depth);
-  }, [yaw, ramp, days, cols]);
+  }, [yaw, pitch, ramp, days, cols]);
 
-  // drag-to-rotate: listeners attach once, with the live yaw/onYaw riding in
-  // refs — depending on yaw would tear the listeners down on the first move of
-  // a drag and reset `dragging`, freezing the rotation after one frame.
-  const yawRef = useRef(yaw);
-  yawRef.current = yaw;
-  const onYawRef = useRef(onYaw);
-  onYawRef.current = onYaw;
+  // drag-to-orbit: listeners attach once, with the live view/onView riding in
+  // refs — depending on the view would tear the listeners down on the first
+  // move of a drag and reset `dragging`, freezing the rotation after one frame.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const onViewRef = useRef(onView);
+  onViewRef.current = onView;
   const onHoverDayRef = useRef(onHoverDay);
   onHoverDayRef.current = onHoverDay;
   const draggingRef = useRef(false);
@@ -157,20 +180,26 @@ export default function Landscape3D({
     const svg = svgRef.current;
     if (!svg) return;
     let startX = 0;
-    let startYaw = 0;
+    let startY = 0;
+    let start: View3D = INITIAL_VIEW;
     const down = (e: MouseEvent) => {
       e.preventDefault(); // WebKit: keep the drag from starting a selection
       draggingRef.current = true;
       startX = e.clientX;
-      startYaw = yawRef.current;
+      startY = e.clientY;
+      start = viewRef.current;
       onHoverDayRef.current?.(null); // no tooltip while rotating
       svg.classList.add('grabbing');
     };
     const move = (e: MouseEvent) => {
       if (!draggingRef.current) return;
-      // minus: the front of the landscape follows the cursor; no clamp — the
-      // spin is free and the trig wraps the angle.
-      onYawRef.current(startYaw - (e.clientX - startX) * 0.005);
+      onViewRef.current({
+        // minus: the front of the landscape follows the cursor; no clamp —
+        // the spin is free and the trig wraps the angle.
+        yaw: start.yaw - (e.clientX - startX) * 0.005,
+        // drag down pulls the front over toward a top-down view.
+        pitch: Math.min(PITCH_MAX, Math.max(PITCH_MIN, start.pitch + (e.clientY - startY) * 0.005)),
+      });
     };
     const up = () => {
       draggingRef.current = false;
