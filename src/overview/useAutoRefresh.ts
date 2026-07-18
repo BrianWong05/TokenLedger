@@ -65,6 +65,21 @@ export function useRefreshSec(): [RefreshSec, (sec: RefreshSec) => void] {
   return [sec, setRefreshSec];
 }
 
+// A scan can finish in ~20ms, which would flash the Rescan spinner for a
+// single frame; hold the refreshing state for at least one full rotation of
+// the 1s spin so the button visibly responds.
+export const MIN_SPIN_MS = 1_000;
+
+export async function holdSpin<T>(work: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  try {
+    return await work();
+  } finally {
+    const remain = MIN_SPIN_MS - (Date.now() - t0);
+    if (remain > 0) await new Promise((r) => setTimeout(r, remain));
+  }
+}
+
 export function createRefreshGate(onRefresh: () => Promise<void>): {
   refresh: () => Promise<void>;
   isBusy: () => boolean;
@@ -99,7 +114,7 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
     busyRef.current = true;
     setRefreshing(true);
     try {
-      await onRefreshRef.current();
+      await holdSpin(() => onRefreshRef.current());
     } finally {
       busyRef.current = false;
       setRefreshing(false);

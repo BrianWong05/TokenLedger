@@ -6,7 +6,7 @@
 // fake Ledger + Settings/Pricing ports.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Overview from './Overview';
 import { RANGES_8B } from './meta';
 import { systemClock } from './overviewStore';
@@ -78,9 +78,34 @@ async function mount(
   return { container, ledger };
 }
 
+// Like mount(), but on fake timers, advanced past the ≥1s Rescan spin hold so
+// the initial refresh has fully settled (refreshing false) before assertions.
+async function mountSettled(
+  seed: Parameters<typeof makeFakeLedger>[0],
+): Promise<{ container: HTMLElement; ledger: FakeLedger }> {
+  vi.useFakeTimers();
+  const ledger = makeFakeLedger(seed);
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  await act(async () => {
+    root.render(
+      <SettingsProvider port={makeFakeSettings()}>
+        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing() }} />
+      </SettingsProvider>,
+    );
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1_200);
+  });
+  return { container, ledger };
+}
+
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 describe('Overview presentation', () => {
@@ -149,7 +174,7 @@ describe('Overview presentation', () => {
   it('renders the last-scan label at the scan wall-clock time (backend sends epoch seconds)', async () => {
     const scannedAtSec = 1_780_300_000; // 2026-06-01T… — any real epoch-second instant
     const scan: ScanStatus = { scannedAt: scannedAtSec, sources: [] };
-    const { container: c } = await mount({
+    const { container: c } = await mountSettled({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,
       scan,
@@ -179,7 +204,7 @@ describe('Overview presentation', () => {
   });
 
   it('re-runs the scan when the toolbar Rescan is clicked', async () => {
-    const { container: c, ledger } = await mount({
+    const { container: c, ledger } = await mountSettled({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,
     });
@@ -189,7 +214,10 @@ describe('Overview presentation', () => {
 
     const rescan = c.querySelector<HTMLButtonElement>('.tt-rescan')!;
     await act(async () => rescan.click());
-    await settle();
+    // The spinner holds ≥1s even for an instant scan; ride it out.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_200);
+    });
 
     expect(ledger.calls.scan.length).toBe(2);
     expect(c.querySelector('.tt-lastscan')?.textContent).toMatch(/^last scan/);

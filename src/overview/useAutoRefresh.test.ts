@@ -5,6 +5,8 @@ import {
   saveRefreshSec,
   scheduleAutoRefresh,
   createRefreshGate,
+  holdSpin,
+  MIN_SPIN_MS,
   STORAGE_KEY,
 } from './useAutoRefresh';
 
@@ -99,6 +101,54 @@ describe('scheduleAutoRefresh', () => {
     stop60();
     vi.advanceTimersByTime(60_000);
     expect(tick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('holdSpin', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('holds at least MIN_SPIN_MS when the work finishes instantly', async () => {
+    let done = false;
+    const p = holdSpin(async () => 'ok').then((v) => {
+      done = true;
+      return v;
+    });
+    await vi.advanceTimersByTimeAsync(MIN_SPIN_MS - 1);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await p).toBe('ok');
+    expect(done).toBe(true);
+  });
+
+  it('adds no delay when the work already ran longer than the floor', async () => {
+    let done = false;
+    const p = holdSpin(
+      () => new Promise<void>((r) => setTimeout(r, MIN_SPIN_MS + 500)),
+    ).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(MIN_SPIN_MS + 500);
+    await p;
+    expect(done).toBe(true);
+  });
+
+  it('holds the floor even when the work rejects', async () => {
+    let settled = false;
+    const p = holdSpin(async () => {
+      throw new Error('boom');
+    }).catch((e) => {
+      settled = true;
+      return e;
+    });
+    await vi.advanceTimersByTimeAsync(MIN_SPIN_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(((await p) as Error).message).toBe('boom');
   });
 });
 
