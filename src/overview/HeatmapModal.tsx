@@ -6,7 +6,7 @@ import { fmtPct, fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, formatDisplayCost, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
-import Landscape3D, { INITIAL_YAW } from './Landscape3D';
+import Landscape3D, { INITIAL_VIEW } from './Landscape3D';
 import { HEAT_DARK, HEAT_LIGHT } from './Heatmap';
 import { useDialogChrome } from './useDialogChrome';
 
@@ -31,7 +31,7 @@ export default function HeatmapModal({
   const ramp = colors === CHART_LIGHT ? HEAT_LIGHT : HEAT_DARK;
   const accent = ramp[3];
 
-  const [yaw, setYaw] = useState(INITIAL_YAW);
+  const [view, setView] = useState(INITIAL_VIEW);
   const [hover, setHover] = useState<Day | null>(null);
   const [pos, setPos] = useState<{ x: number; y: number; flip: boolean }>({ x: 0, y: 0, flip: false });
 
@@ -105,7 +105,7 @@ export default function HeatmapModal({
             <button
               type="button"
               className="reset"
-              onClick={() => setYaw(INITIAL_YAW)}
+              onClick={() => setView(INITIAL_VIEW)}
               title={t('overview.resetView')}
               aria-label={t('overview.resetView')}
             >
@@ -170,7 +170,7 @@ export default function HeatmapModal({
         </div>
 
         <div className="tt-heat-modal-canvas" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
-          <Landscape3D days={days} ramp={ramp} yaw={yaw} onYaw={setYaw} onHoverDay={setHover} />
+          <Landscape3D days={days} ramp={ramp} view={view} onView={setView} onHoverDay={setHover} />
 
           {hover && (
             <div

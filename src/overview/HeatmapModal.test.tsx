@@ -231,6 +231,17 @@ describe('Activity Enlarge', () => {
     }
     expect(svg.querySelectorAll('path').length).toBe(pathCount);
 
+    // Vertical movement tilts too: same x, changing y keeps re-rendering.
+    for (const y of [40, 80]) {
+      await act(async () => {
+        window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 1100, clientY: y }));
+      });
+      await settle(1);
+      const next = shape();
+      expect(next).not.toBe(prev);
+      prev = next;
+    }
+
     // Sweeping over a day mid-drag must not pop the inspector.
     await act(async () => {
       topPath().dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
