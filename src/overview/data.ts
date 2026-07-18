@@ -37,6 +37,7 @@ export interface Day {
   tokens: number;
   level: 0 | 1 | 2 | 3 | 4;
   byTool: Record<ToolKey, number>;
+  byModel: Record<string, number>;
 }
 
 export interface Bucket {
@@ -93,16 +94,18 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     date.setDate(start.getDate() + i);
     const iso = isoOf(date);
     const byTool = emptyByTool();
+    const byModel: Record<string, number> = {};
     let tokens = 0;
     for (const p of byDate.get(iso) ?? []) {
       if (p.source in byTool) byTool[p.source as ToolKey] += p.totalTokens;
+      for (const [m, v] of Object.entries(p.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
       tokens += p.totalTokens;
     }
     const cell = i + startDow;
     days.push({
       index: i, date, iso, weekday: date.getDay(),
       col: Math.floor(cell / 7), row: cell % 7,
-      tokens, level: 0, byTool,
+      tokens, level: 0, byTool, byModel,
     });
   }
 
