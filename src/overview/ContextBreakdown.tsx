@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { memo, useState } from 'react';
 import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type ToolCategory } from './data';
 import type { ToolMeta } from './meta';
 import type { CtxExecRow } from '../types';
@@ -9,7 +9,7 @@ import { useOverviewT } from './localize';
 // primaries with expandable Messages; estimated secondary section with a
 // two-level Tool-calls drill-down allocated by stored content weights.
 // null renders "—" (source cannot say) — never 0.
-export default function ContextBreakdown({
+function ContextBreakdown({
   tool,
   ctx,
   view: v,
@@ -202,3 +202,6 @@ function ExecTable({
     </div>
   );
 }
+
+// Memoized: props stay identity-stable across the shell's per-tick re-renders.
+export default memo(ContextBreakdown);

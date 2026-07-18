@@ -1,9 +1,10 @@
+import { memo } from 'react';
 import type { SmallMultipleItem } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { useOverviewT } from './localize';
 
 // ---- per-tool small multiples (one sparkline per tool) ----
-export default function SmallMultiples({ items, rangeLabel }: { items: SmallMultipleItem[]; rangeLabel: string }) {
+function SmallMultiples({ items, rangeLabel }: { items: SmallMultipleItem[]; rangeLabel: string }) {
   const { t } = useOverviewT();
   const W = 100;
   const H = 40;
@@ -48,3 +49,6 @@ export default function SmallMultiples({ items, rangeLabel }: { items: SmallMult
     </div>
   );
 }
+
+// Memoized: props stay identity-stable across the shell's per-tick re-renders.
+export default memo(SmallMultiples);

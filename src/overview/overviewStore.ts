@@ -165,6 +165,17 @@ class Store implements OverviewStore {
     this.state.scanAt = status.scannedAt || this.clock.now().getTime();
     this.publish();
 
+    // Idle tick: nothing ingested, no source errored, data already on screen —
+    // the Ledger is bit-identical to what's rendered, so skip the series fetch
+    // and the 8-query reload. This is the every-30s steady state of an open
+    // app; the skip is what lets it sit at ~0 CPU instead of re-rendering the
+    // whole dashboard each tick. Prices-rebuilt still forces a reload via its
+    // own listener.
+    // fetchError null required: a failed cycle must retry on the next tick
+    // even when the scan reports nothing new.
+    const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
+    if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
+
     try {
       const pts = await this.ledger.series(EMPTY_FILTERS, 'day');
       this.state.allPoints = pts;
@@ -288,27 +299,36 @@ class Store implements OverviewStore {
     }, delay);
   }
 
+  // All jobs land as ONE patch/publish: eight individual landings would
+  // re-render the dashboard eight times per reload (visible as a long-task
+  // burst every refresh tick).
   private runReload(epoch: number, filters: Filters, isDay: boolean) {
     const land = (fn: () => void) => {
       if (epoch === this.epoch) fn();
     };
     const L = this.ledger;
-    const jobs: Promise<unknown>[] = [
-      L.summary(filters).then((v) => land(() => this.patch({ summary: v }))),
-      L.breakdown('model', filters).then((v) => land(() => this.patch({ modelRows: v }))),
-      L.breakdown('project', filters).then((v) => land(() => this.patch({ projectRows: v }))),
-      L.ctxResources(filters).then((v) => land(() => this.patch({ ctxResources: v }))),
-      L.ctxBuckets(filters).then((v) => land(() => this.patch({ ctxBuckets: v }))),
-      L.ctxTools(filters).then((v) => land(() => this.patch({ ctxToolRows: v }))),
-      L.ctxExec(filters).then((v) => land(() => this.patch({ ctxExecRows: v }))),
-    ];
-    if (isDay) {
-      jobs.push(L.series(filters, 'hour').then((v) => land(() => this.patch({ hourPoints: v }))));
-    } else if (this.state.hourPoints.length) {
+    if (!isDay && this.state.hourPoints.length) {
       this.patch({ hourPoints: [] }); // leaving Day: drop the hourly series
     }
-    Promise.all(jobs)
-      .then(() => land(() => this.patch({ fetchError: null })))
+    Promise.all([
+      L.summary(filters),
+      L.breakdown('model', filters),
+      L.breakdown('project', filters),
+      L.ctxResources(filters),
+      L.ctxBuckets(filters),
+      L.ctxTools(filters),
+      L.ctxExec(filters),
+      isDay ? L.series(filters, 'hour') : null,
+    ])
+      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxExecRows, hour]) =>
+        land(() =>
+          this.patch({
+            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxExecRows,
+            ...(hour ? { hourPoints: hour } : {}),
+            fetchError: null,
+          }),
+        ),
+      )
       .catch((e) => land(() => this.patch({ fetchError: String(e) })));
   }
 }

@@ -96,6 +96,9 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
     panels,
   } = useOverview(ports);
 
+  // Stable identity so the memoized ModelsList skips per-tick re-renders.
+  const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
+
   const scanLabel = refreshing
     ? tShell('header.scanning')
     : scanAt
@@ -255,7 +258,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               toolTokens={panels.models.toolTokens}
               models={panels.models.models}
               settings={settings}
-              onModelClick={(name) => openPricing(name, tool.key)}
+              onModelClick={onModelClick}
             />
           </div>
         </div>

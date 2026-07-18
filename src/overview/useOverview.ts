@@ -40,15 +40,29 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   // allPoints's reference stable across range/selection, so this never
   // recomputes on those.
   const days = useMemo(() => selectDays(snap), [snap.allPoints]);
-  const view = useMemo(() => selectView(snap, undefined, lang), [snap, lang]);
+  // Deps name the data fields rather than the snapshot: an idle 30s tick
+  // publishes a new snapshot for scanAt alone, and rebuilding the whole view
+  // for a clock label was most of the dashboard's steady-state CPU.
+  /* eslint-disable react-hooks/exhaustive-deps */
+  const view = useMemo(
+    () => selectView(snap, undefined, lang),
+    [
+      snap.allPoints, snap.hourPoints, snap.summary, snap.modelRows, snap.projectRows,
+      snap.ctxResources, snap.ctxBuckets, snap.ctxToolRows, snap.ctxExecRows,
+      snap.range, snap.selected, snap.customFrom, snap.customTo,
+      snap.from, snap.to, snap.firstIso, snap.lastIso,
+      lang,
+    ],
+  );
   const visibleTools = useMemo(
     () =>
       selectVisibleTools(snap).map((t) => ({
         ...t,
         nModels: snap.modelRows.filter((r) => r.source === t.key).length,
       })),
-    [snap],
+    [snap.allPoints, snap.modelRows, snap.range, snap.from, snap.to, snap.lastIso],
   );
+  /* eslint-enable react-hooks/exhaustive-deps */
 
   const setRange = useCallback((r: Range8b) => store.setRange(r), [store]);
   const setSel = useCallback((k: ToolKey) => store.setSelected(k), [store]);

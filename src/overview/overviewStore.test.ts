@@ -92,6 +92,40 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().fetchError).toBeNull();
   });
 
+  it('an idle rescan (no errors, zero inserted) skips the series+reload fan-out', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock);
+    const seriesCalls = ledger.calls.series.length;
+    const summaryCalls = ledger.calls.summary.length;
+    const before = store.getSnapshot();
+
+    await store.refresh(); // ledger unchanged: default scan reports nothing inserted
+    clock.advance(0);
+    await flush();
+
+    expect(ledger.calls.series).toHaveLength(seriesCalls);
+    expect(ledger.calls.summary).toHaveLength(summaryCalls);
+    expect(store.getSnapshot().allPoints).toBe(before.allPoints); // identity stable → no re-render churn
+  });
+
+  it('a rescan that ingested events still reloads', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock);
+    const seriesCalls = ledger.calls.series.length;
+
+    ledger.data.scan = {
+      scannedAt: 0,
+      sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, error: null }],
+    };
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+
+    expect(ledger.calls.series.length).toBeGreaterThan(seriesCalls);
+  });
+
   it('scan() throw sets scanError and skips the series fetch', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger();
@@ -230,6 +264,11 @@ describe('overviewStore first-load vs later series failure', () => {
     expect(store.getSnapshot().allPoints).toBe(pts);
 
     // A later series failure keeps the prior points (does not reset to []).
+    // Scan must report an ingest: an idle rescan would skip the fetch entirely.
+    ledger.data.scan = {
+      scannedAt: 0,
+      sources: [{ source: 'claude', eventsInserted: 1, linesSkipped: 0, error: null }],
+    };
     ledger.failNext('series', 'sboom2');
     await store.refresh();
     expect(store.getSnapshot().allPoints).toBe(pts);

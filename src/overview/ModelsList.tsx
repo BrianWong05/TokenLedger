@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { CATEGORIES, type ToolMeta } from './meta';
 import type { ModelBar } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
@@ -8,7 +9,7 @@ import type { Settings } from '../types';
 // model's share of the source; inner segments are the four token categories.
 // Costs render in the Display Currency; settings arrive as a prop (rather than
 // via useSettings) so the Pricing-entry test can mount this component bare.
-export default function ModelsList({
+function ModelsList({
   tool,
   toolTokens,
   models,
@@ -85,3 +86,6 @@ export default function ModelsList({
     </>
   );
 }
+
+// Memoized: props stay identity-stable across the shell's per-tick re-renders.
+export default memo(ModelsList);

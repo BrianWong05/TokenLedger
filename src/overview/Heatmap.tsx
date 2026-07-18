@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { TOOLS } from './meta';
 import { heatStats, type Day } from './data';
 import { fmtTok } from '../lib/format';
@@ -18,7 +18,7 @@ const S = 13; // cell size
 const STEP = 16; // cell + gap
 const TOP = 16; // room for month labels
 
-export default function Heatmap({
+function Heatmap({
   days,
   compact = false,
   onEnlarge,
@@ -208,3 +208,6 @@ export default function Heatmap({
     </div>
   );
 }
+
+// Memoized: props stay identity-stable across the shell's per-tick re-renders.
+export default memo(Heatmap);

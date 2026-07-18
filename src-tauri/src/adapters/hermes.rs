@@ -4,10 +4,23 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::db::upsert_events;
+use super::{file_state_of, unchanged};
+use crate::db::{set_file_state, upsert_events};
 use crate::types::{SourceScanResult, UsageEvent};
 
 pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult {
+    // Whole-DB skip when neither the main file nor its WAL moved since the
+    // last scan; without this every scan re-upserts every session, which
+    // keeps the ledger churning (and the frontend reloading) forever. A
+    // missing DB never skips — it must fall through to report the open error.
+    let db_state = file_state_of(hermes_db);
+    let wal_path = hermes_db.with_extension("db-wal");
+    let wal_state = file_state_of(&wal_path);
+    let db_exists = db_state.size != 0 || db_state.mtime != 0;
+    if db_exists && unchanged(conn, hermes_db, &db_state) && unchanged(conn, &wal_path, &wal_state) {
+        return SourceScanResult::default();
+    }
+
     // Open the Hermes ledger read-only so we never lock out its live writer.
     let uri = format!("file:{}?mode=ro", hermes_db.display());
     let ro = match Connection::open_with_flags(
@@ -116,6 +129,11 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
         };
     }
 
+    let _ = set_file_state(conn, &hermes_db.to_string_lossy(), db_state);
+    if wal_state.size != 0 || wal_state.mtime != 0 {
+        let _ = set_file_state(conn, &wal_path.to_string_lossy(), wal_state);
+    }
+
     SourceScanResult { events_inserted: inserted, lines_skipped: skipped, error: None }
 }
 
@@ -126,6 +144,14 @@ mod tests {
     use rusqlite::Connection;
     use std::path::Path;
     use tempfile::tempdir;
+
+    /// Advance a file's mtime by 2s so an in-place same-second rewrite is
+    /// visible to the size+mtime skip (real scans are 30s apart).
+    fn bump_mtime(path: &Path) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        let m = f.metadata().unwrap().modified().unwrap();
+        f.set_modified(m + std::time::Duration::from_secs(2)).unwrap();
+    }
 
     /// Build a minimal Hermes-schema sqlite DB (subset of columns the adapter reads).
     fn build_hermes_db(path: &Path) {
@@ -265,6 +291,25 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_db_skips_rescan() {
+        let hermes_dir = tempdir().unwrap();
+        let hermes_db = hermes_dir.path().join("state.db");
+        build_hermes_db(&hermes_db);
+
+        let app_dir = tempdir().unwrap();
+        let mut conn = open_db(&app_dir.path().join("tokenledger.db")).unwrap();
+
+        let r1 = scan_hermes(&mut conn, &hermes_db);
+        assert_eq!(r1.events_inserted, 2);
+
+        // Untouched DB → whole scan skipped: no phantom re-upserts.
+        let r2 = scan_hermes(&mut conn, &hermes_db);
+        assert!(r2.error.is_none());
+        assert_eq!(r2.events_inserted, 0);
+        assert_eq!(r2.lines_skipped, 0);
+    }
+
+    #[test]
     fn upsert_grows_live_rows() {
         let hermes_dir = tempdir().unwrap();
         let hermes_db = hermes_dir.path().join("state.db");
@@ -281,6 +326,7 @@ mod tests {
             src.execute("UPDATE sessions SET output_tokens = 9000 WHERE id = 's1'", [])
                 .unwrap();
         }
+        bump_mtime(&hermes_db); // same-second in-place update: advance past mtime granularity
 
         let res = scan_hermes(&mut conn, &hermes_db);
         assert!(res.error.is_none());

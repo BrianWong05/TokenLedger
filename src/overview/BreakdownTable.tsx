@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { type TableRow } from './data';
 import { fmtIsoDateL, useOverviewT, type OverviewKey } from './localize';
 
@@ -17,7 +17,7 @@ const NUMCOLS: { key: SortKey; labelKey: OverviewKey }[] = [
 const fmtInt = (n: number) => n.toLocaleString('en-US');
 
 // Daily breakdown / project usage — a tabbed, click-to-sort table (design 8b).
-export default function BreakdownTable({
+function BreakdownTable({
   dailyRows,
   projectRows,
 }: {
@@ -100,3 +100,6 @@ export default function BreakdownTable({
     </div>
   );
 }
+
+// Memoized: props stay identity-stable across the shell's per-tick re-renders.
+export default memo(BreakdownTable);

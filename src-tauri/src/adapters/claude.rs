@@ -205,8 +205,17 @@ fn scan_file(
         .unwrap_or_default();
 
     // Resume from stored offset only when the file has not shrunk; otherwise
-    // reparse from the start (idempotent via dedup keys).
-    let start = match get_file_state(conn, &path_str)? {
+    // reparse from the start (idempotent via dedup keys). A file whose size
+    // AND mtime both match the stored state is skipped outright — with ~900
+    // transcripts on disk this is the difference between a scan that touches
+    // every file every 30s and one that only reads what actually changed.
+    let prev = get_file_state(conn, &path_str)?;
+    if let Some(ref fs) = prev {
+        if fs.size == size && fs.mtime == mtime {
+            return Ok(());
+        }
+    }
+    let start = match prev {
         Some(fs) if size >= fs.size => fs.byte_offset,
         _ => 0,
     };

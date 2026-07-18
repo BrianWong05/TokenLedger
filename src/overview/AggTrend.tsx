@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { TOOLS, emptyByTool } from './meta';
 import { rankModels, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
@@ -13,7 +13,7 @@ const PT = 14;
 const BASE = 176;
 const LABEL_Y = 194;
 
-export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: string; rangeLabel: string; modelTool: Record<string, string> }) {
+function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: string; rangeLabel: string; modelTool: Record<string, string> }) {
   const { t } = useOverviewT();
   const colors = useChartColors();
   const [hover, setHover] = useState<number | null>(null);
@@ -160,3 +160,6 @@ export default function AggTrend({ data, per, rangeLabel, modelTool }: { data: B
     </div>
   );
 }
+
+// Memoized: props stay identity-stable across the shell's per-tick re-renders.
+export default memo(AggTrend);
