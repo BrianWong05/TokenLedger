@@ -96,9 +96,10 @@ function Heatmap({
   };
   const leave = () => setHover(null);
 
-  // Place the 2D tooltip above the cell (below when there's no room), then
-  // clamp it inside the card so it never spills past the card edges. Measured
-  // after render but before paint, so no unclamped frame is visible.
+  // Place the 2D tooltip above the cell, below it when above would cross the
+  // card top. Horizontally it clamps to the card; vertically it may overflow
+  // the card — never let it cover the hovered cell (the pointer sits there).
+  // Measured after render but before paint, so no unpositioned frame shows.
   const tipRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = tipRef.current;
@@ -107,11 +108,12 @@ function Heatmap({
     if (!el || !host || !card || mode !== '2d' || !hover) return;
     const hb = host.getBoundingClientRect();
     const cb = card.getBoundingClientRect();
-    const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
-    const left = clamp(pos2.x - el.offsetWidth / 2, cb.left - hb.left + 8, cb.right - hb.left - el.offsetWidth - 8);
+    const left = Math.max(
+      cb.left - hb.left + 8,
+      Math.min(pos2.x - el.offsetWidth / 2, cb.right - hb.left - el.offsetWidth - 8),
+    );
     let top = pos2.y - el.offsetHeight - 8;
     if (top < cb.top - hb.top + 8) top = pos2.y + CELL + 8;
-    top = clamp(top, cb.top - hb.top + 8, cb.bottom - hb.top - el.offsetHeight - 8);
     el.style.left = `${left}px`;
     el.style.top = `${top}px`;
   }, [mode, hover, pos2]);
