@@ -5,11 +5,17 @@ import type { Day } from './data';
 // its intensity level. Shared by the Activity card's 3D mode and the full-screen
 // enlarge — it owns the view angle and drag-to-rotate; the parent renders any
 // tooltip via onHoverDay so hover stays consistent with the 2D grid.
+//
+// Rotation is a full free spin: yaw is unbounded (trig wraps it), each bar
+// renders the two side walls that face the camera at the current angle, and
+// the camera is fixed to bounds that hold at every angle — so dragging turns
+// a rigid object instead of re-fitting the scene per frame.
 
-const TILE = 0.86;
+export const TILE = 0.86;
 const AX = 10; // iso x scale
 const BY = 5.4; // iso tilt scale
-const ZUNIT = 8; // extruded height per level
+export const ZUNIT = 8; // extruded height per level
+const CY = 3.5; // grid vertical center (7 weekday rows)
 
 function shade(hex: string, f: number): string {
   const n = parseInt(hex.slice(1), 16);
@@ -22,20 +28,53 @@ const poly = (pts: [number, number][]) =>
   'M' + pts.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join('L') + 'Z';
 
 export const INITIAL_YAW = -0.14;
-const YAW_MIN = -0.5;
-const YAW_MAX = 0.4;
 
-const proj = (
-  x: number,
-  y: number,
-  z: number,
-  cos: number,
-  sin: number,
-): [number, number] => {
+// The oblique projection, in grid coordinates centered on the scene
+// (x = col - cols/2, y = row - CY). Screen y grows downward; z subtracts.
+export function projectPoint(x: number, y: number, z: number, yaw: number): [number, number] {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
   const rx = x * cos - y * sin;
   const ry = x * sin + y * cos;
   return [(rx - ry) * AX, (rx + ry) * BY - z];
-};
+}
+
+// Which two of a bar's four side walls face the camera at this yaw: a wall is
+// visible when its outward normal projects toward the viewer (positive screen
+// y), so exactly one x-facing and one y-facing wall shows at any angle.
+export function visibleWalls(yaw: number): { x: 'east' | 'west'; y: 'south' | 'north' } {
+  const cos = Math.cos(yaw);
+  const sin = Math.sin(yaw);
+  return { x: cos + sin > 0 ? 'east' : 'west', y: cos - sin > 0 ? 'south' : 'north' };
+}
+
+// Fixed-camera bounds that contain the scene at EVERY yaw: the projection of a
+// point of grid radius ρ stays within ±√2·ρ on both pre-scale axes, so the
+// sweep of the whole rotation fits in the circumscribed-circle box (plus the
+// tallest bar's extrusion above the ground plane).
+export function sceneBounds(
+  days: Pick<Day, 'col' | 'row' | 'level'>[],
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const cols = Math.max(1, ...days.map((d) => d.col)) + 1;
+  const cx = cols / 2;
+  let r2 = 0;
+  let maxZ = 0;
+  for (const d of days) {
+    for (const [gx, gy] of [
+      [d.col, d.row],
+      [d.col + TILE, d.row],
+      [d.col + TILE, d.row + TILE],
+      [d.col, d.row + TILE],
+    ]) {
+      const dx = gx - cx;
+      const dy = gy - CY;
+      r2 = Math.max(r2, dx * dx + dy * dy);
+    }
+    maxZ = Math.max(maxZ, d.level * ZUNIT);
+  }
+  const r = Math.sqrt(r2) * Math.SQRT2;
+  return { minX: -r * AX, minY: -r * BY - maxZ, maxX: r * AX, maxY: r * BY };
+}
 
 export default function Landscape3D({
   days,
@@ -53,65 +92,52 @@ export default function Landscape3D({
   const svgRef = useRef<SVGSVGElement>(null);
   const cols = useMemo(() => Math.max(1, ...days.map((d) => d.col)) + 1, [days]);
 
-  // Fixed camera: the viewBox fits the scene's bounds across the whole yaw
-  // range, not the current angle — refitting per frame would rescale and
-  // recenter the scene while dragging, so rotation reads as warping.
   const viewBox = useMemo(() => {
-    const cx = cols / 2;
-    const cy = 3.5;
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (let i = 0; i <= 6; i++) {
-      const th = YAW_MIN + (i / 6) * (YAW_MAX - YAW_MIN);
-      const cos = Math.cos(th);
-      const sin = Math.sin(th);
-      for (const d of days) {
-        for (const [gx, gy] of [
-          [d.col, d.row],
-          [d.col + TILE, d.row],
-          [d.col + TILE, d.row + TILE],
-          [d.col, d.row + TILE],
-        ]) {
-          const [px, py] = proj(gx - cx, gy - cy, 0, cos, sin);
-          minX = Math.min(minX, px);
-          maxX = Math.max(maxX, px);
-          maxY = Math.max(maxY, py); // ground is the low edge
-          minY = Math.min(minY, py - d.level * ZUNIT); // top face is the high edge
-        }
-      }
-    }
+    const b = sceneBounds(days);
     const pad = 10;
-    return `${(minX - pad).toFixed(1)} ${(minY - pad).toFixed(1)} ${(maxX - minX + pad * 2).toFixed(1)} ${(maxY - minY + pad * 2).toFixed(1)}`;
-  }, [days, cols]);
+    return `${(b.minX - pad).toFixed(1)} ${(b.minY - pad).toFixed(1)} ${(b.maxX - b.minX + pad * 2).toFixed(1)} ${(b.maxY - b.minY + pad * 2).toFixed(1)}`;
+  }, [days]);
 
-  // Faces at the current angle, depth-sorted back-to-front.
+  // Faces at the current angle, depth-sorted back-to-front. Ground edges of
+  // the visible walls: east x = col+TILE, west x = col; south y = row+TILE,
+  // north y = row. x-walls shade darker than y-walls at any angle.
   const cells = useMemo(() => {
-    const cos = Math.cos(yaw);
-    const sin = Math.sin(yaw);
     const cx = cols / 2;
-    const cy = 3.5;
-    const p = (gx: number, gy: number, z: number) => proj(gx - cx, gy - cy, z, cos, sin);
-    const depth = (gx: number, gy: number) => (gx - cx) * sin + (gy - cy) * cos; // larger = nearer
+    const p = (gx: number, gy: number, z: number) => projectPoint(gx - cx, gy - CY, z, yaw);
+    // Painter's order: a tile whose ground center projects lower on screen
+    // (larger screen y) is nearer the camera and must draw later.
+    const depth = (gx: number, gy: number) => p(gx, gy, 0)[1];
+    const walls = visibleWalls(yaw);
 
     return days
       .map((d) => {
         const c = d.col;
         const r = d.row;
         const z = d.level * ZUNIT;
-        const g = [p(c, r, 0), p(c + TILE, r, 0), p(c + TILE, r + TILE, 0), p(c, r + TILE, 0)];
-        const t = [p(c, r, z), p(c + TILE, r, z), p(c + TILE, r + TILE, z), p(c, r + TILE, z)];
         const top = ramp[d.level];
+        const t = [p(c, r, z), p(c + TILE, r, z), p(c + TILE, r + TILE, z), p(c, r + TILE, z)];
+
+        // Ground edge of each visible wall, as its two corners.
+        const [xa, xb]: [number, number][] =
+          walls.x === 'east'
+            ? [[c + TILE, r], [c + TILE, r + TILE]]
+            : [[c, r], [c, r + TILE]];
+        const [ya, yb]: [number, number][] =
+          walls.y === 'south'
+            ? [[c, r + TILE], [c + TILE, r + TILE]]
+            : [[c, r], [c + TILE, r]];
+        const wallPoly = (a: [number, number], b: [number, number]) =>
+          poly([p(a[0], a[1], 0), p(b[0], b[1], 0), p(b[0], b[1], z), p(a[0], a[1], z)]);
+
         return {
           d,
           depth: depth(c + TILE / 2, r + TILE / 2),
           top: poly([t[0], t[1], t[2], t[3]]),
-          right: poly([g[1], g[2], t[2], t[1]]),
-          front: poly([g[3], g[2], t[2], t[3]]),
+          xWall: wallPoly(xa, xb),
+          yWall: wallPoly(ya, yb),
           topFill: top,
-          rightFill: shade(top, 0.62),
-          frontFill: shade(top, 0.8),
+          xFill: shade(top, 0.62),
+          yFill: shade(top, 0.8),
         };
       })
       .sort((a, b) => a.depth - b.depth);
@@ -142,9 +168,9 @@ export default function Landscape3D({
     };
     const move = (e: MouseEvent) => {
       if (!draggingRef.current) return;
-      // minus: the front of the landscape follows the cursor
-      const next = startYaw - (e.clientX - startX) * 0.005;
-      onYawRef.current(Math.max(YAW_MIN, Math.min(YAW_MAX, next)));
+      // minus: the front of the landscape follows the cursor; no clamp — the
+      // spin is free and the trig wraps the angle.
+      onYawRef.current(startYaw - (e.clientX - startX) * 0.005);
     };
     const up = () => {
       draggingRef.current = false;
@@ -164,8 +190,8 @@ export default function Landscape3D({
     <svg ref={svgRef} className="grab" viewBox={viewBox} preserveAspectRatio="xMidYMid meet">
       {cells.map((c) => (
         <g key={c.d.index}>
-          {c.d.level > 0 && <path d={c.right} fill={c.rightFill} />}
-          {c.d.level > 0 && <path d={c.front} fill={c.frontFill} />}
+          {c.d.level > 0 && <path d={c.xWall} fill={c.xFill} />}
+          {c.d.level > 0 && <path d={c.yWall} fill={c.yFill} />}
           <path
             d={c.top}
             fill={c.topFill}

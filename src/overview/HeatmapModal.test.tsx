@@ -216,8 +216,11 @@ describe('Activity Enlarge', () => {
 
     // Each committed move keeps rotating — regression for the mid-drag freeze,
     // where the first re-render tore down the listeners and froze the view.
+    // The later moves sweep far past the old ±0.5 rad clamp: a free spin keeps
+    // turning (and keeps every bar solid — same number of wall faces).
+    const pathCount = svg.querySelectorAll('path').length;
     let prev = shape();
-    for (const x of [340, 380]) {
+    for (const x of [340, 380, 700, 1100]) {
       await act(async () => {
         window.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x }));
       });
@@ -226,6 +229,7 @@ describe('Activity Enlarge', () => {
       expect(next).not.toBe(prev);
       prev = next;
     }
+    expect(svg.querySelectorAll('path').length).toBe(pathCount);
 
     // Sweeping over a day mid-drag must not pop the inspector.
     await act(async () => {
