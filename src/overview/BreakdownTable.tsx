@@ -16,6 +16,9 @@ const NUMCOLS: { key: SortKey; labelKey: OverviewKey }[] = [
 
 const fmtInt = (n: number) => n.toLocaleString('en-US');
 
+// Project rows carry a full path; the last segment is the readable name.
+const basename = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
+
 // Daily breakdown / project usage — a tabbed, click-to-sort table (design 8b).
 function BreakdownTable({
   dailyRows,
@@ -87,7 +90,11 @@ function BreakdownTable({
         </div>
         {sorted.map((r, i) => (
           <div className="tt-tbl-grid tt-tbl-row" key={r.label + i}>
-            <span>{tab === 'daily' ? fmtIsoDateL(r.label, lang) : r.label}</span>
+            {tab === 'daily' ? (
+              <span>{fmtIsoDateL(r.label, lang)}</span>
+            ) : (
+              <span title={r.label}>{basename(r.label)}</span>
+            )}
             <span>{fmtInt(r.total)}</span>
             <span>{fmtInt(r.input)}</span>
             <span>{fmtInt(r.output)}</span>
