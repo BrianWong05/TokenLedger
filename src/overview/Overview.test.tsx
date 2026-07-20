@@ -204,6 +204,29 @@ describe('Overview presentation', () => {
     expect(tip.textContent).not.toContain('Claude Code');
   });
 
+  it('keeps the usage-trend y-axis labels out of the plot area', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],
+      summary,
+    });
+
+    const card = Array.from(c.querySelectorAll('.tt-card')).find(
+      (el) => el.querySelector('.tt-title')?.textContent === 'Usage over time',
+    )!;
+    const svg = card.querySelector('svg')!;
+
+    // Bars paint from the plot's left edge rightward; the y labels live in the
+    // gutter left of it, end-anchored so they grow away from the bars. Drawing
+    // them inside the plot is what let tall bars cover the numbers.
+    const bars = Array.from(svg.querySelectorAll('rect')).filter((r) => r.getAttribute('fill') !== 'transparent');
+    expect(bars.length).toBeGreaterThan(0);
+    const plotLeft = Math.min(...bars.map((r) => Number(r.getAttribute('x'))));
+
+    const yLabels = Array.from(svg.querySelectorAll('text')).filter((el) => el.getAttribute('text-anchor') === 'end');
+    expect(yLabels).toHaveLength(5);
+    for (const label of yLabels) expect(Number(label.getAttribute('x'))).toBeLessThan(plotLeft);
+  });
+
   it('renders a static 3D landscape on the Activity card', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
