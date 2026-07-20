@@ -7,7 +7,10 @@ import { useChartColors } from '../lib/chartColors';
 
 // ---- aggregate usage-trend bars (no interval toggle; driven by the range) ----
 const VW = 560;
-const PL = 30;
+// Left gutter: fits the widest right-aligned y label fmtTok can produce
+// ("999.99B" measures ~38px at 9px) plus the 6px tick gap, so labels never
+// spill into the plot and get painted over by the bars.
+const PL = 45;
 const PR = 8;
 const PT = 14;
 const BASE = 176;
@@ -74,7 +77,7 @@ function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: s
           {grid.map((g, i) => (
             <g key={i}>
               <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke={colors.grid} strokeWidth={1} />
-              <text x={PL} y={g.y} dy={-4} fontSize={9} style={{ fill: 'var(--text-tertiary)' }}>
+              <text x={PL - 6} y={g.y} dy={3.2} fontSize={9} textAnchor="end" style={{ fill: 'var(--text-tertiary)' }}>
                 {g.label}
               </text>
             </g>
