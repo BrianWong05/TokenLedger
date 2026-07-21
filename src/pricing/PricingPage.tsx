@@ -130,19 +130,22 @@ export default function PricingPage({
               <span className="note">{t('pricing.tableNote')}</span>
             </div>
 
-            <div className="tl-pr-grid">
-              <span className="tl-pr-colhead">{t('pricing.col.model')}</span>
-              <span className="tl-pr-colhead">{t('pricing.col.rateSource')}</span>
-              <span className="tl-pr-colhead num">{t('pricing.col.input')}</span>
-              <span className="tl-pr-colhead num">{t('pricing.col.output')}</span>
-              <span className="tl-pr-colhead num">{t('pricing.col.cacheRead')}</span>
-              <span className="tl-pr-colhead num">{t('pricing.col.cacheWrite')}</span>
-              <span />
-            </div>
+            {/* header + rows scroll as one unit so the columns stay aligned */}
+            <div className="tl-pr-scroll">
+              <div className="tl-pr-grid">
+                <span className="tl-pr-colhead">{t('pricing.col.model')}</span>
+                <span className="tl-pr-colhead">{t('pricing.col.rateSource')}</span>
+                <span className="tl-pr-colhead num">{t('pricing.col.input')}</span>
+                <span className="tl-pr-colhead num">{t('pricing.col.output')}</span>
+                <span className="tl-pr-colhead num">{t('pricing.col.cacheRead')}</span>
+                <span className="tl-pr-colhead num">{t('pricing.col.cacheWrite')}</span>
+                <span />
+              </div>
 
-            {rows.map((m) => (
-              <ModelRow key={m.model} m={m} onEdit={() => setEditor(m)} t={t} />
-            ))}
+              {rows.map((m) => (
+                <ModelRow key={m.model} m={m} onEdit={() => setEditor(m)} t={t} />
+              ))}
+            </div>
 
             {rows.length === 0 && (
               <div className="tl-pr-none">
@@ -252,19 +255,21 @@ function LoadingSkeleton({ note, title }: { note: string; title: string }) {
         <div className="tl-pr-card-head">
           <span className="title">{title}</span>
         </div>
-        {[0, 1, 2, 3, 4].map((i) => (
-          <div className="tl-pr-grid tl-pr-row" key={i}>
-            <div className="tl-pr-model">
-              <span className="tl-pr-skel" style={{ width: 24, height: 24, borderRadius: 7 }} />
-              <span className="tl-pr-skel" style={{ width: 130, height: 11 }} />
+        <div className="tl-pr-scroll">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <div className="tl-pr-grid tl-pr-row" key={i}>
+              <div className="tl-pr-model">
+                <span className="tl-pr-skel" style={{ width: 24, height: 24, borderRadius: 7 }} />
+                <span className="tl-pr-skel" style={{ width: 130, height: 11 }} />
+              </div>
+              <span className="tl-pr-skel" style={{ width: 70, height: 18, borderRadius: 6 }} />
+              {[0, 1, 2, 3].map((j) => (
+                <span key={j} className="tl-pr-skel" style={{ justifySelf: 'end', width: 44, height: 11 }} />
+              ))}
+              <span className="tl-pr-skel" style={{ justifySelf: 'end', width: 58, height: 24, borderRadius: 7 }} />
             </div>
-            <span className="tl-pr-skel" style={{ width: 70, height: 18, borderRadius: 6 }} />
-            {[0, 1, 2, 3].map((j) => (
-              <span key={j} className="tl-pr-skel" style={{ justifySelf: 'end', width: 44, height: 11 }} />
-            ))}
-            <span className="tl-pr-skel" style={{ justifySelf: 'end', width: 58, height: 24, borderRadius: 7 }} />
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </>
   );

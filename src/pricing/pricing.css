@@ -163,12 +163,21 @@
   color: var(--muted);
 }
 
+/* The seven columns need ~890px, but the card only gets ~822px at the default
+   1100px window (less at the 900px minimum), so the Override button used to be
+   clipped by the card's overflow:hidden with no way to reach it. Scroll the
+   header and rows together instead; min-width keeps every row on the same
+   track sizes so the columns stay aligned while scrolling. */
+.tl-pr-scroll {
+  overflow-x: auto;
+}
 .tl-pr-grid {
   display: grid;
   grid-template-columns: minmax(200px, 1.35fr) 150px repeat(4, minmax(80px, 1fr)) 116px;
   gap: 12px;
   align-items: center;
   padding: 11px 16px;
+  min-width: 890px;
 }
 .tl-pr-row {
   border-top: 1px solid var(--border);
