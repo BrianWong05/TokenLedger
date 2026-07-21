@@ -33,7 +33,13 @@ pub(crate) fn unchanged(
     current: &FileState,
 ) -> bool {
     match get_file_state(conn, &path.to_string_lossy()) {
-        Ok(Some(prev)) => prev.size == current.size && prev.mtime == current.mtime,
+        // byte_offset carries the caller's parser version (0 where unused), so
+        // bumping it re-parses files whose size/mtime never changed.
+        Ok(Some(prev)) => {
+            prev.size == current.size
+                && prev.mtime == current.mtime
+                && prev.byte_offset == current.byte_offset
+        }
         _ => current.size == 0 && current.mtime == 0, // no state: only a missing file is "unchanged"
     }
 }

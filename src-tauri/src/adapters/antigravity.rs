@@ -31,7 +31,36 @@ use rusqlite::{Connection, OpenFlags};
 
 use super::{file_state_of, percent_decode, unchanged};
 use crate::db::{replace_file_events, set_file_state};
-use crate::types::{SourceScanResult, UsageEvent};
+use crate::types::{FileState, SourceScanResult, UsageEvent};
+
+/// Bump to force a full re-parse of every Antigravity DB on the next scan.
+/// Stored in the file-state's otherwise-unused `byte_offset` (this adapter
+/// re-reads whole files, so it never tracks a real offset), which makes the
+/// re-scan self-clearing: the mismatch fires once, then the new version is
+/// persisted. Beats a one-shot migration, which a dev run would consume.
+/// v1 = wire aliases resolved to real model ids (see `resolve_model`).
+const PARSER_VERSION: i64 = 1;
+
+/// Antigravity records an internal wire alias in `chatModel`, not a model id.
+/// `gemini-3-flash-a`/`-b` are the M132/M133 placeholders — both Gemini 3.5
+/// Flash (High), despite the "3-flash" spelling; mapping them to the
+/// `gemini-3-flash-preview` family would be wrong. `gemini-default` names
+/// whichever Gemini was the default when the row was written, so it resolves
+/// against the event's own timestamp. Anything unrecognized passes through
+/// untouched and simply lands in the unpriced list under its raw name — which
+/// is the signal that Antigravity has renamed a placeholder again.
+fn resolve_model(raw: &str, ts: i64) -> String {
+    match raw.to_lowercase().as_str() {
+        "gemini-3-flash-a" | "gemini-3-flash-b" => "gemini-3.5-flash".to_string(),
+        // Exclusive upper bounds; a row exactly on a boundary is the later era.
+        "gemini-default" => match ts {
+            _ if ts < 1742860800 => "gemini-2.0-flash".to_string(), // < 2025-03-25
+            _ if ts < 1779148800 => "gemini-2.5-flash".to_string(), // < 2026-05-19
+            _ => "gemini-3.5-flash".to_string(),
+        },
+        _ => raw.to_string(),
+    }
+}
 
 pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanResult {
     let mut result = SourceScanResult::default();
@@ -51,7 +80,7 @@ pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanRes
 }
 
 fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResult) {
-    let state = file_state_of(db_path);
+    let state = FileState { byte_offset: PARSER_VERSION, ..file_state_of(db_path) };
     if unchanged(conn, db_path, &state) {
         return;
     }
@@ -141,10 +170,12 @@ fn decode_generation(
         .filter(|&s| s > 0)
         .unwrap_or(created_ts);
 
-    let model = string_field(chat_model, 19)
-        .filter(|m| !m.trim().is_empty())
-        .unwrap_or("unknown")
-        .to_string();
+    let model = resolve_model(
+        string_field(chat_model, 19)
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or("unknown"),
+        timestamp,
+    );
 
     let dedup_key = string_field(usage, 11)
         .filter(|s| !s.trim().is_empty())
@@ -393,7 +424,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ts, 1780300000); // per-generation stamp, not created-at
-        assert_eq!(model, "gemini-3-flash-a");
+        assert_eq!(model, "gemini-3.5-flash"); // wire alias resolved at parse time
         assert_eq!(project, Some("/Users/dev/my app".to_string())); // URI percent-decoded
         assert_eq!(input, 1132 + 500); // system prompt + fresh input
         assert_eq!(output, 300 + 150); // thinking folds into output
@@ -459,6 +490,55 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn wire_aliases_resolve_and_unknown_names_pass_through() {
+        // Both flash placeholders are the same 3.5 Flash (High) catalog entry.
+        assert_eq!(resolve_model("gemini-3-flash-a", 1780300000), "gemini-3.5-flash");
+        assert_eq!(resolve_model("gemini-3-flash-b", 1780300000), "gemini-3.5-flash");
+        assert_eq!(resolve_model("GEMINI-3-Flash-A", 1780300000), "gemini-3.5-flash");
+        // gemini-default follows the era it was written in; boundaries are
+        // exclusive upper bounds, so a row exactly on one is the later era.
+        assert_eq!(resolve_model("gemini-default", 1742860799), "gemini-2.0-flash");
+        assert_eq!(resolve_model("gemini-default", 1742860800), "gemini-2.5-flash");
+        assert_eq!(resolve_model("gemini-default", 1779148799), "gemini-2.5-flash");
+        assert_eq!(resolve_model("gemini-default", 1779148800), "gemini-3.5-flash");
+        // Untouched: real ids, and any placeholder Antigravity renames next.
+        assert_eq!(resolve_model("gemini-3.5-flash", 100), "gemini-3.5-flash");
+        assert_eq!(resolve_model("gemini-3-flash-z", 100), "gemini-3-flash-z");
+        assert_eq!(resolve_model("unknown", 100), "unknown");
+    }
+
+    #[test]
+    fn a_parser_version_bump_reparses_an_otherwise_unchanged_db() {
+        let convs = tempdir().unwrap();
+        let db_path = convs.path().join("s.db");
+        build_db(&db_path, &[gen_blob("gemini-default", 1780300000, 0, 10, 0, 5, 0, "r1")], None);
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 1);
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 0);
+
+        // Rewind the stored version to pre-versioning, leaving size/mtime alone:
+        // exactly the state a Ledger written by the previous parser is in.
+        conn.execute(
+            "UPDATE scanned_files SET byte_offset = 0 WHERE path = ?1",
+            rusqlite::params![db_path.to_string_lossy()],
+        )
+        .unwrap();
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 1);
+        // Re-parsed, not duplicated — and the row carries the resolved name.
+        let (n, model): (i64, String) = conn
+            .query_row("SELECT COUNT(*), MAX(model) FROM events", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(model, "gemini-3.5-flash");
+        // And the bump is self-clearing: the next scan is quiet again.
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 0);
     }
 
     #[test]
