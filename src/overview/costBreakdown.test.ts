@@ -20,6 +20,7 @@ function row(overrides: Partial<BreakdownRow>): BreakdownRow {
     reasoningTokens: null,
     convs: 1,
     cacheEstimated: false,
+    hasUnpriced: false,
     ...overrides,
   };
 }

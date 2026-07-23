@@ -79,6 +79,9 @@ pub struct BreakdownRow {
     #[ts(type = "number")]
     pub convs: i64,
     pub cache_estimated: bool,
+    // True when any of the row's Models is Unpriced — a Some(cost) is then a
+    // Partial Cost (glossary: shown with "≥", never as a complete total).
+    pub has_unpriced: bool,
 }
 
 use std::collections::HashMap;
@@ -408,6 +411,7 @@ struct Agg {
     reasoning: Option<i64>,
     convs: i64,
     cache_estimated: bool,
+    unpriced: bool,
 }
 
 pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<Vec<BreakdownRow>> {
@@ -455,6 +459,8 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             a.cost += rt.cost(in_, out, cr, w5, w1);
             a.priced += in_ + out + cr + w5 + w1;
             a.cache_estimated |= rt.cache_gap(cr, w5, w1);
+        } else {
+            a.unpriced = true;
         }
     }
 
@@ -490,6 +496,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             reasoning_tokens: a.reasoning,
             convs: a.convs,
             cache_estimated: a.cache_estimated,
+            has_unpriced: a.unpriced,
         })
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));

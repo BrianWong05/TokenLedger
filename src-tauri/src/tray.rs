@@ -3,37 +3,87 @@
 // Settings… (⌘,) / Quit (⌘Q); accelerators are menu-local hints, not global
 // hotkeys. "Rescan now" reuses the exact scan the `scan` command runs
 // (crate::scan_now), so there is no second scan code path.
-use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use std::sync::Mutex;
+
+use tauri::image::Image;
+use tauri::menu::{IconMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::scan_now;
 
-// Held so each scan can rewrite the bar title and header rows in place
-// without rebuilding the whole tray (an open menu must not be disturbed).
+// Held so each scan can rewrite the bar title, header rows, and per-Source
+// rows in place without rebuilding the whole tray (an open menu must not be
+// disturbed); the menu is rebuilt only when Source membership changes.
 pub struct TrayMenu {
     tray: TrayIcon<Wry>,
+    handles: Mutex<Handles>,
+}
+
+// The mutable menu items refresh() re-texts, plus the (icon key, item) pair
+// per Today-used Source — the key list is the membership identity.
+struct Handles {
     hdr_cost: MenuItem<Wry>,
     hdr_usage: MenuItem<Wry>,
+    sources: Vec<(String, IconMenuItem<Wry>)>,
+}
+
+/// Builds the whole 2b menu for a given header + per-Source row set:
+/// header rows / sep / source rows / sep / Open, Rescan / sep / Settings,
+/// Quit. Stats rows are disabled ("no fake hover"). The trailing source
+/// separator is skipped when there are no rows, so an empty day never shows
+/// a double rule.
+fn build_menu(
+    app: &AppHandle,
+    header: &(String, String),
+    rows: &[(String, String)],
+) -> tauri::Result<(Menu<Wry>, Handles)> {
+    let hdr_cost = MenuItem::with_id(app, "hdr_cost", &header.0, false, None::<&str>)?;
+    let hdr_usage = MenuItem::with_id(app, "hdr_usage", &header.1, false, None::<&str>)?;
+    let menu = Menu::new(app)?;
+    menu.append(&hdr_cost)?;
+    menu.append(&hdr_usage)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    let mut sources = Vec::with_capacity(rows.len());
+    for (i, (key, text)) in rows.iter().enumerate() {
+        let item =
+            IconMenuItem::with_id(app, format!("src_{i}"), text, false, source_icon(key), None::<&str>)?;
+        menu.append(&item)?;
+        sources.push((key.clone(), item));
+    }
+    if !rows.is_empty() {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
+    menu.append(&MenuItem::with_id(app, "open", "Open TokenLedger", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "scan", "Rescan now", true, Some("Shift+CmdOrCtrl+R"))?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?)?;
+    menu.append(&MenuItem::with_id(app, "quit", "Quit TokenLedger", true, Some("CmdOrCtrl+Q"))?)?;
+    Ok((menu, Handles { hdr_cost, hdr_usage, sources }))
+}
+
+/// The committed 18pt-rendered PNGs (rasterized from src/overview/icons SVGs,
+/// full color). ponytail: decoded per rebuild — six tiny files, rare rebuilds.
+fn source_icon(key: &str) -> Option<Image<'static>> {
+    let bytes: &[u8] = match key {
+        "claude" => include_bytes!("../icons/sources/claude.png"),
+        "codex" => include_bytes!("../icons/sources/codex.png"),
+        "gemini" => include_bytes!("../icons/sources/gemini.png"),
+        "hermes" => include_bytes!("../icons/sources/hermes.png"),
+        "grok" => include_bytes!("../icons/sources/grok.png"),
+        "antigravity" => include_bytes!("../icons/sources/antigravity.png"),
+        _ => return None,
+    };
+    Image::from_bytes(bytes).ok()
 }
 
 /// Builds the tray once, from setup. Uses the app's own icon as a macOS template
 /// image so it inverts with the menu bar.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    // Disabled Today-header rows (2b's stats header, "no fake hover"); their
-    // text is placeholder until the refresh() below seeds it.
-    let hdr_cost = MenuItem::with_id(app, "hdr_cost", "Today", false, None::<&str>)?;
-    let hdr_usage = MenuItem::with_id(app, "hdr_usage", "…", false, None::<&str>)?;
-    let sep_hdr = PredefinedMenuItem::separator(app)?;
-    let open = MenuItem::with_id(app, "open", "Open TokenLedger", true, None::<&str>)?;
-    let scan = MenuItem::with_id(app, "scan", "Rescan now", true, Some("Shift+CmdOrCtrl+R"))?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-    let quit = MenuItem::with_id(app, "quit", "Quit TokenLedger", true, Some("CmdOrCtrl+Q"))?;
-    let menu = Menu::with_items(
-        app,
-        &[&hdr_cost, &hdr_usage, &sep_hdr, &open, &scan, &sep, &settings, &quit],
-    )?;
+    // Placeholder header + no source rows; the refresh() below seeds both
+    // from the existing Ledger (rebuilding the menu if today has usage).
+    let placeholder = ("Today".to_string(), "…".to_string());
+    let (menu, handles) = build_menu(app, &placeholder, &[])?;
 
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
@@ -43,17 +93,20 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon.clone()).icon_as_template(true);
     }
     let tray = builder.build(app)?;
-    app.manage(TrayMenu { tray, hdr_cost, hdr_usage });
-    // Seed the title from the existing Ledger so a relaunch shows Today's
-    // figures before the first scan lands.
+    app.manage(TrayMenu {
+        tray,
+        handles: Mutex::new(handles),
+    });
     refresh(app);
     Ok(())
 }
 
-/// Recomputes the bar title and the Today-header rows (Summaries + Settings →
-/// tray_title / header_lines) and rewrites them in place — no tray rebuild.
-/// Called after every scan and on settings save; no-op until the tray exists.
-/// The db lock is released before set_title/set_text: those hop to the main
+/// Recomputes the bar title, Today-header rows, and per-Source rows and
+/// applies them: set_text in place when Source membership is unchanged (an
+/// open menu is never disturbed), a full build_menu + set_menu when it
+/// changed (rare: first usage of a tool today, midnight rollover). Called
+/// after every scan and on settings save; no-op until the tray exists.
+/// The db lock is released before any menu call: those hop to the main
 /// thread, and sync commands on the main thread take the same lock — holding
 /// it here would deadlock.
 pub fn refresh(app: &AppHandle) {
@@ -61,7 +114,7 @@ pub fn refresh(app: &AppHandle) {
         return;
     };
     let state = app.state::<crate::AppState>();
-    let (title, header) = {
+    let (title, header, rows) = {
         let Ok(db) = state.db.lock() else { return };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -88,9 +141,10 @@ pub fn refresh(app: &AppHandle) {
             end_ts: Some(y_now),
             ..Default::default()
         };
-        let (Ok(today), Ok(yesterday), Ok(settings)) = (
+        let (Ok(today), Ok(yesterday), Ok(tool_rows), Ok(settings)) = (
             crate::queries::summary(&db, &today_f),
             crate::queries::summary(&db, &y_f),
+            crate::queries::breakdown(&db, "tool", &today_f),
             crate::settings::get_settings(&db),
         ) else {
             return;
@@ -98,11 +152,30 @@ pub fn refresh(app: &AppHandle) {
         (
             tray_title(&today, &settings),
             header_lines(&today, &yesterday, &settings),
+            source_rows(&tool_rows, &settings),
         )
     };
     let _ = tray.tray.set_title(title.as_deref());
-    let _ = tray.hdr_cost.set_text(header.0);
-    let _ = tray.hdr_usage.set_text(header.1);
+    // try_lock, never lock: the main thread must not block here, or it could
+    // deadlock against a background refresh mid-hop to the main thread for a
+    // menu call. A lost contended refresh is fine — the next scan tick
+    // (≤30s) redoes it.
+    let Ok(mut h) = tray.handles.try_lock() else {
+        return;
+    };
+    let same_membership = h.sources.len() == rows.len()
+        && h.sources.iter().zip(&rows).all(|((k, _), (rk, _))| k == rk);
+    if same_membership {
+        let _ = h.hdr_cost.set_text(&header.0);
+        let _ = h.hdr_usage.set_text(&header.1);
+        for ((_, item), (_, text)) in h.sources.iter().zip(&rows) {
+            let _ = item.set_text(text);
+        }
+    } else if let Ok((menu, handles)) = build_menu(app, &header, &rows) {
+        if tray.tray.set_menu(Some(menu)).is_ok() {
+            *h = handles;
+        }
+    }
 }
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
@@ -263,6 +336,60 @@ fn header_lines(
         }
     };
     (cost_line, usage)
+}
+
+/// Display label for a DB source key (breakdown's tool key, e.g. "claude" —
+/// the adapters write short keys, never display names). Labels are the
+/// frontend's (meta.ts TOOLS); the key itself doubles as the icon filename.
+/// Unknown keys fall through to None — shown by raw key, never dropped.
+fn source_label(key: &str) -> Option<&'static str> {
+    match key {
+        "claude" => Some("Claude"),
+        "codex" => Some("Codex"),
+        "gemini" => Some("Gemini"),
+        "hermes" => Some("Hermes"),
+        "grok" => Some("Grok"),
+        "antigravity" => Some("Antigravity"),
+        _ => None,
+    }
+}
+
+/// The menu's per-Source rows for Today, as (source key, row text): one row
+/// per Source with usage — "Claude — 1.8M · $6.12" — Cost descending, Sources
+/// whose Models are all Unpriced last (by tokens) reading "unpriced", never
+/// $0.00; a mixed row's priced sum is a Partial Cost and carries "≥ ". The
+/// key list is also the membership identity the glue diffs to decide re-text
+/// vs rebuild.
+fn source_rows(
+    rows: &[crate::queries::BreakdownRow],
+    settings: &crate::settings::Settings,
+) -> Vec<(String, String)> {
+    let mut used: Vec<&crate::queries::BreakdownRow> =
+        rows.iter().filter(|r| r.total_tokens > 0).collect();
+    // Cost desc; None (all-Unpriced) sorts after every Some, then tokens desc.
+    used.sort_by(|a, b| match (a.cost, b.cost) {
+        (Some(x), Some(y)) => y.total_cmp(&x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.total_tokens.cmp(&a.total_tokens),
+    });
+    used.iter()
+        .map(|r| {
+            let cost = match r.cost {
+                Some(c) => {
+                    let marker = if r.has_unpriced { "≥ " } else { "" };
+                    format!("{marker}{}", fmt_cost(c, settings))
+                }
+                None => "unpriced".to_string(),
+            };
+            let text = format!(
+                "{} — {} · {cost}",
+                source_label(&r.key).unwrap_or(&r.key),
+                fmt_tokens(r.total_tokens)
+            );
+            (r.key.clone(), text)
+        })
+        .collect()
 }
 
 /// [local midnight, next local midnight) as epoch seconds for the day
@@ -451,6 +578,81 @@ mod tests {
         );
         assert_eq!(lines.0, "Today: no usage yet");
         assert_eq!(lines.1, "0 tok · 0 req");
+    }
+
+    fn brow(source: &str, total_tokens: i64, cost: Option<f64>) -> crate::queries::BreakdownRow {
+        crate::queries::BreakdownRow {
+            key: source.to_string(),
+            source: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            total_tokens,
+            requests: 0,
+            cost,
+            reasoning_tokens: None,
+            convs: 0,
+            cache_estimated: false,
+            has_unpriced: false,
+        }
+    }
+
+    // Keys are the DB source values (short keys, e.g. "claude" — what
+    // breakdown(by "tool") actually returns), never display names.
+    #[test]
+    fn source_rows_drop_zero_usage_and_sort_by_cost_then_unpriced_by_tokens() {
+        let rows = source_rows(
+            &[
+                brow("codex", 238_100, Some(1.11)),
+                brow("gemini", 0, None), // no usage today → absent
+                brow("grok", 964_200, None), // Unpriced → last
+                brow("hermes", 500_000, Some(2.0)),
+                brow("claude", 1_800_000, Some(6.12)),
+            ],
+            &Settings::default(),
+        );
+        let texts: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "Claude — 1.8M · $6.12",
+                "Hermes — 500K · $2.00",
+                "Codex — 238.1K · $1.11",
+                "Grok — 964.2K · unpriced",
+            ]
+        );
+        let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["claude", "hermes", "codex", "grok"]);
+    }
+
+    #[test]
+    fn source_rows_order_multiple_unpriced_by_tokens() {
+        let rows = source_rows(
+            &[brow("grok", 100, None), brow("hermes", 900, None)],
+            &Settings::default(),
+        );
+        let texts: Vec<&str> = rows.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(texts, vec!["Hermes — 900 · unpriced", "Grok — 100 · unpriced"]);
+    }
+
+    #[test]
+    fn source_rows_keep_unknown_sources_by_raw_key_without_icon() {
+        let rows = source_rows(&[brow("weirdtool", 1_000, Some(1.0))], &Settings::default());
+        assert_eq!(
+            rows,
+            vec![("weirdtool".to_string(), "weirdtool — 1K · $1.00".to_string())]
+        );
+    }
+
+    #[test]
+    fn source_row_partial_cost_carries_the_marker() {
+        // A Source mixing priced and Unpriced Models: breakdown returns the
+        // priced-only sum — the row must not read as a complete total.
+        let mut row = brow("claude", 1_800_000, Some(6.12));
+        row.has_unpriced = true;
+        let rows = source_rows(&[row], &Settings::default());
+        assert_eq!(rows[0].1, "Claude — 1.8M · ≥ $6.12");
     }
 
     #[test]

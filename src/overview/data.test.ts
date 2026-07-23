@@ -252,6 +252,7 @@ describe('tables', () => {
       key: '/p/alpha', inputTokens: 1, outputTokens: 2, cacheReadTokens: 3,
       cacheWriteTokens: 4, totalTokens: 10, requests: 5, cost: null,
       source: null, reasoningTokens: null, convs: 2, cacheEstimated: false,
+      hasUnpriced: true,
     };
     expect(projectTableRows([row])[0]).toEqual({
       label: '/p/alpha', total: 10, input: 1, output: 2, cached: 3, reasoning: null, convs: 2,
@@ -264,10 +265,12 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     const rows: BreakdownRow[] = [
       { key: 'claude-opus-4-8', inputTokens: 10, outputTokens: 10, cacheReadTokens: 60,
         cacheWriteTokens: 20, totalTokens: 100, requests: 1, cost: 1.5,
-        source: 'claude', reasoningTokens: null, convs: 1, cacheEstimated: true },
+        source: 'claude', reasoningTokens: null, convs: 1, cacheEstimated: true,
+        hasUnpriced: false },
       { key: 'gpt-5.4', inputTokens: 1, outputTokens: 1, cacheReadTokens: 1,
         cacheWriteTokens: 1, totalTokens: 4, requests: 1, cost: null,
-        source: 'codex', reasoningTokens: null, convs: 1, cacheEstimated: false },
+        source: 'codex', reasoningTokens: null, convs: 1, cacheEstimated: false,
+        hasUnpriced: true },
     ];
     const bars = modelBars(rows, 'claude', 200);
     expect(bars).toHaveLength(1);
