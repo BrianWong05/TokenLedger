@@ -215,7 +215,10 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
         </div>
 
         <div className="tt-split">
-          {TOOLS.map((tl) => (
+          {/* Only Sources with tokens render: a zero-width segment still carries
+              the flex gap on both sides, wedging dead space between the segments
+              that do have tokens (e.g. Claude first + pi last, five empties between). */}
+          {TOOLS.filter((tl) => toolTotals[tl.key] > 0).map((tl) => (
             <div key={tl.key} style={{ width: fmtPct(toolTotals[tl.key] / grand), background: tl.color }} />
           ))}
         </div>

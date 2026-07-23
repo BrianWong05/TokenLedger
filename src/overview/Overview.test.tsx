@@ -124,10 +124,9 @@ describe('Overview presentation', () => {
       c.querySelectorAll<HTMLElement>('.tt-split div'),
       (d) => d.style.width,
     );
-    // TOOLS order: claude, codex, gemini, hermes, grok, antigravity, pi.
-    expect(widths[0]).toBe('75%');
-    expect(widths[1]).toBe('25%');
-    expect(widths[2]).toBe('0%'); // CSSOM serializes fmtPct(0) "0.0%" → "0%"
+    // Only Sources with tokens render a segment; the five zero-token Sources are
+    // omitted so their flex gaps don't wedge dead space between the visible ones.
+    expect(widths).toEqual(['75%', '25%']);
   });
 
   it('renders lowercase pi after Google Antigravity with scan status and official mark', async () => {
