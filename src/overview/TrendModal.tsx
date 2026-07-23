@@ -318,9 +318,15 @@ export default function TrendModal({
                     {i % labelStep ? '' : b.label}
                   </text>
                 ))}
-                {data.map((b, i) => (
-                  <rect key={'hit' + i} x={PL + i * slot} y={PT} width={slot} height={BASE - PT} fill="transparent" onMouseOver={() => setSel({ win: winId, key: b.key })} />
-                ))}
+                {/* Hover targets hug the drawn bar (its width + height from the
+                    baseline), so the empty space above a short bar doesn't
+                    select it. A zero bar has no target. */}
+                {data.map((b, i) => {
+                  const bh = h(b.total);
+                  return (
+                    <rect key={'hit' + i} x={PL + i * slot + (slot - barW) / 2} y={BASE - bh} width={barW} height={bh} fill="transparent" onMouseOver={() => setSel({ win: winId, key: b.key })} />
+                  );
+                })}
               </svg>
             </div>
 

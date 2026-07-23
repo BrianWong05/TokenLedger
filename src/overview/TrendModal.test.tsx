@@ -542,12 +542,17 @@ describe('Usage-trend Enlarge', () => {
     expect(contents).toContain('c2');
   });
 
-  it('disables Export for a bucket with no usage', async () => {
+  it('disables Export when the selected bucket has no usage', async () => {
+    // No hourly data seeded, so a Day window is entirely empty: every bucket is
+    // zero, and the default peak selection is itself a zero bucket. (Zero bars
+    // have no hover target, so this all-empty window is how the disabled state
+    // is actually reached.)
     const { container: c } = await mount({}, inspectorSeed());
     await open(c);
-    expect(exportBtn().disabled).toBe(false); // peak has usage
+    expect(exportBtn().disabled).toBe(false); // Total window peak has usage
 
-    await hoverBar(2); // the zero-filled today bucket
+    await act(async () => modalRangeButton('Day').click());
+    await settle(1);
     expect(exportBtn().disabled).toBe(true);
   });
 });
