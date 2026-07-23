@@ -415,7 +415,7 @@ pub fn model_pricing(conn: &Connection) -> rusqlite::Result<Vec<ModelPricing>> {
     // Order so the first row per model is the most-frequent Source (the `tool`);
     // grouping by model keeps a model's rows contiguous for the first-wins scan.
     let mut stmt = conn.prepare(
-        "SELECT model, source, COUNT(*) AS c FROM events \
+        "SELECT model, source, COUNT(*) AS c FROM events WHERE model IS NOT NULL \
          GROUP BY model, source ORDER BY model, c DESC, source ASC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -623,6 +623,22 @@ mod tests {
             rusqlite::params![format!("k{k}"), source, model],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn model_pricing_omits_unattributed_usage() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        seed_event(&conn, "priced-full", "claude");
+        conn.execute(
+            "INSERT INTO events (dedup_key, source, timestamp, model, input_tokens, source_file) \
+             VALUES ('pi:tool-result:1', 'pi', 0, NULL, 100, 'pi.jsonl')",
+            [],
+        ).unwrap();
+
+        let list = model_pricing(&conn).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].model, "priced-full");
     }
 
     #[test]

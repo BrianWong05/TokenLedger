@@ -137,6 +137,39 @@ fn build_where(f: &Filters) -> (String, Vec<Value>) {
     (where_sql, params)
 }
 
+#[derive(Default)]
+struct CostContribution {
+    cost: f64,
+    priced_tokens: i64,
+    unattributed_tokens: i64,
+    unpriced: bool,
+    cache_estimated: bool,
+}
+
+fn cost_contribution(
+    rates: &RateMap,
+    model: Option<&str>,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write_5m: i64,
+    cache_write_1h: i64,
+) -> CostContribution {
+    let tokens = input + output + cache_read + cache_write_5m + cache_write_1h;
+    let Some(model) = model else {
+        return CostContribution { unattributed_tokens: tokens, ..Default::default() };
+    };
+    let Some(model_rates) = rates.resolve(model) else {
+        return CostContribution { unpriced: tokens > 0, ..Default::default() };
+    };
+    CostContribution {
+        cost: model_rates.cost(input, output, cache_read, cache_write_5m, cache_write_1h),
+        priced_tokens: tokens,
+        cache_estimated: model_rates.cache_gap(cache_read, cache_write_5m, cache_write_1h),
+        ..Default::default()
+    }
+}
+
 pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
@@ -149,7 +182,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(0)?,
             r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
             r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
         ))
@@ -159,6 +192,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         (0i64, 0i64, 0i64, 0i64, 0i64, 0i64);
     let mut cost = 0.0f64;
     let mut priced_tokens = 0i64;
+    let mut unattributed_tokens = 0i64;
     let mut unpriced_models: Vec<String> = Vec::new();
     let mut cache_estimated_models: Vec<String> = Vec::new();
 
@@ -170,19 +204,15 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         cw5m += w5;
         cw1h += w1;
         requests += calls;
-        let tokens = in_ + out + cr + w5 + w1;
-        match rates.resolve(&model) {
-            Some(rt) => {
-                cost += rt.cost(in_, out, cr, w5, w1);
-                priced_tokens += tokens;
-                if rt.cache_gap(cr, w5, w1) {
-                    cache_estimated_models.push(model);
-                }
-            }
-            None => {
-                if tokens > 0 {
-                    unpriced_models.push(model);
-                }
+        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
+        cost += contribution.cost;
+        priced_tokens += contribution.priced_tokens;
+        unattributed_tokens += contribution.unattributed_tokens;
+        if let Some(model) = model {
+            if contribution.unpriced {
+                unpriced_models.push(model);
+            } else if contribution.cache_estimated {
+                cache_estimated_models.push(model);
             }
         }
     }
@@ -205,7 +235,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         requests,
         cost: if priced_tokens > 0 { Some(cost) } else { None },
         has_unpriced: !unpriced_models.is_empty(),
-        unattributed_tokens: 0,
+        unattributed_tokens,
         unpriced_models,
         cache_estimated_models,
         cache_hit_rate,
@@ -225,7 +255,7 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, String>(0)?, r.get::<_, String>(1)?,
+            r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?,
             r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?,
             r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
         ))
@@ -236,10 +266,7 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     for row in rows {
         let (bucket, model, in_, out, cr, w5, w1) = row?;
         let tokens = in_ + out + cr + w5 + w1;
-        let (c, unpriced) = match rates.resolve(&model) {
-            Some(rt) => (rt.cost(in_, out, cr, w5, w1), false),
-            None => (0.0, tokens > 0),
-        };
+        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
         let i = *idx.entry(bucket.clone()).or_insert_with(|| {
             points.push(TrendPoint {
                 bucket: bucket.clone(),
@@ -260,8 +287,9 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
         p.cache_read_tokens += cr;
         p.cache_write_tokens += w5 + w1;
         p.total_tokens += tokens;
-        p.cost += c;
-        p.has_unpriced |= unpriced;
+        p.cost += contribution.cost;
+        p.has_unpriced |= contribution.unpriced;
+        p.unattributed_tokens += contribution.unattributed_tokens;
     }
     Ok(points)
 }
@@ -336,7 +364,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?,
             r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
             r.get::<_, Option<i64>>(9)?,
@@ -352,10 +380,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
         let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning,
              cxm, cxs, cxr, cxt, cxa, cxmc, cxsk) = row?;
         let tokens = in_ + out + cr + w5 + w1;
-        let (c, unpriced) = match rates.resolve(&model) {
-            Some(rt) => (rt.cost(in_, out, cr, w5, w1), false),
-            None => (0.0, tokens > 0),
-        };
+        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
         // Clone into the map key like trend(); avoid moving (bucket, source) before push.
         let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
             points.push(SeriesPoint {
@@ -384,15 +409,18 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             points.len() - 1
         });
         let p = &mut points[i];
-        *p.by_model.entry(model).or_insert(0) += tokens;
-        p.has_unpriced |= unpriced;
+        if let Some(model) = model {
+            *p.by_model.entry(model).or_insert(0) += tokens;
+        }
+        p.unattributed_tokens += contribution.unattributed_tokens;
+        p.has_unpriced |= contribution.unpriced;
         p.input_tokens += in_;
         p.output_tokens += out;
         p.cache_read_tokens += cr;
         p.cache_write_tokens += w5 + w1;
         p.total_tokens += in_ + out + cr + w5 + w1;
         p.requests += calls;
-        p.cost += c;
+        p.cost += contribution.cost;
         add_opt(&mut p.reasoning_tokens, reasoning);
         add_opt(&mut p.ctx_messages, cxm);
         add_opt(&mut p.ctx_system, cxs);
@@ -436,6 +464,7 @@ struct Agg {
     convs: i64,
     cache_estimated: bool,
     unpriced: bool,
+    unattributed: i64,
 }
 
 pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<Vec<BreakdownRow>> {
@@ -458,17 +487,24 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
             r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
             r.get::<_, Option<i64>>(9)?,
         ))
     })?;
 
-    let mut map: HashMap<(String, Option<String>), Agg> = HashMap::new();
+    let group_key = |group: Option<String>| {
+        if group_col == "model" {
+            group
+        } else {
+            Some(group.unwrap_or_else(|| "unknown".to_string()))
+        }
+    };
+    let mut map: HashMap<(Option<String>, Option<String>), Agg> = HashMap::new();
     for row in rows {
         let (grp, src, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
-        let key = (grp.unwrap_or_else(|| "unknown".to_string()), src);
+        let key = (group_key(grp), src);
         let a = map.entry(key).or_default();
         a.input += in_;
         a.output += out;
@@ -479,13 +515,12 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         if let Some(r) = reasoning {
             a.reasoning = Some(a.reasoning.unwrap_or(0) + r);
         }
-        if let Some(rt) = rates.resolve(&model) {
-            a.cost += rt.cost(in_, out, cr, w5, w1);
-            a.priced += in_ + out + cr + w5 + w1;
-            a.cache_estimated |= rt.cache_gap(cr, w5, w1);
-        } else {
-            a.unpriced = true;
-        }
+        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
+        a.cost += contribution.cost;
+        a.priced += contribution.priced_tokens;
+        a.cache_estimated |= contribution.cache_estimated;
+        a.unpriced |= contribution.unpriced;
+        a.unattributed += contribution.unattributed_tokens;
     }
 
     // Convs at the row's own grain (distinct sessions can span models).
@@ -499,7 +534,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     })?;
     for row in crows {
         let (grp, src, convs) = row?;
-        let key = (grp.unwrap_or_else(|| "unknown".to_string()), src);
+        let key = (group_key(grp), src);
         if let Some(a) = map.get_mut(&key) {
             a.convs = convs;
         }
@@ -508,7 +543,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     let mut out: Vec<BreakdownRow> = map
         .into_iter()
         .map(|((key, source), a)| BreakdownRow {
-            key: Some(key),
+            key,
             source,
             input_tokens: a.input,
             output_tokens: a.output,
@@ -521,7 +556,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             convs: a.convs,
             cache_estimated: a.cache_estimated,
             has_unpriced: a.unpriced,
-            unattributed_tokens: 0,
+            unattributed_tokens: a.unattributed,
         })
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));
@@ -739,7 +774,7 @@ mod tests {
             dedup_key: key.to_string(),
             source: source.to_string(),
             timestamp: ts,
-            model: model.to_string(),
+            model: Some(model.to_string()),
             project: project.map(|p| p.to_string()),
             api_calls: calls,
             input_tokens: input,
@@ -794,6 +829,65 @@ mod tests {
     }
 
     #[test]
+    fn summary_counts_all_unattributed_usage_with_unavailable_cost() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut usage = ev(
+            "pi:tool-result:1", "pi", DAY1_TS, "unused", Some("/p/pi"),
+            2, 100, 50, 20, 10, 5,
+        );
+        usage.model = None;
+        db::insert_events(&mut conn, &[usage]).unwrap();
+
+        let filters = Filters {
+            tools: vec!["pi".to_string()],
+            project: Some("/p/pi".to_string()),
+            start_ts: Some(DAY1_START),
+            end_ts: Some(DAY2_START),
+            ..Filters::default()
+        };
+        let s = summary(&conn, &filters).unwrap();
+        assert_eq!(s.input_tokens, 100);
+        assert_eq!(s.output_tokens, 50);
+        assert_eq!(s.cache_read_tokens, 20);
+        assert_eq!(s.cache_write_tokens, 15);
+        assert_eq!(s.total_tokens, 185);
+        assert_eq!(s.requests, 2);
+        assert_eq!(s.cost, None);
+        assert!(!s.has_unpriced, "Unattributed Usage is not an Unpriced Model");
+        assert!(s.unpriced_models.is_empty());
+        assert_eq!(s.unattributed_tokens, 185);
+    }
+
+    #[test]
+    fn summary_keeps_unpriced_and_unattributed_reasons_separate_and_model_filters_omit_null() {
+        let (_dir, mut conn) = seed();
+        let mut usage = ev(
+            "pi:tool-result:1", "pi", DAY1_TS, "unused", None,
+            4, 75, 25, 0, 0, 0,
+        );
+        usage.model = None;
+        db::insert_events(&mut conn, &[usage]).unwrap();
+
+        let s = summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(s.total_tokens, 5350);
+        assert_eq!(s.requests, 9);
+        approx(s.cost.unwrap(), 0.02155);
+        assert!(s.has_unpriced);
+        assert_eq!(s.unpriced_models, vec!["hermes-local".to_string()]);
+        assert_eq!(s.unattributed_tokens, 100);
+
+        let model_only = summary(&conn, &Filters {
+            models: vec!["gpt-5.4".to_string()],
+            ..Filters::default()
+        }).unwrap();
+        assert_eq!(model_only.total_tokens, 4850);
+        assert_eq!(model_only.requests, 2);
+        assert_eq!(model_only.unattributed_tokens, 0);
+        assert!(!model_only.has_unpriced);
+    }
+
+    #[test]
     fn summary_tool_filter_excludes_unpriced() {
         let (_dir, conn) = seed();
         let f = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
@@ -827,6 +921,51 @@ mod tests {
         assert!(!s.has_unpriced);
         assert!(s.unpriced_models.is_empty());
         approx(s.cost.unwrap(), 0.02185); // 0.02155 + 300 * 0.000001
+    }
+
+    #[test]
+    fn breakdown_preserves_unattributed_identity_and_counts_it_in_source_and_project() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('gpt-5.4', 0.000002, 0.000010, 0, 0, 0)",
+            [],
+        ).unwrap();
+        let mut priced = ev("a", "pi", DAY1_TS, "gpt-5.4", Some("/p/pi"), 1, 100, 50, 0, 0, 0);
+        priced.session_id = Some("s1".to_string());
+        let mut unpriced = ev("b", "pi", DAY1_TS, "local", Some("/p/pi"), 1, 30, 20, 0, 0, 0);
+        unpriced.session_id = Some("s2".to_string());
+        let mut unattributed = ev("c", "pi", DAY1_TS, "unused", Some("/p/pi"), 2, 40, 10, 0, 0, 0);
+        unattributed.model = None;
+        unattributed.session_id = Some("s3".to_string());
+        db::insert_events(&mut conn, &[priced, unpriced, unattributed]).unwrap();
+
+        let model_rows = breakdown(&conn, "model", &Filters::default()).unwrap();
+        assert_eq!(model_rows.len(), 3);
+        let null_model = model_rows.iter().find(|r| r.key.is_none()).unwrap();
+        assert_eq!(null_model.source.as_deref(), Some("pi"));
+        assert_eq!(null_model.total_tokens, 50);
+        assert_eq!(null_model.requests, 2);
+        assert_eq!(null_model.cost, None);
+        assert!(!null_model.has_unpriced);
+        assert_eq!(null_model.unattributed_tokens, 50);
+        assert_eq!(null_model.convs, 1);
+        let local = model_rows.iter().find(|r| r.key.as_deref() == Some("local")).unwrap();
+        assert!(local.has_unpriced);
+        assert_eq!(local.unattributed_tokens, 0);
+
+        for by in ["tool", "project"] {
+            let rows = breakdown(&conn, by, &Filters::default()).unwrap();
+            assert_eq!(rows.len(), 1, "one {by} row");
+            let row = &rows[0];
+            assert_eq!(row.total_tokens, 250);
+            assert_eq!(row.requests, 4);
+            approx(row.cost.unwrap(), 0.0007);
+            assert!(row.has_unpriced);
+            assert_eq!(row.unattributed_tokens, 50);
+            assert_eq!(row.convs, 3);
+        }
     }
 
     #[test]
@@ -948,6 +1087,27 @@ mod tests {
     }
 
     #[test]
+    fn trend_counts_unattributed_usage_without_marking_an_unpriced_model() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut usage = ev(
+            "pi:tool-result:1", "pi", DAY1_TS, "unused", None,
+            2, 100, 50, 20, 10, 5,
+        );
+        usage.model = None;
+        db::insert_events(&mut conn, &[usage]).unwrap();
+
+        let pts = trend(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].bucket, "2026-07-01");
+        assert_eq!(pts[0].total_tokens, 185);
+        approx(pts[0].cost, 0.0);
+        assert!(!pts[0].has_unpriced);
+        assert_eq!(pts[0].unattributed_tokens, 185);
+    }
+
+    #[test]
     fn trend_daily_buckets_local_time() {
         std::env::set_var("TZ", "UTC"); // pin bucketing timezone for a deterministic date string
         let (_dir, conn) = seed();
@@ -974,6 +1134,40 @@ mod tests {
         e.session_id = session.map(|s| s.to_string());
         e.reasoning_tokens = reasoning;
         e
+    }
+
+    #[test]
+    fn series_keeps_unattributed_usage_outside_the_model_map() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let attributed = ev_s(
+            "pi:assistant:1", "pi", DAY1_TS, "gpt-5.4", Some("s1"), Some(5),
+        );
+        let mut unattributed = ev_s(
+            "pi:tool-result:1", "pi", DAY1_TS, "unused", Some("s2"), None,
+        );
+        unattributed.model = None;
+        unattributed.api_calls = 2;
+        db::insert_events(&mut conn, &[attributed, unattributed]).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('gpt-5.4', 0.000002, 0.000010, 0, 0, 0)",
+            [],
+        ).unwrap();
+
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(pts.len(), 1);
+        let point = &pts[0];
+        assert_eq!(point.total_tokens, 300);
+        assert_eq!(point.by_model.len(), 1);
+        assert_eq!(point.by_model.get("gpt-5.4"), Some(&150));
+        assert_eq!(point.unattributed_tokens, 150);
+        assert!(!point.has_unpriced);
+        approx(point.cost, 0.0007);
+        assert_eq!(point.requests, 3);
+        assert_eq!(point.convs, 2);
+        assert_eq!(point.reasoning_tokens, Some(5));
     }
 
     #[test]

@@ -6,7 +6,7 @@ pub struct UsageEvent {
     pub dedup_key: String,
     pub source: String,
     pub timestamp: i64,
-    pub model: String,
+    pub model: Option<String>, // None = Unattributed Usage, never a sentinel Model
     pub project: Option<String>,
     pub api_calls: i64,
     pub input_tokens: i64,

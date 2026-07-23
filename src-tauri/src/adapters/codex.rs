@@ -220,7 +220,7 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                     dedup_key: format!("codex:{}:{}", file_stem, line_offset),
                     source: "codex".to_string(),
                     timestamp: ts,
-                    model: model.clone(),
+                    model: Some(model.clone()),
                     project: cwd.clone(),
                     api_calls: 1,
                     input_tokens: input,

@@ -300,7 +300,7 @@ fn make_event(
         dedup_key: format!("grok:{}:{}", meta.session_id, turn_index),
         source: "grok".to_string(),
         timestamp,
-        model: meta.model.clone(),
+        model: Some(meta.model.clone()),
         project: meta.project.clone(),
         api_calls: 1, // logs expose turn boundaries only, not API calls
         input_tokens,

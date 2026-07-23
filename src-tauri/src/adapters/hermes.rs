@@ -106,7 +106,7 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
             dedup_key: format!("hermes:{id}"),
             source: "hermes".to_string(),
             timestamp: started_at as i64,          // truncate fractional seconds
-            model: model.unwrap_or_else(|| "unknown".to_string()),
+            model: Some(model.unwrap_or_else(|| "unknown".to_string())),
             project,
             api_calls,
             input_tokens: input,

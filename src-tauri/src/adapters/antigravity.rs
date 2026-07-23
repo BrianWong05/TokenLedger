@@ -186,7 +186,7 @@ fn decode_generation(
         dedup_key,
         source: "antigravity".to_string(),
         timestamp,
-        model,
+        model: Some(model),
         project: project.clone(),
         api_calls: 1,
         input_tokens: input,

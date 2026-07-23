@@ -121,7 +121,7 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
             dedup_key: format!("gemini:{}:{}", session.session_id, m.id),
             source: "gemini".to_string(),
             timestamp: ts,
-            model: m.model.clone().unwrap_or_else(|| "unknown".to_string()),
+            model: Some(m.model.clone().unwrap_or_else(|| "unknown".to_string())),
             project: Some(project.to_string()),
             api_calls: 1,
             input_tokens: (tokens.input - tokens.cached).max(0),

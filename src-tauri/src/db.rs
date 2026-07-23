@@ -155,6 +155,53 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 PRAGMA user_version = 6;";
 
+// v7: Unattributed Usage. SQLite cannot drop a NOT NULL constraint in place,
+// so rebuild only events with the same columns, defaults, and indexes while
+// allowing Model to be NULL. Price tables stay untouched because they remain
+// keyed exclusively by real Model identities (ADR-0008).
+const SCHEMA_V7: &str = "\
+ALTER TABLE events RENAME TO events_v6;
+CREATE TABLE events (
+  dedup_key TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  model TEXT,
+  project TEXT,
+  api_calls INTEGER NOT NULL DEFAULT 1,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_5m_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_1h_tokens INTEGER NOT NULL DEFAULT 0,
+  source_file TEXT NOT NULL,
+  session_id TEXT,
+  reasoning_tokens INTEGER,
+  ctx_messages INTEGER,
+  ctx_system INTEGER,
+  ctx_reasoning INTEGER,
+  ctx_toolcalls INTEGER,
+  ctx_agents INTEGER,
+  ctx_mcp INTEGER,
+  ctx_skills INTEGER
+);
+INSERT INTO events (
+  dedup_key, source, timestamp, model, project, api_calls,
+  input_tokens, output_tokens, cache_read_tokens,
+  cache_write_5m_tokens, cache_write_1h_tokens, source_file,
+  session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning,
+  ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills
+) SELECT
+  dedup_key, source, timestamp, model, project, api_calls,
+  input_tokens, output_tokens, cache_read_tokens,
+  cache_write_5m_tokens, cache_write_1h_tokens, source_file,
+  session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning,
+  ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills
+FROM events_v6;
+DROP TABLE events_v6;
+CREATE INDEX idx_events_ts ON events(timestamp);
+CREATE INDEX idx_events_file ON events(source_file);
+PRAGMA user_version = 7;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -327,7 +374,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 6) and no-ops.
+    // the committed user_version (currently 7) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -348,6 +395,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 6 {
             conn.execute_batch(SCHEMA_V6)?;
+        }
+        if version < 7 {
+            conn.execute_batch(SCHEMA_V7)?;
         }
         Ok(())
     };
@@ -619,7 +669,7 @@ mod tests {
             dedup_key: dedup_key.to_string(),
             source: "claude".to_string(),
             timestamp: 1_700_000_000,
-            model: "claude-sonnet-4-20250514".to_string(),
+            model: Some("claude-sonnet-4-20250514".to_string()),
             project: Some("/Users/dev/projects/alpha".to_string()),
             api_calls: 1,
             input_tokens: 100,
@@ -646,7 +696,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
         for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings"] {
             let count: i64 = conn
                 .query_row(
@@ -676,7 +726,99 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 6);
+        assert_eq!(version, 7);
+    }
+
+    #[test]
+    fn insert_accepts_unattributed_usage_without_a_sentinel_model() {
+        let (_dir, mut conn) = temp_db();
+        let mut usage = sample_event("pi:tool-result:1", "pi.jsonl");
+        usage.source = "pi".to_string();
+        usage.model = None;
+
+        let inserted = insert_events(&mut conn, &[usage]).unwrap();
+        assert_eq!(inserted, 1);
+        let stored: (Option<String>, i64, i64) = conn.query_row(
+            "SELECT model, input_tokens, api_calls FROM events WHERE dedup_key = 'pi:tool-result:1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(stored, (None, 100, 1));
+    }
+
+    #[test]
+    fn v6_db_migrates_to_nullable_models_without_losing_ledger_or_prices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(SCHEMA_V3).unwrap();
+            conn.execute_batch(SCHEMA_V4).unwrap();
+            conn.execute_batch(SCHEMA_V5).unwrap();
+            conn.execute_batch(SCHEMA_V6).unwrap();
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                 cache_write_1h_tokens, source_file, session_id) \
+                 VALUES ('claude:old:1','claude',123,'claude-existing','/p',2,10,20,3,4,5,'f','s')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO prices (model, input_per_tok, output_per_tok) \
+                 VALUES ('claude-existing', 0.000001, 0.000002)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO price_overrides (model, input_per_tok, output_per_tok) \
+                 VALUES ('claude-existing', 0.000009, 0.000010)",
+                [],
+            ).unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 7);
+        let model_not_null: i64 = conn.query_row(
+            "SELECT [notnull] FROM pragma_table_info('events') WHERE name = 'model'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(model_not_null, 0, "Model storage must accept SQL NULL");
+        let usage: (String, String, i64, String, Option<String>, Option<String>) = conn.query_row(
+            "SELECT dedup_key, source, timestamp, model, project, session_id FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).unwrap();
+        assert_eq!(usage, (
+            "claude:old:1".to_string(), "claude".to_string(), 123,
+            "claude-existing".to_string(), Some("/p".to_string()), Some("s".to_string()),
+        ));
+        let usage_totals: (i64, i64, i64, i64, i64, i64) = conn.query_row(
+            "SELECT api_calls, input_tokens, output_tokens, cache_read_tokens, \
+             cache_write_5m_tokens, cache_write_1h_tokens FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).unwrap();
+        assert_eq!(usage_totals, (2, 10, 20, 3, 4, 5));
+        let price: (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT input_per_tok, output_per_tok FROM prices WHERE model = 'claude-existing'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(price, (Some(0.000001), Some(0.000002)));
+        let override_rates: (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT input_per_tok, output_per_tok FROM price_overrides WHERE model = 'claude-existing'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(override_rates, (Some(0.000009), Some(0.000010)));
+        drop(conn);
+
+        let conn = open_db(&path).unwrap();
+        let usage_count: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(usage_count, 1, "reopening after migration is idempotent");
     }
 
     #[test]
@@ -684,7 +826,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         // Build a genuine v1 database by hand (SCHEMA still writes user_version 1),
-        // then prove open_db chains v1->v2->v3->v4->v5 cleanly in one shot.
+        // then prove open_db chains every migration through v7 in one shot.
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
@@ -704,7 +846,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -835,7 +977,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -922,8 +1064,8 @@ mod tests {
 
     #[test]
     fn concurrent_opens_of_v1_db_both_succeed() {
-        // Two processes racing the v1->v6 migration: the loser of the
-        // BEGIN IMMEDIATE lock must see user_version=6 and no-op, not die on
+        // Two processes racing the v1->v7 migration: the loser of the
+        // BEGIN IMMEDIATE lock must see user_version=7 and no-op, not die on
         // "duplicate column name".
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
@@ -941,7 +1083,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
     }
 
     #[test]
@@ -1102,7 +1244,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1167,7 +1309,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1204,7 +1346,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 6);
+        assert_eq!(v, 7);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",

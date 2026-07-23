@@ -319,7 +319,7 @@ fn parse_line_event(v: &serde_json::Value, source_file: &str, encoded_dir: &str)
         dedup_key,
         source: "claude".to_string(),
         timestamp,
-        model,
+        model: Some(model),
         project,
         api_calls: 1,
         input_tokens: input,
