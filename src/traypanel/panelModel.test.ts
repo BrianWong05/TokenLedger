@@ -74,6 +74,15 @@ describe('panelModel', () => {
     ]);
   });
 
+  it('exposes raw values and per-frame formatters for the count-up animation', () => {
+    const m = panelModel(sum(3_400_000, 10.0, true, 1912), sum(0, null), [], { ...S, currency: 'HKD', usdRate: 7.8 }, 'en');
+    expect(m.costValue).toBe(10.0); // USD, conversion happens in fmtCost
+    expect(m.tokensValue).toBe(3_400_000);
+    expect(m.requestsText).toBe('1,912');
+    expect(m.fmtCost(5.0)).toBe('≥ HK$39.00'); // marker survives every frame
+    expect(m.fmtTokens(964_200)).toBe('964.2K');
+  });
+
   it('unknown sources keep their raw key and never disappear', () => {
     const m = panelModel(sum(1, 1), sum(0, null), [brow('weirdtool', 1_000, 1.0)], S, 'en');
     expect(m.rows[0].label).toBe('weirdtool');

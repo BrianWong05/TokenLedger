@@ -24,6 +24,14 @@ export interface PanelModel {
   sub: string; // "3.4M tok · 1,912 req"
   rows: PanelRow[];
   empty: boolean; // no usage today → panel shows its empty state
+  // Raw values + per-frame formatters for the header count-up animation:
+  // the view tweens the numbers and formats each frame with the same rules
+  // the static strings above use (≥ marker and Display Currency included).
+  costValue: number | null; // USD; null = unpriced, not animatable
+  tokensValue: number;
+  requestsText: string; // "1,912" — not animated, appended to the sub line
+  fmtCost(v: number): string;
+  fmtTokens(v: number): string;
 }
 
 type CostSettings = Pick<Settings, 'currency' | 'usdRate'>;
@@ -63,11 +71,17 @@ export function panelModel(
     return b.totalTokens - a.totalTokens;
   });
 
+  const requestsText = today.requests.toLocaleString('en-US');
   return {
     cost: cost(today.cost, today.hasUnpriced, settings, lang),
     delta,
     deltaUp,
-    sub: `${formatCompactTokenTotal(today.totalTokens)} tok · ${today.requests.toLocaleString('en-US')} req`,
+    sub: `${formatCompactTokenTotal(today.totalTokens)} tok · ${requestsText} req`,
+    costValue: today.cost,
+    tokensValue: today.totalTokens,
+    requestsText,
+    fmtCost: (v: number) => cost(v, today.hasUnpriced, settings, lang),
+    fmtTokens: formatCompactTokenTotal,
     rows: used.map((r) => {
       const meta = TOOLS.find((t) => t.key === r.key);
       return {

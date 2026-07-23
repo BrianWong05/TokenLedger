@@ -27,12 +27,47 @@ function ipc(cmd: string) {
     .catch(() => {});
 }
 
+// Tween toward `target` with an ease-out, so the header figures count up
+// instead of jumping. Snaps instantly under prefers-reduced-motion — and in
+// jsdom, which has no matchMedia — keeping tests deterministic and motion
+// accessible.
+function useCountUp(target: number, duration = 600): number {
+  const [value, setValue] = useState(target);
+  const shown = useRef(target);
+  useEffect(() => {
+    const reduce =
+      typeof window.matchMedia !== 'function' ||
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const from = shown.current;
+    if (reduce || from === target) {
+      shown.current = target;
+      setValue(target);
+      return;
+    }
+    let raf: number;
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const p = Math.min(1, (t - t0) / duration);
+      const eased = 1 - (1 - p) ** 3;
+      shown.current = from + (target - from) * eased;
+      setValue(shown.current);
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, duration]);
+  return value;
+}
+
 export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   const ledger = ports?.ledger ?? tauriLedger;
   const settings = ports?.settings ?? tauriSettings;
   const [model, setModel] = useState<PanelModel | null>(null);
   const [scanning, setScanning] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Count-up for the two headline figures; unpriced (null) doesn't animate.
+  const animCost = useCountUp(model?.costValue ?? 0);
+  const animTokens = useCountUp(model?.tokensValue ?? 0);
 
   const refresh = useCallback(async () => {
     try {
@@ -103,8 +138,12 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
           <div className="tp-empty">No usage yet</div>
         ) : (
           <div className="tp-cost-row">
-            <span className="tp-cost">{model?.cost ?? '…'}</span>
-            <span className="tp-sub">{model?.sub ?? ''}</span>
+            <span className="tp-cost">
+              {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
+            </span>
+            <span className="tp-sub">
+              {model ? `${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
+            </span>
           </div>
         )}
       </div>
