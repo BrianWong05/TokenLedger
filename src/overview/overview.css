@@ -620,6 +620,17 @@
 .tt-tip-row .lab span:first-child {
   color: var(--text-secondary);
 }
+/* Owning Source of a tooltip's Model row. Two Sources can run the same Model
+   name (pi and codex both report gpt-5.6-sol), so the row names its owner. An
+   <em> (not a <span>) keeps it clear of the value styling below. */
+.tt-tip-row .lab .src {
+  color: var(--text-tertiary);
+  font-style: normal;
+  margin-left: 5px;
+}
+.tt-tip-row .lab .src::before {
+  content: '· ';
+}
 .tt-tip-row .lab span:last-child {
   color: var(--text-primary);
   font-weight: 600;

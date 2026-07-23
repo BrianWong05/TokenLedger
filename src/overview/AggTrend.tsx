@@ -53,6 +53,10 @@ function AggTrend({
   // Segments are per model but colored by the model's tool; grouping the stack
   // by tool keeps each bar reading as contiguous tool blocks.
   const colorOf = (m: string) => modelColor(modelTool, m);
+  // Two Sources can run the same Model name (pi and codex both report
+  // `gpt-5.6-sol`), so a bare model name is ambiguous. Name the owning Source
+  // from the same map that picks the segment colour, so label and colour agree.
+  const sourceOf = (m: string) => TOOLS.find((tl) => tl.key === modelTool[m])?.label;
   const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
   const segsOf = (b: Bucket) => [
     ...models.map((m) => ({ key: m, color: colorOf(m), val: b.byModel[m] ?? 0 })),
@@ -64,11 +68,14 @@ function AggTrend({
   // Hovered bucket's model rows, largest first.
   const tipRows = shown
     ? [
-        ...rankedModels(shown.byModel).map(([m, v]) => ({ key: m, label: m, val: v, color: colorOf(m) })),
+        ...rankedModels(shown.byModel).map(([m, v]) => ({
+          key: m, label: m, source: sourceOf(m), val: v, color: colorOf(m),
+        })),
         ...(shown.unattributedTokens > 0
           ? [{
               key: 'unattributed-usage',
               label: t('overview.unattributedUsage'),
+              source: undefined,
               val: shown.unattributedTokens,
               color: UNATTRIBUTED_COLOR,
             }]
@@ -159,7 +166,10 @@ function AggTrend({
             {tipRows.slice(0, 6).map((r) => (
               <div className="tt-tip-row" key={r.key}>
                 <div className="lab">
-                  <span>{r.label}</span>
+                  <span>
+                    {r.label}
+                    {r.source && <em className="src">{r.source}</em>}
+                  </span>
                   <span>
                     {r.val.toLocaleString('en-US')} · {fmtPct(r.val / (shown.total || 1))}
                   </span>

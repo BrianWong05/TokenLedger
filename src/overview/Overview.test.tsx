@@ -288,6 +288,32 @@ describe('Overview presentation', () => {
     expect(card.querySelector('.tt-tip')?.textContent).toContain('Unattributed usage');
   });
 
+  it('names the owning Source on each usage-trend tooltip model row', async () => {
+    // A bare model name is ambiguous once two Sources share one (pi and codex
+    // both report gpt-5.6-sol), so every row carries its Source.
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ source: 'claude', totalTokens: 100, byModel: { 'claude-opus-4-8': 100 } }),
+        pt({ source: 'codex', totalTokens: 60, byModel: { 'gpt-5.6-sol': 60 } }),
+      ],
+      summary,
+    });
+    const card = Array.from(c.querySelectorAll('.tt-card')).find(
+      (el) => el.querySelector('.tt-title')?.textContent === 'Usage over time',
+    )!;
+    const hit = Array.from(card.querySelectorAll<SVGRectElement>('rect')).find(
+      (rect) => rect.getAttribute('fill') === 'transparent',
+    )!;
+    await act(async () => hit.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+
+    const rows = Array.from(
+      card.querySelectorAll<HTMLElement>('.tt-tip-row .lab span:first-child'),
+      (el) => el.textContent ?? '',
+    );
+    expect(rows.some((r) => r.includes('claude-opus-4-8') && r.includes('Claude'))).toBe(true);
+    expect(rows.some((r) => r.includes('gpt-5.6-sol') && r.includes('Codex'))).toBe(true);
+  });
+
   it('keeps the usage-trend y-axis labels out of the plot area', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],
