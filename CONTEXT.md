@@ -73,8 +73,9 @@ _Avoid_: Tray, status item
 
 **Source**:
 An AI tool whose local logs TokenLedger reads: Claude Code, Codex, Gemini CLI,
-Hermes, Grok Build, or Google Antigravity (IDE and CLI conversations count as
-the one Antigravity Source).
+Hermes, Grok Build, Google Antigravity (IDE and CLI conversations count as the
+one Antigravity Source), or pi. pi is always lowercase. It is the seventh
+Source, appended after Antigravity in the fixed Source order.
 _Avoid_: Provider, tool, agent, integration
 
 **Session**:
@@ -88,7 +89,10 @@ One API call to a Model. The displayed **Requests** figure is the total number
 of API calls — the count of Usage Records for Claude/Codex/Gemini/Antigravity
 (one call each), but the summed `api_call_count` for Hermes (whose one Session
 Record stands for many calls). Grok logs expose Turn boundaries only, so each
-Grok Record counts as one Request even though a Turn spans several calls.
+Grok Record counts as one Request even though a Turn spans several calls. Each
+pi Record — an assistant message, a compaction, or an auxiliary usage block —
+counts as one Request; for auxiliary blocks that may aggregate several hidden
+calls, that count is a source-observable lower bound.
 Requests is a sum of calls, never a row count.
 _Avoid_: Call count, hits
 
@@ -103,8 +107,21 @@ _Avoid_: Repo, workspace, directory
 The specific model a Usage Record used, identified by its raw logged name (e.g.
 `claude-opus-4-8`, `gpt-5.4`). The raw name is what is displayed and what a
 price resolves against; name normalisation exists only for price matching, not
-for display.
+for display. A Model is nullable: usage with no trustworthy Model is
+Unattributed Usage, stored as NULL rather than a sentinel name.
 _Avoid_: Engine, LLM, variant
+
+**Unattributed Usage**:
+Usage TokenLedger cannot attribute to any Model — pi's tool-result and
+extension-provided summary usage, where the Source records no trustworthy Model.
+Its Model is NULL (never a sentinel), so it is excluded from Model filters,
+price resolution, Overrides, and the Pricing table, yet its tokens and Requests
+still count in Source, Project, time-series, Trend, Activity, and overall totals.
+It surfaces as a distinct, non-clickable "Unattributed usage" row and is
+reported separately from an Unpriced Model: a selection of only Unattributed
+Usage shows no Cost (not $0), and a mix of priced and Unattributed Usage is a
+Partial Cost. See ADR-0008.
+_Avoid_: Unknown model, unpriced, misc, other
 
 ### Token categories
 

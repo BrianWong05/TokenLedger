@@ -370,9 +370,59 @@ fn hermetic_seven_source_partition_invariants() {
         buckets.len()
     );
 
+    // pi is non-vacuous: it attributes context along its ancestor tree, populates
+    // the tool drill-down, AND records Unattributed usage (its usage-bearing tool
+    // result) with no Model — so the invariants below actually bite on pi too.
+    let pi_attr: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE source='pi' AND ctx_messages IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(pi_attr > 0, "pi produced no attributed events");
+    let pi_tools: i64 = conn
+        .query_row("SELECT COUNT(*) FROM ctx_tools WHERE source='pi'", [], |r| r.get(0))
+        .unwrap();
+    assert!(pi_tools > 0, "pi ctx_tools empty");
+    let pi_unattributed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE source='pi' AND model IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(pi_unattributed > 0, "pi recorded no Unattributed usage");
+
     // --- The universal invariants, now proven non-vacuous. ---
     assert_partition_exact(&conn);
     assert_secondary_subset(&conn);
     assert_hermes_ctx_null(&conn);
     assert_bucket_partition_exact(&conn);
+
+    // A second scan of the same corpus inserts nothing new and leaves every
+    // Source's totals identical: ingestion is idempotent across all seven.
+    let totals_before = source_totals(&conn);
+    let rescan = run_scan(&mut conn, &roots);
+    for s in &rescan.sources {
+        assert_eq!(s.events_inserted, 0, "{}: second scan re-inserted", s.source);
+    }
+    assert_eq!(totals_before, source_totals(&conn), "second-scan totals drifted");
+}
+
+// (source, total tokens, requests) per Source — a stable-totals fingerprint.
+fn source_totals(conn: &Connection) -> Vec<(String, i64, i64)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT source, \
+               SUM(input_tokens + output_tokens + cache_read_tokens + \
+                   cache_write_5m_tokens + cache_write_1h_tokens), \
+               SUM(api_calls) \
+             FROM events GROUP BY source ORDER BY source",
+        )
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
 }

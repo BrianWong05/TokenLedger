@@ -1430,6 +1430,74 @@ mod tests {
         assert_eq!(origtool_calls(&conn2), 1);
     }
 
+    // Opt-in parity check against the REAL pi Sessions on this machine. Never run
+    // by default (reads private local logs) and never asserts machine-specific
+    // numbers: it independently sums the canonical token categories over every
+    // usage-bearing entry — deduplicated by entry identity, exactly the Ledger's
+    // rule — and asserts the Ledger's pi totals match that reckoning. No Session
+    // content is committed; the fixture is your own live corpus.
+    //   cargo test --manifest-path src-tauri/Cargo.toml pi_real_log_parity -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn pi_real_log_parity() {
+        let roots = crate::scan::SourceRoots::default_roots().pi_sessions;
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = open_db(&dir.path().join("ledger.db")).unwrap();
+        let result = scan_pi(&mut conn, &roots);
+        println!(
+            "pi scan: inserted={} skipped={} error={:?}",
+            result.events_inserted, result.lines_skipped, result.error
+        );
+
+        // Independent reckoning: dedup usage-bearing entries by identity, sum tokens.
+        let mut files = Vec::new();
+        for root in &roots {
+            find_jsonl(root, &mut files);
+        }
+        let mut seen: HashSet<String> = HashSet::new();
+        let (mut input, mut output, mut cache_read, mut cache_write) = (0i64, 0i64, 0i64, 0i64);
+        for path in files {
+            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            for line in content.lines() {
+                let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+                let usage_value = match v["type"].as_str() {
+                    Some("compaction") => &v["usage"],
+                    Some("message") => &v["message"]["usage"],
+                    _ => continue,
+                };
+                let Some(u) = parse_usage(usage_value) else { continue };
+                let id = v["id"].as_str().unwrap_or("");
+                let ts = v["timestamp"].as_str().unwrap_or("");
+                let ident = if id.is_empty() || ts.is_empty() {
+                    line.to_string() // legacy: identical copies share the whole line
+                } else {
+                    format!("{id}:{ts}")
+                };
+                if !seen.insert(ident) {
+                    continue; // a copied entry counts once
+                }
+                input += u.input;
+                output += u.output;
+                cache_read += u.cache_read;
+                cache_write += u.cache_write_5m + u.cache_write_1h;
+            }
+        }
+
+        let pi = queries::Filters { tools: vec!["pi".to_string()], ..Default::default() };
+        let s = queries::summary(&conn, &pi).unwrap();
+        println!(
+            "reckoned  input={input} output={output} cacheRead={cache_read} cacheWrite={cache_write}"
+        );
+        println!(
+            "ledger    input={} output={} cacheRead={} cacheWrite={}",
+            s.input_tokens, s.output_tokens, s.cache_read_tokens, s.cache_write_tokens
+        );
+        assert_eq!(s.input_tokens, input, "input parity");
+        assert_eq!(s.output_tokens, output, "output parity");
+        assert_eq!(s.cache_read_tokens, cache_read, "cache read parity");
+        assert_eq!(s.cache_write_tokens, cache_write, "cache write parity");
+    }
+
     #[test]
     fn active_model_follows_ancestry_and_isolates_sibling_branches() {
         let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
