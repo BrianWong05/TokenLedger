@@ -1345,6 +1345,26 @@ mod tests {
     }
 
     #[test]
+    fn pi_tool_owner_is_first_writer_wins_and_roundtrips() {
+        let (_dir, mut conn) = temp_db();
+        assert!(load_pi_tool_owners(&conn).is_empty());
+        record_pi_tool_owners(&mut conn, &[
+            ("a:1".to_string(), "orig.jsonl".to_string()),
+            ("b:2".to_string(), "orig.jsonl".to_string()),
+        ]).unwrap();
+        // A later copy from a fork file must not steal ownership of a:1.
+        record_pi_tool_owners(&mut conn, &[
+            ("a:1".to_string(), "fork.jsonl".to_string()),
+            ("c:3".to_string(), "fork.jsonl".to_string()),
+        ]).unwrap();
+        let owners = load_pi_tool_owners(&conn);
+        assert_eq!(owners.get("a:1").map(String::as_str), Some("orig.jsonl"));
+        assert_eq!(owners.get("b:2").map(String::as_str), Some("orig.jsonl"));
+        assert_eq!(owners.get("c:3").map(String::as_str), Some("fork.jsonl"));
+        assert_eq!(owners.len(), 3);
+    }
+
+    #[test]
     fn v4_db_migrates_to_v5_with_ctx_exec() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");

@@ -279,11 +279,17 @@ fn event_timestamp(message_ts_ms: Option<i64>, entry_ts_iso: Option<&str>) -> Op
         .or_else(|| entry_ts_iso.and_then(iso_to_epoch))
 }
 
-// The dedup_key of a modern entry (one with an id + entry timestamp), stable
-// across every copy. Its "{id}:{ts}" tail is the identity `entry_identity_from_key`
-// recovers for the fork/clone owner map — keep the two in lockstep.
+// The file/session-independent identity of a modern entry (one with an id + entry
+// timestamp), shared by every copy. It is the fork/clone owner-map key and the
+// tail of the entry's dedup_key.
+fn modern_ident(id: &str, entry_ts_iso: &str) -> String {
+    format!("{id}:{entry_ts_iso}")
+}
+
+// The dedup_key of a modern entry: its source-independent identity, namespaced by
+// Source and entry kind so copies of one entry collapse to a single Usage Record.
 fn modern_key(kind: &str, id: &str, entry_ts_iso: &str) -> String {
-    format!("pi:{kind}:{id}:{entry_ts_iso}")
+    format!("pi:{kind}:{}", modern_ident(id, entry_ts_iso))
 }
 
 // A legacy pi Session (no entry ids) still deduplicates: identity is a hash of
@@ -380,7 +386,7 @@ fn parse_file(
         let entry_ts_iso = nonempty(v["timestamp"].as_str());
         // File/session-independent identity of this entry, shared by every copy.
         let ident = match (id.as_deref(), entry_ts_iso.as_deref()) {
-            (Some(id), Some(ts)) => Some(format!("{id}:{ts}")),
+            (Some(id), Some(ts)) => Some(modern_ident(id, ts)),
             _ => None,
         };
         // Content active immediately before this entry: its parent's composition
