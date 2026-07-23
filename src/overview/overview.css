@@ -1237,7 +1237,8 @@
   text-align: right;
   white-space: nowrap;
 }
-.tt-cost-model > span.unpriced {
+.tt-cost-model > span.unpriced,
+.tt-cost-model > span.unattributed {
   color: var(--warning-text);
 }
 .tt-cost-model-name {

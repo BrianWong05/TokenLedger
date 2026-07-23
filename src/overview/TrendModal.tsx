@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, rankedModels, stackModels, trendSlice, type Bucket, type Granularity } from './data';
+import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
 import { fmtPct, fmtTok } from '../lib/format';
 import {
   fmtIsoDateL,
-  formatDisplayCost,
+  formatSummaryCost,
   INTERVAL_LABEL_KEY,
   monthShortL,
   PER_UNIT_KEY,
@@ -148,10 +148,14 @@ export default function TrendModal({
   // stack by tool keeps each bar reading as contiguous tool blocks (shared with
   // the card via stackModels/modelColor).
   const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
-  const segsOf = (b: Bucket) => models.map((m) => ({ key: m, color: modelColor(modelTool, m), val: b.byModel[m] ?? 0 }));
+  const segsOf = (b: Bucket) => [
+    ...models.map((m) => ({ key: m, color: modelColor(modelTool, m), val: b.byModel[m] ?? 0 })),
+    ...(b.unattributedTokens > 0
+      ? [{ key: 'unattributed-usage', color: UNATTRIBUTED_COLOR, val: b.unattributedTokens }]
+      : []),
+  ];
 
-  const costLabel =
-    summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
+  const costLabel = summary === null ? '…' : formatSummaryCost(summary, settings, lang);
 
   // Exactly one bucket is always selected — moved by hovering a bar. The
   // selection is keyed by bucket key AND its window AND the effective
@@ -197,10 +201,20 @@ export default function TrendModal({
         : fmtIsoDateL(b.key, lang);
   // Top-6 models in the selected bucket, largest first; the rest fold into one
   // muted remainder row (color '' → grey).
-  const selRows: { key: string; name: string; val: number; color: string; more: boolean }[] = [];
+  const selRows: {
+    key: string;
+    name: string;
+    val: number;
+    color: string;
+    more: boolean;
+  }[] = [];
   if (selBucket) {
     const ranked = rankedModels(selBucket.byModel);
-    for (const [m, v] of ranked.slice(0, 6)) selRows.push({ key: m, name: m, val: v, color: modelColor(modelTool, m), more: false });
+    for (const [m, v] of ranked.slice(0, 6)) {
+      selRows.push({
+        key: m, name: m, val: v, color: modelColor(modelTool, m), more: false,
+      });
+    }
     const rest = ranked.slice(6);
     if (rest.length) {
       selRows.push({
@@ -209,6 +223,15 @@ export default function TrendModal({
         val: rest.reduce((a, [, v]) => a + v, 0),
         color: '',
         more: true,
+      });
+    }
+    if (selBucket.unattributedTokens > 0) {
+      selRows.push({
+        key: 'unattributed-usage',
+        name: t('overview.unattributedUsage'),
+        val: selBucket.unattributedTokens,
+        color: UNATTRIBUTED_COLOR,
+        more: false,
       });
     }
   }
@@ -367,6 +390,9 @@ export default function TrendModal({
                       {summary.unpricedModels.length} {t('overview.unpricedMarker')}
                     </span>
                   )}
+                  {summary && summary.unattributedTokens > 0 && (
+                    <span className="mark">{t('overview.unattributedUsage')}</span>
+                  )}
                 </div>
               </div>
               <div className="tt-legend">
@@ -419,11 +445,14 @@ export default function TrendModal({
                 <div className="tt-trend-insp-cost">
                   <span>{t('overview.estCost')}</span>
                   <span className="amt">
-                    {selCost === null ? '…' : formatDisplayCost(selCost.cost, selCost.hasUnpriced, settings, lang)}
+                    {selCost === null ? '…' : formatSummaryCost(selCost, settings, lang)}
                     {selCost?.hasUnpriced && (
                       <span className="mark" title={selCost.unpricedModels.join(', ')}>
                         {' '}· {selCost.unpricedModels.length} {t('overview.unpricedMarker')}
                       </span>
+                    )}
+                    {selCost && selCost.unattributedTokens > 0 && (
+                      <span className="mark"> {' '}· {t('overview.unattributedUsage')}</span>
                     )}
                   </span>
                 </div>

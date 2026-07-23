@@ -34,7 +34,7 @@ beforeEach(() => {
 
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
   return {
-    bucket: '2026-07-16', source: 'claude', byModel: {},
+    bucket: '2026-07-16', source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     totalTokens: 0, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
     ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
@@ -44,7 +44,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 
 const summary: Summary = {
   inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-  totalTokens: 700, requests: 3, cost: 1.5, hasUnpriced: false,
+  totalTokens: 700, requests: 3, cost: 1.5, hasUnpriced: false, unattributedTokens: 0,
   unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
 };
 
@@ -321,6 +321,24 @@ describe('Activity Enlarge', () => {
     expect(stats()).toContain('≥ $9.99');
     expect(stats()).toContain('1 unpriced');
     expect(stats()).not.toContain('…');
+  });
+
+  it('distinguishes Unattributed Usage in the year-window Cost', async () => {
+    const { container: c, ledger } = await mount();
+    ledger.hold('summary');
+    const modal = await open(c);
+    const stats = () => modal.querySelector('.tt-heat-modal-stats')!.textContent!;
+
+    await act(async () => {
+      ledger.resolveHeld('summary', 0, {
+        ...summary, cost: null, hasUnpriced: false, unattributedTokens: 700,
+      });
+    });
+    await settle(1);
+
+    expect(stats()).toContain('Unavailable');
+    expect(stats()).toContain('Unattributed usage');
+    expect(stats()).not.toContain('unpriced');
   });
 
   it('ignores a stale year Summary from a previous open after a quick reopen', async () => {

@@ -34,6 +34,8 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
     bucket: '2026-07-09',
     source: 'claude',
     byModel: {},
+    unattributedTokens: 0,
+    hasUnpriced: false,
     inputTokens: 100,
     outputTokens: 50,
     cacheReadTokens: 200,
@@ -175,7 +177,7 @@ describe('bucketCsv', () => {
     label: '15',
     byTool: emptyByTool(),
     byModel: { 'claude-opus-4-8': 300, 'gpt-5.5-codex': 100 },
-    total: 400,
+    unattributedTokens: 0, hasUnpriced: false, total: 400,
   };
   const modelTool = { 'claude-opus-4-8': 'claude', 'gpt-5.5-codex': 'codex' };
 
@@ -190,7 +192,8 @@ describe('bucketCsv', () => {
   it('skips zero-token models and includes every nonzero one (no top-N cap)', () => {
     const many = {
       key: '2026-07-15', label: '15', byTool: emptyByTool(),
-      byModel: { a: 7, b: 6, c: 5, d: 4, e: 3, f: 2, g: 1, h: 0 }, total: 28,
+      byModel: { a: 7, b: 6, c: 5, d: 4, e: 3, f: 2, g: 1, h: 0 },
+      unattributedTokens: 0, hasUnpriced: false, total: 28,
     };
     const rows = bucketCsv(many, {}).trim().split('\n');
     expect(rows).toHaveLength(1 + 7); // header + 7 nonzero models, h dropped
@@ -199,7 +202,7 @@ describe('bucketCsv', () => {
   });
 
   it('CSV-escapes a field containing a comma and blanks an unknown tool', () => {
-    const b = { key: 'k', label: 'k', byTool: emptyByTool(), byModel: { 'weird,name': 50 }, total: 50 };
+    const b = { key: 'k', label: 'k', byTool: emptyByTool(), byModel: { 'weird,name': 50 }, unattributedTokens: 0, hasUnpriced: false, total: 50 };
     expect(bucketCsv(b, {})).toBe('model,tool,tokens,share\n"weird,name",,50,1.0000\n');
   });
 });
@@ -276,6 +279,23 @@ describe('bucketsFromPoints', () => {
     expect(bks[0].key).toBe('2026-07-09');
     expect(bks[0].byModel).toEqual({ 'claude-fable-5': 300, 'claude-opus-4-8': 80, 'gpt-5.6-sol': 50 });
   });
+
+  it('keeps Unattributed Usage outside Model maps while carrying both Cost gaps', () => {
+    const [bucket] = bucketsFromPoints(
+      [
+        pt({
+          bucket: '2026-07-09', totalTokens: 350,
+          byModel: { 'claude-opus-4-8': 300 },
+          unattributedTokens: 50, hasUnpriced: true,
+        }),
+      ],
+      'day',
+    );
+
+    expect(bucket.byModel).toEqual({ 'claude-opus-4-8': 300 });
+    expect(bucket.unattributedTokens).toBe(50);
+    expect(bucket.hasUnpriced).toBe(true);
+  });
 });
 
 describe('smallMultiples', () => {
@@ -337,7 +357,7 @@ describe('tables', () => {
       key: '/p/alpha', inputTokens: 1, outputTokens: 2, cacheReadTokens: 3,
       cacheWriteTokens: 4, totalTokens: 10, requests: 5, cost: null,
       source: null, reasoningTokens: null, convs: 2, cacheEstimated: false,
-      hasUnpriced: true,
+      hasUnpriced: true, unattributedTokens: 0,
     };
     expect(projectTableRows([row])[0]).toEqual({
       label: '/p/alpha', total: 10, input: 1, output: 2, cached: 3, reasoning: null, convs: 2,
@@ -351,17 +371,35 @@ describe('modelBars + catTotals + rangeToFilters', () => {
       { key: 'claude-opus-4-8', inputTokens: 10, outputTokens: 10, cacheReadTokens: 60,
         cacheWriteTokens: 20, totalTokens: 100, requests: 1, cost: 1.5,
         source: 'claude', reasoningTokens: null, convs: 1, cacheEstimated: true,
-        hasUnpriced: false },
+        hasUnpriced: false, unattributedTokens: 0 },
       { key: 'gpt-5.4', inputTokens: 1, outputTokens: 1, cacheReadTokens: 1,
         cacheWriteTokens: 1, totalTokens: 4, requests: 1, cost: null,
         source: 'codex', reasoningTokens: null, convs: 1, cacheEstimated: false,
-        hasUnpriced: true },
+        hasUnpriced: true, unattributedTokens: 0 },
     ];
     const bars = modelBars(rows, 'claude', 200);
     expect(bars).toHaveLength(1);
     expect(bars[0].share).toBeCloseTo(0.5);
     expect(bars[0].cacheEstimated).toBe(true);
     expect(bars[0].segs.map((s) => s.frac)).toEqual([0.1, 0.1, 0.6, 0.2]);
+  });
+
+  it('modelBars carries a null Model as a distinct non-Model row', () => {
+    const rows: BreakdownRow[] = [
+      { key: 'claude-opus-4-8', inputTokens: 50, outputTokens: 50, cacheReadTokens: 0,
+        cacheWriteTokens: 0, totalTokens: 100, requests: 1, cost: 1,
+        source: 'claude', reasoningTokens: null, convs: 1, cacheEstimated: false,
+        hasUnpriced: false, unattributedTokens: 0 },
+      { key: null, inputTokens: 20, outputTokens: 30, cacheReadTokens: 0,
+        cacheWriteTokens: 0, totalTokens: 50, requests: 1, cost: null,
+        source: 'claude', reasoningTokens: null, convs: 1, cacheEstimated: false,
+        hasUnpriced: false, unattributedTokens: 50 },
+    ];
+
+    expect(modelBars(rows, 'claude', 150).map((bar) => bar.name)).toEqual([
+      'claude-opus-4-8',
+      null,
+    ]);
   });
   it('catTotals sums one tool', () => {
     const t = catTotals(

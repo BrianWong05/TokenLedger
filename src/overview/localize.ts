@@ -9,6 +9,11 @@ import { overview } from '../lib/strings/overview';
 import { parseLocalDate } from '../lib/dateRange';
 import { formatCost as formatUsdCost } from '../lib/format';
 import { formatCost as formatCurrency } from '../lib/currency';
+import {
+  isAllUnattributedCost,
+  isPartialCost,
+  type CostCompleteness,
+} from '../lib/costCompleteness';
 import type { Range8b } from './meta';
 import type { Settings } from '../types';
 
@@ -113,15 +118,25 @@ export const INTERVAL_LABEL_KEY: Record<string, OverviewKey> = {
 // converts through lib/currency at 2dp and re-applies the markers.
 export function formatDisplayCost(
   usd: number | null,
-  hasUnpriced: boolean,
+  partial: boolean,
   settings: Pick<Settings, 'currency' | 'usdRate'>,
   lang: Lang,
   opts: { adaptivePrecision?: boolean; unpricedLabel?: string } = {},
 ): string {
-  if (settings.currency === 'USD') return formatUsdCost(usd, hasUnpriced, opts);
+  if (settings.currency === 'USD') return formatUsdCost(usd, partial, opts);
   if (usd === null) return opts.unpricedLabel ?? 'unpriced';
   const amount = formatCurrency(usd, settings, lang);
-  return hasUnpriced ? `≥ ${amount}` : amount;
+  return partial ? `≥ ${amount}` : amount;
+}
+
+export function formatSummaryCost(
+  summary: CostCompleteness,
+  settings: Pick<Settings, 'currency' | 'usdRate'>,
+  lang: Lang,
+  opts: { adaptivePrecision?: boolean; unpricedLabel?: string } = {},
+): string {
+  if (isAllUnattributedCost(summary)) return overviewT(lang, 'overview.unavailableCost');
+  return formatDisplayCost(summary.cost, isPartialCost(summary), settings, lang, opts);
 }
 
 // A USD identity, for callers (and tests) that render before real settings land.

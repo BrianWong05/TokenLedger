@@ -6,6 +6,8 @@ import type { BreakdownRow, Filters, SeriesPoint, CtxResourceCount, CtxBuckets, 
 import { parseLocalDate } from '../lib/dateRange';
 import { TOOLS, CATEGORIES, emptyByTool, type ToolKey, type ToolMeta, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
+
+export const UNATTRIBUTED_COLOR = '#7a8499';
 import { monthShortL, overviewT, type OverviewKey } from './localize';
 
 // One bucket's (or day's) models as [name, tokens] pairs, largest first with
@@ -70,6 +72,7 @@ export interface Day {
   level: 0 | 1 | 2 | 3 | 4;
   byTool: Record<ToolKey, number>;
   byModel: Record<string, number>;
+  unattributedTokens: number;
 }
 
 export interface Bucket {
@@ -77,6 +80,8 @@ export interface Bucket {
   label: string;
   byTool: Record<ToolKey, number>;
   byModel: Record<string, number>;
+  unattributedTokens: number;
+  hasUnpriced: boolean;
   total: number;
 }
 
@@ -127,17 +132,19 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     const iso = isoOf(date);
     const byTool = emptyByTool();
     const byModel: Record<string, number> = {};
+    let unattributedTokens = 0;
     let tokens = 0;
     for (const p of byDate.get(iso) ?? []) {
       if (p.source in byTool) byTool[p.source as ToolKey] += p.totalTokens;
       for (const [m, v] of Object.entries(p.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
+      unattributedTokens += p.unattributedTokens;
       tokens += p.totalTokens;
     }
     const cell = i + startDow;
     days.push({
       index: i, date, iso, weekday: date.getDay(),
       col: Math.floor(cell / 7), row: cell % 7,
-      tokens, level: 0, byTool, byModel,
+      tokens, level: 0, byTool, byModel, unattributedTokens,
     });
   }
 
@@ -363,12 +370,21 @@ export function bucketsFromPoints(
     : per === 'day' ? p.bucket.slice(0, 10)
     : per === 'week' ? weekKey(p.bucket.slice(0, 10))
     : p.bucket.slice(0, 7); // YYYY-MM
-  const map = new Map<string, { byTool: Record<ToolKey, number>; byModel: Record<string, number> }>();
+  const map = new Map<string, {
+    byTool: Record<ToolKey, number>;
+    byModel: Record<string, number>;
+    unattributedTokens: number;
+    hasUnpriced: boolean;
+  }>();
   for (const p of pts) {
     const k = keyOf(p);
-    const g = map.get(k) ?? { byTool: emptyByTool(), byModel: {} };
+    const g = map.get(k) ?? {
+      byTool: emptyByTool(), byModel: {}, unattributedTokens: 0, hasUnpriced: false,
+    };
     if (p.source in g.byTool) g.byTool[p.source as ToolKey] += p.totalTokens;
     for (const [m, v] of Object.entries(p.byModel)) g.byModel[m] = (g.byModel[m] ?? 0) + v;
+    g.unattributedTokens += p.unattributedTokens;
+    g.hasUnpriced ||= p.hasUnpriced;
     map.set(k, g);
   }
   const labelOf = (k: string) =>
@@ -380,12 +396,16 @@ export function bucketsFromPoints(
   // data-present keys otherwise.
   const keys = fromIso && toIso ? allKeys(per, fromIso, toIso) : [...map.keys()].sort();
   const out = keys.map((k) => {
-    const g = map.get(k) ?? { byTool: emptyByTool(), byModel: {} };
+    const g = map.get(k) ?? {
+      byTool: emptyByTool(), byModel: {}, unattributedTokens: 0, hasUnpriced: false,
+    };
     return {
       key: k,
       label: labelOf(k),
       byTool: g.byTool,
       byModel: g.byModel,
+      unattributedTokens: g.unattributedTokens,
+      hasUnpriced: g.hasUnpriced,
       total: (Object.values(g.byTool) as number[]).reduce((a, b) => a + b, 0),
     };
   });
@@ -507,7 +527,7 @@ export function dailyTableRows(pts: SeriesPoint[]): TableRow[] {
 
 export function projectTableRows(rows: BreakdownRow[]): TableRow[] {
   return rows.map((r) => ({
-    label: r.key,
+    label: r.key ?? 'unknown',
     total: r.totalTokens,
     input: r.inputTokens,
     output: r.outputTokens,
@@ -520,7 +540,7 @@ export function projectTableRows(rows: BreakdownRow[]): TableRow[] {
 // ---- models panel ----
 
 export interface ModelBar {
-  name: string;
+  name: string | null;
   tokens: number;
   cost: number | null; // null = unpriced
   share: number;       // of the tool's range total

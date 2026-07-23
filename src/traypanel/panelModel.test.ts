@@ -3,19 +3,31 @@ import { panelModel, periodWindows } from './panelModel';
 import { DEFAULT_SETTINGS } from '../settings/settings';
 import type { BreakdownRow, Summary } from '../types';
 
-function sum(totalTokens: number, cost: number | null, hasUnpriced = false, requests = 0): Summary {
+function sum(
+  totalTokens: number,
+  cost: number | null,
+  hasUnpriced = false,
+  requests = 0,
+  unattributedTokens = 0,
+): Summary {
   return {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-    totalTokens, requests, cost, hasUnpriced,
+    totalTokens, requests, cost, hasUnpriced, unattributedTokens,
     unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
   };
 }
 
-function brow(key: string, totalTokens: number, cost: number | null, hasUnpriced = false): BreakdownRow {
+function brow(
+  key: string,
+  totalTokens: number,
+  cost: number | null,
+  hasUnpriced = false,
+  unattributedTokens = 0,
+): BreakdownRow {
   return {
     key, source: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
     cacheWriteTokens: 0, totalTokens, requests: 0, cost, reasoningTokens: null,
-    convs: 0, cacheEstimated: false, hasUnpriced,
+    convs: 0, cacheEstimated: false, hasUnpriced, unattributedTokens,
   };
 }
 
@@ -47,6 +59,11 @@ describe('panelModel', () => {
     expect(panelModel(sum(1, null, true), sum(0, null), [], S, 'en').cost).toBe('unpriced');
   });
 
+  it('distinguishes mixed and all-Unattributed Cost from Unpriced Models', () => {
+    expect(panelModel(sum(1, 12.8, false, 0, 1), sum(0, null), [], S, 'en').cost).toBe('≥ $12.80');
+    expect(panelModel(sum(1, null, false, 0, 1), sum(0, null), [], S, 'en').cost).toBe('unavailable');
+  });
+
   it('honors Display Currency like every other Cost in the app', () => {
     const m = panelModel(sum(1, 10.0), sum(0, null), [], { ...S, currency: 'HKD', usdRate: 7.8 }, 'en');
     expect(m.cost).toBe('HK$78.00');
@@ -71,6 +88,18 @@ describe('panelModel', () => {
       ['Hermes', '500K', '$2.00'],
       ['Codex', '238.1K', '$1.11'],
       ['Grok', '964.2K', 'unpriced'],
+    ]);
+  });
+
+  it('marks Source rows Partial or unavailable for Unattributed Usage', () => {
+    const m = panelModel(sum(150, 1, false, 0, 50), sum(0, null), [
+      brow('claude', 100, 1, false, 25),
+      brow('codex', 50, null, false, 50),
+    ], S, 'en');
+
+    expect(m.rows.map((r) => [r.label, r.cost])).toEqual([
+      ['Claude', '≥ $1.00'],
+      ['Codex', 'unavailable'],
     ]);
   });
 

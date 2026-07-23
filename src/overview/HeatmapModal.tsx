@@ -3,7 +3,7 @@ import type { Summary } from '../types';
 import { heatStats, type Day } from './data';
 import { TOOLS } from './meta';
 import { fmtPct, fmtTok } from '../lib/format';
-import { fmtDateL, fmtWeekdayDateL, formatDisplayCost, useOverviewT } from './localize';
+import { fmtDateL, fmtWeekdayDateL, formatSummaryCost, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import Landscape3D, { INITIAL_VIEW } from './Landscape3D';
@@ -50,13 +50,20 @@ export default function HeatmapModal({
     for (const d of days) for (const tl of TOOLS) totals.set(tl.key, (totals.get(tl.key) ?? 0) + d.byTool[tl.key]);
     return TOOLS.filter((tl) => (totals.get(tl.key) ?? 0) > 0);
   }, [days]);
-  const costLabel =
-    summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
+  const costLabel = summary === null ? '…' : formatSummaryCost(summary, settings, lang);
 
   // tooltip per-model rows for the hovered day (mirrors the card)
   const tipRows = hover
-    ? Object.entries(hover.byModel)
-        .map(([model, val]) => ({ key: model, label: model, val }))
+    ? [
+        ...Object.entries(hover.byModel).map(([model, val]) => ({ key: model, label: model, val })),
+        ...(hover.unattributedTokens > 0
+          ? [{
+              key: 'unattributed-usage',
+              label: t('overview.unattributedUsage'),
+              val: hover.unattributedTokens,
+            }]
+          : []),
+      ]
         .filter((r) => r.val > 0)
         .sort((a, b) => b.val - a.val)
         .slice(0, 3)
@@ -144,6 +151,9 @@ export default function HeatmapModal({
                 <span className="muted" title={summary.unpricedModels.join(', ')}>
                   {' '}· {summary.unpricedModels.length} {t('overview.unpricedMarker')}
                 </span>
+              )}
+              {summary && summary.unattributedTokens > 0 && (
+                <span className="muted"> {' '}· {t('overview.unattributedUsage')}</span>
               )}
             </span>
           </div>

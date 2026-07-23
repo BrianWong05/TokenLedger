@@ -36,6 +36,7 @@ beforeEach(() => {
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
   return {
     bucket: '2026-07-16', source: 'claude', byModel: {},
+    unattributedTokens: 0, hasUnpriced: false,
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     totalTokens: 0, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
     ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
@@ -46,7 +47,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 const summary: Summary = {
   inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
   totalTokens: 700, requests: 3, cost: 1.5, hasUnpriced: false,
-  unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
 };
 
 function daysAgo(n: number): string {
@@ -215,6 +216,35 @@ describe('Usage-trend Enlarge', () => {
     const foot = modal.querySelector('.tt-trend-modal-foot')!.textContent!;
     expect(foot).toContain('≥ $9.99');
     expect(foot).toContain('1 unpriced');
+  });
+
+  it('shows Unattributed Usage as a separate inspector row outside Model data', async () => {
+    const { container: c } = await mount(
+      { totalTokens: 150, cost: 1, unattributedTokens: 50 },
+      [
+        pt({
+          bucket: daysAgo(1), totalTokens: 150,
+          byModel: { 'claude-opus-4-8': 100 }, unattributedTokens: 50,
+        }),
+      ],
+    );
+    await open(c);
+
+    expect(inspText()).toContain('claude-opus-4-8');
+    expect(inspText()).toContain('Unattributed usage');
+  });
+
+  it('marks priced Cost Partial for Unattributed Usage and makes all-Unattributed Cost unavailable', async () => {
+    const mixed = await mount({ cost: 9.99, unattributedTokens: 50 });
+    await open(mixed.container);
+    expect(footText()).toContain('≥ $9.99');
+    expect(footText()).toContain('Unattributed usage');
+
+    act(() => dialog()!.querySelector<HTMLButtonElement>('.tt-trend-modal-close')!.click());
+    const only = await mount({ cost: null, hasUnpriced: false, unattributedTokens: 700 });
+    await open(only.container);
+    expect(footText()).toContain('Unavailable');
+    expect(footText()).not.toContain('unpriced');
   });
 
   it('locks page scroll while open and unlocks on close', async () => {

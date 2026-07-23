@@ -32,6 +32,8 @@ pub struct Summary {
     pub requests: i64,
     pub cost: Option<f64>,
     pub has_unpriced: bool,
+    #[ts(type = "number")]
+    pub unattributed_tokens: i64,
     pub unpriced_models: Vec<String>,
     pub cache_estimated_models: Vec<String>,
     pub cache_hit_rate: f64,
@@ -53,13 +55,18 @@ pub struct TrendPoint {
     #[ts(type = "number")]
     pub total_tokens: i64,
     pub cost: f64,
+    pub has_unpriced: bool,
+    #[ts(type = "number")]
+    pub unattributed_tokens: i64,
 }
 
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct BreakdownRow {
-    pub key: String,
+    // None is reserved for a model-breakdown row whose Usage has no Model.
+    // Project/tool breakdowns continue to return named keys.
+    pub key: Option<String>,
     pub source: Option<String>,
     #[ts(type = "number")]
     pub input_tokens: i64,
@@ -82,6 +89,10 @@ pub struct BreakdownRow {
     // True when any of the row's Models is Unpriced — a Some(cost) is then a
     // Partial Cost (glossary: shown with "≥", never as a complete total).
     pub has_unpriced: bool,
+    // Tokens in this row that have no Model. Kept outside Model identity so
+    // future adapters never need a sentinel model name.
+    #[ts(type = "number")]
+    pub unattributed_tokens: i64,
 }
 
 use std::collections::HashMap;
@@ -194,6 +205,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         requests,
         cost: if priced_tokens > 0 { Some(cost) } else { None },
         has_unpriced: !unpriced_models.is_empty(),
+        unattributed_tokens: 0,
         unpriced_models,
         cache_estimated_models,
         cache_hit_rate,
@@ -223,9 +235,10 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     let mut points: Vec<TrendPoint> = Vec::new();
     for row in rows {
         let (bucket, model, in_, out, cr, w5, w1) = row?;
-        let c = match rates.resolve(&model) {
-            Some(rt) => rt.cost(in_, out, cr, w5, w1),
-            None => 0.0,
+        let tokens = in_ + out + cr + w5 + w1;
+        let (c, unpriced) = match rates.resolve(&model) {
+            Some(rt) => (rt.cost(in_, out, cr, w5, w1), false),
+            None => (0.0, tokens > 0),
         };
         let i = *idx.entry(bucket.clone()).or_insert_with(|| {
             points.push(TrendPoint {
@@ -236,6 +249,8 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
                 cache_write_tokens: 0,
                 total_tokens: 0,
                 cost: 0.0,
+                has_unpriced: false,
+                unattributed_tokens: 0,
             });
             points.len() - 1
         });
@@ -244,8 +259,9 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
         p.output_tokens += out;
         p.cache_read_tokens += cr;
         p.cache_write_tokens += w5 + w1;
-        p.total_tokens += in_ + out + cr + w5 + w1;
+        p.total_tokens += tokens;
         p.cost += c;
+        p.has_unpriced |= unpriced;
     }
     Ok(points)
 }
@@ -258,6 +274,10 @@ pub struct SeriesPoint {
     pub source: String,
     #[ts(type = "Record<string, number>")]
     pub by_model: HashMap<String, i64>, // model -> total tokens within (bucket, source)
+    // Usage with no Model stays beside, never inside, the Model map.
+    #[ts(type = "number")]
+    pub unattributed_tokens: i64,
+    pub has_unpriced: bool,
     #[ts(type = "number")]
     pub input_tokens: i64,
     #[ts(type = "number")]
@@ -331,9 +351,10 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     for row in rows {
         let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning,
              cxm, cxs, cxr, cxt, cxa, cxmc, cxsk) = row?;
-        let c = match rates.resolve(&model) {
-            Some(rt) => rt.cost(in_, out, cr, w5, w1),
-            None => 0.0,
+        let tokens = in_ + out + cr + w5 + w1;
+        let (c, unpriced) = match rates.resolve(&model) {
+            Some(rt) => (rt.cost(in_, out, cr, w5, w1), false),
+            None => (0.0, tokens > 0),
         };
         // Clone into the map key like trend(); avoid moving (bucket, source) before push.
         let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
@@ -341,6 +362,8 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
                 bucket: bucket.clone(),
                 source: source.clone(),
                 by_model: HashMap::new(),
+                unattributed_tokens: 0,
+                has_unpriced: false,
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -361,7 +384,8 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             points.len() - 1
         });
         let p = &mut points[i];
-        *p.by_model.entry(model).or_insert(0) += in_ + out + cr + w5 + w1;
+        *p.by_model.entry(model).or_insert(0) += tokens;
+        p.has_unpriced |= unpriced;
         p.input_tokens += in_;
         p.output_tokens += out;
         p.cache_read_tokens += cr;
@@ -484,7 +508,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     let mut out: Vec<BreakdownRow> = map
         .into_iter()
         .map(|((key, source), a)| BreakdownRow {
-            key,
+            key: Some(key),
             source,
             input_tokens: a.input,
             output_tokens: a.output,
@@ -497,6 +521,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             convs: a.convs,
             cache_estimated: a.cache_estimated,
             has_unpriced: a.unpriced,
+            unattributed_tokens: 0,
         })
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));
@@ -764,6 +789,7 @@ mod tests {
         approx(s.cost.unwrap(), 0.02155);
         assert!(s.has_unpriced);
         assert_eq!(s.unpriced_models, vec!["hermes-local".to_string()]);
+        assert_eq!(s.unattributed_tokens, 0, "current Sources attribute every Usage Record to a Model");
         approx(s.cache_hit_rate, 200.0 / 3650.0); // cr / (input + cr + cache_write)
     }
 
@@ -777,6 +803,7 @@ mod tests {
         approx(s.cost.unwrap(), 0.02155);
         assert!(!s.has_unpriced);
         assert!(s.unpriced_models.is_empty());
+        assert_eq!(s.unattributed_tokens, 0);
     }
 
     #[test]
@@ -807,11 +834,13 @@ mod tests {
         let (_dir, conn) = seed();
         let rows = breakdown(&conn, "model", &Filters::default()).unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].key, "gpt-5.4");
+        assert_eq!(rows[0].key.as_deref(), Some("gpt-5.4"));
+        assert_eq!(rows[0].unattributed_tokens, 0);
         assert_eq!(rows[0].total_tokens, 4850);
         assert_eq!(rows[0].requests, 2);
         approx(rows[0].cost.unwrap(), 0.02155);
-        assert_eq!(rows[1].key, "hermes-local");
+        assert_eq!(rows[1].key.as_deref(), Some("hermes-local"));
+        assert_eq!(rows[1].unattributed_tokens, 0);
         assert_eq!(rows[1].total_tokens, 400);
         assert_eq!(rows[1].requests, 3);
         assert!(rows[1].cost.is_none());
@@ -883,7 +912,7 @@ mod tests {
         let rows = breakdown(&conn, "model", &Filters::default()).unwrap();
         assert_eq!(rows.len(), 2, "model rows split by source");
         let codex = rows.iter().find(|r| r.source == Some("codex".to_string())).unwrap();
-        assert_eq!(codex.key, "half-priced");
+        assert_eq!(codex.key.as_deref(), Some("half-priced"));
         assert_eq!(codex.convs, 1, "one distinct session");
         assert_eq!(codex.reasoning_tokens, Some(8));
         assert!(codex.cache_estimated, "cache tokens present but cache rate is 0");
@@ -912,9 +941,9 @@ mod tests {
     fn breakdown_by_project_maps_null_to_unknown() {
         let (_dir, conn) = seed();
         let rows = breakdown(&conn, "project", &Filters::default()).unwrap();
-        assert_eq!(rows[0].key, "/Users/dev/projects/alpha");
+        assert_eq!(rows[0].key.as_deref(), Some("/Users/dev/projects/alpha"));
         assert_eq!(rows[0].total_tokens, 4850);
-        assert_eq!(rows[1].key, "unknown");
+        assert_eq!(rows[1].key.as_deref(), Some("unknown"));
         assert_eq!(rows[1].total_tokens, 400);
     }
 
@@ -927,9 +956,13 @@ mod tests {
         assert_eq!(pts[0].bucket, "2026-07-01");
         assert_eq!(pts[0].total_tokens, 2250); // A + C
         approx(pts[0].cost, 0.00755);
+        assert!(pts[0].has_unpriced);
+        assert_eq!(pts[0].unattributed_tokens, 0);
         assert_eq!(pts[1].bucket, "2026-07-02");
         assert_eq!(pts[1].total_tokens, 3000); // B
         approx(pts[1].cost, 0.014);
+        assert!(!pts[1].has_unpriced);
+        assert_eq!(pts[1].unattributed_tokens, 0);
     }
 
     // Events with v2 fields for series tests.
@@ -969,6 +1002,8 @@ mod tests {
         assert_eq!(d1c.total_tokens, 450); // 3 events × (100 input + 50 output)
         assert_eq!(d1c.by_model.get("gpt-5.4"), Some(&300));
         assert_eq!(d1c.by_model.get("gpt-5.4-mini"), Some(&150));
+        assert_eq!(d1c.unattributed_tokens, 0);
+        assert!(d1c.has_unpriced, "gpt-5.4-mini has no rate");
         assert_eq!(d1c.requests, 3);
         assert_eq!(d1c.convs, 2, "sa + sb, distinct across models within the source");
         assert_eq!(d1c.reasoning_tokens, Some(8), "5 + 3; the NULL event does not zero it");
@@ -977,11 +1012,15 @@ mod tests {
 
         let d1h = pts.iter().find(|p| p.bucket == "2026-07-01" && p.source == "hermes").unwrap();
         assert_eq!(d1h.reasoning_tokens, Some(0), "reported zero ≠ not reported");
+        assert_eq!(d1h.unattributed_tokens, 0);
+        assert!(d1h.has_unpriced);
         approx(d1h.cost, 0.0);
 
         let d2c = pts.iter().find(|p| p.bucket == "2026-07-02").unwrap();
         assert_eq!(d2c.convs, 0, "NULL session ids count zero distinct");
         assert_eq!(d2c.reasoning_tokens, None, "nothing reported that day");
+        assert_eq!(d2c.unattributed_tokens, 0);
+        assert!(!d2c.has_unpriced);
     }
 
     #[test]

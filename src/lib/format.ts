@@ -5,10 +5,10 @@ interface FormatCostOptions {
   unpricedLabel?: string;
 }
 
-// null -> "unpriced"; hasUnpriced -> "≥ $X.XX"; else "$X.XX".
+// null -> "unpriced"; partial -> "≥ $X.XX"; else "$X.XX".
 export function formatCost(
   c: number | null,
-  hasUnpriced: boolean,
+  partial: boolean,
   options: FormatCostOptions = {},
 ): string {
   if (c === null) return options.unpricedLabel ?? 'unpriced';
@@ -28,7 +28,7 @@ export function formatCost(
           minimumFractionDigits: fractionDigits,
           maximumFractionDigits: fractionDigits,
         }).format(c);
-  return hasUnpriced ? `≥ ${amount}` : amount;
+  return partial ? `≥ ${amount}` : amount;
 }
 
 const TOKEN_UNITS = [

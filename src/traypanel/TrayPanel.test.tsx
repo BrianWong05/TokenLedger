@@ -14,16 +14,18 @@ import type { BreakdownRow, Summary } from '../types';
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
   totalTokens: 3_400_000, requests: 1912, cost: 12.84, hasUnpriced: false,
-  unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
 };
 
 const toolRows: BreakdownRow[] = [
   { key: 'claude', source: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
     cacheWriteTokens: 0, totalTokens: 1_800_000, requests: 0, cost: 6.12,
-    reasoningTokens: null, convs: 0, cacheEstimated: false, hasUnpriced: false },
+    reasoningTokens: null, convs: 0, cacheEstimated: false, hasUnpriced: false,
+    unattributedTokens: 0 },
   { key: 'codex', source: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
     cacheWriteTokens: 0, totalTokens: 238_100, requests: 0, cost: 1.11,
-    reasoningTokens: null, convs: 0, cacheEstimated: false, hasUnpriced: false },
+    reasoningTokens: null, convs: 0, cacheEstimated: false, hasUnpriced: false,
+    unattributedTokens: 0 },
 ];
 
 const mountedRoots: Root[] = [];
@@ -79,6 +81,22 @@ describe('TrayPanel', () => {
       b.textContent?.replace(/[⇧⌘,QR]+$/, '').trim(),
     );
     expect(actions).toEqual(['Open TokenLedger', 'Rescan now', 'Settings…', 'Quit TokenLedger']);
+  });
+
+  it('renders all-Unattributed headline and Source Cost as unavailable', async () => {
+    const ledger = makeFakeLedger({
+      summary: { ...summary, totalTokens: 50, requests: 1, cost: null, unattributedTokens: 50 },
+      modelRows: [{ ...toolRows[0], totalTokens: 50, cost: null, unattributedTokens: 50 }],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    expect(container.querySelector('.tp-cost')?.textContent).toBe('unavailable');
+    expect(container.querySelector('.tp-row-cost')?.textContent).toBe('unavailable');
   });
 
   it('Rescan runs the scan through the ledger port and refetches', async () => {

@@ -19,7 +19,7 @@ import type { SeriesPoint } from '../types';
 
 function pt(bucket: string, totalTokens: number): SeriesPoint {
   return {
-    bucket, source: 'claude', byModel: {},
+    bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     totalTokens, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
     ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,

@@ -121,8 +121,9 @@ pub fn refresh(app: &AppHandle) {
 /// The bar title for Today's Summary: "3.4M · $12.84". `None` on a no-usage
 /// day — the icon stands alone rather than advertising `0 · $0.00`. Cost
 /// follows the glossary: "≥ " marker when Partial (priced total over a set
-/// with Unpriced Models), and an all-Unpriced day shows tokens alone — never
-/// $0. ponytail: the bar drops the word "unpriced" for space; the menu's
+/// with Unpriced Models or Unattributed Usage), and a day with no available
+/// Cost shows tokens alone — never $0. ponytail: the bar drops the missing-Cost
+/// wording for space; the menu's
 /// per-Source rows (#24) spell it out.
 fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Settings) -> Option<String> {
     if today.total_tokens == 0 {
@@ -132,7 +133,7 @@ fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Setti
     Some(match today.cost {
         None => toks,
         Some(c) => {
-            let marker = if today.has_unpriced { "≥ " } else { "" };
+            let marker = if today.has_unpriced || today.unattributed_tokens > 0 { "≥ " } else { "" };
             format!("{toks} · {marker}{cost}", cost = fmt_cost(c, settings))
         }
     })
@@ -226,6 +227,7 @@ mod tests {
             requests: 0,
             cost,
             has_unpriced,
+            unattributed_tokens: 0,
             unpriced_models: vec![],
             cache_estimated_models: vec![],
             cache_hit_rate: 0.0,
@@ -250,6 +252,26 @@ mod tests {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default()),
             Some("3.4M · ≥ $12.80".to_string())
+        );
+    }
+
+    #[test]
+    fn unattributed_usage_marks_priced_cost_partial() {
+        let mut today = sum(3_400_000, Some(12.8), false);
+        today.unattributed_tokens = 400;
+        assert_eq!(
+            tray_title(&today, &Settings::default()),
+            Some("3.4M · ≥ $12.80".to_string())
+        );
+    }
+
+    #[test]
+    fn all_unattributed_day_shows_tokens_alone() {
+        let mut today = sum(964_200, None, false);
+        today.unattributed_tokens = 964_200;
+        assert_eq!(
+            tray_title(&today, &Settings::default()),
+            Some("964.2K".to_string())
         );
     }
 

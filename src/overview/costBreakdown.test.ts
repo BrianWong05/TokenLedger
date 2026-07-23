@@ -21,6 +21,7 @@ function row(overrides: Partial<BreakdownRow>): BreakdownRow {
     convs: 1,
     cacheEstimated: false,
     hasUnpriced: false,
+    unattributedTokens: 0,
     ...overrides,
   };
 }
@@ -35,6 +36,7 @@ function summary(overrides: Partial<Summary>): Summary {
     requests: 1,
     cost: 1,
     hasUnpriced: false,
+    unattributedTokens: 0,
     unpricedModels: [],
     cacheEstimatedModels: [],
     cacheHitRate: 0,
@@ -61,6 +63,7 @@ describe('buildCostBreakdownView', () => {
             name: 'claude-unknown',
             costLabel: 'Unpriced',
             unpriced: true,
+            unattributed: false,
             cacheEstimated: false,
           },
         ],
@@ -95,6 +98,40 @@ describe('buildCostBreakdownView', () => {
     expect(view.note).toBeNull();
     expect(view.groups[0].costLabel).toBe('$4.00');
     expect(view.groups[0].models[0].cacheEstimated).toBe(true);
+  });
+
+  it('renders all-Unattributed Usage as unavailable rather than Unpriced', () => {
+    const view = buildCostBreakdownView(
+      summary({ cost: null, unattributedTokens: 50 }),
+      [row({ key: null, cost: null, totalTokens: 50, unattributedTokens: 50 })],
+    );
+
+    expect(view.totalCostLabel).toBe('Unavailable');
+    expect(view.note).toBe('Unattributed usage');
+    expect(view.groups[0].costLabel).toBe('Unavailable · Unattributed usage');
+    expect(view.groups[0].models).toEqual([
+      {
+        name: 'Unattributed usage',
+        costLabel: 'Unavailable',
+        unpriced: false,
+        unattributed: true,
+        cacheEstimated: false,
+      },
+    ]);
+  });
+
+  it('names Unpriced Models and Unattributed Usage independently on Partial Cost', () => {
+    const view = buildCostBreakdownView(
+      summary({ cost: 5, hasUnpriced: true, unpricedModels: ['local'], unattributedTokens: 50 }),
+      [
+        row({ key: 'priced', cost: 5 }),
+        row({ key: 'local', cost: null, hasUnpriced: true }),
+        row({ key: null, cost: null, totalTokens: 50, unattributedTokens: 50 }),
+      ],
+    );
+
+    expect(view.totalCostLabel).toBe('≥ $5.00');
+    expect(view.note).toBe('Partial Cost · 1 Unpriced Model · Unattributed usage');
   });
 });
 
@@ -133,10 +170,10 @@ describe('buildCostBreakdownView grouping', () => {
 
     expect(group.costLabel).toBe('≥ $5.00 · 2 unpriced');
     expect(group.models).toEqual([
-      { name: 'expensive', costLabel: '$4.00', unpriced: false, cacheEstimated: true },
-      { name: 'cheap', costLabel: '$1.00', unpriced: false, cacheEstimated: false },
-      { name: 'a-unpriced', costLabel: 'Unpriced', unpriced: true, cacheEstimated: false },
-      { name: 'z-unpriced', costLabel: 'Unpriced', unpriced: true, cacheEstimated: false },
+      { name: 'expensive', costLabel: '$4.00', unpriced: false, unattributed: false, cacheEstimated: true },
+      { name: 'cheap', costLabel: '$1.00', unpriced: false, unattributed: false, cacheEstimated: false },
+      { name: 'a-unpriced', costLabel: 'Unpriced', unpriced: true, unattributed: false, cacheEstimated: false },
+      { name: 'z-unpriced', costLabel: 'Unpriced', unpriced: true, unattributed: false, cacheEstimated: false },
     ]);
   });
 
@@ -185,5 +222,7 @@ describe('formatBreakdownCost', () => {
     expect(formatSourceCost(12.34, 1)).toBe('≥ $12.34 · 1 unpriced');
     expect(formatSourceCost(12.34, 2)).toBe('≥ $12.34 · 2 unpriced');
     expect(formatSourceCost(null, 2)).toBe('Unpriced');
+    expect(formatSourceCost(12.34, 0, 50)).toBe('≥ $12.34 · Unattributed usage');
+    expect(formatSourceCost(null, 0, 50)).toBe('Unavailable · Unattributed usage');
   });
 });

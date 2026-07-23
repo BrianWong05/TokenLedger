@@ -127,9 +127,18 @@ function Heatmap({
 
   // tooltip per-model rows for the hovered day
   const tipRows = hover
-    ? rankedModels(hover.byModel)
+    ? [
+        ...rankedModels(hover.byModel).map(([model, val]) => ({ key: model, label: model, val })),
+        ...(hover.unattributedTokens > 0
+          ? [{
+              key: 'unattributed-usage',
+              label: t('overview.unattributedUsage'),
+              val: hover.unattributedTokens,
+            }]
+          : []),
+      ]
+        .sort((a, b) => b.val - a.val)
         .slice(0, 3)
-        .map(([model, val]) => ({ key: model, label: model, val }))
     : [];
   const tipMax = Math.max(1, ...tipRows.map((r) => r.val));
 

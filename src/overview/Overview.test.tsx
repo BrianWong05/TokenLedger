@@ -14,7 +14,7 @@ import { makeFakeLedger, type FakeLedger } from './ledger.fake';
 import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
-import type { SeriesPoint, Summary, ScanStatus } from '../types';
+import type { BreakdownRow, SeriesPoint, Summary, ScanStatus } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -36,6 +36,7 @@ beforeEach(() => {
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
   return {
     bucket: '2026-07-16', source: 'claude', byModel: {},
+    unattributedTokens: 0, hasUnpriced: false,
     inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
     totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
     ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
@@ -46,7 +47,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
   totalTokens: 400, requests: 2, cost: 1.5, hasUnpriced: false,
-  unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
 };
 
 const mountedRoots: Root[] = [];
@@ -152,9 +153,33 @@ describe('Overview presentation', () => {
     expect(ctxTitle()).toContain('Codex');
   });
 
+  it('renders all-Unattributed Usage without exposing a Model Override action', async () => {
+    const unattributed: BreakdownRow = {
+      key: null, source: 'claude', inputTokens: 30, outputTokens: 20,
+      cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 50, requests: 1,
+      cost: null, reasoningTokens: null, convs: 1, cacheEstimated: false,
+      hasUnpriced: false, unattributedTokens: 50,
+    };
+    const { container: c } = await mount({
+      dayPoints: [pt({ totalTokens: 50, byModel: {}, unattributedTokens: 50 })],
+      summary: { ...summary, totalTokens: 50, requests: 1, cost: null, unattributedTokens: 50 },
+      modelRows: [unattributed],
+    });
+
+    expect(c.querySelector('.tt-b8-cost')?.textContent).toContain('Unavailable');
+    const row = c.querySelector<HTMLElement>('.tt-model')!;
+    expect(row.textContent).toContain('Unattributed usage');
+    expect(row.textContent).toContain('Unavailable');
+    expect(row.getAttribute('role')).toBeNull();
+    expect(row.tabIndex).toBe(-1);
+  });
+
   it('renders the 2D activity grid as a fixed-pitch scrollable calendar', async () => {
     const { container: c } = await mount({
-      dayPoints: [pt({ source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],
+      dayPoints: [pt({
+        source: 'claude', totalTokens: 350,
+        byModel: { 'claude-opus-4-8': 300 }, unattributedTokens: 50,
+      })],
       summary,
     });
 
@@ -201,7 +226,27 @@ describe('Overview presentation', () => {
     expect(svg.querySelectorAll('rect')).toHaveLength(366);
     const tip = c.querySelector('.tt-tip')!;
     expect(tip.textContent).toContain('claude-opus-4-8');
+    expect(tip.textContent).toContain('Unattributed usage');
     expect(tip.textContent).not.toContain('Claude Code');
+  });
+
+  it('keeps Unattributed Usage distinct in the usage-trend tooltip', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({
+        source: 'claude', totalTokens: 150,
+        byModel: { 'claude-opus-4-8': 100 }, unattributedTokens: 50,
+      })],
+      summary,
+    });
+    const card = Array.from(c.querySelectorAll('.tt-card')).find(
+      (el) => el.querySelector('.tt-title')?.textContent === 'Usage over time',
+    )!;
+    const hit = Array.from(card.querySelectorAll<SVGRectElement>('rect')).find(
+      (rect) => rect.getAttribute('fill') === 'transparent',
+    )!;
+    await act(async () => hit.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+
+    expect(card.querySelector('.tt-tip')?.textContent).toContain('Unattributed usage');
   });
 
   it('keeps the usage-trend y-axis labels out of the plot area', async () => {

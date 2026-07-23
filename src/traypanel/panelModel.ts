@@ -8,6 +8,7 @@ import type { Lang } from '../lib/i18n';
 import { TOOLS } from '../overview/meta';
 import { TOOL_ICONS } from '../overview/icons';
 import type { BreakdownRow, Settings, Summary } from '../types';
+import { isAllUnattributedCost, isPartialCost, type CostCompleteness } from '../lib/costCompleteness';
 
 export interface PanelRow {
   key: string;
@@ -18,7 +19,7 @@ export interface PanelRow {
 }
 
 export interface PanelModel {
-  cost: string; // "$12.84" | "≥ $12.84" | "unpriced"
+  cost: string; // "$12.84" | "≥ $12.84" | "unpriced" | "unavailable"
   delta: string | null; // "+12.4%", null when yesterday-so-far has no Cost
   deltaUp: boolean;
   sub: string; // "3.4M tok · 1,912 req"
@@ -27,7 +28,7 @@ export interface PanelModel {
   // Raw values + per-frame formatters for the header count-up animation:
   // the view tweens the numbers and formats each frame with the same rules
   // the static strings above use (≥ marker and Display Currency included).
-  costValue: number | null; // USD; null = unpriced, not animatable
+  costValue: number | null; // USD; null = unavailable or unpriced, not animatable
   tokensValue: number;
   requestsText: string; // "1,912" — not animated, appended to the sub line
   fmtCost(v: number): string;
@@ -37,11 +38,13 @@ export interface PanelModel {
 type CostSettings = Pick<Settings, 'currency' | 'usdRate'>;
 
 // Cost per the glossary: Display Currency at render time, "≥ " marks a
-// Partial Cost, and Unpriced is worded — never $0.
-function cost(c: number | null, hasUnpriced: boolean, s: CostSettings, lang: Lang): string {
-  if (c === null) return 'unpriced';
-  const base = formatCost(c, s, lang);
-  return hasUnpriced ? `≥ ${base}` : base;
+// Partial Cost, and missing Cost distinguishes Unpriced Models from an
+// all-Unattributed selection — never $0.
+function cost(value: CostCompleteness, s: CostSettings, lang: Lang): string {
+  if (isAllUnattributedCost(value)) return 'unavailable';
+  if (value.cost === null) return 'unpriced';
+  const base = formatCost(value.cost, s, lang);
+  return isPartialCost(value) ? `≥ ${base}` : base;
 }
 
 export function panelModel(
@@ -73,23 +76,24 @@ export function panelModel(
 
   const requestsText = today.requests.toLocaleString('en-US');
   return {
-    cost: cost(today.cost, today.hasUnpriced, settings, lang),
+    cost: cost(today, settings, lang),
     delta,
     deltaUp,
     sub: `${formatCompactTokenTotal(today.totalTokens)} tok · ${requestsText} req`,
     costValue: today.cost,
     tokensValue: today.totalTokens,
     requestsText,
-    fmtCost: (v: number) => cost(v, today.hasUnpriced, settings, lang),
+    fmtCost: (v: number) => cost({ ...today, cost: v }, settings, lang),
     fmtTokens: formatCompactTokenTotal,
     rows: used.map((r) => {
-      const meta = TOOLS.find((t) => t.key === r.key);
+      const key = r.key ?? 'unknown';
+      const meta = TOOLS.find((t) => t.key === key);
       return {
-        key: r.key,
-        label: meta?.label ?? r.key,
+        key,
+        label: meta?.label ?? key,
         icon: meta ? TOOL_ICONS[meta.key] : undefined,
         tokens: formatCompactTokenTotal(r.totalTokens),
-        cost: cost(r.cost, r.hasUnpriced, settings, lang),
+        cost: cost(r, settings, lang),
       };
     }),
     empty: today.totalTokens === 0,

@@ -58,7 +58,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     () =>
       selectVisibleTools(snap).map((t) => ({
         ...t,
-        nModels: snap.modelRows.filter((r) => r.source === t.key).length,
+        nModels: snap.modelRows.filter((r) => r.source === t.key && r.key !== null).length,
       })),
     [snap.allPoints, snap.modelRows, snap.range, snap.from, snap.to, snap.lastIso],
   );

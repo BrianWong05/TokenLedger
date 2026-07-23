@@ -29,7 +29,7 @@ fn e2e_real_logs() {
     for row in &by_tool {
         println!(
             "  {:<8} tokens={:<12} requests={:<8} cost={:?}",
-            row.key, row.total_tokens, row.requests, row.cost
+            row.key.as_deref().unwrap_or("Unattributed usage"), row.total_tokens, row.requests, row.cost
         );
     }
 

@@ -51,6 +51,7 @@ function row(overrides: Partial<BreakdownRow>): BreakdownRow {
     convs: 1,
     cacheEstimated: false,
     hasUnpriced: false,
+    unattributedTokens: 0,
     ...overrides,
   };
 }
@@ -64,21 +65,25 @@ const SUMMARY: Summary = {
   requests: 1,
   cost: 3,
   hasUnpriced: false,
+  unattributedTokens: 0,
   unpricedModels: [],
   cacheEstimatedModels: [],
   cacheHitRate: 0,
 };
 
-async function mountModal(): Promise<HTMLElement> {
+async function mountModal(
+  summary = SUMMARY,
+  rows: BreakdownRow[] = [
+    row({ key: 'claude-opus', source: 'claude', cost: 2 }),
+    row({ key: 'gpt-5.5', source: 'codex', cost: 1 }),
+  ],
+): Promise<HTMLElement> {
   const c = await render(
     <SettingsProvider port={makeFakeSettings()}>
       <I18nProvider lang="en">
         <CostBreakdownModal
-          summary={SUMMARY}
-          rows={[
-            row({ key: 'claude-opus', source: 'claude', cost: 2 }),
-            row({ key: 'gpt-5.5', source: 'codex', cost: 1 }),
-          ]}
+          summary={summary}
+          rows={rows}
           returnFocusRef={createRef<HTMLElement>()}
           onClose={() => {}}
         />
@@ -166,6 +171,23 @@ describe('CostBreakdownModal pinned group head', () => {
     const scroller = c.querySelector<HTMLElement>('.tt-cost-modal-scroll')!;
 
     expect(pinnedEl.nextElementSibling).toBe(scroller);
+  });
+});
+
+describe('CostBreakdownModal missing-Cost reasons', () => {
+  it('renders Unattributed Usage as unavailable and not as an editable Model', async () => {
+    const c = await mountModal(
+      { ...SUMMARY, totalTokens: 50, cost: null, unattributedTokens: 50 },
+      [row({ key: null, totalTokens: 50, cost: null, unattributedTokens: 50 })],
+    );
+
+    expect(c.querySelector('.tt-cost-modal-total')?.textContent).toBe('Unavailable');
+    expect(c.querySelector('.tt-cost-modal-note')?.textContent).toBe('Unattributed usage');
+    const usage = c.querySelector<HTMLElement>('.tt-cost-model')!;
+    expect(usage.textContent).toContain('Unattributed usage');
+    expect(usage.textContent).toContain('Unavailable');
+    expect(usage.getAttribute('role')).toBeNull();
+    expect(usage.querySelector('.unattributed')).not.toBeNull();
   });
 });
 

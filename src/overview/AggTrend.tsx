@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { TOOLS, emptyByTool } from './meta';
-import { modelColor, rankedModels, stackModels, type Bucket } from './data';
+import { modelColor, rankedModels, stackModels, UNATTRIBUTED_COLOR, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
 import { useChartColors } from '../lib/chartColors';
@@ -38,7 +38,10 @@ function AggTrend({
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
   const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
-  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? { key: '', label: '—', byTool: emptyByTool(), byModel: {}, total: 0 });
+  const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? {
+    key: '', label: '—', byTool: emptyByTool(), byModel: {},
+    unattributedTokens: 0, hasUnpriced: false, total: 0,
+  });
   const plotW = VW - PL - PR;
   const slot = plotW / (data.length || 1);
   const barW = Math.min(38, slot * 0.62);
@@ -51,11 +54,26 @@ function AggTrend({
   // by tool keeps each bar reading as contiguous tool blocks.
   const colorOf = (m: string) => modelColor(modelTool, m);
   const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
-  const segsOf = (b: Bucket) => models.map((m) => ({ key: m, color: colorOf(m), val: b.byModel[m] ?? 0 }));
+  const segsOf = (b: Bucket) => [
+    ...models.map((m) => ({ key: m, color: colorOf(m), val: b.byModel[m] ?? 0 })),
+    ...(b.unattributedTokens > 0
+      ? [{ key: 'unattributed-usage', color: UNATTRIBUTED_COLOR, val: b.unattributedTokens }]
+      : []),
+  ];
 
   // Hovered bucket's model rows, largest first.
   const tipRows = shown
-    ? rankedModels(shown.byModel).map(([m, v]) => ({ key: m, val: v, color: colorOf(m) }))
+    ? [
+        ...rankedModels(shown.byModel).map(([m, v]) => ({ key: m, label: m, val: v, color: colorOf(m) })),
+        ...(shown.unattributedTokens > 0
+          ? [{
+              key: 'unattributed-usage',
+              label: t('overview.unattributedUsage'),
+              val: shown.unattributedTokens,
+              color: UNATTRIBUTED_COLOR,
+            }]
+          : []),
+      ]
     : [];
   const tipMore = Math.max(0, tipRows.length - 6);
 
@@ -141,7 +159,7 @@ function AggTrend({
             {tipRows.slice(0, 6).map((r) => (
               <div className="tt-tip-row" key={r.key}>
                 <div className="lab">
-                  <span>{r.key}</span>
+                  <span>{r.label}</span>
                   <span>
                     {r.val.toLocaleString('en-US')} · {fmtPct(r.val / (shown.total || 1))}
                   </span>

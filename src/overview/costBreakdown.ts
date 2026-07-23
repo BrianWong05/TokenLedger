@@ -2,6 +2,7 @@ import type { BreakdownRow, Settings, Summary } from '../types';
 import type { Lang } from '../lib/i18n';
 import { formatDisplayCost, overviewT, countLabel, USD_IDENTITY } from './localize';
 import { TOOLS } from './meta';
+import { isAllUnattributedCost, isPartialCost } from '../lib/costCompleteness';
 
 type CostSettings = Pick<Settings, 'currency' | 'usdRate'>;
 
@@ -9,6 +10,7 @@ interface CostBreakdownModelData {
   name: string;
   cost: number | null;
   cacheEstimated: boolean;
+  unattributed: boolean;
 }
 
 interface CostBreakdownGroupData {
@@ -17,6 +19,7 @@ interface CostBreakdownGroupData {
   models: CostBreakdownModelData[];
   cost: number | null;
   unpricedCount: number;
+  unattributedTokens: number;
 }
 
 export interface CostBreakdownView {
@@ -30,6 +33,7 @@ export interface CostBreakdownView {
       name: string;
       costLabel: string;
       unpriced: boolean;
+      unattributed: boolean;
       cacheEstimated: boolean;
     }>;
   }>;
@@ -39,7 +43,7 @@ function getSourceName(sourceKey: string): string {
   return TOOLS.find((tool) => tool.key === sourceKey)?.source ?? sourceKey;
 }
 
-function buildCostBreakdownGroups(rows: BreakdownRow[]): CostBreakdownGroupData[] {
+function buildCostBreakdownGroups(rows: BreakdownRow[], lang: Lang): CostBreakdownGroupData[] {
   const groups = new Map<string, CostBreakdownGroupData>();
 
   for (const row of rows) {
@@ -50,15 +54,20 @@ function buildCostBreakdownGroups(rows: BreakdownRow[]): CostBreakdownGroupData[
       models: [],
       cost: null,
       unpricedCount: 0,
+      unattributedTokens: 0,
     };
 
+    const unattributed = row.key === null;
     group.models.push({
-      name: row.key,
+      name: row.key ?? overviewT(lang, 'overview.unattributedUsage'),
       cost: row.cost,
       cacheEstimated: row.cacheEstimated,
+      unattributed,
     });
 
-    if (row.cost === null) {
+    if (unattributed) {
+      group.unattributedTokens += row.unattributedTokens;
+    } else if (row.cost === null) {
       group.unpricedCount += 1;
     } else {
       group.cost = (group.cost ?? 0) + row.cost;
@@ -99,12 +108,24 @@ export function formatBreakdownCost(
 export function formatSourceCost(
   cost: number | null,
   unpricedCount: number,
+  unattributedTokens = 0,
   settings: CostSettings = USD_IDENTITY,
   lang: Lang = 'en',
 ): string {
-  if (cost === null) return overviewT(lang, 'overview.unpricedLabel');
-  if (unpricedCount === 0) return formatBreakdownCost(cost, false, settings, lang);
-  return `${formatBreakdownCost(cost, true, settings, lang)} · ${unpricedCount} ${overviewT(lang, 'overview.unpricedMarker')}`;
+  const unattributed = unattributedTokens > 0;
+  if (cost === null) {
+    const base = unpricedCount > 0
+      ? overviewT(lang, 'overview.unpricedLabel')
+      : unattributed
+        ? overviewT(lang, 'overview.unavailableCost')
+        : overviewT(lang, 'overview.unpricedLabel');
+    return unattributed ? `${base} · ${overviewT(lang, 'overview.unattributedUsage')}` : base;
+  }
+  const bits: string[] = [];
+  if (unpricedCount > 0) bits.push(`${unpricedCount} ${overviewT(lang, 'overview.unpricedMarker')}`);
+  if (unattributed) bits.push(overviewT(lang, 'overview.unattributedUsage'));
+  const base = formatBreakdownCost(cost, bits.length > 0, settings, lang);
+  return bits.length ? `${base} · ${bits.join(' · ')}` : base;
 }
 
 export function buildCostBreakdownView(
@@ -113,29 +134,42 @@ export function buildCostBreakdownView(
   settings: CostSettings = USD_IDENTITY,
   lang: Lang = 'en',
 ): CostBreakdownView {
-  const groups = buildCostBreakdownGroups(rows).map((group) => ({
+  const groups = buildCostBreakdownGroups(rows, lang).map((group) => ({
     sourceKey: group.sourceKey,
     sourceName: group.sourceName,
-    costLabel: formatSourceCost(group.cost, group.unpricedCount, settings, lang),
+    costLabel: formatSourceCost(
+      group.cost, group.unpricedCount, group.unattributedTokens, settings, lang,
+    ),
     models: group.models.map((model) => ({
       name: model.name,
-      costLabel: formatBreakdownCost(model.cost, false, settings, lang),
-      unpriced: model.cost === null,
+      costLabel: model.unattributed
+        ? overviewT(lang, 'overview.unavailableCost')
+        : formatBreakdownCost(model.cost, false, settings, lang),
+      unpriced: !model.unattributed && model.cost === null,
+      unattributed: model.unattributed,
       cacheEstimated: model.cacheEstimated,
     })),
   }));
 
-  return {
-    totalCostLabel: formatBreakdownCost(
-      summary.cost,
-      summary.hasUnpriced && summary.cost !== null,
-      settings,
+  const reasons: string[] = [];
+  if (summary.hasUnpriced && summary.cost !== null) {
+    reasons.push(countLabel(
+      summary.unpricedModels.length,
+      'overview.unpricedModelOne',
+      'overview.unpricedModelMany',
       lang,
-    ),
-    note:
-      summary.hasUnpriced && summary.cost !== null
-        ? `${overviewT(lang, 'overview.partialCost')} · ${countLabel(summary.unpricedModels.length, 'overview.unpricedModelOne', 'overview.unpricedModelMany', lang)}`
-        : null,
+    ));
+  }
+  if (summary.unattributedTokens > 0) reasons.push(overviewT(lang, 'overview.unattributedUsage'));
+  const note = reasons.length
+    ? `${summary.cost !== null ? `${overviewT(lang, 'overview.partialCost')} · ` : ''}${reasons.join(' · ')}`
+    : null;
+
+  return {
+    totalCostLabel: isAllUnattributedCost(summary)
+      ? overviewT(lang, 'overview.unavailableCost')
+      : formatBreakdownCost(summary.cost, isPartialCost(summary), settings, lang),
+    note,
     groups,
   };
 }

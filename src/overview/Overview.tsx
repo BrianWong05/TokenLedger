@@ -13,7 +13,7 @@ import SmallMultiples from './SmallMultiples';
 import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
 import { TOOL_ICONS } from './icons';
 import { fmtPct } from '../lib/format';
-import { formatDisplayCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
+import { formatSummaryCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
@@ -119,10 +119,13 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   // billed" is the design's secondary descriptor.
   const headlineCost = (
     <>
-      {summary ? formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang) : '…'}
+      {summary ? formatSummaryCost(summary, settings, lang) : '…'}
       <span className="tt-b8-cost-note" title={t('overview.notBilled')}> {t('overview.costNote')}</span>
       {summary?.hasUnpriced && (
         <span className="tt-b8-cost-mark" title={summary.unpricedModels.join(', ')}> · {summary.unpricedModels.length} {t('overview.unpricedMarker')}</span>
+      )}
+      {summary && summary.unattributedTokens > 0 && (
+        <span className="tt-b8-cost-mark"> · {t('overview.unattributedUsage')}</span>
       )}
       {summary && summary.cacheEstimatedModels.length > 0 && (
         <span className="tt-b8-cost-mark" title={summary.cacheEstimatedModels.join(', ')}> · {summary.cacheEstimatedModels.length} {t('overview.cacheEst')}</span>

@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { CATEGORIES, type ToolMeta } from './meta';
 import type { ModelBar } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
-import { CAT_KEY, formatDisplayCost, useOverviewT, USD_IDENTITY } from './localize';
+import { CAT_KEY, formatDisplayCost, overviewT, useOverviewT, USD_IDENTITY } from './localize';
 import type { Settings } from '../types';
 
 // Per-model token breakdown for one source. Each bar's filled width is the
@@ -32,49 +32,63 @@ function ModelsList({
       <div className="tt-models-head">
         <div className="lbl">
           <span className="dot" style={{ background: tool.color }} />
-          {t('overview.modelsHead')} <span className="count">· {models.length}</span>
+          {t('overview.modelsHead')} <span className="count">· {models.filter((m) => m.name !== null).length}</span>
         </div>
         <span className="tot">{fmtTok(toolTokens)}</span>
       </div>
-      {models.map((m) => (
-        <div
-          className="tt-model"
-          key={m.name}
-          role={onModelClick ? 'button' : undefined}
-          tabIndex={onModelClick ? 0 : undefined}
-          style={onModelClick ? { cursor: 'pointer' } : undefined}
-          onClick={onModelClick ? () => onModelClick(m.name) : undefined}
-          onKeyDown={
-            onModelClick
-              ? (e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onModelClick(m.name);
+      {models.map((m) => {
+        const modelName = m.name;
+        const unattributed = modelName === null;
+        const activate = modelName === null || onModelClick === undefined
+          ? undefined
+          : () => onModelClick(modelName);
+        const name = unattributed ? t('overview.unattributedUsage') : modelName;
+        return (
+          <div
+            className="tt-model"
+            key={m.name ?? 'unattributed-usage'}
+            role={activate ? 'button' : undefined}
+            tabIndex={activate ? 0 : undefined}
+            style={activate ? { cursor: 'pointer' } : undefined}
+            onClick={activate}
+            onKeyDown={
+              activate
+                ? (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      activate();
+                    }
                   }
-                }
-              : undefined
-          }
-        >
-          <div className="top">
-            <span className="name">
-              {m.name}
-              {m.cacheEstimated && <span className="tt-tag">{t('overview.cacheEst')}</span>}
-            </span>
-            <span className="figs">
-              <span className="tok">{fmtTok(m.tokens)}</span>
-              {showCost && <span className="cost">{formatDisplayCost(m.cost, false, settings, lang)}</span>}
-              <span className="pct">{fmtPct(m.share)}</span>
-            </span>
-          </div>
-          <div className="track">
-            <div className="segs" style={{ width: m.share * 100 + '%' }}>
-              {m.segs.map((c) => (
-                <div key={c.key} style={{ width: c.frac * 100 + '%', background: c.color }} />
-              ))}
+                : undefined
+            }
+          >
+            <div className="top">
+              <span className="name">
+                {name}
+                {m.cacheEstimated && <span className="tt-tag">{t('overview.cacheEst')}</span>}
+              </span>
+              <span className="figs">
+                <span className="tok">{fmtTok(m.tokens)}</span>
+                {showCost && (
+                  <span className="cost">
+                    {unattributed
+                      ? overviewT(lang, 'overview.unavailableCost')
+                      : formatDisplayCost(m.cost, false, settings, lang)}
+                  </span>
+                )}
+                <span className="pct">{fmtPct(m.share)}</span>
+              </span>
+            </div>
+            <div className="track">
+              <div className="segs" style={{ width: m.share * 100 + '%' }}>
+                {m.segs.map((c) => (
+                  <div key={c.key} style={{ width: c.frac * 100 + '%', background: c.color }} />
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       <div className="tt-legend" style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
         {CATEGORIES.map((c) => (
           <span className="item" key={c.key}>

@@ -13,7 +13,7 @@ import type { SeriesPoint, Summary } from '../types';
 
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
   return {
-    bucket: '2026-07-16', source: 'claude', byModel: {},
+    bucket: '2026-07-16', source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
     inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
     totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
     ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
@@ -23,7 +23,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
-  totalTokens: 100, requests: 2, cost: 1.5, hasUnpriced: false,
+  totalTokens: 100, requests: 2, cost: 1.5, hasUnpriced: false, unattributedTokens: 0,
   unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
 };
 

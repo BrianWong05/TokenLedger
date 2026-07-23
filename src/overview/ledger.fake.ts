@@ -45,7 +45,7 @@ export interface FakeLedger extends LedgerPort {
 
 const EMPTY_SUMMARY: Summary = {
   inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-  totalTokens: 0, requests: 0, cost: null, hasUnpriced: false,
+  totalTokens: 0, requests: 0, cost: null, hasUnpriced: false, unattributedTokens: 0,
   unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
 };
 

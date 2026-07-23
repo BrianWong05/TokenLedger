@@ -120,7 +120,9 @@ export default function CostBreakdownModal({
                       </span>
                     )}
                   </span>
-                  <span className={model.unpriced ? 'unpriced' : ''}>{model.costLabel}</span>
+                  <span className={model.unattributed ? 'unattributed' : model.unpriced ? 'unpriced' : ''}>
+                    {model.costLabel}
+                  </span>
                 </div>
               ))}
             </section>
