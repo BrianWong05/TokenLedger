@@ -10,11 +10,7 @@ import {
   toolTotalsOfPoints,
   seriesToDays,
   rangeToFilters,
-  granularityOf,
-  calendarSpan,
-  bucketsFromPoints,
-  sumPoints,
-  modelTools,
+  trendSlice,
   smallMultiples,
   catTotals,
   ctxTotals,
@@ -382,17 +378,11 @@ export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()):
 
 export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: Lang = 'en'): OverviewView {
   const pts = s.allPoints ?? [];
-  const win = windowOf(s.range, s.from, s.to, now);
-  const rpts = pointsIn(pts, win);
-  // Window bounds (not the raw custom inputs) drive granularity + trend.
-  const winFrom = win.fromIso ?? s.firstIso;
-  const winTo = win.toIso ?? s.lastIso;
-  const per = granularityOf(s.range, calendarSpan(winFrom, winTo));
-  const trend =
-    per === 'hour'
-      ? bucketsFromPoints(s.hourPoints, 'hour', winFrom, winTo, lang)
-      : bucketsFromPoints(rpts, per, winFrom, winTo, lang);
-  const total = sumPoints(rpts);
+  // Window bounds (not the raw custom inputs) drive granularity + trend; the
+  // enlarge shares this exact derivation via trendSlice.
+  const { rpts, trend, per, modelTool, total } = trendSlice(
+    pts, s.hourPoints, s.range, s.from, s.to, s.firstIso, s.lastIso, now, lang,
+  );
   const toolTotals = toolTotalsOfPoints(rpts);
   const ctx = ctxTotals(rpts, s.selected);
   const selBuckets = s.ctxBuckets.find((b) => b.source === s.selected) ?? null;
@@ -403,7 +393,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     toolTotals,
     per,
     trend,
-    modelTool: modelTools(rpts),
+    modelTool,
     sparks: smallMultiples(trend),
     cats: catTotals(rpts, s.selected),
     ctx,

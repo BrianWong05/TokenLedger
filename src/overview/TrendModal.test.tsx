@@ -65,13 +65,18 @@ async function settle(times = 4) {
   }
 }
 
-async function mount(over: Partial<Summary> = {}): Promise<{ container: HTMLElement }> {
+async function mount(
+  over: Partial<Summary> = {},
+  seedDayPoints?: SeriesPoint[],
+  seedHourPoints?: SeriesPoint[],
+): Promise<{ container: HTMLElement; ledger: ReturnType<typeof makeFakeLedger> }> {
   const ledger = makeFakeLedger({
-    dayPoints: [
+    dayPoints: seedDayPoints ?? [
       pt({ bucket: daysAgo(2), source: 'claude', totalTokens: 400, byModel: { 'claude-opus-4-8': 400 } }),
       pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 100, byModel: { 'claude-opus-4-8': 100 } }),
       pt({ bucket: daysAgo(1), source: 'codex', totalTokens: 200, byModel: { 'gpt-5.5-codex': 200 } }),
     ],
+    hourPoints: seedHourPoints ?? [],
     summary: { ...summary, ...over },
   });
   const container = document.createElement('div');
@@ -86,8 +91,18 @@ async function mount(over: Partial<Summary> = {}): Promise<{ container: HTMLElem
     );
   });
   await settle();
-  return { container };
+  return { container, ledger };
 }
+
+// The dialog's own window selector lives in its header; the page's range
+// control lives in the toolbar. Scope each so they never collide.
+const modalRangeButton = (label: string) =>
+  Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('.tt-seg button')).find(
+    (b) => b.textContent === label,
+  )!;
+const pageActiveRange = (c: HTMLElement) =>
+  c.querySelector<HTMLElement>('.tt-toolbar .tt-seg .active')!.textContent;
+const footText = () => dialog()!.querySelector('.tt-trend-modal-foot')!.textContent!;
 
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
@@ -204,5 +219,100 @@ describe('Usage-trend Enlarge', () => {
       document.querySelector<HTMLElement>('.tt-trend-modal-backdrop')!.click();
     });
     expect(dialog()).not.toBeNull();
+  });
+
+  it('has all five presets in its own selector, opening on the page range', async () => {
+    const { container: c } = await mount();
+    await open(c);
+    const labels = Array.from(dialog()!.querySelectorAll('.tt-seg button')).map((b) => b.textContent);
+    expect(labels).toEqual(['Day', 'Week', 'Month', 'Total', 'Custom']);
+    // Page default range is Total → the dialog opens on Total.
+    expect(modalRangeButton('Total').className).toContain('active');
+  });
+
+  it('reveals a Custom from/to date row when Custom is picked', async () => {
+    const { container: c } = await mount();
+    await open(c);
+    expect(dialog()!.querySelector('.tt-trend-modal-custom')).toBeNull();
+    await act(async () => modalRangeButton('Custom').click());
+    const dates = dialog()!.querySelectorAll<HTMLInputElement>('.tt-trend-modal-custom input[type="date"]');
+    expect(dates).toHaveLength(2);
+  });
+
+  it('changes its window without moving the Overview, and reopens on the page range', async () => {
+    const { container: c } = await mount();
+    await open(c);
+    expect(pageActiveRange(c)).toBe('Total');
+
+    await act(async () => modalRangeButton('Week').click());
+    // The dialog followed; the page did not.
+    expect(modalRangeButton('Week').className).toContain('active');
+    expect(dialog()!.querySelector('.tt-trend-modal-sub')!.textContent).toContain('Last 7 days');
+    expect(pageActiveRange(c)).toBe('Total');
+
+    // Close and reopen: the local window was forgotten, so it re-seeds from the
+    // page (still Total).
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await open(c);
+    expect(modalRangeButton('Total').className).toContain('active');
+  });
+
+  it('fetches its own hourly series for a local Day window', async () => {
+    const { container: c, ledger } = await mount(
+      {},
+      [pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],
+      [pt({ bucket: `${daysAgo(0)} 09:00`, source: 'claude', totalTokens: 120, byModel: { 'claude-opus-4-8': 120 } })],
+    );
+    await open(c);
+    const before = ledger.calls.series.filter((a) => a[1] === 'hour').length;
+
+    await act(async () => modalRangeButton('Day').click());
+    await settle(1);
+
+    // The dialog fetched hourly itself, independent of the page (on Total).
+    const hourlyCalls = ledger.calls.series.filter((a) => a[1] === 'hour');
+    expect(hourlyCalls.length).toBe(before + 1);
+    expect(footText()).toContain('avg / hour');
+    expect(dialog()!.querySelector('.tt-trend-modal-sub')!.textContent).toContain('Today');
+    expect(pageActiveRange(c)).toBe('Total');
+  });
+
+  it('recomputes the footer figures for the local window', async () => {
+    // One bucket far outside the trailing week, one inside it.
+    const { container: c } = await mount({}, [
+      pt({ bucket: daysAgo(60), source: 'claude', totalTokens: 400, byModel: { 'claude-opus-4-8': 400 } }),
+      pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } }),
+    ]);
+    await open(c);
+    // Total window sees both buckets.
+    expect(footText()).toContain('700');
+
+    await act(async () => modalRangeButton('Week').click());
+    // The trailing week sees only the recent bucket.
+    expect(footText()).toContain('300');
+    expect(footText()).not.toContain('700');
+  });
+
+  it('ignores a window Summary that resolves after a newer window change', async () => {
+    const { container: c, ledger } = await mount();
+    ledger.hold('summary');
+    await open(c); // fetch #0 (Total) held
+    expect(footText()).toContain('…');
+
+    await act(async () => modalRangeButton('Week').click()); // fetch #1 (Week) held
+    expect(footText()).toContain('…');
+
+    // The abandoned Total fetch resolving must not land…
+    await act(async () => ledger.resolveHeld('summary', 0, { ...summary, cost: 111.11 }));
+    await settle(1);
+    expect(footText()).toContain('…');
+    expect(footText()).not.toContain('$111.11');
+
+    // …only the current window's own fetch may.
+    await act(async () => ledger.resolveHeld('summary', 1, { ...summary, cost: 2.22 }));
+    await settle(1);
+    expect(footText()).toContain('$2.22');
   });
 });

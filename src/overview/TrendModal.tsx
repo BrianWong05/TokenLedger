@@ -1,19 +1,29 @@
-import { useMemo, useRef, type RefObject } from 'react';
-import type { Summary } from '../types';
-import { modelColor, stackModels, type Bucket, type Granularity } from './data';
-import { TOOLS } from './meta';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import type { SeriesPoint, Summary } from '../types';
+import { modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
+import { TOOLS, RANGES_8B, type Range8b } from './meta';
+import type { LedgerPort } from './ledger';
 import { fmtTok } from '../lib/format';
-import { formatDisplayCost, PER_UNIT_KEY, useOverviewT } from './localize';
+import {
+  fmtIsoDateL,
+  formatDisplayCost,
+  PER_UNIT_KEY,
+  RANGE_LABEL_KEY,
+  RANGE_LONG_KEY,
+  useOverviewT,
+} from './localize';
 import { useChartColors } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import { useDialogChrome } from './useDialogChrome';
 
-// Design 1b — the Usage-trend card's full-screen enlarge (shell slice). A
-// centered dialog over the dimmed dashboard: a header (title + window
-// subtitle + close), the stacked-by-Source chart at full width, and a footer
-// of the window's headline figures + legend. The window is the Overview's
-// current one; its Cost comes from the same range Summary the page already
-// fetched (later slices give the dialog its own window and inspector).
+// Design 1b — the Usage-trend card's full-screen enlarge. A centered dialog
+// over the dimmed dashboard with a window of its own: the Day/Week/Month/Total/
+// Custom selector, initialized from the Overview's window and discarded on
+// close (the dashboard behind never moves). The stacked-by-tool chart, footer
+// figures and Est. cost all describe the dialog's local window — buckets from
+// the shared trendSlice (its own hourly fetch for a Day window), Cost from a
+// per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
+// enlarge). The bucket inspector + per-bucket cost + CSV land in later slices.
 
 // Chart geometry in viewBox units (full-width, larger than the card).
 const VW = 1000;
@@ -25,19 +35,23 @@ const BASE = 320;
 const LABEL_Y = 344;
 
 export default function TrendModal({
-  data,
-  per,
-  rangeLabel,
-  modelTool,
-  summary,
+  allPoints,
+  firstIso,
+  lastIso,
+  initialRange,
+  initialCustomFrom,
+  initialCustomTo,
+  ledger,
   returnFocusRef,
   onClose,
 }: {
-  data: Bucket[];
-  per: Granularity;
-  rangeLabel: string;
-  modelTool: Record<string, string>;
-  summary: Summary | null; // the Overview's range Summary; null while it loads
+  allPoints: SeriesPoint[]; // the full unbounded daily series
+  firstIso: string;
+  lastIso: string;
+  initialRange: Range8b;
+  initialCustomFrom: string;
+  initialCustomTo: string;
+  ledger: LedgerPort;
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
@@ -53,8 +67,53 @@ export default function TrendModal({
   // also began on the backdrop (mirrors the Activity enlarge).
   const backdropArmed = useRef(false);
 
+  // Window state local to the dialog: seeded from the Overview's on open,
+  // forgotten on close (this component only mounts while open).
+  const [range, setRange] = useState<Range8b>(initialRange);
+  const [customFrom, setCustomFrom] = useState(initialCustomFrom);
+  const [customTo, setCustomTo] = useState(initialCustomTo);
+  // Effective bounds — the raw custom inputs fall back to the data extent,
+  // exactly as the store derives from/to (never the empty string).
+  const from = customFrom || firstIso;
+  const to = customTo || lastIso;
+
+  // Per-window fetches the dialog owns: a Summary for the footer Cost, and the
+  // hourly series a Day window needs (the page only holds it while itself on
+  // Day). Epoch-guarded so a stale response from a superseded window can't land.
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [hourPoints, setHourPoints] = useState<SeriesPoint[]>([]);
+  const fetchEpoch = useRef(0);
+  useEffect(() => {
+    const epoch = ++fetchEpoch.current;
+    setSummary(null);
+    const filters = rangeToFilters(range, from, to);
+    ledger.summary(filters).then(
+      (s) => {
+        if (fetchEpoch.current === epoch) setSummary(s);
+      },
+      () => {},
+    );
+    if (range === 'day') {
+      ledger.series(filters, 'hour').then(
+        (pts) => {
+          if (fetchEpoch.current === epoch) setHourPoints(pts);
+        },
+        () => {},
+      );
+    }
+  }, [range, from, to, ledger]);
+
+  const { trend: data, per, modelTool, total } = useMemo(
+    () => trendSlice(allPoints, hourPoints, range, from, to, firstIso, lastIso, new Date(), lang),
+    [allPoints, hourPoints, range, from, to, firstIso, lastIso, lang],
+  );
+
+  const rangeLabel =
+    range === 'custom'
+      ? `${fmtIsoDateL(from, lang)} – ${fmtIsoDateL(to, lang)}`
+      : t(RANGE_LONG_KEY[range]);
+
   const maxTotal = Math.max(1, ...data.map((b) => b.total));
-  const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
   const plotW = VW - PL - PR;
   const slot = plotW / (data.length || 1);
@@ -102,6 +161,13 @@ export default function TrendModal({
             </div>
           </div>
           <span className="tt-trend-modal-spacer" />
+          <div className="tt-seg">
+            {RANGES_8B.map((r) => (
+              <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
+                {t(RANGE_LABEL_KEY[r.key])}
+              </button>
+            ))}
+          </div>
           <button
             ref={closeButtonRef}
             type="button"
@@ -115,6 +181,27 @@ export default function TrendModal({
             </svg>
           </button>
         </header>
+
+        {range === 'custom' && (
+          <div className="tt-custom-row tt-trend-modal-custom">
+            <span className="lbl">{t('overview.customRange')}</span>
+            <input
+              type="date"
+              value={from}
+              min={firstIso}
+              max={to}
+              onChange={(e) => e.target.value && setCustomFrom(e.target.value)}
+            />
+            <span className="to">{t('overview.to')}</span>
+            <input
+              type="date"
+              value={to}
+              min={from}
+              max={lastIso}
+              onChange={(e) => e.target.value && setCustomTo(e.target.value)}
+            />
+          </div>
+        )}
 
         <div className="tt-trend-modal-chart">
           <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }}>

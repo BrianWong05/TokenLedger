@@ -331,6 +331,42 @@ export function bucketsFromPoints(
   return out;
 }
 
+export interface TrendSlice {
+  rpts: SeriesPoint[];               // the window-filtered daily points
+  trend: Bucket[];                   // stacked buckets at the window's granularity
+  per: Granularity;
+  modelTool: Record<string, string>;
+  total: number;
+}
+
+// The trend derivation shared by the Overview and its enlarge: window the
+// series, pick the granularity that fits, and bucket it — hourly buckets for a
+// single-day window come from a separately-fetched hourPoints. `from`/`to` are
+// the effective window bounds (the custom inputs, else firstIso/lastIso); they
+// only matter for a custom range (windowOf ignores them for presets).
+export function trendSlice(
+  allPoints: SeriesPoint[],
+  hourPoints: SeriesPoint[],
+  range: Range8b,
+  from: string,
+  to: string,
+  firstIso: string,
+  lastIso: string,
+  now: Date = new Date(),
+  lang: Lang = 'en',
+): TrendSlice {
+  const win = windowOf(range, from, to, now);
+  const rpts = pointsIn(allPoints, win);
+  const winFrom = win.fromIso ?? firstIso;
+  const winTo = win.toIso ?? lastIso;
+  const per = granularityOf(range, calendarSpan(winFrom, winTo));
+  const trend =
+    per === 'hour'
+      ? bucketsFromPoints(hourPoints, 'hour', winFrom, winTo, lang)
+      : bucketsFromPoints(rpts, per, winFrom, winTo, lang);
+  return { rpts, trend, per, modelTool: modelTools(rpts), total: sumPoints(rpts) };
+}
+
 // ---- aggregations ----
 
 export function sumPoints(pts: SeriesPoint[]): number {

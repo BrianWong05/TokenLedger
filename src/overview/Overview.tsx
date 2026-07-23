@@ -93,7 +93,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   }, []);
 
   const {
-    loading, scanError, fetchError, scanSources,
+    loading, scanError, fetchError, scanSources, allPoints,
     refresh, refreshing, scanAt,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
@@ -305,11 +305,13 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       )}
       {trendModalOpen && (
         <TrendModal
-          data={panels.trend.data}
-          per={panels.trend.per}
-          rangeLabel={rangeLabel}
-          modelTool={panels.trend.modelTool}
-          summary={summary}
+          allPoints={allPoints}
+          firstIso={firstIso}
+          lastIso={lastIso}
+          initialRange={range}
+          initialCustomFrom={customFrom}
+          initialCustomTo={customTo}
+          ledger={ledger}
           returnFocusRef={trendEnlargeRef}
           onClose={() => setTrendModalOpen(false)}
         />

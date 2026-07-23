@@ -1573,6 +1573,11 @@
   outline: none;
   box-shadow: var(--focus-shadow);
 }
+/* Custom-range row reuses .tt-custom-row; only its horizontal padding shifts to
+   line up with the modal's 28px content gutter. */
+.tt-trend-modal-custom {
+  padding: 12px 28px;
+}
 .tt-trend-modal-chart {
   flex: 1;
   min-height: 0;
