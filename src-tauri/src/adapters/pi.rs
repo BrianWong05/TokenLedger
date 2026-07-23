@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 
 use super::ctx::{content_bytes, est};
 use super::{file_state_of, find_jsonl, rollup_worktree, unchanged};
-use crate::db::{add_ctx_tool_rows, clear_ctx_tools_for_file, insert_events, set_file_state};
+use crate::db::{
+    add_ctx_tool_rows, clear_ctx_tools_for_file, insert_events_keep_max_output, set_file_state,
+};
 use crate::time::iso_to_epoch;
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
 
@@ -151,11 +153,20 @@ pub fn scan_pi(conn: &mut rusqlite::Connection, session_roots: &[PathBuf]) -> So
             }
         }
     }
-    files.sort();
+    // Order by file name (pi names begin with an ISO creation timestamp) so the
+    // ORIGINAL Session — created before any fork/clone of it — is written first
+    // and owns copied history, independent of directory or the order roots arrive.
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()).then_with(|| a.cmp(b)));
+
+    // Copied entries share a dedup identity across files. The owner map (from
+    // already-ingested usage) plus a scan-wide seen-set let the drill-down count
+    // each entry's tool activity once, attributed to its originating file.
+    let owner = load_pi_entry_owners(conn);
+    let mut seen_tool_entries: HashSet<String> = HashSet::new();
 
     let mut result = SourceScanResult::default();
     for path in files {
-        match scan_file(conn, &path) {
+        match scan_file(conn, &path, &owner, &mut seen_tool_entries) {
             Ok((inserted, skipped)) => {
                 result.events_inserted += inserted;
                 result.lines_skipped += skipped;
@@ -172,7 +183,43 @@ pub fn scan_pi(conn: &mut rusqlite::Connection, session_roots: &[PathBuf]) -> So
     result
 }
 
-fn scan_file(conn: &mut rusqlite::Connection, path: &Path) -> Result<(u64, u64), String> {
+// identity ("{id}:{ts}") → the source_file that first ingested that entry.
+// Derived from the existing pi Usage Records so a rescanned or newly discovered
+// copy defers its drill-down to the file that already owns the entry.
+fn load_pi_entry_owners(conn: &rusqlite::Connection) -> std::collections::HashMap<String, String> {
+    let mut owner = std::collections::HashMap::new();
+    let Ok(mut stmt) =
+        conn.prepare("SELECT dedup_key, source_file FROM events WHERE source = 'pi'")
+    else {
+        return owner;
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    });
+    if let Ok(rows) = rows {
+        for row in rows.flatten() {
+            if let Some(ident) = entry_identity_from_key(&row.0) {
+                owner.entry(ident).or_insert(row.1);
+            }
+        }
+    }
+    owner
+}
+
+// The file/session-independent "{id}:{ts}" identity behind a modern dedup_key.
+fn entry_identity_from_key(dedup_key: &str) -> Option<String> {
+    dedup_key
+        .strip_prefix("pi:message:")
+        .or_else(|| dedup_key.strip_prefix("pi:compaction:"))
+        .map(str::to_owned)
+}
+
+fn scan_file(
+    conn: &mut rusqlite::Connection,
+    path: &Path,
+    owner: &std::collections::HashMap<String, String>,
+    seen_tool_entries: &mut HashSet<String>,
+) -> Result<(u64, u64), String> {
     let state = FileState {
         byte_offset: PI_PARSER_VERSION,
         ..file_state_of(path)
@@ -184,15 +231,16 @@ fn scan_file(conn: &mut rusqlite::Connection, path: &Path) -> Result<(u64, u64),
     let source_file = path.to_string_lossy().to_string();
     let content = std::fs::read_to_string(path)
         .map_err(|error| format!("pi: read {}: {error}", path.display()))?;
-    let parsed = parse_file(&content, &source_file);
+    let parsed = parse_file(&content, &source_file, owner, seen_tool_entries);
     // A changed pi file is reparsed from the top (no byte-offset resume), so the
     // per-tool drill-down is rebuilt from scratch: clear this file's rows first,
-    // then re-add. Copied fork/clone tool activity is deduplicated in the Ledger
-    // via dedup_key; the drill-down is per source_file and needs no cross-file
-    // reconciliation here.
+    // then re-add only the entries this file owns (copies defer to their origin).
     clear_ctx_tools_for_file(conn, &source_file)
         .map_err(|error| format!("pi: metadata {}: {error}", path.display()))?;
-    let inserted = insert_events(conn, &parsed.events)
+    // keep_max_output preserves first-writer attribution on a copied conflict
+    // (identical copies tie, so the original's Session/Project/Model stand) while
+    // still backfilling newly added nullable fields.
+    let inserted = insert_events_keep_max_output(conn, &parsed.events)
         .map_err(|error| format!("pi: insert {}: {error}", path.display()))?;
     add_ctx_tool_rows(conn, "pi", &source_file, &parsed.tool_rows)
         .map_err(|error| format!("pi: metadata {}: {error}", path.display()))?;
@@ -274,12 +322,29 @@ fn legacy_dedup_key(
     format!("pi:legacy:{kind}:{digest:x}")
 }
 
-fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
+fn parse_file(
+    content: &str,
+    source_file: &str,
+    owner: &std::collections::HashMap<String, String>,
+    seen_tool_entries: &mut HashSet<String>,
+) -> ParsedPiFile {
     let mut events = Vec::new();
     let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
     let mut lines_skipped = 0u64;
     let mut session_id: Option<String> = None;
     let mut project: Option<String> = None;
+
+    // A tool-bearing entry contributes drill-down rows only the first time its
+    // (file-independent) identity is seen: a copy whose origin already owns it, or
+    // an earlier file this scan, defers. Keeps forked/cloned tool activity single.
+    let mut owns_tools = |ident: Option<&str>| -> bool {
+        let Some(ident) = ident else {
+            return true; // no stable identity (legacy, no id): cannot dedup
+        };
+        let copied = matches!(owner.get(ident), Some(f) if f != source_file);
+        let fresh = seen_tool_entries.insert(ident.to_string());
+        !copied && fresh
+    };
 
     // Tree state. Entries arrive parent-before-child (creation order), so the
     // parent's composition is already known when its children are seen. A modern
@@ -322,6 +387,11 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
         let id = nonempty(v["id"].as_str());
         let parent_id = nonempty(v["parentId"].as_str());
         let entry_ts_iso = nonempty(v["timestamp"].as_str());
+        // File/session-independent identity of this entry, shared by every copy.
+        let ident = match (id.as_deref(), entry_ts_iso.as_deref()) {
+            (Some(id), Some(ts)) => Some(format!("{id}:{ts}")),
+            _ => None,
+        };
         // Content active immediately before this entry: its parent's composition
         // (tree), or the previous entry (legacy linear). A resolvable parentId
         // never leaks a sibling branch in.
@@ -399,6 +469,8 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
 
         if entry_type == "message" {
             let message = &v["message"];
+            // Copies defer their tool drill-down to the entry's owning file.
+            let emit_tools = owns_tools(ident.as_deref());
             match message["role"].as_str().unwrap_or("") {
                 "user" => {
                     delta.msg = est_user_content(&message["content"]);
@@ -433,15 +505,19 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
                         None => {}
                     }
                     // Tool CALLS: one call each; arguments are sized then dropped.
-                    for (name, e) in calls {
-                        tool_rows.push((name, e, 1, row_ts));
+                    if emit_tools {
+                        for (name, e) in calls {
+                            tool_rows.push((name, e, 1, row_ts));
+                        }
                     }
                 }
                 "toolResult" => {
                     let e = est_toolresult_content(&message["content"]);
                     delta = Delta { msg: e, tool: e, reas: 0, user_reset: false };
                     let name = message["toolName"].as_str().unwrap_or("unknown").to_string();
-                    tool_rows.push((name, e, 0, row_ts));
+                    if emit_tools {
+                        tool_rows.push((name, e, 0, row_ts));
+                    }
                     // A usage-bearing tool result reports nested model work with no
                     // trustworthy Model — one Unattributed Usage Record (#41). An
                     // all-zero block is ordinary retained context, not a Request.
@@ -664,6 +740,11 @@ mod tests {
 
     fn scan_root(conn: &mut rusqlite::Connection, root: &Path) -> SourceScanResult {
         scan_pi(conn, &[root.to_path_buf()])
+    }
+
+    // Parse one file in isolation (no prior owners, fresh dedup set).
+    fn parse(content: &str, source_file: &str) -> ParsedPiFile {
+        parse_file(content, source_file, &std::collections::HashMap::new(), &mut HashSet::new())
     }
 
     fn write_session(root: &Path, name: &str, session_id: &str, model: &str, input: i64) {
@@ -1001,7 +1082,7 @@ mod tests {
             "{\"type\":\"session\",\"version\":3,\"id\":\"s\",\"timestamp\":\"2026-07-01T12:00:00.000Z\",\"cwd\":\"relative/project\"}\n",
             "{\"type\":\"message\",\"id\":\"a\",\"parentId\":null,\"timestamp\":\"2026-07-01T12:00:07.000Z\",\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"usage\":{\"input\":1,\"output\":0,\"cacheRead\":0,\"cacheWrite\":0},\"stopReason\":\"stop\"}}\n",
         );
-        let parsed = parse_file(session, "fixture.jsonl");
+        let parsed = parse(session, "fixture.jsonl");
         assert_eq!(parsed.events.len(), 1);
         assert_eq!(parsed.events[0].timestamp, 1_782_907_207);
         assert_eq!(parsed.events[0].session_id.as_deref(), Some("s"));
@@ -1010,7 +1091,7 @@ mod tests {
 
     #[test]
     fn parses_nonzero_assistant_usage_without_retaining_private_content_fields() {
-        let parsed = parse_file(BASIC_SESSION, "/fixtures/basic-session.jsonl");
+        let parsed = parse(BASIC_SESSION, "/fixtures/basic-session.jsonl");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
         assert_eq!(parsed.events.len(), 4);
         assert_eq!(parsed.lines_skipped, 2, "zero placeholder + malformed line");
@@ -1232,7 +1313,7 @@ mod tests {
 
     #[test]
     fn tool_result_and_extension_summary_usage_are_unattributed() {
-        let parsed = parse_file(AUXILIARY_SESSION, "/fixtures/aux.jsonl");
+        let parsed = parse(AUXILIARY_SESSION, "/fixtures/aux.jsonl");
         // tool result (usage) + extension summary; the zero-usage tool result is not
         // a Request.
         assert_eq!(parsed.events.len(), 2);
@@ -1266,6 +1347,87 @@ mod tests {
         assert_eq!(s.unattributed_tokens, 700 + 300 + 400 + 50);
         assert_eq!(s.cost, None, "all-Unattributed selection has no Cost, never $0");
         assert!(!s.has_unpriced, "Unattributed Usage is not an Unpriced Model");
+    }
+
+    // Shared history that a fork and a clone copy verbatim (identical ids/times/
+    // usage), plus new work that lives only in the fork.
+    const SHARED_U1: &str = r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"a shared prompt copied verbatim into fork and clone"}],"timestamp":1782864001000}}"#;
+    const SHARED_A1: &str = r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T00:00:02.000Z","message":{"role":"assistant","model":"orig-model","content":[{"type":"toolCall","id":"tc","name":"origtool","arguments":{"q":"shared"}}],"usage":{"input":100,"output":20,"cacheRead":0,"cacheWrite":0},"timestamp":1782864002000}}"#;
+    const FORK_U2: &str = r#"{"type":"message","id":"u2","parentId":"a1","timestamp":"2026-07-01T00:00:03.000Z","message":{"role":"user","content":[{"type":"text","text":"new work only in the fork"}],"timestamp":1782864003000}}"#;
+    const FORK_A2: &str = r#"{"type":"message","id":"a2","parentId":"u2","timestamp":"2026-07-01T00:00:04.000Z","message":{"role":"assistant","model":"fork-model","content":[],"usage":{"input":50,"output":10,"cacheRead":0,"cacheWrite":0},"timestamp":1782864004000}}"#;
+
+    fn write_file(path: std::path::PathBuf, content: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn forks_and_clones_deduplicate_history_and_keep_original_attribution() {
+        let corpus = tempfile::tempdir().unwrap();
+        let app = tempfile::tempdir().unwrap();
+        let header =
+            |id: &str, proj: &str| format!(r#"{{"type":"session","version":3,"id":"{id}","cwd":"/projects/{proj}"}}"#);
+        // Different directories, ISO-timestamped names: the original is earliest.
+        let root_a = corpus.path().join("projA");
+        let root_b = corpus.path().join("projB");
+        let root_c = corpus.path().join("projC");
+        write_file(
+            root_a.join("2026-07-01T10-00-00-000Z_orig.jsonl"),
+            &format!("{}\n{SHARED_U1}\n{SHARED_A1}\n", header("orig", "projA")),
+        );
+        write_file(
+            root_b.join("2026-07-01T11-00-00-000Z_fork.jsonl"),
+            &format!("{}\n{SHARED_U1}\n{SHARED_A1}\n{FORK_U2}\n{FORK_A2}\n", header("fork", "projB")),
+        );
+        write_file(
+            root_c.join("2026-07-01T12-00-00-000Z_clone.jsonl"),
+            &format!("{}\n{SHARED_U1}\n{SHARED_A1}\n", header("clone", "projC")),
+        );
+
+        let attr = |conn: &rusqlite::Connection, model: &str| -> (Option<String>, Option<String>) {
+            conn.query_row(
+                "SELECT project, session_id FROM events WHERE source='pi' AND model = ?1",
+                [model],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        let origtool_calls = |conn: &rusqlite::Connection| -> i64 {
+            queries::ctx_tools(conn, &Filters::default())
+                .unwrap()
+                .iter()
+                .find(|t| t.name == "origtool")
+                .map(|t| t.calls)
+                .unwrap_or(0)
+        };
+
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let result = scan_pi(&mut conn, &[root_a.clone(), root_b.clone(), root_c.clone()]);
+        assert!(result.error.is_none());
+
+        // Copied a1 deduplicates; only a1 + the fork's new a2 are Requests.
+        assert_eq!(queries::summary(&conn, &Filters::default()).unwrap().requests, 2);
+        // a1 keeps its ORIGINAL Project/Session; a2 (new work) belongs to the fork.
+        assert_eq!(attr(&conn, "orig-model"), (Some("/projects/projA".into()), Some("orig".into())));
+        assert_eq!(attr(&conn, "fork-model"), (Some("/projects/projB".into()), Some("fork".into())));
+        // The clone/fork copies add no Session of their own: distinct = {orig, fork}.
+        let sessions: i64 = conn
+            .query_row("SELECT COUNT(DISTINCT session_id) FROM events WHERE source='pi'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sessions, 2, "a copy-only clone contributes no Session");
+        // Copied tool activity is counted once across all three files.
+        assert_eq!(origtool_calls(&conn), 1, "copied tool call is not multiplied");
+
+        // A rescan changes nothing.
+        assert_eq!(scan_pi(&mut conn, &[root_a.clone(), root_b.clone(), root_c.clone()]).events_inserted, 0);
+        assert_eq!(origtool_calls(&conn), 1);
+
+        // Reversed discovery order on a fresh Ledger yields identical attribution.
+        let app2 = tempfile::tempdir().unwrap();
+        let mut conn2 = open_db(&app2.path().join("ledger.db")).unwrap();
+        assert!(scan_pi(&mut conn2, &[root_c, root_b, root_a]).error.is_none());
+        assert_eq!(attr(&conn2, "orig-model"), (Some("/projects/projA".into()), Some("orig".into())));
+        assert_eq!(origtool_calls(&conn2), 1);
     }
 
     #[test]
