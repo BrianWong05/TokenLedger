@@ -23,11 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-# Agent tooling — generated scratch/output, regenerated on demand
+# Agent tooling — generated scratch/output, regenerated on demand.
+# The agent CONFIG (AGENTS.md, docs/agents/) is tracked, not ignored: skills
+# read it (e.g. docs/agents/issue-tracker.md) and it should match the repo.
 .planning/
 graphify-out/
-
-# Agent tooling — local agent config. Regenerate with the setup skill; drop
-# these lines if you'd rather share them with the repo.
-AGENTS.md
-docs/agents/
