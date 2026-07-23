@@ -64,26 +64,43 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   const settings = ports?.settings ?? tauriSettings;
   const [model, setModel] = useState<PanelModel | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [loading, setLoading] = useState(true);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Count-up for the two headline figures; unpriced (null) doesn't animate.
   const animCost = useCountUp(model?.costValue ?? 0);
   const animTokens = useCountUp(model?.tokensValue ?? 0);
 
-  const refresh = useCallback(async () => {
-    try {
-      const w = dayWindows(new Date());
-      const today: Filters = { tools: [], models: [], project: null, startTs: w.todayStart, endTs: w.todayEnd };
-      const yday: Filters = { tools: [], models: [], project: null, startTs: w.yStart, endTs: w.yEnd };
-      const [t, y, rows, s] = await Promise.all([
-        ledger.summary(today),
-        ledger.summary(yday),
-        ledger.breakdown('tool', today),
-        settings.get(),
-      ]);
+  // On panel open the skeleton stays up at least this long, so the load
+  // reads as a deliberate beat instead of a flash. Zero under
+  // reduced-motion (and in jsdom) — the wait is pure show.
+  const minLoadingMs = () =>
+    typeof window.matchMedia !== 'function' ||
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 0
+      : 1000;
+
+  const refresh = useCallback(async (showLoading = false) => {
+    if (showLoading) setLoading(true);
+    const w = dayWindows(new Date());
+    const today: Filters = { tools: [], models: [], project: null, startTs: w.todayStart, endTs: w.todayEnd };
+    const yday: Filters = { tools: [], models: [], project: null, startTs: w.yStart, endTs: w.yEnd };
+    const [fetched] = await Promise.all([
+      Promise.allSettled([
+        Promise.all([
+          ledger.summary(today),
+          ledger.summary(yday),
+          ledger.breakdown('tool', today),
+          settings.get(),
+        ]),
+      ]),
+      new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
+    ]);
+    if (fetched[0].status === 'fulfilled') {
+      const [t, y, rows, s] = fetched[0].value;
       setModel(panelModel(t, y, rows, s, s.language === 'zh-Hant' ? 'zh-Hant' : 'en'));
-    } catch {
-      // Ledger unavailable (e.g. mid-restart): keep the last model.
     }
+    // Ledger unavailable (e.g. mid-restart): keep the last model.
+    if (showLoading) setLoading(false);
   }, [ledger, settings]);
 
   // Mark the document so TrayPanel.css can force the window transparent
@@ -93,12 +110,13 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
     return () => document.body.classList.remove('tp-window');
   }, []);
 
-  // Initial load + refetch every time the tray shows the panel.
+  // Initial load + refetch every time the tray shows the panel — both with
+  // the loading beat; background refetches (rescan) skip it.
   useEffect(() => {
-    void refresh();
+    void refresh(true);
     let un: (() => void) | undefined;
     Promise.resolve()
-      .then(() => listen('panel-shown', () => void refresh()))
+      .then(() => listen('panel-shown', () => void refresh(true)))
       .then((f) => { un = f; })
       .catch(() => {});
     return () => un?.();
@@ -130,11 +148,16 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
       <div className="tp-header">
         <div className="tp-caption-row">
           <span className="tp-caption">Today</span>
-          {model?.delta && (
+          {!loading && model?.delta && (
             <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
           )}
         </div>
-        {model?.empty ? (
+        {loading ? (
+          <div className="tp-cost-row">
+            <span className="tp-skel tp-skel-cost" />
+            <span className="tp-skel tp-skel-sub" />
+          </div>
+        ) : model?.empty ? (
           <div className="tp-empty">No usage yet</div>
         ) : (
           <div className="tp-cost-row">
@@ -148,7 +171,21 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
         )}
       </div>
 
-      {model && model.rows.length > 0 && (
+      {loading && (
+        <>
+          <div className="tp-sep" />
+          {[0, 1].map((i) => (
+            <div className="tp-row" key={i}>
+              <span className="tp-skel tp-skel-dot" />
+              <span className="tp-skel tp-skel-name" />
+              <span className="tp-spacer" />
+              <span className="tp-skel tp-skel-num" />
+            </div>
+          ))}
+        </>
+      )}
+
+      {!loading && model && model.rows.length > 0 && (
         <>
           <div className="tp-sep" />
           {model.rows.map((r) => (

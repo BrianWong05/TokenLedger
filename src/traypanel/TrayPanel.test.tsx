@@ -133,4 +133,32 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-spin')).toBeNull();
     expect(rescan.disabled).toBe(false);
   });
+
+  it('shows the loading skeleton while the panel load is in flight', async () => {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const settings = makeFakeSettings();
+    ledger.hold('summary');
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings }} />);
+    });
+    await settle();
+
+    // In flight: shimmer blocks instead of figures; actions stay usable.
+    expect(container.querySelectorAll('.tp-skel').length).toBeGreaterThan(0);
+    expect(container.querySelector('.tp-cost')).toBeNull();
+    expect(container.querySelectorAll('.tp-action').length).toBe(4);
+
+    await act(async () => {
+      ledger.resolveHeld('summary', 0);
+      ledger.resolveHeld('summary', 1);
+    });
+    await settle();
+    expect(container.querySelector('.tp-skel')).toBeNull();
+    expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
+  });
 });
