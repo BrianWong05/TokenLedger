@@ -131,13 +131,18 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   // skeleton → figures, period switches, row counts. Measuring on a state
   // dep is not enough: the model lands while the skeleton still shows, and
   // the taller real content would never get re-measured (the scroll bug).
-  // jsdom has no ResizeObserver; window sizing is Tauri glue anyway.
+  // The resize goes through the resize_panel command — the Rust side is
+  // authoritative — with the JS window API as belt-and-braces. jsdom has no
+  // ResizeObserver; window sizing is Tauri glue anyway.
   useEffect(() => {
     const el = bodyRef.current;
     if (!el || typeof ResizeObserver !== 'function') return;
     const ro = new ResizeObserver(() => {
       const h = el.offsetHeight;
       if (!h) return;
+      Promise.resolve()
+        .then(() => invoke('resize_panel', { height: h }))
+        .catch(() => {});
       Promise.resolve()
         .then(() => getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, h)))
         .catch(() => {});

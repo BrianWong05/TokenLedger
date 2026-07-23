@@ -193,6 +193,15 @@ fn quit_app(app: AppHandle) {
     app.exit(0);
 }
 
+// The panel reports its rendered content height (logical px) and the window
+// hugs it — the panel must never scroll or clip.
+#[tauri::command]
+fn resize_panel(app: AppHandle, height: f64) {
+    if let Some(w) = app.get_webview_window("traypanel") {
+        let _ = w.set_size(tauri::LogicalSize::new(300.0, height.max(1.0)));
+    }
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -355,6 +364,7 @@ pub fn run() {
             show_main,
             open_settings,
             quit_app,
+            resize_panel,
             get_settings,
             set_settings,
             check_updates,
