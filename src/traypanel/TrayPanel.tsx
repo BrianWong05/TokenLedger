@@ -50,6 +50,13 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
     }
   }, [ledger, settings]);
 
+  // Mark the document so TrayPanel.css can force the window transparent
+  // over index.css's app background (see the css header comment).
+  useEffect(() => {
+    document.body.classList.add('tp-window');
+    return () => document.body.classList.remove('tp-window');
+  }, []);
+
   // Initial load + refetch every time the tray shows the panel.
   useEffect(() => {
     void refresh();

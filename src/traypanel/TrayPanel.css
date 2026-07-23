@@ -1,8 +1,13 @@
 /* Design 2b's panel, lifted from the mock's inline styles (Menu Bar -
    Options.dc.html #2b). Dark-only, like the mock. The window itself is
-   transparent; .tp paints the rounded card. */
-html, body, #root {
-  background: transparent;
+   transparent; .tp paints the rounded card, and macOS draws the window
+   shadow from the card's alpha (conf: shadow true) — a CSS box-shadow
+   would clip at the window edge. The body.tp-window class (set by
+   TrayPanel on mount) outranks index.css's body background, which is
+   imported later and would otherwise paint the window black. */
+body.tp-window,
+body.tp-window #root {
+  background: transparent !important;
   margin: 0;
 }
 
@@ -12,7 +17,6 @@ html, body, #root {
   background: #1e1e24;
   border: 1px solid #3f3f47;
   border-radius: 8px;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
   padding: 5px;
   font-family: -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
