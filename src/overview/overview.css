@@ -1789,6 +1789,33 @@
   color: var(--text-tertiary);
   font-weight: 500;
 }
+.tt-trend-insp-export {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 10px 13px;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  background: var(--bg-inset);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tt-trend-insp-export:hover {
+  border-color: var(--border-strong);
+}
+.tt-trend-insp-export:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+.tt-trend-insp-export:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 
 /* ---- narrow fallback (desktop Tauri window can be resized) ---- */
 @media (max-width: 860px) {

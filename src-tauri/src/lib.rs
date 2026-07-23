@@ -241,6 +241,27 @@ fn restart_app(app: AppHandle) {
     app.restart();
 }
 
+// The app's only file-save surface: opens the native save dialog seeded with a
+// suggested name, and writes `contents` verbatim to the chosen path. The
+// frontend assembles the CSV; this owns only the dialog + write. Returns whether
+// a file was written (false = the user cancelled — a no-op).
+#[tauri::command]
+fn save_csv(app: AppHandle, filename: String, contents: String) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(file) = app
+        .dialog()
+        .file()
+        .set_file_name(filename)
+        .add_filter("CSV", &["csv"])
+        .blocking_save_file()
+    else {
+        return Ok(false);
+    };
+    let path = file.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(path, contents).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -256,6 +277,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         // Closing the window must not kill capture (ADR-0005): hide it instead,
         // keeping the webview (and its auto-refresh scans) alive. Quit lives in
         // the tray.
@@ -369,7 +391,8 @@ pub fn run() {
             set_settings,
             check_updates,
             download_update,
-            restart_app
+            restart_app,
+            save_csv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

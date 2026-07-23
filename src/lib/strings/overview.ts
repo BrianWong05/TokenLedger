@@ -77,6 +77,7 @@ export const overview = {
     'overview.trend.vsAvg': 'vs avg',
     'overview.trend.byModel': 'By model',
     'overview.trend.moreModels': 'more models',
+    'overview.trend.exportCsv': 'Export CSV',
 
     // token breakdown
     'overview.tokenBreakdown': 'Token Breakdown',
@@ -223,6 +224,7 @@ export const overview = {
     'overview.trend.vsAvg': '對比平均',
     'overview.trend.byModel': '依模型',
     'overview.trend.moreModels': '個其他模型',
+    'overview.trend.exportCsv': '匯出 CSV',
 
     'overview.tokenBreakdown': 'Token 明細',
     'overview.cacheHitRate': '快取命中率',

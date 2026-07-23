@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
+import { emptyByTool } from './meta';
 import {
   seriesToDays,
   heatStats,
@@ -19,6 +20,8 @@ import {
   ctxMeta,
   rangeToFilters,
   bucketFilters,
+  bucketCsv,
+  csvFilename,
   categorizeTool,
   allocateByWeight,
   toolTree,
@@ -155,6 +158,49 @@ describe('bucketFilters', () => {
     expect(f.tools).toEqual([]);
     expect(f.models).toEqual([]);
     expect(f.project).toBeNull();
+  });
+});
+
+describe('csvFilename', () => {
+  it('derives a filesystem-safe name from the bucket key', () => {
+    expect(csvFilename('2026-07-15')).toBe('usage-2026-07-15.csv'); // day/week
+    expect(csvFilename('2026-07-15 09:00')).toBe('usage-2026-07-15-09-00.csv'); // hour
+    expect(csvFilename('2026-07')).toBe('usage-2026-07.csv'); // month
+  });
+});
+
+describe('bucketCsv', () => {
+  const bucket = {
+    key: '2026-07-15',
+    label: '15',
+    byTool: emptyByTool(),
+    byModel: { 'claude-opus-4-8': 300, 'gpt-5.5-codex': 100 },
+    total: 400,
+  };
+  const modelTool = { 'claude-opus-4-8': 'claude', 'gpt-5.5-codex': 'codex' };
+
+  it('emits a header and one row per model, largest first, with tool + share', () => {
+    expect(bucketCsv(bucket, modelTool)).toBe(
+      'model,tool,tokens,share\n' +
+        'claude-opus-4-8,Claude,300,0.7500\n' +
+        'gpt-5.5-codex,Codex,100,0.2500\n',
+    );
+  });
+
+  it('skips zero-token models and includes every nonzero one (no top-N cap)', () => {
+    const many = {
+      key: '2026-07-15', label: '15', byTool: emptyByTool(),
+      byModel: { a: 7, b: 6, c: 5, d: 4, e: 3, f: 2, g: 1, h: 0 }, total: 28,
+    };
+    const rows = bucketCsv(many, {}).trim().split('\n');
+    expect(rows).toHaveLength(1 + 7); // header + 7 nonzero models, h dropped
+    expect(rows[1].startsWith('a,')).toBe(true);
+    expect(rows.some((r) => r.startsWith('h,'))).toBe(false);
+  });
+
+  it('CSV-escapes a field containing a comma and blanks an unknown tool', () => {
+    const b = { key: 'k', label: 'k', byTool: emptyByTool(), byModel: { 'weird,name': 50 }, total: 50 };
+    expect(bucketCsv(b, {})).toBe('model,tool,tokens,share\n"weird,name",,50,1.0000\n');
   });
 });
 

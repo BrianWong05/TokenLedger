@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { bucketFilters, modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
+import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
+import type { ExportPort } from './export';
 import { fmtPct, fmtTok } from '../lib/format';
 import {
   fmtIsoDateL,
@@ -47,6 +48,7 @@ export default function TrendModal({
   initialCustomFrom,
   initialCustomTo,
   ledger,
+  exporter,
   returnFocusRef,
   onClose,
 }: {
@@ -57,6 +59,7 @@ export default function TrendModal({
   initialCustomFrom: string;
   initialCustomTo: string;
   ledger: LedgerPort;
+  exporter: ExportPort;
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
@@ -398,6 +401,24 @@ export default function TrendModal({
                     )}
                   </span>
                 </div>
+                <button
+                  type="button"
+                  className="tt-trend-insp-export"
+                  disabled={selTotal === 0}
+                  onClick={() => {
+                    // ponytail: fire-and-forget. Cancel is a no-op; a rare
+                    // post-confirm write error is swallowed (no toast infra yet).
+                    // Add user feedback if writes ever fail in practice.
+                    void exporter.saveCsv(csvFilename(selBucket.key), bucketCsv(selBucket, modelTool)).catch(() => {});
+                  }}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path d="M7 10l5 5 5-5" />
+                    <path d="M12 15V3" />
+                  </svg>
+                  {t('overview.trend.exportCsv')}
+                </button>
               </>
             )}
           </aside>

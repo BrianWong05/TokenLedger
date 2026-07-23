@@ -18,6 +18,7 @@ import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
 import { tauriLedger, type LedgerPort } from './ledger';
+import { tauriExport, type ExportPort } from './export';
 import type { ClockPort } from './overviewStore';
 import { heatFilters } from './data';
 import { tauriPricing, type PricingPort } from '../pricing/pricing';
@@ -35,7 +36,7 @@ import type { ModelPricing, Summary } from '../types';
 // The window chrome (sidebar wordmark, tab nav) is owned by the app shell; the
 // last-scan status + Rescan live in this tab's toolbar (dashboard-v2). This tab
 // renders the design's <main> content, flush on --bg-app.
-export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort } } = {}) {
+export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort; export?: ExportPort } } = {}) {
   const { settings } = useSettings();
   const { t, lang } = useOverviewT();
   // header.* strings (Rescan, last-scan status) live in the shared shell dictionary.
@@ -60,6 +61,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   // latest open's response may land, so a stale fetch can't replace the
   // placeholder or outlive a newer answer.
   const ledger = ports?.ledger ?? tauriLedger;
+  const exporter = ports?.export ?? tauriExport;
   const [heatSummary, setHeatSummary] = useState<Summary | null>(null);
   const heatFetchEpoch = useRef(0);
   const openHeatModal = useCallback(() => {
@@ -312,6 +314,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}
           ledger={ledger}
+          exporter={exporter}
           returnFocusRef={trendEnlargeRef}
           onClose={() => setTrendModalOpen(false)}
         />

@@ -19,10 +19,15 @@ export function rankModels(bks: Bucket[]): string[] {
   return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
 }
 
+// The tool meta owning a model (undefined if its source is unknown).
+function toolMeta(modelTool: Record<string, string>, m: string): ToolMeta | undefined {
+  return TOOLS.find((t) => t.key === modelTool[m]);
+}
+
 // A model's stack color: the brand accent of its owning tool (grey fallback for
 // an unknown source). Shared by the trend card and its enlarge.
 export function modelColor(modelTool: Record<string, string>, m: string): string {
-  return TOOLS.find((t) => t.key === modelTool[m])?.color ?? '#5f6880';
+  return toolMeta(modelTool, m)?.color ?? '#5f6880';
 }
 
 // Models ordered for a stacked bar: grouped by owning tool (in TOOLS order),
@@ -275,6 +280,29 @@ export function bucketFilters(key: string, per: Granularity): Filters {
     end.setDate(end.getDate() + (per === 'week' ? 7 : 1));
   }
   return { tools: [], models: [], project: null, startTs: secs(start), endTs: secs(end) };
+}
+
+// A filesystem-safe default name for a bucket's CSV export: the bucket key with
+// its spaces/colons flattened, e.g. usage-2026-07-15.csv (day/week),
+// usage-2026-07-15-09-00.csv (hour), usage-2026-07.csv (month).
+export function csvFilename(key: string): string {
+  return `usage-${key.replace(/[: ]/g, '-')}.csv`;
+}
+
+// A CSV of one trend bucket's per-Model usage: header plus one row per Model
+// (largest first), each with its owning tool label and its share of the bucket.
+// Pure — the file write itself happens in the Rust save_csv command.
+export function bucketCsv(bucket: Bucket, modelTool: Record<string, string>): string {
+  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+  const toolOf = (m: string) => toolMeta(modelTool, m)?.label ?? modelTool[m] ?? '';
+  const total = bucket.total || 1;
+  const lines = ['model,tool,tokens,share'];
+  for (const [m, v] of Object.entries(bucket.byModel)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])) {
+    lines.push([esc(m), esc(toolOf(m)), String(v), (v / total).toFixed(4)].join(','));
+  }
+  return lines.join('\n') + '\n';
 }
 
 // ---- trend buckets ----

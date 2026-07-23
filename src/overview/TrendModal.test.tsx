@@ -55,6 +55,12 @@ function daysAgo(n: number): string {
   return isoOf(d);
 }
 
+// Fake file-save port: records (filename, contents) instead of opening a dialog.
+function makeFakeExporter() {
+  const calls: [string, string][] = [];
+  return { calls, saveCsv: (filename: string, contents: string) => (calls.push([filename, contents]), Promise.resolve(true)) };
+}
+
 const mountedRoots: Root[] = [];
 
 async function settle(times = 4) {
@@ -69,7 +75,11 @@ async function mount(
   over: Partial<Summary> = {},
   seedDayPoints?: SeriesPoint[],
   seedHourPoints?: SeriesPoint[],
-): Promise<{ container: HTMLElement; ledger: ReturnType<typeof makeFakeLedger> }> {
+): Promise<{
+  container: HTMLElement;
+  ledger: ReturnType<typeof makeFakeLedger>;
+  exporter: ReturnType<typeof makeFakeExporter>;
+}> {
   const ledger = makeFakeLedger({
     dayPoints: seedDayPoints ?? [
       pt({ bucket: daysAgo(2), source: 'claude', totalTokens: 400, byModel: { 'claude-opus-4-8': 400 } }),
@@ -79,6 +89,7 @@ async function mount(
     hourPoints: seedHourPoints ?? [],
     summary: { ...summary, ...over },
   });
+  const exporter = makeFakeExporter();
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -86,12 +97,12 @@ async function mount(
   await act(async () => {
     root.render(
       <SettingsProvider port={makeFakeSettings()}>
-        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing() }} />
+        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing(), export: exporter }} />
       </SettingsProvider>,
     );
   });
   await settle();
-  return { container, ledger };
+  return { container, ledger, exporter };
 }
 
 // The dialog's own window selector lives in its header; the page's range
@@ -104,6 +115,7 @@ const pageActiveRange = (c: HTMLElement) =>
   c.querySelector<HTMLElement>('.tt-toolbar .tt-seg .active')!.textContent;
 const footText = () => dialog()!.querySelector('.tt-trend-modal-foot')!.textContent!;
 const costText = () => dialog()!.querySelector('.tt-trend-insp-cost')!.textContent!;
+const exportBtn = () => dialog()!.querySelector<HTMLButtonElement>('.tt-trend-insp-export')!;
 
 // The modal fires two kinds of `summary` fetch that share the port: window
 // fetches (footer Cost — never carry endTs) and per-bucket fetches (inspector
@@ -512,5 +524,30 @@ describe('Usage-trend Enlarge', () => {
     await open(c);
     expect(costText()).toContain('unpriced');
     expect(costText()).not.toContain('$0');
+  });
+
+  it('exports the selected bucket as CSV through the save port', async () => {
+    const { container: c, exporter } = await mount({}, inspectorSeed());
+    await open(c); // peak (daysAgo 1) preselected
+
+    await act(async () => exportBtn().click());
+
+    expect(exporter.calls).toHaveLength(1);
+    const [filename, contents] = exporter.calls[0];
+    expect(filename).toBe(`usage-${daysAgo(1)}.csv`);
+    expect(contents.split('\n')[0]).toBe('model,tool,tokens,share');
+    // The CSV carries every model in the bucket — including the two the
+    // inspector folds into its "2 more models" row.
+    expect(contents).toContain('m6');
+    expect(contents).toContain('c2');
+  });
+
+  it('disables Export for a bucket with no usage', async () => {
+    const { container: c } = await mount({}, inspectorSeed());
+    await open(c);
+    expect(exportBtn().disabled).toBe(false); // peak has usage
+
+    await clickBar(2); // the zero-filled today bucket
+    expect(exportBtn().disabled).toBe(true);
   });
 });
