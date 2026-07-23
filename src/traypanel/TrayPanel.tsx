@@ -134,12 +134,16 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   const rescan = async () => {
     if (scanning) return; // coalesce double-clicks; scans serialize anyway
     setScanning(true);
+    // Same minimum beat as the open-skeleton: a fast no-change scan must
+    // still visibly happen (spinner + pulsing figures for ≥1s).
+    const minDone = new Promise((r) => setTimeout(r, minLoadingMs()));
     try {
       await ledger.scan();
     } catch {
       /* scan errors surface in the Overview, not here */
     }
     await refresh();
+    await minDone;
     setScanning(false);
   };
 
@@ -160,7 +164,7 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
         ) : model?.empty ? (
           <div className="tp-empty">No usage yet</div>
         ) : (
-          <div className="tp-cost-row">
+          <div className={scanning ? 'tp-cost-row tp-pulse' : 'tp-cost-row'}>
             <span className="tp-cost">
               {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
             </span>

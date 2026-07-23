@@ -102,6 +102,15 @@ body.tp-window #root {
   to { background-position: -200% 0; }
 }
 
+/* Rescan in flight: the Today figures breathe so an unchanged total still
+   reads as a refresh happening. */
+.tp-pulse {
+  animation: tp-pulse 0.9s ease-in-out infinite;
+}
+@keyframes tp-pulse {
+  50% { opacity: 0.35; }
+}
+
 .tp-action:disabled { color: #a3a3ab; }
 .tp-action:disabled:hover { background: none; }
 .tp-spin {

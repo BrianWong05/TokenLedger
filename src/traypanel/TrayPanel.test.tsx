@@ -122,8 +122,11 @@ describe('TrayPanel', () => {
     ) as HTMLButtonElement;
     await act(async () => rescan.click());
 
-    // In flight: spinner shown, row disabled, second click coalesced.
+    // In flight: spinner shown, row disabled, second click coalesced, and
+    // the Today figures pulse so an unchanged total still reads as a
+    // refresh happening.
     expect(container.querySelector('.tp-spin')).not.toBeNull();
+    expect(container.querySelector('.tp-cost-row.tp-pulse')).not.toBeNull();
     expect(rescan.disabled).toBe(true);
     await act(async () => rescan.click());
     expect(ledger.calls.scan.length).toBe(1);
@@ -131,6 +134,7 @@ describe('TrayPanel', () => {
     await act(async () => ledger.resolveHeld('scan', 0));
     await settle();
     expect(container.querySelector('.tp-spin')).toBeNull();
+    expect(container.querySelector('.tp-pulse')).toBeNull();
     expect(rescan.disabled).toBe(false);
   });
 
