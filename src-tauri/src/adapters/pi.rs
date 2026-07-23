@@ -288,6 +288,9 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
     let mut comp_after: HashMap<String, Comp> = HashMap::new();
     let mut parent_of: HashMap<String, Option<String>> = HashMap::new();
     let mut established_model: HashMap<String, Option<String>> = HashMap::new();
+    // Per-entry content contribution, so a compaction can rebuild the context of
+    // its retained tail (the entries it kept) after discarding the older prefix.
+    let mut delta_by_id: HashMap<String, Delta> = HashMap::new();
     let mut last_comp = Comp::default();
 
     for complete_record in content.split_inclusive('\n') {
@@ -339,6 +342,54 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
                 parent_of.insert(id.clone(), parent_id.clone());
             }
             continue; // Model changes carry no context and no usage.
+        }
+
+        if entry_type == "compaction" {
+            // pi's built-in compaction summarizes the branch prefix into `summary`
+            // and keeps entries from firstKeptEntryId onward. It is one model call
+            // (its own usage block) — a built-in summary (fromHook false) inherits
+            // the active Model from its parent branch; an extension-provided one
+            // (fromHook true) is left Unattributed (handled in #41). Any messages
+            // nested inside this entry are never separate JSONL lines, so they are
+            // inherently not counted as Usage Records.
+            let from_hook = v["fromHook"].as_bool().unwrap_or(false);
+            let first_kept = nonempty(v["firstKeptEntryId"].as_str());
+            let summary_est = est(content_bytes(&v["summary"]));
+            if !from_hook {
+                if let Some(u) = parse_usage(&v["usage"]) {
+                    let model = active_model(&parent_of, &established_model, parent_id.as_deref());
+                    emit_summary(
+                        &mut events,
+                        &mut lines_skipped,
+                        source_file,
+                        &id,
+                        entry_ts_iso.as_deref(),
+                        model,
+                        base,
+                        &u,
+                        &session_id,
+                        &project,
+                    );
+                }
+            }
+            // Descendants see the summary plus the retained tail in place of the
+            // superseded prefix. Historical Usage Records from that prefix stay.
+            let retained =
+                rebuild_retained(&parent_of, &delta_by_id, parent_id.as_deref(), first_kept.as_deref());
+            let after = Comp {
+                msg: summary_est + retained.msg,
+                tool: retained.tool,
+                reas: retained.reas,
+            };
+            if let Some(id) = &id {
+                comp_after.insert(id.clone(), after);
+                parent_of.insert(id.clone(), parent_id);
+                // A nested compaction inside a future retained window loses its
+                // summary weight here. ponytail: rare; revisit if pi nests them.
+                delta_by_id.insert(id.clone(), Delta::default());
+            }
+            last_comp = after;
+            continue;
         }
 
         if entry_type == "message" {
@@ -395,6 +446,7 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
         if let Some(id) = &id {
             comp_after.insert(id.clone(), after);
             parent_of.insert(id.clone(), parent_id);
+            delta_by_id.insert(id.clone(), delta);
         }
         last_comp = after;
     }
@@ -409,9 +461,6 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
 // The Model active on a branch: walk the ancestor path from `start` and return
 // the nearest entry that establishes one (a model_change's modelId, or the model
 // an assistant reported). A sibling branch's changes never appear on this path.
-// Consumed by the compaction/summary Model resolver (#40); the branch-ancestry
-// maps it reads are built here in #39.
-#[allow(dead_code)]
 fn active_model(
     parent_of: &HashMap<String, Option<String>>,
     established_model: &HashMap<String, Option<String>>,
@@ -425,6 +474,73 @@ fn active_model(
         cursor = parent_of.get(&id).cloned().flatten();
     }
     None
+}
+
+// The content of a compaction's retained tail: the entries from firstKeptEntryId
+// up to the compaction's parent, re-folded from scratch (root→leaf order). The
+// older prefix before firstKeptEntryId is discarded — the summary replaces it.
+fn rebuild_retained(
+    parent_of: &HashMap<String, Option<String>>,
+    delta_by_id: &HashMap<String, Delta>,
+    parent: Option<&str>,
+    first_kept: Option<&str>,
+) -> Comp {
+    let Some(first_kept) = first_kept else {
+        return Comp::default(); // nothing kept: the summary stands alone
+    };
+    let mut chain = Vec::new();
+    let mut cursor = parent.map(str::to_owned);
+    let mut reached = false;
+    while let Some(id) = cursor {
+        let is_first_kept = id == first_kept;
+        chain.push(id.clone());
+        if is_first_kept {
+            reached = true;
+            break;
+        }
+        cursor = parent_of.get(&id).cloned().flatten();
+    }
+    if !reached {
+        return Comp::default(); // firstKeptEntryId not on the path: keep only summary
+    }
+    let mut c = Comp::default();
+    for id in chain.iter().rev() {
+        if let Some(d) = delta_by_id.get(id) {
+            c = fold(c, d);
+        }
+    }
+    c
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_pi_event(
+    events: &mut Vec<UsageEvent>,
+    source_file: &str,
+    dedup_key: String,
+    timestamp: i64,
+    model: Option<String>,
+    u: &PiUsage,
+    session_id: &Option<String>,
+    project: &Option<String>,
+    ctx: CtxTokens,
+) {
+    events.push(UsageEvent {
+        dedup_key,
+        source: "pi".to_string(),
+        timestamp,
+        model,
+        project: project.clone(),
+        api_calls: 1,
+        input_tokens: u.input,
+        output_tokens: u.output,
+        cache_read_tokens: u.cache_read,
+        cache_write_5m_tokens: u.cache_write_5m,
+        cache_write_1h_tokens: u.cache_write_1h,
+        source_file: source_file.to_string(),
+        session_id: session_id.clone(),
+        reasoning_tokens: u.reasoning,
+        ctx,
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -449,23 +565,36 @@ fn emit_assistant(
         (Some(id), Some(ts)) => format!("pi:message:{id}:{ts}"),
         _ => legacy_dedup_key("message", message_ts_ms, timestamp, entry_ts_iso, model.as_deref(), u),
     };
-    events.push(UsageEvent {
-        dedup_key,
-        source: "pi".to_string(),
-        timestamp,
-        model,
-        project: project.clone(),
-        api_calls: 1,
-        input_tokens: u.input,
-        output_tokens: u.output,
-        cache_read_tokens: u.cache_read,
-        cache_write_5m_tokens: u.cache_write_5m,
-        cache_write_1h_tokens: u.cache_write_1h,
-        source_file: source_file.to_string(),
-        session_id: session_id.clone(),
-        reasoning_tokens: u.reasoning,
-        ctx: attribute_pi(before, u.billed()),
-    });
+    let ctx = attribute_pi(before, u.billed());
+    push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx);
+}
+
+// Compaction / branch-summary usage. Its Request time is the Session entry time
+// (there is no separate message-completion time), and it uses the canonical token
+// mapping — pi's logged cost is ignored, like every other Source.
+#[allow(clippy::too_many_arguments)]
+fn emit_summary(
+    events: &mut Vec<UsageEvent>,
+    lines_skipped: &mut u64,
+    source_file: &str,
+    id: &Option<String>,
+    entry_ts_iso: Option<&str>,
+    model: Option<String>,
+    before: Comp,
+    u: &PiUsage,
+    session_id: &Option<String>,
+    project: &Option<String>,
+) {
+    let Some(timestamp) = entry_ts_iso.and_then(iso_to_epoch) else {
+        *lines_skipped += 1;
+        return;
+    };
+    let dedup_key = match (id.as_deref(), entry_ts_iso) {
+        (Some(id), Some(ts)) => format!("pi:compaction:{id}:{ts}"),
+        _ => legacy_dedup_key("compaction", None, timestamp, entry_ts_iso, model.as_deref(), u),
+    };
+    let ctx = attribute_pi(before, u.billed());
+    push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx);
 }
 
 #[cfg(test)]
@@ -952,6 +1081,78 @@ mod tests {
             .find(|t| t.source == "pi" && t.name == "grep")
             .expect("grep tool call surfaced in the drill-down");
         assert!(grep.calls >= 1 && grep.est_tokens > 0);
+    }
+
+    // A branch that runs a tool, then a built-in compaction (fromHook false) with
+    // a model_change just before it, then a post-compaction Request. Proves: the
+    // compaction is one Request whose Model is inherited from the branch's active
+    // model_change and whose time is the entry time; the descendant's context uses
+    // the summary + retained tail (the pre-compaction tool prefix is gone) while
+    // the pre-compaction Records survive; and a re-scan does not duplicate.
+    const COMPACTION_SESSION: &str = concat!(
+        r#"{"type":"session","version":3,"id":"comp-session","cwd":"/projects/comp"}"#, "\n",
+        r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"start the long conversation that will later be compacted away"}],"timestamp":1782864001000}}"#, "\n",
+        r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T00:00:02.000Z","message":{"role":"assistant","model":"turn-model","content":[{"type":"toolCall","id":"tc1","name":"search","arguments":{"pattern":"in the pre-compaction prefix"}}],"usage":{"input":20,"output":5,"cacheRead":0,"cacheWrite":0},"timestamp":1782864002000}}"#, "\n",
+        r#"{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-07-01T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"tc1","toolName":"search","content":[{"type":"text","text":"a large search result that only lives in the superseded prefix here"}],"timestamp":1782864003000}}"#, "\n",
+        r#"{"type":"message","id":"a2","parentId":"r1","timestamp":"2026-07-01T00:00:04.000Z","message":{"role":"assistant","model":"turn-model","content":[{"type":"text","text":"kept reply"}],"usage":{"input":30,"output":5,"cacheRead":0,"cacheWrite":0},"timestamp":1782864004000}}"#, "\n",
+        r#"{"type":"model_change","id":"mc","parentId":"a2","modelId":"changed-model","provider":"anthropic","timestamp":"2026-07-01T00:00:04.500Z"}"#, "\n",
+        r#"{"type":"compaction","id":"cmp","parentId":"mc","timestamp":"2026-07-01T00:00:05.000Z","firstKeptEntryId":"a2","summary":"short summary","tokensBefore":900,"details":{"readFiles":[],"modifiedFiles":[]},"usage":{"input":500,"output":40,"cacheRead":0,"cacheWrite":0},"fromHook":false}"#, "\n",
+        r#"{"type":"message","id":"u3","parentId":"cmp","timestamp":"2026-07-01T00:00:06.000Z","message":{"role":"user","content":[{"type":"text","text":"continue after compaction"}],"timestamp":1782864006000}}"#, "\n",
+        r#"{"type":"message","id":"a3","parentId":"u3","timestamp":"2026-07-01T00:00:07.000Z","message":{"role":"assistant","model":"turn-model","content":[],"usage":{"input":40,"output":10,"cacheRead":0,"cacheWrite":0},"timestamp":1782864007000}}"#, "\n",
+    );
+
+    #[test]
+    fn built_in_compaction_is_a_request_that_reshapes_descendant_context() {
+        let sessions = tempfile::tempdir().unwrap();
+        let app = tempfile::tempdir().unwrap();
+        fs::write(sessions.path().join("comp.jsonl"), COMPACTION_SESSION).unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+
+        let result = scan_root(&mut conn, sessions.path());
+        assert!(result.error.is_none());
+        // a1 + a2 + compaction + a3.
+        assert_eq!(
+            queries::summary(&conn, &Filters::default()).unwrap().requests,
+            4,
+            "the compaction usage block is one observable Request",
+        );
+
+        // The compaction inherits the active Model from its parent branch's most
+        // recent model_change, and its time is the Session entry time.
+        let (model, ts): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT model, timestamp FROM events WHERE source='pi' AND input_tokens = 500",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(model.as_deref(), Some("changed-model"), "built-in summary inherits the branch Model");
+        assert_eq!(ts, iso_to_epoch("2026-07-01T00:00:05.000Z").unwrap());
+
+        // Context: the pre-compaction Request (a2, input 30) saw the search tool in
+        // its prefix; the post-compaction Request (a3, input 40) sees the summary +
+        // retained tail instead, so no tool context survives.
+        let toolcalls_of = |input: i64| -> Option<i64> {
+            conn.query_row(
+                "SELECT ctx_toolcalls FROM events WHERE source='pi' AND input_tokens = ?1",
+                [input],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(toolcalls_of(30).unwrap() > 0, "pre-compaction Request saw the tool prefix");
+        assert_eq!(toolcalls_of(40), Some(0), "summary replaced the superseded tool prefix");
+
+        crate::invariants::assert_partition_exact(&conn);
+        crate::invariants::assert_secondary_subset(&conn);
+
+        // Pre-compaction Records persist, and a second scan adds nothing.
+        let second = scan_root(&mut conn, sessions.path());
+        assert_eq!(second.events_inserted, 0, "re-scan does not duplicate compaction usage");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE source='pi'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 4, "pre-compaction history is retained");
     }
 
     #[test]
