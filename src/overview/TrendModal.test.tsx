@@ -130,8 +130,8 @@ const inspText = () => dialog()!.querySelector('.tt-trend-insp')!.textContent!;
 const barGroups = () => Array.from(dialog()!.querySelectorAll('svg g[opacity]'));
 const hitRects = () => Array.from(dialog()!.querySelectorAll<SVGRectElement>('svg rect[fill="transparent"]'));
 const outlineRect = () => dialog()!.querySelector<SVGRectElement>('svg rect[stroke]');
-const clickBar = (i: number) =>
-  act(async () => hitRects()[i].dispatchEvent(new MouseEvent('click', { bubbles: true })));
+const hoverBar = (i: number) =>
+  act(async () => hitRects()[i].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
 
 // A window with a clear peak (daysAgo 1 = 800) that carries eight models across
 // two sources, so the inspector shows a top-6 split plus a "2 more models" row.
@@ -395,12 +395,12 @@ describe('Usage-trend Enlarge', () => {
     expect(insp).not.toContain('c2');
   });
 
-  it('moves the selection to a clicked bar, dimming the rest', async () => {
+  it('moves the selection to a hovered bar, dimming the rest', async () => {
     const { container: c } = await mount({}, inspectorSeed());
     await open(c);
     const peakOutlineX = Number(outlineRect()!.getAttribute('x'));
 
-    await clickBar(0); // the earlier, smaller bucket (200)
+    await hoverBar(0); // the earlier, smaller bucket (200)
 
     const insp = inspText();
     expect(insp).toContain('200');
@@ -413,18 +413,18 @@ describe('Usage-trend Enlarge', () => {
     expect(groups[0].getAttribute('opacity')).toBe('1');
     expect(groups[1].getAttribute('opacity')).toBe('0.42');
     expect(groups[2].getAttribute('opacity')).toBe('0.42');
-    // The selection outline moved left to the clicked (earlier) bar.
+    // The selection outline moved left to the hovered (earlier) bar.
     expect(Number(outlineRect()!.getAttribute('x'))).toBeLessThan(peakOutlineX);
   });
 
   it('resets the selection to the new peak when the window changes', async () => {
     const { container: c } = await mount({}, inspectorSeed());
     await open(c);
-    await clickBar(0); // pin the small bucket
+    await hoverBar(0); // move to the small bucket
     expect(inspText()).toContain('#2 / 3');
 
     // Both seeded days are still inside the trailing week, so the peak is the
-    // same bucket — but the selection must snap back to it, not stay pinned.
+    // same bucket — but the selection must snap back to it, not stay put.
     await act(async () => modalRangeButton('Week').click());
     expect(inspText()).toContain('800');
     expect(inspText()).toContain('#1 /');
@@ -433,10 +433,10 @@ describe('Usage-trend Enlarge', () => {
   it('keeps the selection across a background refresh of the same window', async () => {
     const { container: c, ledger } = await mount({}, inspectorSeed());
     await open(c);
-    await clickBar(0);
+    await hoverBar(0);
     expect(inspText()).toContain('#2 / 3');
 
-    // A store-driven re-render (prices rebuilt → reload) must not reset the pin.
+    // A store-driven re-render (prices rebuilt → reload) must not reset the selection.
     await act(async () => ledger.emitPricesRebuilt());
     await settle(1);
     expect(inspText()).toContain('200');
@@ -447,7 +447,7 @@ describe('Usage-trend Enlarge', () => {
     const { container: c } = await mount({}, inspectorSeed());
     await open(c);
     expect(document.querySelector('.tt-tip')).toBeNull();
-    await clickBar(0);
+    await hoverBar(0);
     expect(document.querySelector('.tt-tip')).toBeNull();
   });
 
@@ -489,7 +489,7 @@ describe('Usage-trend Enlarge', () => {
     const { container: c, ledger } = await mount({}, inspectorSeed());
     ledger.hold('summary');
     await open(c); // peak (daysAgo 1) bucket fetch held
-    await clickBar(0); // pin daysAgo 2 → its own bucket fetch held
+    await hoverBar(0); // move to daysAgo 2 → its own bucket fetch held
 
     const peakIdx = heldIdx(ledger, (f) => isBucket(f) && f.startTs === dayTs(1));
     const pinnedIdx = heldIdx(ledger, (f) => isBucket(f) && f.startTs === dayTs(2));
@@ -547,7 +547,7 @@ describe('Usage-trend Enlarge', () => {
     await open(c);
     expect(exportBtn().disabled).toBe(false); // peak has usage
 
-    await clickBar(2); // the zero-filled today bucket
+    await hoverBar(2); // the zero-filled today bucket
     expect(exportBtn().disabled).toBe(true);
   });
 });

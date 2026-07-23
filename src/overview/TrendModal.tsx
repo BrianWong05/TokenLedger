@@ -27,7 +27,7 @@ import { useDialogChrome } from './useDialogChrome';
 // the shared trendSlice (its own hourly fetch for a Day window), Cost from a
 // per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
 // enlarge). Exactly one bucket is always selected — the window's peak until a
-// bar is clicked — and the right-hand inspector reads it out (rank, delta vs
+// bar is hovered — and the right-hand inspector reads it out (rank, delta vs
 // the window average, per-model split). The inspector's per-bucket Cost and CSV
 // export land in later slices.
 
@@ -140,9 +140,10 @@ export default function TrendModal({
   const costLabel =
     summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
 
-  // Exactly one bucket is always selected. The selection is keyed by bucket key
-  // AND its window: a window change (new winId) drops the old key back to the
-  // peak, while a background refresh (same window) keeps the key if it survives.
+  // Exactly one bucket is always selected — moved by hovering a bar. The
+  // selection is keyed by bucket key AND its window: a window change (new winId)
+  // drops the old key back to the peak, while a background refresh (same window)
+  // keeps the key if it survives.
   const winId = `${range}|${from}|${to}`;
   const [sel, setSel] = useState<{ win: string; key: string } | null>(null);
   const peak = data.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
@@ -318,7 +319,7 @@ export default function TrendModal({
                   </text>
                 ))}
                 {data.map((b, i) => (
-                  <rect key={'hit' + i} x={PL + i * slot} y={PT} width={slot} height={BASE - PT} fill="transparent" onClick={() => setSel({ win: winId, key: b.key })} style={{ cursor: 'pointer' }} />
+                  <rect key={'hit' + i} x={PL + i * slot} y={PT} width={slot} height={BASE - PT} fill="transparent" onMouseOver={() => setSel({ win: winId, key: b.key })} />
                 ))}
               </svg>
             </div>
