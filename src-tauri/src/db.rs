@@ -202,6 +202,20 @@ CREATE INDEX idx_events_ts ON events(timestamp);
 CREATE INDEX idx_events_file ON events(source_file);
 PRAGMA user_version = 7;";
 
+// v8: pi fork/clone tool-drill-down ownership. A pi entry's tool weights are
+// booked once, to the first file that ingested it; a copy in a fork/clone file
+// defers. Usage-bearing copies dedup via the events key, but a usage-less tool
+// result has no event, so its owning file is persisted here — surviving the
+// incremental skip of an unchanged original when a fork is discovered later.
+// Scan-state is not cleared here: the pi parser-version bump forces the pi
+// re-parse that backfills this table. No BEGIN/COMMIT: migrate() wraps the batch.
+const SCHEMA_V8: &str = "\
+CREATE TABLE IF NOT EXISTS pi_tool_owner (
+  ident TEXT PRIMARY KEY,
+  source_file TEXT NOT NULL
+);
+PRAGMA user_version = 8;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -374,7 +388,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 7) and no-ops.
+    // the committed user_version (currently 8) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -398,6 +412,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 7 {
             conn.execute_batch(SCHEMA_V7)?;
+        }
+        if version < 8 {
+            conn.execute_batch(SCHEMA_V8)?;
         }
         Ok(())
     };
@@ -562,6 +579,43 @@ pub fn add_ctx_tool_rows(
     tx.commit()
 }
 
+/// identity → the source_file that first booked that pi entry's tool weights.
+/// Lets a fork/clone copy defer its drill-down to the entry's origin even when
+/// the origin's file is skipped as unchanged on a later scan.
+pub fn load_pi_tool_owners(conn: &Connection) -> std::collections::HashMap<String, String> {
+    let mut owner = std::collections::HashMap::new();
+    let Ok(mut stmt) = conn.prepare("SELECT ident, source_file FROM pi_tool_owner") else {
+        return owner;
+    };
+    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
+        for row in rows.flatten() {
+            owner.insert(row.0, row.1);
+        }
+    }
+    owner
+}
+
+/// First-writer-wins record of which file owns each pi entry's tool weights.
+/// pi entries are append-only, so ownership never needs clearing; INSERT OR
+/// IGNORE keeps the original (earliest-sorted file) as owner.
+pub fn record_pi_tool_owners(
+    conn: &mut Connection,
+    rows: &[(String, String)], // (ident, source_file)
+) -> rusqlite::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut stmt =
+            tx.prepare("INSERT OR IGNORE INTO pi_tool_owner (ident, source_file) VALUES (?1, ?2)")?;
+        for (ident, source_file) in rows {
+            stmt.execute(params![ident, source_file])?;
+        }
+    }
+    tx.commit()
+}
+
 pub fn clear_ctx_exec_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM ctx_exec WHERE source_file = ?1", [source_file])?;
     Ok(())
@@ -696,8 +750,8 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings"] {
+        assert_eq!(version, 8);
+        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -726,7 +780,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
@@ -779,7 +833,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let model_not_null: i64 = conn.query_row(
             "SELECT [notnull] FROM pragma_table_info('events') WHERE name = 'model'",
             [],
@@ -826,7 +880,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         // Build a genuine v1 database by hand (SCHEMA still writes user_version 1),
-        // then prove open_db chains every migration through v7 in one shot.
+        // then prove open_db chains every migration through v8 in one shot.
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
@@ -846,7 +900,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -977,7 +1031,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -1083,7 +1137,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
     }
 
     #[test]
@@ -1244,7 +1298,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1309,7 +1363,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1346,7 +1400,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 7);
+        assert_eq!(v, 8);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
