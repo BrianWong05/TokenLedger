@@ -21,3 +21,10 @@ Menu content updates in place (set_text) after every scan; the menu is
 rebuilt only when Source membership changes. A future request for the mock's
 visual styling means revisiting this ADR toward the popover — not styling the
 native menu, which cannot do it.
+
+Amended at first sign-off: the stat rows were originally disabled items
+(honoring the mock's "no fake hover"), but macOS's disabled-grey proved
+genuinely hard to read. The rows are now enabled-but-inert — full-brightness
+text, no event handler, a click merely closes the menu. Readability beat
+affordance purity; the hover flash on an information row is the accepted
+cost, native menus offering no third option.

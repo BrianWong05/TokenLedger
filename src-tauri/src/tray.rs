@@ -32,16 +32,18 @@ struct Handles {
 
 /// Builds the whole 2b menu for a given header + per-Source row set:
 /// header rows / sep / source rows / sep / Open, Rescan / sep / Settings,
-/// Quit. Stats rows are disabled ("no fake hover"). The trailing source
-/// separator is skipped when there are no rows, so an empty day never shows
-/// a double rule.
+/// Quit. Stats rows are enabled-but-inert (no on_menu_event arm): disabled
+/// grey proved unreadable at sign-off, so full-brightness text won over 2b's
+/// "no fake hover" — clicking a stat row just closes the menu. The trailing
+/// source separator is skipped when there are no rows, so an empty day never
+/// shows a double rule.
 fn build_menu(
     app: &AppHandle,
     header: &(String, String),
     rows: &[(String, String)],
 ) -> tauri::Result<(Menu<Wry>, Handles)> {
-    let hdr_cost = MenuItem::with_id(app, "hdr_cost", &header.0, false, None::<&str>)?;
-    let hdr_usage = MenuItem::with_id(app, "hdr_usage", &header.1, false, None::<&str>)?;
+    let hdr_cost = MenuItem::with_id(app, "hdr_cost", &header.0, true, None::<&str>)?;
+    let hdr_usage = MenuItem::with_id(app, "hdr_usage", &header.1, true, None::<&str>)?;
     let menu = Menu::new(app)?;
     menu.append(&hdr_cost)?;
     menu.append(&hdr_usage)?;
@@ -49,7 +51,7 @@ fn build_menu(
     let mut sources = Vec::with_capacity(rows.len());
     for (i, (key, text)) in rows.iter().enumerate() {
         let item =
-            IconMenuItem::with_id(app, format!("src_{i}"), text, false, source_icon(key), None::<&str>)?;
+            IconMenuItem::with_id(app, format!("src_{i}"), text, true, source_icon(key), None::<&str>)?;
         menu.append(&item)?;
         sources.push((key.clone(), item));
     }
@@ -299,7 +301,7 @@ fn fmt_amount(amount: f64, dec: usize) -> String {
     }
 }
 
-/// The menu's two disabled Today-header rows (design 2b's header, flattened
+/// The menu's two inert Today-header rows (design 2b's header, flattened
 /// to native text): a cost line and a usage line. Both rows always exist so
 /// the menu structure never changes under an open menu — only set_text runs.
 ///
