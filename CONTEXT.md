@@ -10,9 +10,11 @@ precise meaning of each domain term, independent of how the code implements it.
 
 **Usage Record**:
 The token usage attributed to one unit of billable work from a Source. The
-"unit of work" is one API call/response for Claude, Codex, Gemini, and
-Antigravity, one user Turn for Grok, but one whole Session for Hermes — so a
-Usage Record is not synonymous with one API request. (Implemented as
+"unit of work" is one API call/response for Claude, Codex, Gemini,
+Antigravity, and a pi assistant message; one reported auxiliary usage block for
+a pi summary or tool result; one user Turn for Grok; but one whole Session for
+Hermes. Failed or aborted pi work counts when it reports non-zero usage, while
+all-zero placeholders do not. (Implemented as
 `UsageEvent`.)
 _Avoid_: Event, row, entry
 
@@ -74,54 +76,55 @@ _Avoid_: Tray, status item
 **Source**:
 An AI tool whose local logs TokenLedger reads: Claude Code, Codex, Gemini CLI,
 Hermes, Grok Build, Google Antigravity (IDE and CLI conversations count as the
-one Antigravity Source), or pi. pi is always lowercase. It is the seventh
-Source, appended after Antigravity in the fixed Source order.
+one Antigravity Source), or pi.
 _Avoid_: Provider, tool, agent, integration
 
 **Session**:
 One continuous run of a Source's agent, comprising one or more Requests. Every
 Source organises its logs into Sessions; Hermes is the one that stores usage at
-Session granularity (one Usage Record per Session).
+Session granularity (one Usage Record per Session), while a branched pi Session
+retains the Requests from every branch, including branches no longer active.
+Copying pi history into a fork or clone creates no new Requests; the child
+becomes a separate Session only when it produces its first new Request. Pi
+usage without a reliable Session identity remains in the Ledger but contributes
+to no Session count.
 _Avoid_: Conversation, run, thread
 
 **Request**:
-One API call to a Model. The displayed **Requests** figure is the total number
-of API calls — the count of Usage Records for Claude/Codex/Gemini/Antigravity
-(one call each), but the summed `api_call_count` for Hermes (whose one Session
-Record stands for many calls). Grok logs expose Turn boundaries only, so each
-Grok Record counts as one Request even though a Turn spans several calls. Each
-pi Record — an assistant message, a compaction, or an auxiliary usage block —
-counts as one Request; for auxiliary blocks that may aggregate several hidden
-calls, that count is a source-observable lower bound.
-Requests is a sum of calls, never a row count.
+One observable unit of model work, normally one API call. The displayed
+**Requests** figure is exact for Claude, Codex, Gemini, Antigravity, pi assistant
+messages, and Hermes (via its summed `api_call_count`); each Grok Turn and each
+pi auxiliary usage block counts as one Request even when it may aggregate
+several calls, making those contributions a documented lower bound. Requests
+is a sum of source-observable calls or call groups, never a Ledger row count.
 _Avoid_: Call count, hits
 
 **Project**:
 The working directory a Usage Record was produced in, identified by its
 absolute path so the same directory groups together across Sources. A git
 worktree rolls up to its parent repository rather than appearing as its own
-Project.
+Project, and a pi Request copied into a fork or clone keeps the Project where it
+originally occurred. If pi reports no usable working directory, the Usage
+Record has no Project rather than one inferred from a lossy path encoding.
 _Avoid_: Repo, workspace, directory
 
 **Model**:
 The specific model a Usage Record used, identified by its raw logged name (e.g.
 `claude-opus-4-8`, `gpt-5.4`). The raw name is what is displayed and what a
 price resolves against; name normalisation exists only for price matching, not
-for display. A Model is nullable: usage with no trustworthy Model is
-Unattributed Usage, stored as NULL rather than a sentinel name.
+for display. Pi uses an assistant entry's backend `responseModel` when present
+and falls back to its selected `model`; a built-in pi summary Request inherits
+the active Model from its parent branch, while an extension-provided summary
+does not.
 _Avoid_: Engine, LLM, variant
 
 **Unattributed Usage**:
-Usage TokenLedger cannot attribute to any Model — pi's tool-result and
-extension-provided summary usage, where the Source records no trustworthy Model.
-Its Model is NULL (never a sentinel), so it is excluded from Model filters,
-price resolution, Overrides, and the Pricing table, yet its tokens and Requests
-still count in Source, Project, time-series, Trend, Activity, and overall totals.
-It surfaces as a distinct, non-clickable "Unattributed usage" row and is
-reported separately from an Unpriced Model: a selection of only Unattributed
-Usage shows no Cost (not $0), and a mix of priced and Unattributed Usage is a
-Partial Cost. See ADR-0008.
-_Avoid_: Unknown model, unpriced, misc, other
+A Usage Record whose Source reports tokens but no Model identity, including pi
+tool-result usage and extension-provided summary usage. Its tokens and Request
+are counted, but it contributes no Cost and is displayed separately rather than
+assigned to a guessed Model; alone it has no Cost, while a mixed aggregate has
+Partial Cost.
+_Avoid_: Unknown Model, other Model
 
 ### Token categories
 
@@ -192,9 +195,10 @@ never look alike.
 _Avoid_: Free, zero-cost, missing
 
 **Partial Cost**:
-The Cost of a set of Usage Records that mixes priced and Unpriced Models: a sum
-over only the priced tokens, shown with a "≥" marker and a count of the Unpriced
-Models, so the figure is never mistaken for a complete total.
+The Cost of a set of Usage Records that mixes priced usage with Unpriced Models
+or Unattributed Usage: a sum over only the priced tokens, shown with a "≥"
+marker and the missing-pricing reasons, so the figure is never mistaken for a
+complete total.
 _Avoid_: Partial total, incomplete cost
 
 **Cache-Estimated**:
