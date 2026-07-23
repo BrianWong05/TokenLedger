@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { TOOLS, emptyByTool } from './meta';
-import { modelColor, rankedModels, stackModels, UNATTRIBUTED_COLOR, type Bucket } from './data';
+import { modelOwner, rankedModels, stackModels, UNATTRIBUTED_COLOR, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
 import { useChartColors } from '../lib/chartColors';
@@ -50,32 +50,14 @@ function AggTrend({
   const shown = hover != null ? data[hover] : null;
   const dense = data.length > 16;
 
-  // Segments are per model but colored by the model's tool; grouping the stack
-  // by tool keeps each bar reading as contiguous tool blocks.
-  const colorOf = (m: string) => modelColor(modelTool, m);
-  // Two Sources can run the same Model name (pi and codex both report
-  // `gpt-5.6-sol`), so the range-wide modelTool map names the wrong owner for
-  // some buckets. Resolve the owner from the bucket itself; fall back to the
-  // range-wide map only when the bucket carries no per-Model Sources.
-  const ownersIn = (b: Bucket, m: string): string[] => {
-    const owners = b.modelSources?.[m];
-    if (owners?.length) return owners;
-    return modelTool[m] ? [modelTool[m]] : [];
-  };
-  const toolOf = (key: string) => TOOLS.find((tl) => tl.key === key);
-  const sourceIn = (b: Bucket, m: string) => {
-    const labels = ownersIn(b, m).map((k) => toolOf(k)?.label ?? k);
-    return labels.length ? labels.join(' + ') : undefined;
-  };
-  // One owner in this bucket → that Source's colour; mixed/unknown keeps the
-  // range-wide colour so a segment never claims a Source it may not be.
-  const colorIn = (b: Bucket, m: string) => {
-    const owners = ownersIn(b, m);
-    return owners.length === 1 ? toolOf(owners[0])?.color ?? colorOf(m) : colorOf(m);
-  };
+  // Segments are per model but colored by the Source that produced them in that
+  // bucket; grouping the stack by tool keeps each bar reading as contiguous tool
+  // blocks. Owner is resolved per bucket because two Sources can run the same
+  // Model name, so the range-wide map would name/colour the wrong one.
+  const ownerIn = (b: Bucket, m: string) => modelOwner(b.modelSources, modelTool, m);
   const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
   const segsOf = (b: Bucket) => [
-    ...models.map((m) => ({ key: m, color: colorIn(b, m), val: b.byModel[m] ?? 0 })),
+    ...models.map((m) => ({ key: m, color: ownerIn(b, m).color, val: b.byModel[m] ?? 0 })),
     ...(b.unattributedTokens > 0
       ? [{ key: 'unattributed-usage', color: UNATTRIBUTED_COLOR, val: b.unattributedTokens }]
       : []),
@@ -85,7 +67,7 @@ function AggTrend({
   const tipRows = shown
     ? [
         ...rankedModels(shown.byModel).map(([m, v]) => ({
-          key: m, label: m, source: sourceIn(shown, m), val: v, color: colorIn(shown, m),
+          key: m, label: m, source: ownerIn(shown, m).label, val: v, color: ownerIn(shown, m).color,
         })),
         ...(shown.unattributedTokens > 0
           ? [{

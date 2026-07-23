@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
+import { bucketCsv, bucketFilters, csvFilename, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
@@ -144,12 +144,12 @@ export default function TrendModal({
   // One label per ~14 bars, so 24 hourly / 30 daily buckets stay legible.
   const labelStep = Math.max(1, Math.ceil(data.length / 14));
 
-  // Segments are per model but colored by the model's owning tool; grouping the
-  // stack by tool keeps each bar reading as contiguous tool blocks (shared with
-  // the card via stackModels/modelColor).
+  // Segments are per model but colored by the Source that produced them in that
+  // bucket; grouping the stack by tool keeps each bar reading as contiguous tool
+  // blocks (shared with the card via stackModels/modelOwner).
   const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
   const segsOf = (b: Bucket) => [
-    ...models.map((m) => ({ key: m, color: modelColor(modelTool, m), val: b.byModel[m] ?? 0 })),
+    ...models.map((m) => ({ key: m, color: modelOwner(b.modelSources, modelTool, m).color, val: b.byModel[m] ?? 0 })),
     ...(b.unattributedTokens > 0
       ? [{ key: 'unattributed-usage', color: UNATTRIBUTED_COLOR, val: b.unattributedTokens }]
       : []),
@@ -204,6 +204,7 @@ export default function TrendModal({
   const selRows: {
     key: string;
     name: string;
+    source?: string;
     val: number;
     color: string;
     more: boolean;
@@ -211,8 +212,11 @@ export default function TrendModal({
   if (selBucket) {
     const ranked = rankedModels(selBucket.byModel);
     for (const [m, v] of ranked.slice(0, 6)) {
+      // Owner resolved from THIS bucket: a Model name shared by two Sources
+      // would otherwise take whichever the window-wide map happened to pick.
+      const owner = modelOwner(selBucket.modelSources, modelTool, m);
       selRows.push({
-        key: m, name: m, val: v, color: modelColor(modelTool, m), more: false,
+        key: m, name: m, source: owner.label, val: v, color: owner.color, more: false,
       });
     }
     const rest = ranked.slice(6);
@@ -430,7 +434,10 @@ export default function TrendModal({
                     <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
                       <div className="lab">
                         <span className="dot" style={r.more ? undefined : { background: r.color }} />
-                        <span className="name">{r.name}</span>
+                        <span className="name">
+                          {r.name}
+                          {r.source && <em className="src">{r.source}</em>}
+                        </span>
                         <span className="num">
                           {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (selTotal || 1))}</span>
                         </span>

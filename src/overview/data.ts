@@ -53,12 +53,40 @@ export function stackModels(bks: Bucket[], modelTool: Record<string, string>): s
   return rankModels(bks).sort((a, b) => toolIdx(a) - toolIdx(b));
 }
 
-// Model -> owning tool, from the raw points. Models don't span sources in
-// practice, so last-write-wins is fine.
+// Model -> owning tool across the whole window, last-write-wins. Models CAN span
+// sources (pi and codex both report `gpt-5.6-sol`), so this is only a fallback
+// for read-outs with no per-bucket record — prefer modelOwner() below.
 export function modelTools(pts: SeriesPoint[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const p of pts) for (const m of Object.keys(p.byModel)) out[m] = p.source;
   return out;
+}
+
+// Which Source produced a Model *here* (in one bucket or day), for read-outs
+// that name or colour it. byModel merges a Model's tokens across Sources, so a
+// window-wide map picks the wrong owner for some buckets: resolve from the
+// bucket's own record and fall back to `modelTool` only when it has none.
+export interface ModelOwner {
+  keys: string[];
+  label?: string; // 'Codex', or 'Codex + pi' when genuinely produced by both
+  color: string;
+}
+
+export function modelOwner(
+  modelSources: Record<string, string[]> | undefined,
+  modelTool: Record<string, string>,
+  m: string,
+): ModelOwner {
+  const here = modelSources?.[m];
+  const keys = here?.length ? here : modelTool[m] ? [modelTool[m]] : [];
+  const metas = keys.map((k) => TOOLS.find((t) => t.key === k));
+  return {
+    keys,
+    label: keys.length ? keys.map((k, i) => metas[i]?.label ?? k).join(' + ') : undefined,
+    // One owner -> that Source's accent. Mixed or unknown keeps the window-wide
+    // colour so a segment never claims a Source it may not be.
+    color: (keys.length === 1 ? metas[0]?.color : undefined) ?? modelColor(modelTool, m),
+  };
 }
 
 export interface Day {
@@ -72,6 +100,8 @@ export interface Day {
   level: 0 | 1 | 2 | 3 | 4;
   byTool: Record<ToolKey, number>;
   byModel: Record<string, number>;
+  // Source(s) that produced each Model on this day — see modelOwner().
+  modelSources?: Record<string, string[]>;
   unattributedTokens: number;
 }
 
@@ -137,11 +167,16 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     const iso = isoOf(date);
     const byTool = emptyByTool();
     const byModel: Record<string, number> = {};
+    const modelSources: Record<string, string[]> = {};
     let unattributedTokens = 0;
     let tokens = 0;
     for (const p of byDate.get(iso) ?? []) {
       if (p.source in byTool) byTool[p.source as ToolKey] += p.totalTokens;
-      for (const [m, v] of Object.entries(p.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
+      for (const [m, v] of Object.entries(p.byModel)) {
+        byModel[m] = (byModel[m] ?? 0) + v;
+        const owners = (modelSources[m] ??= []);
+        if (!owners.includes(p.source)) owners.push(p.source);
+      }
       unattributedTokens += p.unattributedTokens;
       tokens += p.totalTokens;
     }
@@ -149,7 +184,7 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     days.push({
       index: i, date, iso, weekday: date.getDay(),
       col: Math.floor(cell / 7), row: cell % 7,
-      tokens, level: 0, byTool, byModel, unattributedTokens,
+      tokens, level: 0, byTool, byModel, modelSources, unattributedTokens,
     });
   }
 

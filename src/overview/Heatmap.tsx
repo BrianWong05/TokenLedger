@@ -1,5 +1,5 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { heatStats, rankedModels, type Day } from './data';
+import { heatStats, modelOwner, rankedModels, type Day } from './data';
 import { fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, monthShortL, weekdayShortL, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
@@ -128,11 +128,19 @@ function Heatmap({
   // tooltip per-model rows for the hovered day
   const tipRows = hover
     ? [
-        ...rankedModels(hover.byModel).map(([model, val]) => ({ key: model, label: model, val })),
+        // The day's own Sources name each Model: two Sources can run the same
+        // Model name, so the name alone is ambiguous.
+        ...rankedModels(hover.byModel).map(([model, val]) => ({
+          key: model,
+          label: model,
+          source: modelOwner(hover.modelSources, {}, model).label,
+          val,
+        })),
         ...(hover.unattributedTokens > 0
           ? [{
               key: 'unattributed-usage',
               label: t('overview.unattributedUsage'),
+              source: undefined,
               val: hover.unattributedTokens,
             }]
           : []),
@@ -264,7 +272,10 @@ function Heatmap({
             {tipRows.map((r) => (
               <div className="tt-tip-row" key={r.key}>
                 <div className="lab">
-                  <span>{r.label}</span>
+                  <span>
+                    {r.label}
+                    {r.source && <em className="src">{r.source}</em>}
+                  </span>
                   <span>{fmtTok(r.val)}</span>
                 </div>
                 <div className="track">

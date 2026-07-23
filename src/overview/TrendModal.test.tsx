@@ -429,6 +429,21 @@ describe('Usage-trend Enlarge', () => {
     expect(insp).not.toContain('c2');
   });
 
+  it('names the owning Source per bucket on inspector model rows', async () => {
+    // codex ran gpt-5.6-sol two days ago; pi ran the SAME Model name yesterday.
+    // The inspector opens on the window peak (the codex day), so a window-wide
+    // model->Source map — last-write-wins, i.e. pi — would label it wrongly.
+    const { container: c } = await mount({}, [
+      pt({ bucket: daysAgo(2), source: 'codex', totalTokens: 300, byModel: { 'gpt-5.6-sol': 300 } }),
+      pt({ bucket: daysAgo(1), source: 'pi', totalTokens: 100, byModel: { 'gpt-5.6-sol': 100 } }),
+    ]);
+    await open(c);
+
+    const name = dialog()!.querySelector('.tt-trend-insp-row .lab .name')!.textContent ?? '';
+    expect(name).toContain('gpt-5.6-sol');
+    expect(name).toContain('Codex');
+  });
+
   it('moves the selection to a hovered bar, dimming the rest', async () => {
     const { container: c } = await mount({}, inspectorSeed());
     await open(c);

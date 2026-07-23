@@ -345,6 +345,32 @@ describe('Overview presentation', () => {
     expect(texts.some((r) => r.includes('pi'))).toBe(true);
   });
 
+  it('names the owning Source per day in the activity heatmap tooltip', async () => {
+    // The SAME Model name on two days, produced by different Sources: each day's
+    // row must name the Source that actually produced it that day.
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ bucket: '2026-07-16', source: 'codex', totalTokens: 90, byModel: { 'gpt-5.6-sol': 90 } }),
+        pt({ bucket: '2026-07-18', source: 'pi', totalTokens: 40, byModel: { 'gpt-5.6-sol': 40 } }),
+      ],
+      summary,
+    });
+    const svg = c.querySelector<SVGSVGElement>('.tt-heat2d-scroll svg')!;
+    const cells = Array.from(svg.querySelectorAll('rect'));
+    const today = new Date();
+    const midnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    // Cell index mirrors seriesToDays: index 364 is today, one per day back.
+    const idxOf = (y: number, m: number, d: number) =>
+      364 - Math.round((midnight.getTime() - new Date(y, m, d).getTime()) / 86_400_000);
+    const rowAt = async (i: number) => {
+      await act(async () => cells[i].dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+      return c.querySelector('.tt-card.heat .tt-tip-row .lab span:first-child')?.textContent ?? '';
+    };
+
+    expect(await rowAt(idxOf(2026, 6, 16))).toContain('Codex');
+    expect(await rowAt(idxOf(2026, 6, 18))).toContain('pi');
+  });
+
   it('keeps the usage-trend y-axis labels out of the plot area', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],

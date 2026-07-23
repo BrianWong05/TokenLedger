@@ -620,9 +620,19 @@
 .tt-tip-row .lab span:first-child {
   color: var(--text-secondary);
 }
-/* Owning Source of a tooltip's Model row. Two Sources can run the same Model
-   name (pi and codex both report gpt-5.6-sol), so the row names its owner. An
-   <em> (not a <span>) keeps it clear of the value styling below. */
+/* Owning Source of a Model row (trend tooltip, heatmap tooltip, and the trend
+   enlarge's inspector). Two Sources can run the same Model name (pi and codex
+   both report gpt-5.6-sol), so each row names its owner. An <em> (not a <span>)
+   keeps it clear of the value styling below. */
+.tt-trend-insp-row .lab .name .src {
+  color: var(--text-tertiary);
+  font-style: normal;
+  font-family: var(--tt-sans, inherit);
+  margin-left: 5px;
+}
+.tt-trend-insp-row .lab .name .src::before {
+  content: '· ';
+}
 .tt-tip-row .lab .src {
   color: var(--text-tertiary);
   font-style: normal;
