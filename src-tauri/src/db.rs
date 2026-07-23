@@ -362,9 +362,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
 pub fn open_db(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
+    // busy_timeout FIRST: converting to WAL needs an exclusive lock, so with
+    // the default timeout of 0 a concurrent opener would fail the pragma
+    // instantly ("database is locked") instead of waiting out the race.
+    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     // journal_mode returns the applied mode as a row, so read it via query_row.
     let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-    conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     migrate(&conn)?;
     Ok(conn)
 }
