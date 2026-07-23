@@ -8,6 +8,15 @@ import { TOOLS, CATEGORIES, emptyByTool, type ToolKey, type ToolMeta, type Range
 import type { Lang } from '../lib/i18n';
 import { monthShortL, overviewT, type OverviewKey } from './localize';
 
+// One bucket's (or day's) models as [name, tokens] pairs, largest first with
+// zero-token models dropped — the shape every per-bucket read-out (card and
+// heatmap tooltips, the enlarge inspector, the CSV) starts from.
+export function rankedModels(byModel: Record<string, number>): [string, number][] {
+  return Object.entries(byModel)
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1]);
+}
+
 // Models present in the buckets, ordered by window total descending.
 export function rankModels(bks: Bucket[]): string[] {
   const totals = new Map<string, number>();
@@ -297,9 +306,7 @@ export function bucketCsv(bucket: Bucket, modelTool: Record<string, string>): st
   const toolOf = (m: string) => toolMeta(modelTool, m)?.label ?? modelTool[m] ?? '';
   const total = bucket.total || 1;
   const lines = ['model,tool,tokens,share'];
-  for (const [m, v] of Object.entries(bucket.byModel)
-    .filter(([, v]) => v > 0)
-    .sort((a, b) => b[1] - a[1])) {
+  for (const [m, v] of rankedModels(bucket.byModel)) {
     lines.push([esc(m), esc(toolOf(m)), String(v), (v / total).toFixed(4)].join(','));
   }
   return lines.join('\n') + '\n';

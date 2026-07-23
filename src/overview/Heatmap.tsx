@@ -1,5 +1,5 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { heatStats, type Day } from './data';
+import { heatStats, rankedModels, type Day } from './data';
 import { fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, monthShortL, weekdayShortL, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
@@ -127,11 +127,9 @@ function Heatmap({
 
   // tooltip per-model rows for the hovered day
   const tipRows = hover
-    ? Object.entries(hover.byModel)
-        .map(([model, val]) => ({ key: model, label: model, val }))
-        .filter((r) => r.val > 0)
-        .sort((a, b) => b.val - a.val)
+    ? rankedModels(hover.byModel)
         .slice(0, 3)
+        .map(([model, val]) => ({ key: model, label: model, val }))
     : [];
   const tipMax = Math.max(1, ...tipRows.map((r) => r.val));
 

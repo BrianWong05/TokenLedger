@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, stackModels, trendSlice, type Bucket, type Granularity } from './data';
+import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, rankedModels, stackModels, trendSlice, type Bucket, type Granularity } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
@@ -199,9 +199,7 @@ export default function TrendModal({
   // muted remainder row (color '' → grey).
   const selRows: { key: string; name: string; val: number; color: string; more: boolean }[] = [];
   if (selBucket) {
-    const ranked = Object.entries(selBucket.byModel)
-      .filter(([, v]) => v > 0)
-      .sort((a, b) => b[1] - a[1]);
+    const ranked = rankedModels(selBucket.byModel);
     for (const [m, v] of ranked.slice(0, 6)) selRows.push({ key: m, name: m, val: v, color: modelColor(modelTool, m), more: false });
     const rest = ranked.slice(6);
     if (rest.length) {

@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { TOOLS, emptyByTool } from './meta';
-import { modelColor, stackModels, type Bucket } from './data';
+import { modelColor, rankedModels, stackModels, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
 import { useChartColors } from '../lib/chartColors';
@@ -55,10 +55,7 @@ function AggTrend({
 
   // Hovered bucket's model rows, largest first.
   const tipRows = shown
-    ? Object.entries(shown.byModel)
-        .filter(([, v]) => v > 0)
-        .sort((a, b) => b[1] - a[1])
-        .map(([m, v]) => ({ key: m, val: v, color: colorOf(m) }))
+    ? rankedModels(shown.byModel).map(([m, v]) => ({ key: m, val: v, color: colorOf(m) }))
     : [];
   const tipMore = Math.max(0, tipRows.length - 6);
 
