@@ -47,6 +47,17 @@ its pricing state (Unpriced or Cache-Estimated). The one place rates are
 edited — selecting a Model in the Overview opens this same editor in place.
 _Avoid_: Rate card, price list, models tab
 
+**Menu Bar Extra**:
+The application's resident presence in the system menu bar: an icon with
+Today's token total and Cost beside it, and a menu presenting Today's view of
+the Ledger — headline Cost, tokens, Requests, pace against yesterday, and
+per-Source figures — plus the app actions. "Today" is the local calendar day;
+the surface presents no other date window. On a day with no usage the bar
+shows the icon alone. Every Cost figure follows the same rules as everywhere
+else: Partial Cost's "≥" marker, Unpriced never shown as $0, Display Currency
+honored.
+_Avoid_: Tray, status item
+
 ### Sources and granularity
 
 **Source**:

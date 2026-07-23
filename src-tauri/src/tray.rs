@@ -1,7 +1,9 @@
-// The resident menu-bar tray, the Menu Bar Extra (ADR-0005): TokenLedger lives
-// in the tray, not in a window you keep open. Menu: Open / Rescan now (⇧⌘R) /
-// Settings… (⌘,) / Quit (⌘Q); accelerators are menu-local hints, not global
-// hotkeys. "Rescan now" reuses the exact scan the `scan` command runs
+// The Menu Bar Extra (CONTEXT.md): TokenLedger's resident menu-bar presence
+// per ADR-0005 — the app lives here, not in a window you keep open. Renders
+// design 2b ("Menu Bar - Options") as a native menu per ADR-0006: bar title
+// with Today's tokens + Cost, then the menu build_menu lays out (see its doc
+// for the row order). Accelerators are menu-local hints, not global hotkeys.
+// "Rescan now" reuses the exact scan the `scan` command runs
 // (crate::scan_now), so there is no second scan code path.
 use std::sync::Mutex;
 
