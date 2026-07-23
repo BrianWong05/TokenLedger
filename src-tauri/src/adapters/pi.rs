@@ -355,22 +355,27 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
             let from_hook = v["fromHook"].as_bool().unwrap_or(false);
             let first_kept = nonempty(v["firstKeptEntryId"].as_str());
             let summary_est = est(content_bytes(&v["summary"]));
-            if !from_hook {
-                if let Some(u) = parse_usage(&v["usage"]) {
-                    let model = active_model(&parent_of, &established_model, parent_id.as_deref());
-                    emit_summary(
-                        &mut events,
-                        &mut lines_skipped,
-                        source_file,
-                        &id,
-                        entry_ts_iso.as_deref(),
-                        model,
-                        base,
-                        &u,
-                        &session_id,
-                        &project,
-                    );
-                }
+            if let Some(u) = parse_usage(&v["usage"]) {
+                // A built-in summary inherits the branch Model and attributes the
+                // pre-compaction context. An extension-provided one (fromHook true)
+                // is opaque: no Model and no context attribution (#41).
+                let (model, before) = if from_hook {
+                    (None, Comp::default())
+                } else {
+                    (active_model(&parent_of, &established_model, parent_id.as_deref()), base)
+                };
+                emit_summary(
+                    &mut events,
+                    &mut lines_skipped,
+                    source_file,
+                    &id,
+                    entry_ts_iso.as_deref(),
+                    model,
+                    before,
+                    &u,
+                    &session_id,
+                    &project,
+                );
             }
             // Descendants see the summary plus the retained tail in place of the
             // superseded prefix. Historical Usage Records from that prefix stay.
@@ -437,6 +442,22 @@ fn parse_file(content: &str, source_file: &str) -> ParsedPiFile {
                     delta = Delta { msg: e, tool: e, reas: 0, user_reset: false };
                     let name = message["toolName"].as_str().unwrap_or("unknown").to_string();
                     tool_rows.push((name, e, 0, row_ts));
+                    // A usage-bearing tool result reports nested model work with no
+                    // trustworthy Model — one Unattributed Usage Record (#41). An
+                    // all-zero block is ordinary retained context, not a Request.
+                    if let Some(u) = parse_usage(&message["usage"]) {
+                        emit_tool_result(
+                            &mut events,
+                            &mut lines_skipped,
+                            source_file,
+                            &id,
+                            entry_ts_iso.as_deref(),
+                            message["timestamp"].as_i64(),
+                            &u,
+                            &session_id,
+                            &project,
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -595,6 +616,34 @@ fn emit_summary(
     };
     let ctx = attribute_pi(before, u.billed());
     push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx);
+}
+
+// A usage-bearing tool result: nested model work with no trustworthy Model, left
+// Unattributed (no Model, no context attribution). Its time is the message
+// completion time with an entry-time fallback. One block is one observable
+// Request — a source-observable lower bound, since a block may aggregate several
+// hidden calls that pi does not separate.
+#[allow(clippy::too_many_arguments)]
+fn emit_tool_result(
+    events: &mut Vec<UsageEvent>,
+    lines_skipped: &mut u64,
+    source_file: &str,
+    id: &Option<String>,
+    entry_ts_iso: Option<&str>,
+    message_ts_ms: Option<i64>,
+    u: &PiUsage,
+    session_id: &Option<String>,
+    project: &Option<String>,
+) {
+    let Some(timestamp) = event_timestamp(message_ts_ms, entry_ts_iso) else {
+        *lines_skipped += 1;
+        return;
+    };
+    let dedup_key = match (id.as_deref(), entry_ts_iso) {
+        (Some(id), Some(ts)) => format!("pi:message:{id}:{ts}"),
+        _ => legacy_dedup_key("toolresult", message_ts_ms, timestamp, entry_ts_iso, None, u),
+    };
+    push_pi_event(events, source_file, dedup_key, timestamp, None, u, session_id, project, CtxTokens::default());
 }
 
 #[cfg(test)]
@@ -962,7 +1011,8 @@ mod tests {
     #[test]
     fn parses_nonzero_assistant_usage_without_retaining_private_content_fields() {
         let parsed = parse_file(BASIC_SESSION, "/fixtures/basic-session.jsonl");
-        assert_eq!(parsed.events.len(), 3);
+        // 3 assistant Requests + 1 Unattributed tool-result Request.
+        assert_eq!(parsed.events.len(), 4);
         assert_eq!(parsed.lines_skipped, 2, "zero placeholder + malformed line");
 
         let first = &parsed.events[0];
@@ -1013,6 +1063,19 @@ mod tests {
         );
         assert_eq!(failed.cache_write_5m_tokens, 4);
         assert_eq!(failed.cache_write_1h_tokens, 0);
+
+        // The usage-bearing tool result is Unattributed: no Model, no context
+        // attribution, timed by its own message-completion time.
+        let tool_result = &parsed.events[3];
+        assert_eq!(tool_result.model, None, "tool-result usage guesses no Model");
+        assert_eq!(tool_result.timestamp, 1_782_907_206, "tool-result message time");
+        assert_eq!(tool_result.input_tokens, 900);
+        assert_eq!(tool_result.output_tokens, 900);
+        assert_eq!(tool_result.cache_read_tokens, 900);
+        assert_eq!(tool_result.cache_write_5m_tokens, 900);
+        assert_eq!(tool_result.reasoning_tokens, None);
+        assert_eq!(tool_result.ctx, CtxTokens::default(), "opaque nested work: no ctx");
+        assert!(tool_result.dedup_key.starts_with("pi:message:e5f6a7b8:"));
     }
 
     // A tree with two branches off one shared node. Branch A is abandoned; branch
@@ -1153,6 +1216,56 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events WHERE source='pi'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 4, "pre-compaction history is retained");
+    }
+
+    // Auxiliary usage with no trustworthy Model: a usage-bearing tool result and
+    // an extension-provided summary (compaction fromHook true). A zero-usage tool
+    // result is ordinary context, not a Request. Proves both become Unattributed
+    // Records and a selection of only Unattributed usage shows no Cost, not $0.
+    const AUXILIARY_SESSION: &str = concat!(
+        r#"{"type":"session","version":3,"id":"aux-session","cwd":"/projects/aux"}"#, "\n",
+        r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"run a subagent tool that reports nested usage"}],"timestamp":1782864001000}}"#, "\n",
+        r#"{"type":"message","id":"tr","parentId":"u1","timestamp":"2026-07-01T00:00:02.000Z","message":{"role":"toolResult","toolCallId":"c1","toolName":"agent","content":[{"type":"text","text":"nested result body that is never persisted"}],"usage":{"input":700,"output":300,"cacheRead":0,"cacheWrite":0},"timestamp":1782864002500}}"#, "\n",
+        r#"{"type":"compaction","id":"cmp","parentId":"tr","timestamp":"2026-07-01T00:00:03.000Z","firstKeptEntryId":"tr","summary":"extension summary","tokensBefore":1000,"details":{},"usage":{"input":400,"output":50,"cacheRead":0,"cacheWrite":0},"fromHook":true}"#, "\n",
+        r#"{"type":"message","id":"trz","parentId":"cmp","timestamp":"2026-07-01T00:00:04.000Z","message":{"role":"toolResult","toolCallId":"c2","toolName":"read","content":[{"type":"text","text":"a plain result with no usage block"}],"timestamp":1782864004000}}"#, "\n",
+    );
+
+    #[test]
+    fn tool_result_and_extension_summary_usage_are_unattributed() {
+        let parsed = parse_file(AUXILIARY_SESSION, "/fixtures/aux.jsonl");
+        // tool result (usage) + extension summary; the zero-usage tool result is not
+        // a Request.
+        assert_eq!(parsed.events.len(), 2);
+
+        let tool_result = parsed
+            .events
+            .iter()
+            .find(|e| e.input_tokens == 700)
+            .unwrap();
+        assert_eq!(tool_result.model, None);
+        assert_eq!(tool_result.timestamp, 1_782_864_002, "message time wins for tool results");
+        assert_eq!(tool_result.ctx, CtxTokens::default());
+
+        let summary = parsed.events.iter().find(|e| e.input_tokens == 400).unwrap();
+        assert_eq!(summary.model, None, "extension summary guesses no Model");
+        assert_eq!(summary.timestamp, 1_782_864_003, "summary uses the entry time");
+        assert!(summary.dedup_key.starts_with("pi:compaction:cmp:"));
+        assert_eq!(summary.ctx, CtxTokens::default(), "extension detail is opaque");
+
+        // Through the Ledger: a selection of only Unattributed usage shows no Cost
+        // (not $0) and no Unpriced Model — the tokens still count.
+        let sessions = tempfile::tempdir().unwrap();
+        let app = tempfile::tempdir().unwrap();
+        fs::write(sessions.path().join("aux.jsonl"), AUXILIARY_SESSION).unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        assert!(scan_root(&mut conn, sessions.path()).error.is_none());
+
+        let s = queries::summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(s.requests, 2);
+        assert_eq!(s.total_tokens, 700 + 300 + 400 + 50);
+        assert_eq!(s.unattributed_tokens, 700 + 300 + 400 + 50);
+        assert_eq!(s.cost, None, "all-Unattributed selection has no Cost, never $0");
+        assert!(!s.has_unpriced, "Unattributed Usage is not an Unpriced Model");
     }
 
     #[test]
