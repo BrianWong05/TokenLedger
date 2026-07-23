@@ -7,6 +7,7 @@ export interface FakeSettings extends SettingsPort {
   value: Settings;
   calls: { get: number; set: Settings[]; checkUpdates: number; downloadUpdate: number; restartApp: number };
   failNext(method: 'get' | 'set' | 'checkUpdates' | 'downloadUpdate' | 'restartApp', err: unknown): void;
+  emitOpenSettings(): void;
 }
 
 const NO_UPDATE: UpdateStatus = { state: 'not-configured', version: null };
@@ -18,6 +19,7 @@ export function makeFakeSettings(
   let value: Settings = { ...DEFAULT_SETTINGS, ...seed };
   const calls: FakeSettings['calls'] = { get: 0, set: [], checkUpdates: 0, downloadUpdate: 0, restartApp: 0 };
   const fails = new Map<string, unknown>();
+  const openSettingsCbs = new Set<() => void>();
   // download stages the checked update: same version, state 'downloaded'.
   const downloaded: UpdateStatus = { state: 'downloaded', version: update.version };
 
@@ -39,5 +41,10 @@ export function makeFakeSettings(
     downloadUpdate: () => guard('downloadUpdate', () => { calls.downloadUpdate++; return downloaded; }),
     restartApp: () => guard('restartApp', () => { calls.restartApp++; }),
     failNext: (method, err) => fails.set(method, err),
+    onOpenSettings: (cb: () => void) => {
+      openSettingsCbs.add(cb);
+      return () => openSettingsCbs.delete(cb);
+    },
+    emitOpenSettings: () => openSettingsCbs.forEach((cb) => cb()),
   };
 }

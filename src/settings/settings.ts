@@ -2,6 +2,7 @@
 // src/api.ts, mirroring ledger.ts so a page (and the shell) depends on this port
 // instead of @tauri-apps directly (lets tests swap in settings.fake.ts).
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getSettings, setSettings, checkUpdates } from '../api';
 import type { Settings, UpdateStatus } from '../types';
 
@@ -16,6 +17,8 @@ export interface SettingsPort {
   // User-approved update actions driven by the Settings banner button.
   downloadUpdate(): Promise<UpdateStatus>;
   restartApp(): Promise<void>;
+  // The Menu Bar Extra's "Settings…" item; subscribe, returns unsubscribe.
+  onOpenSettings(cb: () => void): () => void;
 }
 
 export const tauriSettings: SettingsPort = {
@@ -26,6 +29,14 @@ export const tauriSettings: SettingsPort = {
   // matches the check_updates command shape in src-tauri.
   downloadUpdate: () => invoke('download_update'),
   restartApp: () => invoke('restart_app'),
+  onOpenSettings(cb) {
+    // listen() is async; the unsubscribe resolves later, so teardown must
+    // await it (same shape as ledger.ts onPricesRebuilt).
+    const un = listen('open-settings', () => cb());
+    return () => {
+      un.then((f) => f());
+    };
+  },
 };
 
 // The shipped defaults, matching the spec: theme System, launch-at-login and

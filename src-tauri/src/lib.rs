@@ -58,7 +58,6 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
         run_scan(&mut db, &state.roots)
     };
-    tray::set_last_scan(app, &status);
     tray::refresh(app);
     Ok(status)
 }

@@ -1,18 +1,17 @@
-// The resident menu-bar tray (ADR-0005): TokenLedger lives in the tray, not in a
-// window you keep open. Menu mirrors design 1f — Open / Scan now / a disabled
-// "last scan" caption / Quit (⌘Q). "Scan now" reuses the exact scan the `scan`
-// command runs (crate::scan_now), so there is no second scan code path.
+// The resident menu-bar tray, the Menu Bar Extra (ADR-0005): TokenLedger lives
+// in the tray, not in a window you keep open. Menu: Open / Rescan now (⇧⌘R) /
+// Settings… (⌘,) / Quit (⌘Q); accelerators are menu-local hints, not global
+// hotkeys. "Rescan now" reuses the exact scan the `scan` command runs
+// (crate::scan_now), so there is no second scan code path.
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::scan_now;
-use crate::types::ScanStatus;
 
-// Held so each scan can rewrite the caption's text and the bar title in place
-// without rebuilding the whole tray.
+// Held so each scan can rewrite the bar title in place without rebuilding the
+// whole tray.
 pub struct TrayMenu {
-    last_scan: MenuItem<Wry>,
     tray: TrayIcon<Wry>,
 }
 
@@ -20,12 +19,11 @@ pub struct TrayMenu {
 /// image so it inverts with the menu bar.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open TokenLedger", true, None::<&str>)?;
-    let scan = MenuItem::with_id(app, "scan", "Scan now", true, None::<&str>)?;
-    // Disabled caption; its text is replaced after every scan (set_last_scan).
-    let last_scan = MenuItem::with_id(app, "last_scan", "Last scan: never", false, None::<&str>)?;
+    let scan = MenuItem::with_id(app, "scan", "Rescan now", true, Some("Shift+CmdOrCtrl+R"))?;
     let sep = PredefinedMenuItem::separator(app)?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let quit = MenuItem::with_id(app, "quit", "Quit TokenLedger", true, Some("CmdOrCtrl+Q"))?;
-    let menu = Menu::with_items(app, &[&open, &scan, &last_scan, &sep, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &scan, &sep, &settings, &quit])?;
 
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
@@ -35,7 +33,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon.clone()).icon_as_template(true);
     }
     let tray = builder.build(app)?;
-    app.manage(TrayMenu { last_scan, tray });
+    app.manage(TrayMenu { tray });
     // Seed the title from the existing Ledger so a relaunch shows Today's
     // figures before the first scan lands.
     refresh(app);
@@ -79,12 +77,12 @@ pub fn refresh(app: &AppHandle) {
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        "open" => {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.unminimize();
-                let _ = w.set_focus();
-            }
+        "open" => show_main(app),
+        "settings" => {
+            // Show first, then ask the shell to land on the Settings tab; the
+            // frontend's onOpenSettings listener does the switch.
+            show_main(app);
+            let _ = app.emit("open-settings", ());
         }
         "scan" => {
             // Off the UI thread: a scan can take a moment. On completion, emit the
@@ -103,15 +101,11 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-/// Refreshes the tray's last-scan caption after a scan. No-op when the tray was
-/// never built. ponytail: shows the new-event count, not a live "N minutes ago"
-/// — the latter needs a per-second timer this caption does not merit.
-pub fn set_last_scan(app: &AppHandle, status: &ScanStatus) {
-    if let Some(tray) = app.try_state::<TrayMenu>() {
-        let events: u64 = status.sources.iter().map(|s| s.events_inserted).sum();
-        let _ = tray
-            .last_scan
-            .set_text(format!("Last scan: {events} new events"));
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
     }
 }
 

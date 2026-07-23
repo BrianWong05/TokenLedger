@@ -107,4 +107,26 @@ describe('App shell', () => {
     expect(container.querySelector('.tt-toolcards')).not.toBeNull();
     expect(ledger.calls.scan.length).toBe(1);
   });
+
+  it('opens the Settings tab when the Menu Bar Extra asks for it', async () => {
+    const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
+    const settings = makeFakeSettings();
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<App ports={{ ledger, clock: systemClock, settings }} />);
+    });
+    await settle();
+
+    // Starts on Overview; the tray's "Settings…" item fires the event.
+    expect(container.querySelector('.tl-page-settings')).toBeNull();
+    await act(async () => settings.emitOpenSettings());
+
+    expect(container.querySelector('.tl-page-settings')).not.toBeNull();
+    const active = container.querySelector('.tl-nav button[aria-current="page"]');
+    expect(active?.textContent).toBe('Settings');
+  });
 });

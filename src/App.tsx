@@ -6,7 +6,7 @@
 // across tab switches so its data survives; the Pricing and Settings pages mount on
 // demand. Settings state is owned by SettingsProvider so theme + language changes
 // take effect live app-wide.
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import Overview from './overview/Overview';
 import PricingPage from './pricing/PricingPage';
 import SettingsPage from './settings/SettingsPage';
@@ -95,6 +95,10 @@ function Shell({ ports }: { ports?: AppPorts }) {
   const [tab, setTab] = useState<Tab>('overview');
   const ledger = ports?.ledger ?? tauriLedger;
   const settingsPort = ports?.settings ?? tauriSettings;
+
+  // The Menu Bar Extra's "Settings… ⌘," item: the tray shows the window and
+  // asks the shell to land on the Settings tab.
+  useEffect(() => settingsPort.onOpenSettings(() => setTab('settings')), [settingsPort]);
 
   return (
     <div className="tl-shell">
