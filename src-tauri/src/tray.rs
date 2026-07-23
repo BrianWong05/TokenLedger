@@ -9,21 +9,31 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::scan_now;
 
-// Held so each scan can rewrite the bar title in place without rebuilding the
-// whole tray.
+// Held so each scan can rewrite the bar title and header rows in place
+// without rebuilding the whole tray (an open menu must not be disturbed).
 pub struct TrayMenu {
     tray: TrayIcon<Wry>,
+    hdr_cost: MenuItem<Wry>,
+    hdr_usage: MenuItem<Wry>,
 }
 
 /// Builds the tray once, from setup. Uses the app's own icon as a macOS template
 /// image so it inverts with the menu bar.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
+    // Disabled Today-header rows (2b's stats header, "no fake hover"); their
+    // text is placeholder until the refresh() below seeds it.
+    let hdr_cost = MenuItem::with_id(app, "hdr_cost", "Today", false, None::<&str>)?;
+    let hdr_usage = MenuItem::with_id(app, "hdr_usage", "…", false, None::<&str>)?;
+    let sep_hdr = PredefinedMenuItem::separator(app)?;
     let open = MenuItem::with_id(app, "open", "Open TokenLedger", true, None::<&str>)?;
     let scan = MenuItem::with_id(app, "scan", "Rescan now", true, Some("Shift+CmdOrCtrl+R"))?;
     let sep = PredefinedMenuItem::separator(app)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
     let quit = MenuItem::with_id(app, "quit", "Quit TokenLedger", true, Some("CmdOrCtrl+Q"))?;
-    let menu = Menu::with_items(app, &[&open, &scan, &sep, &settings, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[&hdr_cost, &hdr_usage, &sep_hdr, &open, &scan, &sep, &settings, &quit],
+    )?;
 
     let mut builder = TrayIconBuilder::new()
         .menu(&menu)
@@ -33,24 +43,25 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon.clone()).icon_as_template(true);
     }
     let tray = builder.build(app)?;
-    app.manage(TrayMenu { tray });
+    app.manage(TrayMenu { tray, hdr_cost, hdr_usage });
     // Seed the title from the existing Ledger so a relaunch shows Today's
     // figures before the first scan lands.
     refresh(app);
     Ok(())
 }
 
-/// Recomputes the bar title (Today's Summary + Settings → tray_title) and
-/// rewrites it in place — no tray rebuild. Called after every scan and on
-/// settings save; no-op until the tray exists. The db lock is released before
-/// set_title: set_title hops to the main thread, and sync commands on the main
-/// thread take the same lock — holding it here would deadlock.
+/// Recomputes the bar title and the Today-header rows (Summaries + Settings →
+/// tray_title / header_lines) and rewrites them in place — no tray rebuild.
+/// Called after every scan and on settings save; no-op until the tray exists.
+/// The db lock is released before set_title/set_text: those hop to the main
+/// thread, and sync commands on the main thread take the same lock — holding
+/// it here would deadlock.
 pub fn refresh(app: &AppHandle) {
     let Some(tray) = app.try_state::<TrayMenu>() else {
         return;
     };
     let state = app.state::<crate::AppState>();
-    let title = {
+    let (title, header) = {
         let Ok(db) = state.db.lock() else { return };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -59,20 +70,39 @@ pub fn refresh(app: &AppHandle) {
         let Ok((start, end)) = day_window(&db, now) else {
             return;
         };
-        let filters = crate::queries::Filters {
+        // Same time yesterday = now − 24h. Its window is clamped at that
+        // instant so the pace comparison is so-far vs so-far. ponytail: a DST
+        // change skews the comparison an hour twice a year; civil-time
+        // arithmetic is the upgrade path if that hour ever matters.
+        let y_now = now - 86_400;
+        let Ok((y_start, _)) = day_window(&db, y_now) else {
+            return;
+        };
+        let today_f = crate::queries::Filters {
             start_ts: Some(start),
             end_ts: Some(end),
             ..Default::default()
         };
-        let (Ok(today), Ok(settings)) = (
-            crate::queries::summary(&db, &filters),
+        let y_f = crate::queries::Filters {
+            start_ts: Some(y_start),
+            end_ts: Some(y_now),
+            ..Default::default()
+        };
+        let (Ok(today), Ok(yesterday), Ok(settings)) = (
+            crate::queries::summary(&db, &today_f),
+            crate::queries::summary(&db, &y_f),
             crate::settings::get_settings(&db),
         ) else {
             return;
         };
-        tray_title(&today, &settings)
+        (
+            tray_title(&today, &settings),
+            header_lines(&today, &yesterday, &settings),
+        )
     };
     let _ = tray.tray.set_title(title.as_deref());
+    let _ = tray.hdr_cost.set_text(header.0);
+    let _ = tray.hdr_usage.set_text(header.1);
 }
 
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
@@ -191,6 +221,50 @@ fn fmt_amount(amount: f64, dec: usize) -> String {
     }
 }
 
+/// The menu's two disabled Today-header rows (design 2b's header, flattened
+/// to native text): a cost line and a usage line. Both rows always exist so
+/// the menu structure never changes under an open menu — only set_text runs.
+///
+/// Cost line: "Today: $12.84 · +12.4% vs yesterday". The pace delta compares
+/// today-so-far Cost against yesterday up to the same time and is folded into
+/// the text; it disappears when either side has no Cost (yesterday empty or
+/// Unpriced — no divide-by-zero artifact). "≥ " marks a Partial Cost; an
+/// all-Unpriced day reads "Today: unpriced" — never $0; a no-usage day reads
+/// "Today: no usage yet". ponytail: the glossary's Partial-Cost count of
+/// Unpriced Models is dropped like the title drops it — the per-Source rows
+/// (#24) surface which tools are unpriced.
+/// Usage line: "3.4M tok · 1,912 req" — Requests is the glossary's sum of
+/// calls, straight from Summary.
+fn header_lines(
+    today: &crate::queries::Summary,
+    yesterday_so_far: &crate::queries::Summary,
+    settings: &crate::settings::Settings,
+) -> (String, String) {
+    let usage = format!(
+        "{} tok · {} req",
+        fmt_tokens(today.total_tokens),
+        fmt_amount(today.requests.max(0) as f64, 0)
+    );
+    let cost_line = if today.total_tokens == 0 {
+        "Today: no usage yet".to_string()
+    } else {
+        match today.cost {
+            None => "Today: unpriced".to_string(),
+            Some(c) => {
+                let marker = if today.has_unpriced { "≥ " } else { "" };
+                let delta = match yesterday_so_far.cost {
+                    Some(y) if y > 0.0 => {
+                        format!(" · {:+.1}% vs yesterday", (c / y - 1.0) * 100.0)
+                    }
+                    _ => String::new(),
+                };
+                format!("Today: {marker}{}{delta}", fmt_cost(c, settings))
+            }
+        }
+    };
+    (cost_line, usage)
+}
+
 /// [local midnight, next local midnight) as epoch seconds for the day
 /// containing `now_epoch`. SQLite does the timezone math with the same
 /// 'localtime' modifier the day buckets in queries.rs use, so the bar's
@@ -307,6 +381,76 @@ mod tests {
         assert_eq!(t(999_999), "1M");
         assert_eq!(t(847), "847");
         assert_eq!(t(1_912_345_678), "1.91B");
+    }
+
+    #[test]
+    fn header_shows_cost_then_tokens_and_requests() {
+        let mut today = sum(3_400_000, Some(12.84), false);
+        today.requests = 1912;
+        let lines = header_lines(&today, &sum(0, None, false), &Settings::default());
+        assert_eq!(lines.0, "Today: $12.84"); // yesterday empty → no delta
+        assert_eq!(lines.1, "3.4M tok · 1,912 req");
+    }
+
+    #[test]
+    fn delta_compares_against_yesterday_up_to_now() {
+        let lines = header_lines(
+            &sum(3_400_000, Some(12.84), false),
+            &sum(1_000_000, Some(10.0), false),
+            &Settings::default(),
+        );
+        // 12.84 / 10.00 → +28.4%, one decimal like the design's +12.4%.
+        assert_eq!(lines.0, "Today: $12.84 · +28.4% vs yesterday");
+    }
+
+    #[test]
+    fn falling_pace_reads_negative() {
+        let lines = header_lines(
+            &sum(3_400_000, Some(9.0), false),
+            &sum(1_000_000, Some(10.0), false),
+            &Settings::default(),
+        );
+        assert_eq!(lines.0, "Today: $9.00 · -10.0% vs yesterday");
+    }
+
+    #[test]
+    fn delta_hidden_when_yesterday_had_no_cost_by_now() {
+        // Some(0.0) and None both suppress — no divide-by-zero artifact.
+        let today = sum(3_400_000, Some(12.84), false);
+        let zero = header_lines(&today, &sum(0, Some(0.0), false), &Settings::default());
+        assert_eq!(zero.0, "Today: $12.84");
+        let unpriced = header_lines(&today, &sum(500, None, true), &Settings::default());
+        assert_eq!(unpriced.0, "Today: $12.84");
+    }
+
+    #[test]
+    fn header_partial_cost_carries_the_marker() {
+        let lines = header_lines(
+            &sum(3_400_000, Some(12.84), true),
+            &sum(0, None, false),
+            &Settings::default(),
+        );
+        assert_eq!(lines.0, "Today: ≥ $12.84");
+    }
+
+    #[test]
+    fn header_all_unpriced_day_says_unpriced_never_zero() {
+        let mut today = sum(964_200, None, true);
+        today.requests = 41;
+        let lines = header_lines(&today, &sum(0, None, false), &Settings::default());
+        assert_eq!(lines.0, "Today: unpriced");
+        assert_eq!(lines.1, "964.2K tok · 41 req");
+    }
+
+    #[test]
+    fn header_empty_day_says_no_usage_yet() {
+        let lines = header_lines(
+            &sum(0, Some(0.0), false),
+            &sum(0, None, false),
+            &Settings::default(),
+        );
+        assert_eq!(lines.0, "Today: no usage yet");
+        assert_eq!(lines.1, "0 tok · 0 req");
     }
 
     #[test]
