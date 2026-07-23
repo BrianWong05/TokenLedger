@@ -1768,6 +1768,27 @@
   font-size: 12px;
   color: var(--text-tertiary);
 }
+.tt-trend-insp-cost {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.tt-trend-insp-cost .amt {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-family: var(--tt-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tt-trend-insp-cost .amt .mark {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
 
 /* ---- narrow fallback (desktop Tauri window can be resized) ---- */
 @media (max-width: 860px) {

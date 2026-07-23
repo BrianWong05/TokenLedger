@@ -250,6 +250,33 @@ export function rangeToFilters(range: Range8b, customFrom: string, customTo: str
   return f;
 }
 
+// Exact epoch-second bounds [start, end) for a single trend bucket, so the
+// enlarge inspector can fetch that bucket's Cost with the same honesty rules as
+// any other window. The key format follows its granularity: 'YYYY-MM-DD HH:00'
+// (hour), 'YYYY-MM-DD' (day, or a week's start day), 'YYYY-MM' (month).
+export function bucketFilters(key: string, per: Granularity): Filters {
+  const secs = (d: Date) => Math.floor(d.getTime() / 1000);
+  let start: Date;
+  let end: Date;
+  if (per === 'hour') {
+    start = parseLocalDate(key.slice(0, 10));
+    start.setHours(parseInt(key.slice(11, 13), 10));
+    end = new Date(start);
+    end.setHours(start.getHours() + 1);
+  } else if (per === 'month') {
+    const y = parseInt(key.slice(0, 4), 10);
+    const m = parseInt(key.slice(5, 7), 10) - 1;
+    start = new Date(y, m, 1);
+    end = new Date(y, m + 1, 1);
+  } else {
+    // day and week both key off a start day; a week spans seven days.
+    start = parseLocalDate(key);
+    end = new Date(start);
+    end.setDate(end.getDate() + (per === 'week' ? 7 : 1));
+  }
+  return { tools: [], models: [], project: null, startTs: secs(start), endTs: secs(end) };
+}
+
 // ---- trend buckets ----
 
 export type Granularity = 'hour' | 'day' | 'week' | 'month';

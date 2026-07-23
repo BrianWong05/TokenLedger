@@ -18,6 +18,7 @@ import {
   ctxTotals,
   ctxMeta,
   rangeToFilters,
+  bucketFilters,
   categorizeTool,
   allocateByWeight,
   toolTree,
@@ -113,6 +114,44 @@ describe('heatFilters', () => {
     // first day 2025-07-11, exclusive end at midnight 2026-07-11.
     expect(f.startTs).toBe(Math.floor(new Date(2025, 6, 11).getTime() / 1000));
     expect(f.endTs).toBe(Math.floor(new Date(2026, 6, 11).getTime() / 1000));
+    expect(f.tools).toEqual([]);
+    expect(f.models).toEqual([]);
+    expect(f.project).toBeNull();
+  });
+});
+
+describe('bucketFilters', () => {
+  const secs = (d: Date) => Math.floor(d.getTime() / 1000);
+  it('bounds an hour bucket to [hour, +1h)', () => {
+    const f = bucketFilters('2026-07-15 09:00', 'hour');
+    expect(f.startTs).toBe(secs(new Date(2026, 6, 15, 9)));
+    expect(f.endTs).toBe(secs(new Date(2026, 6, 15, 10)));
+  });
+  it('rolls the last hour of the day over to the next midnight', () => {
+    const f = bucketFilters('2026-07-15 23:00', 'hour');
+    expect(f.startTs).toBe(secs(new Date(2026, 6, 15, 23)));
+    expect(f.endTs).toBe(secs(new Date(2026, 6, 16, 0)));
+  });
+  it('bounds a day bucket to [midnight, +1 day)', () => {
+    const f = bucketFilters('2026-07-15', 'day');
+    expect(f.startTs).toBe(secs(new Date(2026, 6, 15)));
+    expect(f.endTs).toBe(secs(new Date(2026, 6, 16)));
+  });
+  it('bounds a week bucket to [start day, +7 days)', () => {
+    const f = bucketFilters('2026-07-12', 'week');
+    expect(f.startTs).toBe(secs(new Date(2026, 6, 12)));
+    expect(f.endTs).toBe(secs(new Date(2026, 6, 19)));
+  });
+  it('bounds a month bucket to its calendar month, rolling the year at December', () => {
+    const jul = bucketFilters('2026-07', 'month');
+    expect(jul.startTs).toBe(secs(new Date(2026, 6, 1)));
+    expect(jul.endTs).toBe(secs(new Date(2026, 7, 1)));
+    const dec = bucketFilters('2026-12', 'month');
+    expect(dec.startTs).toBe(secs(new Date(2026, 11, 1)));
+    expect(dec.endTs).toBe(secs(new Date(2027, 0, 1)));
+  });
+  it('carries the empty tool/model/project filter like the window helpers', () => {
+    const f = bucketFilters('2026-07-15', 'day');
     expect(f.tools).toEqual([]);
     expect(f.models).toEqual([]);
     expect(f.project).toBeNull();

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
+import { bucketFilters, modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import { fmtPct, fmtTok } from '../lib/format';
@@ -146,6 +146,27 @@ export default function TrendModal({
   const activeKey = sel && sel.win === winId ? sel.key : null;
   const selBucket = data.find((b) => b.key === activeKey) ?? peak;
   const selIndex = selBucket ? data.indexOf(selBucket) : -1;
+
+  // The selected bucket's exact Cost: a Summary scoped to just that bucket's
+  // time bounds, refetched per selection (or granularity) and epoch-guarded so
+  // a superseded bucket's Cost can't land after a newer pick. Its own rules —
+  // ≥ Partial Cost, unpriced never $0, Display Currency — all via
+  // formatDisplayCost. Keyed by bucket key + granularity, so a background
+  // refresh that keeps the selection does not refetch.
+  const selKey = selBucket?.key;
+  const [selCost, setSelCost] = useState<Summary | null>(null);
+  const costEpoch = useRef(0);
+  useEffect(() => {
+    if (!selKey) return;
+    const epoch = ++costEpoch.current;
+    setSelCost(null);
+    ledger.summary(bucketFilters(selKey, per)).then(
+      (s) => {
+        if (costEpoch.current === epoch) setSelCost(s);
+      },
+      () => {},
+    );
+  }, [selKey, per, ledger]);
 
   // Inspector read-outs for the selected bucket.
   const selRank = selBucket ? 1 + data.filter((b) => b.total > selBucket.total).length : 0;
@@ -365,6 +386,17 @@ export default function TrendModal({
                     </div>
                   ))}
                   {selRows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
+                </div>
+                <div className="tt-trend-insp-cost">
+                  <span>{t('overview.estCost')}</span>
+                  <span className="amt">
+                    {selCost === null ? '…' : formatDisplayCost(selCost.cost, selCost.hasUnpriced, settings, lang)}
+                    {selCost?.hasUnpriced && (
+                      <span className="mark" title={selCost.unpricedModels.join(', ')}>
+                        {' '}· {selCost.unpricedModels.length} {t('overview.unpricedMarker')}
+                      </span>
+                    )}
+                  </span>
                 </div>
               </>
             )}

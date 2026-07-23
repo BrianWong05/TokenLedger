@@ -15,7 +15,7 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import { isoOf } from './data';
-import type { SeriesPoint, Summary } from '../types';
+import type { Filters, SeriesPoint, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -103,6 +103,17 @@ const modalRangeButton = (label: string) =>
 const pageActiveRange = (c: HTMLElement) =>
   c.querySelector<HTMLElement>('.tt-toolbar .tt-seg .active')!.textContent;
 const footText = () => dialog()!.querySelector('.tt-trend-modal-foot')!.textContent!;
+const costText = () => dialog()!.querySelector('.tt-trend-insp-cost')!.textContent!;
+
+// The modal fires two kinds of `summary` fetch that share the port: window
+// fetches (footer Cost — never carry endTs) and per-bucket fetches (inspector
+// Cost — always bounded, so endTs is set). Target held calls by that shape
+// instead of a fragile positional index.
+type FL = ReturnType<typeof makeFakeLedger>;
+const heldIdx = (ledger: FL, pred: (f: Filters) => boolean) =>
+  ledger.held('summary').findIndex((d) => pred(d.args[0] as Filters));
+const isWindow = (f: Filters) => f.endTs === undefined;
+const isBucket = (f: Filters) => f.endTs !== undefined;
 const inspText = () => dialog()!.querySelector('.tt-trend-insp')!.textContent!;
 const barGroups = () => Array.from(dialog()!.querySelectorAll('svg g[opacity]'));
 const hitRects = () => Array.from(dialog()!.querySelectorAll<SVGRectElement>('svg rect[fill="transparent"]'));
@@ -122,6 +133,18 @@ const inspectorSeed = () => [
   }),
   pt({ bucket: daysAgo(1), source: 'codex', totalTokens: 120, byModel: { c1: 80, c2: 40 } }),
 ];
+
+// Local-midnight epoch seconds for the day N days ago, and the top of hour H
+// today — the exact bounds bucketFilters() produces.
+const dayTs = (n: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000);
+};
+const hourTs = (hh: number) => {
+  const d = new Date();
+  return Math.floor(new Date(d.getFullYear(), d.getMonth(), d.getDate(), hh).getTime() / 1000);
+};
 
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
@@ -317,20 +340,22 @@ describe('Usage-trend Enlarge', () => {
   it('ignores a window Summary that resolves after a newer window change', async () => {
     const { container: c, ledger } = await mount();
     ledger.hold('summary');
-    await open(c); // fetch #0 (Total) held
+    await open(c); // Total window fetch held (unbounded → no endTs)
+    const totalIdx = heldIdx(ledger, (f) => isWindow(f) && f.startTs === undefined);
     expect(footText()).toContain('…');
 
-    await act(async () => modalRangeButton('Week').click()); // fetch #1 (Week) held
+    await act(async () => modalRangeButton('Week').click()); // Week window fetch held
     expect(footText()).toContain('…');
+    const weekIdx = heldIdx(ledger, (f) => isWindow(f) && f.startTs !== undefined);
 
     // The abandoned Total fetch resolving must not land…
-    await act(async () => ledger.resolveHeld('summary', 0, { ...summary, cost: 111.11 }));
+    await act(async () => ledger.resolveHeld('summary', totalIdx, { ...summary, cost: 111.11 }));
     await settle(1);
     expect(footText()).toContain('…');
     expect(footText()).not.toContain('$111.11');
 
     // …only the current window's own fetch may.
-    await act(async () => ledger.resolveHeld('summary', 1, { ...summary, cost: 2.22 }));
+    await act(async () => ledger.resolveHeld('summary', weekIdx, { ...summary, cost: 2.22 }));
     await settle(1);
     expect(footText()).toContain('$2.22');
   });
@@ -412,5 +437,80 @@ describe('Usage-trend Enlarge', () => {
     expect(document.querySelector('.tt-tip')).toBeNull();
     await clickBar(0);
     expect(document.querySelector('.tt-tip')).toBeNull();
+  });
+
+  it('fetches a Summary bounded to exactly the selected day', async () => {
+    const { container: c, ledger } = await mount({}, inspectorSeed());
+    await open(c); // peak (daysAgo 1) preselected → its own bounded fetch
+    const bounded = ledger.calls.summary.map((a) => a[0] as Filters);
+    // [midnight of the peak day, midnight of the next day).
+    expect(bounded.some((f) => f.startTs === dayTs(1) && f.endTs === dayTs(0))).toBe(true);
+  });
+
+  it('fetches hourly bounds for a bucket in a local Day window', async () => {
+    const { container: c, ledger } = await mount(
+      {},
+      [pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 300, byModel: { m1: 300 } })],
+      [
+        pt({ bucket: `${daysAgo(0)} 09:00`, source: 'claude', totalTokens: 500, byModel: { m1: 500 } }),
+        pt({ bucket: `${daysAgo(0)} 10:00`, source: 'claude', totalTokens: 100, byModel: { m1: 100 } }),
+      ],
+    );
+    await open(c);
+    await act(async () => modalRangeButton('Day').click());
+    await settle(1);
+
+    // Peak hour (09:00) selected → a Summary bounded to [09:00, 10:00).
+    const bounded = ledger.calls.summary.map((a) => a[0] as Filters);
+    expect(bounded.some((f) => f.startTs === hourTs(9) && f.endTs === hourTs(10))).toBe(true);
+  });
+
+  it('shows a placeholder in the cost row while the bucket Summary is in flight', async () => {
+    const { container: c, ledger } = await mount({}, inspectorSeed());
+    ledger.hold('summary');
+    await open(c);
+    expect(costText()).toContain('…');
+    expect(costText()).not.toContain('$');
+  });
+
+  it('ignores a bucket Summary that resolves after a newer selection', async () => {
+    const { container: c, ledger } = await mount({}, inspectorSeed());
+    ledger.hold('summary');
+    await open(c); // peak (daysAgo 1) bucket fetch held
+    await clickBar(0); // pin daysAgo 2 → its own bucket fetch held
+
+    const peakIdx = heldIdx(ledger, (f) => isBucket(f) && f.startTs === dayTs(1));
+    const pinnedIdx = heldIdx(ledger, (f) => isBucket(f) && f.startTs === dayTs(2));
+
+    // The superseded peak fetch resolving must not land…
+    await act(async () => ledger.resolveHeld('summary', peakIdx, { ...summary, cost: 999 }));
+    await settle(1);
+    expect(costText()).toContain('…');
+    expect(costText()).not.toContain('$999');
+
+    // …only the current selection's own fetch may.
+    await act(async () => ledger.resolveHeld('summary', pinnedIdx, { ...summary, cost: 5.5 }));
+    await settle(1);
+    expect(costText()).toContain('$5.50');
+  });
+
+  it('renders the bucket cost with Partial-Cost and unpriced markers', async () => {
+    const { container: c } = await mount(
+      { cost: 9.99, hasUnpriced: true, unpricedModels: ['self-hosted-x'] },
+      inspectorSeed(),
+    );
+    await open(c);
+    expect(costText()).toContain('≥ $9.99');
+    expect(costText()).toContain('1 unpriced');
+  });
+
+  it('never renders $0 for a fully unpriced bucket', async () => {
+    const { container: c } = await mount(
+      { cost: null, hasUnpriced: true, unpricedModels: ['x', 'y'] },
+      inspectorSeed(),
+    );
+    await open(c);
+    expect(costText()).toContain('unpriced');
+    expect(costText()).not.toContain('$0');
   });
 });
