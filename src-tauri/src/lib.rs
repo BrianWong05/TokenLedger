@@ -59,6 +59,7 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
         run_scan(&mut db, &state.roots)
     };
     tray::set_last_scan(app, &status);
+    tray::refresh(app);
     Ok(status)
 }
 
@@ -181,9 +182,19 @@ fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-fn set_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    settings::set_settings(&db, &settings).map_err(|e| e.to_string())
+fn set_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Settings,
+) -> Result<(), String> {
+    {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        settings::set_settings(&db, &settings).map_err(|e| e.to_string())?;
+    }
+    // A Display Currency change must reach the bar title promptly, not on the
+    // next scan tick.
+    tray::refresh(&app);
+    Ok(())
 }
 
 #[tauri::command]
