@@ -69,6 +69,15 @@ export const overview = {
     'overview.peak': 'peak',
     'overview.perToolTrend': 'Per-tool trend',
 
+    // usage-trend enlarge — bucket inspector (design 1b)
+    'overview.trend.selDay': 'Selected day',
+    'overview.trend.selHour': 'Selected hour',
+    'overview.trend.selWeek': 'Selected week',
+    'overview.trend.selMonth': 'Selected month',
+    'overview.trend.vsAvg': 'vs avg',
+    'overview.trend.byModel': 'By model',
+    'overview.trend.moreModels': 'more models',
+
     // token breakdown
     'overview.tokenBreakdown': 'Token Breakdown',
     'overview.cacheHitRate': 'Cache hit rate',
@@ -205,6 +214,15 @@ export const overview = {
     'overview.per.month': '月',
     'overview.peak': '尖峰',
     'overview.perToolTrend': '各工具趨勢',
+
+    // usage-trend enlarge — bucket inspector (design 1b)
+    'overview.trend.selDay': '所選日',
+    'overview.trend.selHour': '所選時段',
+    'overview.trend.selWeek': '所選週',
+    'overview.trend.selMonth': '所選月',
+    'overview.trend.vsAvg': '對比平均',
+    'overview.trend.byModel': '依模型',
+    'overview.trend.moreModels': '個其他模型',
 
     'overview.tokenBreakdown': 'Token 明細',
     'overview.cacheHitRate': '快取命中率',

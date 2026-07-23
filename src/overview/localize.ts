@@ -91,6 +91,14 @@ export const PER_UNIT_KEY: Record<string, OverviewKey> = {
   month: 'overview.per.month',
 };
 
+// Granularity -> the trend enlarge inspector's "Selected {unit}" heading.
+export const SEL_HEADING_KEY: Record<string, OverviewKey> = {
+  hour: 'overview.trend.selHour',
+  day: 'overview.trend.selDay',
+  week: 'overview.trend.selWeek',
+  month: 'overview.trend.selMonth',
+};
+
 // Render a USD Cost in the Display Currency, preserving the ≥ (Partial Cost)
 // prefix and null→unpriced label. USD delegates to lib/format so it is
 // byte-identical to today (including adaptive precision); any other currency

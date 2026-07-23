@@ -1578,11 +1578,23 @@
 .tt-trend-modal-custom {
   padding: 12px 28px;
 }
+/* body = chart+footer column (main) beside the pinned inspector */
+.tt-trend-modal-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.tt-trend-modal-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
 .tt-trend-modal-chart {
   flex: 1;
   min-height: 0;
   display: flex;
-  padding: 20px 28px 4px;
+  padding: 20px 20px 4px 28px;
 }
 .tt-trend-modal-foot {
   display: flex;
@@ -1616,6 +1628,144 @@
 }
 .tt-trend-modal-stats .stat span.mark {
   display: block;
+  color: var(--text-tertiary);
+}
+
+/* pinned bucket inspector (design 1b) */
+.tt-trend-insp {
+  width: 320px;
+  flex: none;
+  margin: 20px 24px 20px 4px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+}
+.tt-trend-insp .eyebrow {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.tt-trend-insp-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.tt-trend-insp-head .date {
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.tt-trend-insp-head .rank {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 650;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--info-subtle);
+  color: var(--info-text);
+  font-variant-numeric: tabular-nums;
+}
+.tt-trend-insp-tok {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 16px 0 3px;
+}
+.tt-trend-insp-tok .val {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
+}
+.tt-trend-insp-tok .unit {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.tt-trend-insp-delta {
+  font-size: 12px;
+  font-weight: 600;
+}
+.tt-trend-insp-delta.up {
+  color: var(--success-text);
+}
+.tt-trend-insp-delta.down {
+  color: var(--danger-text);
+}
+.tt-trend-insp-div {
+  height: 1px;
+  background: var(--border-subtle);
+  margin: 16px 0 14px;
+}
+.tt-trend-insp-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+  overflow-y: auto;
+}
+.tt-trend-insp-row .lab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.tt-trend-insp-row .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-tertiary);
+}
+.tt-trend-insp-row .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-family: var(--tt-mono);
+}
+.tt-trend-insp-row.more .name {
+  color: var(--text-tertiary);
+}
+.tt-trend-insp-row .num {
+  flex: none;
+  color: var(--text-primary);
+  font-family: var(--tt-mono);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tt-trend-insp-row .num .pct {
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+.tt-trend-insp-row .track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-inset);
+  overflow: hidden;
+}
+.tt-trend-insp-row .track .fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--text-tertiary);
+}
+.tt-trend-insp-empty {
+  font-size: 12px;
   color: var(--text-tertiary);
 }
 

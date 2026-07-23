@@ -103,6 +103,25 @@ const modalRangeButton = (label: string) =>
 const pageActiveRange = (c: HTMLElement) =>
   c.querySelector<HTMLElement>('.tt-toolbar .tt-seg .active')!.textContent;
 const footText = () => dialog()!.querySelector('.tt-trend-modal-foot')!.textContent!;
+const inspText = () => dialog()!.querySelector('.tt-trend-insp')!.textContent!;
+const barGroups = () => Array.from(dialog()!.querySelectorAll('svg g[opacity]'));
+const hitRects = () => Array.from(dialog()!.querySelectorAll<SVGRectElement>('svg rect[fill="transparent"]'));
+const outlineRect = () => dialog()!.querySelector<SVGRectElement>('svg rect[stroke]');
+const clickBar = (i: number) =>
+  act(async () => hitRects()[i].dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+// A window with a clear peak (daysAgo 1 = 800) that carries eight models across
+// two sources, so the inspector shows a top-6 split plus a "2 more models" row.
+// The window zero-fills up to today, so it holds three buckets: [daysAgo 2,
+// daysAgo 1, today] → the peak sits at index 1.
+const inspectorSeed = () => [
+  pt({ bucket: daysAgo(2), source: 'claude', totalTokens: 200, byModel: { m1: 200 } }),
+  pt({
+    bucket: daysAgo(1), source: 'claude', totalTokens: 680,
+    byModel: { m1: 300, m2: 150, m3: 100, m4: 60, m5: 40, m6: 30 },
+  }),
+  pt({ bucket: daysAgo(1), source: 'codex', totalTokens: 120, byModel: { c1: 80, c2: 40 } }),
+];
 
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
@@ -314,5 +333,84 @@ describe('Usage-trend Enlarge', () => {
     await act(async () => ledger.resolveHeld('summary', 1, { ...summary, cost: 2.22 }));
     await settle(1);
     expect(footText()).toContain('$2.22');
+  });
+
+  it('opens with the window peak selected and its top-6 model split', async () => {
+    const { container: c } = await mount({}, inspectorSeed());
+    await open(c);
+
+    const insp = inspText();
+    expect(insp).toContain('Selected day'); // per=day heading
+    expect(insp).toContain('#1 / 3'); // peak is rank 1 of the 3 buckets
+    expect(insp).toContain('800'); // the peak bucket's tokens
+    // Peak is above the window average → green "up" delta.
+    expect(dialog()!.querySelector('.tt-trend-insp-delta.up')).not.toBeNull();
+
+    // Eight models → six rows plus one muted "2 more models" remainder row.
+    const rows = dialog()!.querySelectorAll('.tt-trend-insp-row');
+    expect(rows).toHaveLength(7);
+    const more = dialog()!.querySelector('.tt-trend-insp-row.more')!;
+    expect(more.textContent).toContain('2 more models');
+    // Top-6 names shown; the folded pair is not.
+    expect(insp).toContain('m4');
+    expect(insp).toContain('m5');
+    expect(insp).not.toContain('m6');
+    expect(insp).not.toContain('c2');
+  });
+
+  it('moves the selection to a clicked bar, dimming the rest', async () => {
+    const { container: c } = await mount({}, inspectorSeed());
+    await open(c);
+    const peakOutlineX = Number(outlineRect()!.getAttribute('x'));
+
+    await clickBar(0); // the earlier, smaller bucket (200)
+
+    const insp = inspText();
+    expect(insp).toContain('200');
+    expect(insp).toContain('#2 / 3');
+    // Below the window average → red "down" delta.
+    expect(dialog()!.querySelector('.tt-trend-insp-delta.down')).not.toBeNull();
+
+    // Selected bar solid, the others dimmed.
+    const groups = barGroups();
+    expect(groups[0].getAttribute('opacity')).toBe('1');
+    expect(groups[1].getAttribute('opacity')).toBe('0.42');
+    expect(groups[2].getAttribute('opacity')).toBe('0.42');
+    // The selection outline moved left to the clicked (earlier) bar.
+    expect(Number(outlineRect()!.getAttribute('x'))).toBeLessThan(peakOutlineX);
+  });
+
+  it('resets the selection to the new peak when the window changes', async () => {
+    const { container: c } = await mount({}, inspectorSeed());
+    await open(c);
+    await clickBar(0); // pin the small bucket
+    expect(inspText()).toContain('#2 / 3');
+
+    // Both seeded days are still inside the trailing week, so the peak is the
+    // same bucket — but the selection must snap back to it, not stay pinned.
+    await act(async () => modalRangeButton('Week').click());
+    expect(inspText()).toContain('800');
+    expect(inspText()).toContain('#1 /');
+  });
+
+  it('keeps the selection across a background refresh of the same window', async () => {
+    const { container: c, ledger } = await mount({}, inspectorSeed());
+    await open(c);
+    await clickBar(0);
+    expect(inspText()).toContain('#2 / 3');
+
+    // A store-driven re-render (prices rebuilt → reload) must not reset the pin.
+    await act(async () => ledger.emitPricesRebuilt());
+    await settle(1);
+    expect(inspText()).toContain('200');
+    expect(inspText()).toContain('#2 / 3');
+  });
+
+  it('renders no hover tooltip inside the dialog', async () => {
+    const { container: c } = await mount({}, inspectorSeed());
+    await open(c);
+    expect(document.querySelector('.tt-tip')).toBeNull();
+    await clickBar(0);
+    expect(document.querySelector('.tt-tip')).toBeNull();
   });
 });

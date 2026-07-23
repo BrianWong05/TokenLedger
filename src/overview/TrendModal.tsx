@@ -3,16 +3,18 @@ import type { SeriesPoint, Summary } from '../types';
 import { modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
-import { fmtTok } from '../lib/format';
+import { fmtPct, fmtTok } from '../lib/format';
 import {
   fmtIsoDateL,
   formatDisplayCost,
+  monthShortL,
   PER_UNIT_KEY,
   RANGE_LABEL_KEY,
   RANGE_LONG_KEY,
+  SEL_HEADING_KEY,
   useOverviewT,
 } from './localize';
-import { useChartColors } from '../lib/chartColors';
+import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import { useDialogChrome } from './useDialogChrome';
 
@@ -23,7 +25,10 @@ import { useDialogChrome } from './useDialogChrome';
 // figures and Est. cost all describe the dialog's local window — buckets from
 // the shared trendSlice (its own hourly fetch for a Day window), Cost from a
 // per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
-// enlarge). The bucket inspector + per-bucket cost + CSV land in later slices.
+// enlarge). Exactly one bucket is always selected — the window's peak until a
+// bar is clicked — and the right-hand inspector reads it out (rank, delta vs
+// the window average, per-model split). The inspector's per-bucket Cost and CSV
+// export land in later slices.
 
 // Chart geometry in viewBox units (full-width, larger than the card).
 const VW = 1000;
@@ -132,6 +137,48 @@ export default function TrendModal({
   const costLabel =
     summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
 
+  // Exactly one bucket is always selected. The selection is keyed by bucket key
+  // AND its window: a window change (new winId) drops the old key back to the
+  // peak, while a background refresh (same window) keeps the key if it survives.
+  const winId = `${range}|${from}|${to}`;
+  const [sel, setSel] = useState<{ win: string; key: string } | null>(null);
+  const peak = data.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
+  const activeKey = sel && sel.win === winId ? sel.key : null;
+  const selBucket = data.find((b) => b.key === activeKey) ?? peak;
+  const selIndex = selBucket ? data.indexOf(selBucket) : -1;
+
+  // Inspector read-outs for the selected bucket.
+  const selRank = selBucket ? 1 + data.filter((b) => b.total > selBucket.total).length : 0;
+  const selDeltaPct = selBucket && avg > 0 ? Math.round((selBucket.total / avg - 1) * 100) : 0;
+  const selDate = (b: Bucket) =>
+    per === 'hour'
+      ? b.key.slice(11, 16)
+      : per === 'month'
+        ? `${monthShortL(parseInt(b.key.slice(5, 7), 10) - 1, lang)} ${b.key.slice(0, 4)}`
+        : fmtIsoDateL(b.key, lang);
+  // Top-6 models in the selected bucket, largest first; the rest fold into one
+  // muted remainder row (color '' → grey).
+  const selRows: { key: string; name: string; val: number; color: string; more: boolean }[] = [];
+  if (selBucket) {
+    const ranked = Object.entries(selBucket.byModel)
+      .filter(([, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1]);
+    for (const [m, v] of ranked.slice(0, 6)) selRows.push({ key: m, name: m, val: v, color: modelColor(modelTool, m), more: false });
+    const rest = ranked.slice(6);
+    if (rest.length) {
+      selRows.push({
+        key: '__more__',
+        name: `${rest.length} ${t('overview.trend.moreModels')}`,
+        val: rest.reduce((a, [, v]) => a + v, 0),
+        color: '',
+        more: true,
+      });
+    }
+  }
+  const selTotal = selBucket?.total ?? 0;
+  // WebKit can't resolve var() in an SVG stroke; pick the outline per theme.
+  const outline = colors === CHART_LIGHT ? '#12151b' : '#e8ecf4';
+
   return (
     <div
       className="tt-trend-modal-backdrop"
@@ -203,65 +250,125 @@ export default function TrendModal({
           </div>
         )}
 
-        <div className="tt-trend-modal-chart">
-          <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }}>
-            {grid.map((g, i) => (
-              <g key={i}>
-                <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke={colors.grid} strokeWidth={1} />
-                <text x={PL - 6} y={g.y} dy={3.4} fontSize={11} textAnchor="end" style={{ fill: 'var(--text-tertiary)' }}>
-                  {g.label}
-                </text>
-              </g>
-            ))}
-            {data.map((b, i) => {
-              const x = PL + i * slot + (slot - barW) / 2;
-              let y = BASE;
-              return (
-                <g key={i}>
-                  {segsOf(b).map((s) => {
-                    const seg = h(s.val);
-                    y -= seg;
-                    return <rect key={s.key} x={x} y={y} width={barW} height={Math.max(0, seg)} fill={s.color} />;
-                  })}
-                </g>
-              );
-            })}
-            {data.map((b, i) => (
-              <text key={'x' + i} x={PL + i * slot + slot / 2} y={LABEL_Y} fontSize={11} textAnchor="middle" style={{ fill: 'var(--text-tertiary)' }}>
-                {i % labelStep ? '' : b.label}
-              </text>
-            ))}
-          </svg>
-        </div>
+        <div className="tt-trend-modal-body">
+          <div className="tt-trend-modal-main">
+            <div className="tt-trend-modal-chart">
+              <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }}>
+                {grid.map((g, i) => (
+                  <g key={i}>
+                    <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke={colors.grid} strokeWidth={1} />
+                    <text x={PL - 6} y={g.y} dy={3.4} fontSize={11} textAnchor="end" style={{ fill: 'var(--text-tertiary)' }}>
+                      {g.label}
+                    </text>
+                  </g>
+                ))}
+                {data.map((b, i) => {
+                  const x = PL + i * slot + (slot - barW) / 2;
+                  let y = BASE;
+                  return (
+                    <g key={i} opacity={selIndex === i ? 1 : 0.42} style={{ transition: 'opacity .15s' }}>
+                      {segsOf(b).map((s) => {
+                        const seg = h(s.val);
+                        y -= seg;
+                        return <rect key={s.key} x={x} y={y} width={barW} height={Math.max(0, seg)} fill={s.color} />;
+                      })}
+                    </g>
+                  );
+                })}
+                {selIndex >= 0 && (
+                  <rect
+                    x={PL + selIndex * slot + (slot - barW) / 2 - 2.5}
+                    y={BASE - h(selTotal) - 2.5}
+                    width={barW + 5}
+                    height={h(selTotal) + 5}
+                    rx={3}
+                    fill="none"
+                    stroke={outline}
+                    strokeWidth={1.5}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                )}
+                {data.map((b, i) => (
+                  <text key={'x' + i} x={PL + i * slot + slot / 2} y={LABEL_Y} fontSize={11} textAnchor="middle" style={{ fill: 'var(--text-tertiary)' }}>
+                    {i % labelStep ? '' : b.label}
+                  </text>
+                ))}
+                {data.map((b, i) => (
+                  <rect key={'hit' + i} x={PL + i * slot} y={PT} width={slot} height={BASE - PT} fill="transparent" onClick={() => setSel({ win: winId, key: b.key })} style={{ cursor: 'pointer' }} />
+                ))}
+              </svg>
+            </div>
 
-        <div className="tt-trend-modal-foot">
-          <div className="tt-trend-modal-stats">
-            <div className="stat">
-              <b>{fmtTok(total)}</b>
-              <span>{t('overview.total')} · {rangeLabel}</span>
-            </div>
-            <div className="stat">
-              <b>{fmtTok(avg)}</b>
-              <span>{t('overview.avg')} / {t(PER_UNIT_KEY[per])}</span>
-            </div>
-            <div className="stat">
-              <b className="cost">{costLabel}</b>
-              <span>{t('overview.estCost')}</span>
-              {summary?.hasUnpriced && (
-                <span className="mark" title={summary.unpricedModels.join(', ')}>
-                  {summary.unpricedModels.length} {t('overview.unpricedMarker')}
-                </span>
-              )}
+            <div className="tt-trend-modal-foot">
+              <div className="tt-trend-modal-stats">
+                <div className="stat">
+                  <b>{fmtTok(total)}</b>
+                  <span>{t('overview.total')} · {rangeLabel}</span>
+                </div>
+                <div className="stat">
+                  <b>{fmtTok(avg)}</b>
+                  <span>{t('overview.avg')} / {t(PER_UNIT_KEY[per])}</span>
+                </div>
+                <div className="stat">
+                  <b className="cost">{costLabel}</b>
+                  <span>{t('overview.estCost')}</span>
+                  {summary?.hasUnpriced && (
+                    <span className="mark" title={summary.unpricedModels.join(', ')}>
+                      {summary.unpricedModels.length} {t('overview.unpricedMarker')}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="tt-legend">
+                {TOOLS.filter((tl) => data.some((b) => b.byTool[tl.key] > 0)).map((tl) => (
+                  <span className="item" key={tl.key}>
+                    <span className="sw" style={{ background: tl.color }} />
+                    {tl.label}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
-          <div className="tt-legend">
-            {TOOLS.filter((tl) => data.some((b) => b.byTool[tl.key] > 0)).map((tl) => (
-              <span className="item" key={tl.key}>
-                <span className="sw" style={{ background: tl.color }} />
-                {tl.label}
-              </span>
-            ))}
-          </div>
+
+          <aside className="tt-trend-insp">
+            {selBucket && (
+              <>
+                <div className="tt-trend-insp-head">
+                  <div>
+                    <div className="eyebrow">{t(SEL_HEADING_KEY[per])}</div>
+                    <div className="date">{selDate(selBucket)}</div>
+                  </div>
+                  <span className="rank">#{selRank} / {data.length}</span>
+                </div>
+                <div className="tt-trend-insp-tok">
+                  <span className="val">{fmtTok(selTotal)}</span>
+                  <span className="unit">{t('overview.tokens')}</span>
+                </div>
+                <div className={'tt-trend-insp-delta ' + (selDeltaPct >= 0 ? 'up' : 'down')}>
+                  {selDeltaPct >= 0 ? '+' : '−'}{Math.abs(selDeltaPct)}% {t('overview.trend.vsAvg')}
+                </div>
+                <div className="tt-trend-insp-div" />
+                <div className="eyebrow">{t('overview.trend.byModel')}</div>
+                <div className="tt-trend-insp-rows">
+                  {selRows.map((r) => (
+                    <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
+                      <div className="lab">
+                        <span className="dot" style={r.more ? undefined : { background: r.color }} />
+                        <span className="name">{r.name}</span>
+                        <span className="num">
+                          {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (selTotal || 1))}</span>
+                        </span>
+                      </div>
+                      <div className="track">
+                        <div className="fill" style={{ width: (r.val / (selTotal || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
+                      </div>
+                    </div>
+                  ))}
+                  {selRows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
+                </div>
+              </>
+            )}
+          </aside>
         </div>
       </section>
     </div>
