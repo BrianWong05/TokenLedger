@@ -314,6 +314,37 @@ describe('Overview presentation', () => {
     expect(rows.some((r) => r.includes('gpt-5.6-sol') && r.includes('Codex'))).toBe(true);
   });
 
+  it('attributes a Model shared by two Sources per bucket, not range-wide', async () => {
+    // codex ran gpt-5.6-sol on the 16th, pi ran the SAME model name on the 17th.
+    // A range-wide model->Source map is last-write-wins, so it would label the
+    // 16th "pi"; the 16th's row must say Codex.
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ bucket: '2026-07-16', source: 'codex', totalTokens: 90, byModel: { 'gpt-5.6-sol': 90 } }),
+        pt({ bucket: '2026-07-17', source: 'pi', totalTokens: 40, byModel: { 'gpt-5.6-sol': 40 } }),
+      ],
+      summary,
+    });
+    const card = Array.from(c.querySelectorAll('.tt-card')).find(
+      (el) => el.querySelector('.tt-title')?.textContent === 'Usage over time',
+    )!;
+    const hits = Array.from(card.querySelectorAll<SVGRectElement>('rect')).filter(
+      (rect) => rect.getAttribute('fill') === 'transparent',
+    );
+    const rowText = async (hit: SVGRectElement) => {
+      await act(async () => hit.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+      return card.querySelector('.tt-tip-row .lab span:first-child')?.textContent ?? '';
+    };
+    // Buckets are zero-filled across the window, so pick the two with usage.
+    const texts: string[] = [];
+    for (const hit of hits) {
+      const text = await rowText(hit);
+      if (text.includes('gpt-5.6-sol')) texts.push(text);
+    }
+    expect(texts.some((r) => r.includes('Codex'))).toBe(true);
+    expect(texts.some((r) => r.includes('pi'))).toBe(true);
+  });
+
   it('keeps the usage-trend y-axis labels out of the plot area', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'claude', totalTokens: 300, byModel: { 'claude-opus-4-8': 300 } })],

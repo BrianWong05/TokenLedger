@@ -54,12 +54,28 @@ function AggTrend({
   // by tool keeps each bar reading as contiguous tool blocks.
   const colorOf = (m: string) => modelColor(modelTool, m);
   // Two Sources can run the same Model name (pi and codex both report
-  // `gpt-5.6-sol`), so a bare model name is ambiguous. Name the owning Source
-  // from the same map that picks the segment colour, so label and colour agree.
-  const sourceOf = (m: string) => TOOLS.find((tl) => tl.key === modelTool[m])?.label;
+  // `gpt-5.6-sol`), so the range-wide modelTool map names the wrong owner for
+  // some buckets. Resolve the owner from the bucket itself; fall back to the
+  // range-wide map only when the bucket carries no per-Model Sources.
+  const ownersIn = (b: Bucket, m: string): string[] => {
+    const owners = b.modelSources?.[m];
+    if (owners?.length) return owners;
+    return modelTool[m] ? [modelTool[m]] : [];
+  };
+  const toolOf = (key: string) => TOOLS.find((tl) => tl.key === key);
+  const sourceIn = (b: Bucket, m: string) => {
+    const labels = ownersIn(b, m).map((k) => toolOf(k)?.label ?? k);
+    return labels.length ? labels.join(' + ') : undefined;
+  };
+  // One owner in this bucket → that Source's colour; mixed/unknown keeps the
+  // range-wide colour so a segment never claims a Source it may not be.
+  const colorIn = (b: Bucket, m: string) => {
+    const owners = ownersIn(b, m);
+    return owners.length === 1 ? toolOf(owners[0])?.color ?? colorOf(m) : colorOf(m);
+  };
   const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
   const segsOf = (b: Bucket) => [
-    ...models.map((m) => ({ key: m, color: colorOf(m), val: b.byModel[m] ?? 0 })),
+    ...models.map((m) => ({ key: m, color: colorIn(b, m), val: b.byModel[m] ?? 0 })),
     ...(b.unattributedTokens > 0
       ? [{ key: 'unattributed-usage', color: UNATTRIBUTED_COLOR, val: b.unattributedTokens }]
       : []),
@@ -69,7 +85,7 @@ function AggTrend({
   const tipRows = shown
     ? [
         ...rankedModels(shown.byModel).map(([m, v]) => ({
-          key: m, label: m, source: sourceOf(m), val: v, color: colorOf(m),
+          key: m, label: m, source: sourceIn(shown, m), val: v, color: colorIn(shown, m),
         })),
         ...(shown.unattributedTokens > 0
           ? [{

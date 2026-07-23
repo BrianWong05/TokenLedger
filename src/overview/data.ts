@@ -80,6 +80,11 @@ export interface Bucket {
   label: string;
   byTool: Record<ToolKey, number>;
   byModel: Record<string, number>;
+  // Source(s) that produced each Model IN THIS BUCKET. byModel merges a Model's
+  // tokens across Sources, and two Sources can run the same Model name (pi and
+  // codex both report `gpt-5.6-sol`), so a range-wide model->Source map picks
+  // the wrong owner for some buckets. Optional: only bucketsFromPoints fills it.
+  modelSources?: Record<string, string[]>;
   unattributedTokens: number;
   hasUnpriced: boolean;
   total: number;
@@ -373,16 +378,24 @@ export function bucketsFromPoints(
   const map = new Map<string, {
     byTool: Record<ToolKey, number>;
     byModel: Record<string, number>;
+    modelSources: Record<string, string[]>;
     unattributedTokens: number;
     hasUnpriced: boolean;
   }>();
   for (const p of pts) {
     const k = keyOf(p);
     const g = map.get(k) ?? {
-      byTool: emptyByTool(), byModel: {}, unattributedTokens: 0, hasUnpriced: false,
+      byTool: emptyByTool(), byModel: {}, modelSources: {},
+      unattributedTokens: 0, hasUnpriced: false,
     };
     if (p.source in g.byTool) g.byTool[p.source as ToolKey] += p.totalTokens;
-    for (const [m, v] of Object.entries(p.byModel)) g.byModel[m] = (g.byModel[m] ?? 0) + v;
+    for (const [m, v] of Object.entries(p.byModel)) {
+      g.byModel[m] = (g.byModel[m] ?? 0) + v;
+      // Remember who produced it here, so a Model name shared by two Sources is
+      // attributed per bucket rather than range-wide.
+      const owners = (g.modelSources[m] ??= []);
+      if (!owners.includes(p.source)) owners.push(p.source);
+    }
     g.unattributedTokens += p.unattributedTokens;
     g.hasUnpriced ||= p.hasUnpriced;
     map.set(k, g);
@@ -397,13 +410,15 @@ export function bucketsFromPoints(
   const keys = fromIso && toIso ? allKeys(per, fromIso, toIso) : [...map.keys()].sort();
   const out = keys.map((k) => {
     const g = map.get(k) ?? {
-      byTool: emptyByTool(), byModel: {}, unattributedTokens: 0, hasUnpriced: false,
+      byTool: emptyByTool(), byModel: {}, modelSources: {},
+      unattributedTokens: 0, hasUnpriced: false,
     };
     return {
       key: k,
       label: labelOf(k),
       byTool: g.byTool,
       byModel: g.byModel,
+      modelSources: g.modelSources,
       unattributedTokens: g.unattributedTokens,
       hasUnpriced: g.hasUnpriced,
       total: (Object.values(g.byTool) as number[]).reduce((a, b) => a + b, 0),
