@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "TokenLedger",
@@ -20,6 +21,20 @@
         "height": 780,
         "minWidth": 900,
         "minHeight": 640
+      },
+      {
+        "label": "traypanel",
+        "url": "index.html?panel=1",
+        "title": "TokenLedger Panel",
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "width": 300,
+        "height": 400
       }
     ],
     "security": {

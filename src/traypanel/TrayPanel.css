@@ -1,0 +1,81 @@
+/* Design 2b's panel, lifted from the mock's inline styles (Menu Bar -
+   Options.dc.html #2b). Dark-only, like the mock. The window itself is
+   transparent; .tp paints the rounded card. */
+html, body, #root {
+  background: transparent;
+  margin: 0;
+}
+
+.tp {
+  width: 300px;
+  box-sizing: border-box;
+  background: #1e1e24;
+  border: 1px solid #3f3f47;
+  border-radius: 8px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  padding: 5px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  color: #f2f2f5;
+  -webkit-user-select: none;
+  user-select: none;
+  overflow: hidden;
+}
+
+.tp-header { padding: 7px 10px 8px; }
+.tp-caption-row { display: flex; align-items: baseline; justify-content: space-between; }
+.tp-caption {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #6e6e76;
+}
+.tp-delta { font-family: ui-monospace, monospace; font-size: 11px; }
+.tp-delta.up { color: #7bd3aa; }
+.tp-delta.down { color: #e2937e; }
+.tp-cost-row { display: flex; align-items: baseline; gap: 8px; margin-top: 3px; }
+.tp-cost { font-family: ui-monospace, monospace; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+.tp-sub { font-family: ui-monospace, monospace; font-size: 12px; color: #a3a3ab; }
+.tp-empty { margin-top: 3px; font-size: 13px; color: #6e6e76; }
+
+.tp-sep { height: 1px; background: #35353c; margin: 4px 10px; }
+
+.tp-row {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  gap: 8px;
+}
+.tp-row img { display: block; }
+.tp-icon-gap { width: 13px; }
+.tp-row-label { color: #f2f2f5; }
+.tp-spacer { flex: 1; }
+.tp-row-tokens { font-family: ui-monospace, monospace; font-size: 11px; color: #6e6e76; }
+.tp-row-cost {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #a3a3ab;
+  min-width: 42px;
+  text-align: right;
+}
+
+.tp-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  font: inherit;
+  color: #f2f2f5;
+  text-align: left;
+  cursor: default;
+}
+.tp-action:hover { background: #7c6bf2; color: #fff; }
+.tp-action:hover .tp-key { color: rgba(255, 255, 255, 0.75); }
+.tp-key { color: #6e6e76; font-size: 12px; }

@@ -2,22 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "vite-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 1420
-    },
-    {
-      "name": "vite-worktree",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "4321", "--strictPort"],
-      "port": 4321
-    },
-    {
-      "name": "vite-preview",
+      "name": "panel-preview",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "preview", "--port", "4319", "--strictPort"],
-      "port": 4319
+      "runtimeArgs": ["vite", "--port", "1425", "--strictPort"],
+      "port": 1425
     }
   ]
 }

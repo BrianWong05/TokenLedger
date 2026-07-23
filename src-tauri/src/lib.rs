@@ -174,6 +174,25 @@ fn delete_model_override(
     app.emit("prices-rebuilt", ()).map_err(|e| e.to_string())
 }
 
+// The traypanel's four actions (src/traypanel/TrayPanel.tsx). Rescan reuses
+// the `scan` command; these three are window/lifecycle glue.
+#[tauri::command]
+fn show_main(app: AppHandle) {
+    tray::show_main(&app);
+}
+
+#[tauri::command]
+fn open_settings(app: AppHandle) -> Result<(), String> {
+    tray::show_main(&app);
+    // The shell's onOpenSettings listener lands on the Settings tab.
+    app.emit("open-settings", ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 #[tauri::command]
 fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -235,6 +254,13 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            // The traypanel behaves like a menu: clicking anywhere else
+            // (focus loss) dismisses it.
+            if let tauri::WindowEvent::Focused(false) = event {
+                if window.label() == "traypanel" {
                     let _ = window.hide();
                 }
             }
@@ -326,6 +352,9 @@ pub fn run() {
             model_pricing,
             set_model_override,
             delete_model_override,
+            show_main,
+            open_settings,
+            quit_app,
             get_settings,
             set_settings,
             check_updates,

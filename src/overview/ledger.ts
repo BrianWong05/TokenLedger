@@ -28,7 +28,7 @@ export interface LedgerPort {
   scan(): Promise<ScanStatus>;
   series(filters: Filters, bucket: 'day' | 'hour'): Promise<SeriesPoint[]>;
   summary(filters: Filters): Promise<Summary>;
-  breakdown(by: 'model' | 'project', filters: Filters): Promise<BreakdownRow[]>;
+  breakdown(by: 'model' | 'project' | 'tool', filters: Filters): Promise<BreakdownRow[]>;
   ctxResources(filters: Filters): Promise<CtxResourceCount[]>;
   ctxBuckets(filters: Filters): Promise<CtxBuckets[]>;
   ctxTools(filters: Filters): Promise<CtxToolRow[]>;

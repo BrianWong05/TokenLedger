@@ -1,5 +1,10 @@
 # Menu bar stats render as a native menu, not a webview panel
 
+**Superseded by ADR-0007**: after two failed sign-offs on readability and
+fidelity, the native menu was replaced by the webview panel this ADR argued
+against. Kept for the reasoning; the amendment below records the first
+partial reversal.
+
 The Menu Bar Extra's stats — the Today header and the per-Source rows of
 design 2b ("Menu Bar - Options", the ★ pick) — render as disabled items in a
 real native menu. The styled mock is not reproduced: no 19px spend figure, no
