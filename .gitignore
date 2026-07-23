@@ -22,3 +22,12 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Agent tooling — generated scratch/output, regenerated on demand
+.planning/
+graphify-out/
+
+# Agent tooling — local agent config. Regenerate with the setup skill; drop
+# these lines if you'd rather share them with the repo.
+AGENTS.md
+docs/agents/
