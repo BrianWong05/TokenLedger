@@ -83,3 +83,13 @@ body.tp-window #root {
 .tp-action:hover { background: #7c6bf2; color: #fff; }
 .tp-action:hover .tp-key { color: rgba(255, 255, 255, 0.75); }
 .tp-key { color: #6e6e76; font-size: 12px; }
+
+.tp-action:disabled { color: #a3a3ab; }
+.tp-action:disabled:hover { background: none; }
+.tp-spin {
+  color: #a99dff;
+  animation: tp-rotate 0.9s linear infinite;
+}
+@keyframes tp-rotate {
+  to { transform: rotate(360deg); }
+}

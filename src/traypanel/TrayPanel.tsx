@@ -31,6 +31,7 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   const ledger = ports?.ledger ?? tauriLedger;
   const settings = ports?.settings ?? tauriSettings;
   const [model, setModel] = useState<PanelModel | null>(null);
+  const [scanning, setScanning] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
@@ -78,12 +79,15 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   }, [model]);
 
   const rescan = async () => {
+    if (scanning) return; // coalesce double-clicks; scans serialize anyway
+    setScanning(true);
     try {
       await ledger.scan();
     } catch {
       /* scan errors surface in the Overview, not here */
     }
-    void refresh();
+    await refresh();
+    setScanning(false);
   };
 
   return (
@@ -124,8 +128,30 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
       <button className="tp-action" onClick={() => ipc('show_main')}>
         Open TokenLedger
       </button>
-      <button className="tp-action" onClick={() => void rescan()}>
-        Rescan now<span className="tp-key">⇧⌘R</span>
+      <button className="tp-action" onClick={() => void rescan()} disabled={scanning}>
+        Rescan now
+        {scanning ? (
+          // 1b's refresh glyph, spinning while the scan runs.
+          <svg
+            className="tp-spin"
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-label="scanning"
+          >
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+            <path d="M8 16H3v5" />
+          </svg>
+        ) : (
+          <span className="tp-key">⇧⌘R</span>
+        )}
       </button>
       <div className="tp-sep" />
       <button className="tp-action" onClick={() => ipc('open_settings')}>

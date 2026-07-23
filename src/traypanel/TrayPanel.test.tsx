@@ -103,4 +103,34 @@ describe('TrayPanel', () => {
     expect(ledger.calls.scan.length).toBe(1);
     expect(ledger.calls.summary.length).toBe(summariesBefore + 2); // refetched
   });
+
+  it('Rescan spins while the scan runs and settles when it lands', async () => {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const settings = makeFakeSettings();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings }} />);
+    });
+    await settle();
+
+    ledger.hold('scan');
+    const rescan = Array.from(container.querySelectorAll('.tp-action')).find((b) =>
+      b.textContent?.startsWith('Rescan'),
+    ) as HTMLButtonElement;
+    await act(async () => rescan.click());
+
+    // In flight: spinner shown, row disabled, second click coalesced.
+    expect(container.querySelector('.tp-spin')).not.toBeNull();
+    expect(rescan.disabled).toBe(true);
+    await act(async () => rescan.click());
+    expect(ledger.calls.scan.length).toBe(1);
+
+    await act(async () => ledger.resolveHeld('scan', 0));
+    await settle();
+    expect(container.querySelector('.tp-spin')).toBeNull();
+    expect(rescan.disabled).toBe(false);
+  });
 });
