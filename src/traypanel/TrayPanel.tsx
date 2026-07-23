@@ -127,14 +127,24 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
     return () => un?.();
   }, [refresh]);
 
-  // Size the window to the rendered content (the row count varies by day).
+  // Size the window to the rendered content on every height change —
+  // skeleton → figures, period switches, row counts. Measuring on a state
+  // dep is not enough: the model lands while the skeleton still shows, and
+  // the taller real content would never get re-measured (the scroll bug).
+  // jsdom has no ResizeObserver; window sizing is Tauri glue anyway.
   useEffect(() => {
-    const h = bodyRef.current?.offsetHeight;
-    if (!h) return;
-    Promise.resolve()
-      .then(() => getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, h)))
-      .catch(() => {});
-  }, [model]);
+    const el = bodyRef.current;
+    if (!el || typeof ResizeObserver !== 'function') return;
+    const ro = new ResizeObserver(() => {
+      const h = el.offsetHeight;
+      if (!h) return;
+      Promise.resolve()
+        .then(() => getCurrentWindow().setSize(new LogicalSize(PANEL_WIDTH, h)))
+        .catch(() => {});
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const pickPeriod = (p: Period) => {
     if (p === periodRef.current) return;

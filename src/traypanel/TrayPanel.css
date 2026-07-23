@@ -9,6 +9,9 @@ body.tp-window,
 body.tp-window #root {
   background: transparent !important;
   margin: 0;
+  /* The panel never scrolls: if content momentarily outruns the window
+     (before the ResizeObserver resize lands), clip instead. */
+  overflow: hidden;
 }
 
 .tp {
