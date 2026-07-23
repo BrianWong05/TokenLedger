@@ -19,6 +19,24 @@ export function rankModels(bks: Bucket[]): string[] {
   return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
 }
 
+// A model's stack color: the brand accent of its owning tool (grey fallback for
+// an unknown source). Shared by the trend card and its enlarge.
+export function modelColor(modelTool: Record<string, string>, m: string): string {
+  return TOOLS.find((t) => t.key === modelTool[m])?.color ?? '#5f6880';
+}
+
+// Models ordered for a stacked bar: grouped by owning tool (in TOOLS order),
+// largest-first within each tool. The stable sort over rankModels keeps the
+// largest-first order inside each tool block, so bars read as contiguous tool
+// blocks. Shared by the trend card and its enlarge.
+export function stackModels(bks: Bucket[], modelTool: Record<string, string>): string[] {
+  const toolIdx = (m: string) => {
+    const i = TOOLS.findIndex((t) => t.key === modelTool[m]);
+    return i < 0 ? TOOLS.length : i;
+  };
+  return rankModels(bks).sort((a, b) => toolIdx(a) - toolIdx(b));
+}
+
 // Model -> owning tool, from the raw points. Models don't span sources in
 // practice, so last-write-wins is fine.
 export function modelTools(pts: SeriesPoint[]): Record<string, string> {

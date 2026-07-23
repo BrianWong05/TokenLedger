@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { TOOLS, emptyByTool } from './meta';
-import { rankModels, type Bucket } from './data';
+import { modelColor, stackModels, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
 import { useChartColors } from '../lib/chartColors';
@@ -16,7 +16,21 @@ const PT = 14;
 const BASE = 176;
 const LABEL_Y = 194;
 
-function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: string; rangeLabel: string; modelTool: Record<string, string> }) {
+function AggTrend({
+  data,
+  per,
+  rangeLabel,
+  modelTool,
+  onEnlarge,
+  enlargeRef,
+}: {
+  data: Bucket[];
+  per: string;
+  rangeLabel: string;
+  modelTool: Record<string, string>;
+  onEnlarge?: () => void;
+  enlargeRef?: (el: HTMLButtonElement | null) => void;
+}) {
   const { t } = useOverviewT();
   const colors = useChartColors();
   const [hover, setHover] = useState<number | null>(null);
@@ -35,15 +49,8 @@ function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: s
 
   // Segments are per model but colored by the model's tool; grouping the stack
   // by tool keeps each bar reading as contiguous tool blocks.
-  const colorOf = (m: string) => TOOLS.find((t) => t.key === modelTool[m])?.color ?? '#5f6880';
-  const models = useMemo(() => {
-    const toolIdx = (m: string) => {
-      const i = TOOLS.findIndex((t) => t.key === modelTool[m]);
-      return i < 0 ? TOOLS.length : i;
-    };
-    // rankModels is largest-first; the stable sort keeps that order within a tool.
-    return rankModels(data).sort((a, b) => toolIdx(a) - toolIdx(b));
-  }, [data, modelTool]);
+  const colorOf = (m: string) => modelColor(modelTool, m);
+  const models = useMemo(() => stackModels(data, modelTool), [data, modelTool]);
   const segsOf = (b: Bucket) => models.map((m) => ({ key: m, color: colorOf(m), val: b.byModel[m] ?? 0 }));
 
   // Hovered bucket's model rows, largest first.
@@ -67,9 +74,21 @@ function AggTrend({ data, per, rangeLabel, modelTool }: { data: Bucket[]; per: s
           <div className="tt-title">{t('overview.usageTrend')}</div>
           <div className="tt-sub">{t('overview.stackedByTool')} · {rangeLabel}</div>
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <div className="tt-read-big">{fmtTok(shown ? shown.total : total)}</div>
-          <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>{shown ? shown.label : t('overview.total')}</div>
+        <div className="tt-head-actions">
+          <div style={{ textAlign: 'right' }}>
+            <div className="tt-read-big">{fmtTok(shown ? shown.total : total)}</div>
+            <div style={{ fontSize: 10.5, color: 'var(--text-tertiary)' }}>{shown ? shown.label : t('overview.total')}</div>
+          </div>
+          {onEnlarge && (
+            <button ref={enlargeRef} type="button" className="tt-heat-enlarge" onClick={onEnlarge} title={t('overview.enlarge')} aria-label={t('overview.enlarge')}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M15 3h6v6" />
+                <path d="M9 21H3v-6" />
+                <path d="m21 3-7 7" />
+                <path d="m3 21 7-7" />
+              </svg>
+            </button>
+          )}
         </div>
       </div>
       <div style={{ marginTop: 12, position: 'relative' }} onMouseMove={onMove}>

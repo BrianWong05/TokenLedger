@@ -8,6 +8,7 @@ import BreakdownTable from './BreakdownTable';
 import CostBreakdownModal from './CostBreakdownModal';
 import TokenTotalHeadline from './TokenTotalHeadline';
 import AggTrend from './AggTrend';
+import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
 import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
 import { TOOL_ICONS } from './icons';
@@ -45,6 +46,12 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   const setHeatEnlargeTarget = useCallback((el: HTMLButtonElement | null) => {
     heatEnlargeRef.current = el;
   }, []);
+  const [trendModalOpen, setTrendModalOpen] = useState(false);
+  const trendEnlargeRef = useRef<HTMLElement | null>(null);
+  const setTrendEnlargeTarget = useCallback((el: HTMLButtonElement | null) => {
+    trendEnlargeRef.current = el;
+  }, []);
+  const openTrendModal = useCallback(() => setTrendModalOpen(true), []);
 
   // The enlarge's Cost describes exactly its trailing-365-day window, so it
   // gets its own Summary fetched per open (the page Summary is range-scoped
@@ -237,7 +244,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       <div className="tt-b8-grid">
         <div className="tt-b8-col">
           <Heatmap days={panels.heatmap.days} compact onEnlarge={openHeatModal} enlargeRef={setHeatEnlargeTarget} />
-          <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} />
+          <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} onEnlarge={openTrendModal} enlargeRef={setTrendEnlargeTarget} />
           {panels.sparks.length > 0 && <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />}
         </div>
 
@@ -294,6 +301,17 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           summary={heatSummary}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
+        />
+      )}
+      {trendModalOpen && (
+        <TrendModal
+          data={panels.trend.data}
+          per={panels.trend.per}
+          rangeLabel={rangeLabel}
+          modelTool={panels.trend.modelTool}
+          summary={summary}
+          returnFocusRef={trendEnlargeRef}
+          onClose={() => setTrendModalOpen(false)}
         />
       )}
       {pricingEditor && (

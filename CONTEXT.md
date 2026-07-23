@@ -40,6 +40,15 @@ every figure it reports — including its Cost — describes that same fixed
 window, never the selected range.
 _Avoid_: Heatmap, contribution graph, calendar
 
+**Trend**:
+The Overview's presentation of the Ledger as consumption over time within the
+selected date window: tokens per bucket — an hour, day, week, or month, chosen
+to fit the window — stacked by Source. Its Enlarge presents the same view
+full-screen with a date window of its own, independent of the Overview's and
+forgotten on close, plus an inspector that always holds exactly one bucket:
+its rank in the window, per-Model split, and its own exactly-computed Cost.
+_Avoid_: Chart, graph, histogram
+
 **Pricing**:
 The tab that presents rates, never usage: every Model seen in the Ledger with
 its resolved List Price, the catalog it came from, its Override if any, and

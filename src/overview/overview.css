@@ -1504,6 +1504,116 @@
   color: var(--text-secondary);
 }
 
+/* ---- Usage-trend enlarge — full-screen stacked chart (design 1b) ---- */
+.tt-trend-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--overlay);
+  backdrop-filter: blur(6px);
+}
+.tt-trend-modal {
+  width: min(1480px, 90vw);
+  height: min(900px, 86vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(120, 150, 220, 0.16);
+  border-radius: 16px;
+  background: radial-gradient(120% 90% at 55% -8%, #101a30 0%, #0b0f1a 58%, #090b12 100%);
+  color: var(--text-primary);
+  box-shadow: 0 40px 120px -30px rgba(0, 0, 0, 0.8);
+}
+[data-theme='light'] .tt-trend-modal {
+  background: var(--bg-surface);
+  border-color: var(--border-subtle);
+}
+.tt-trend-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.tt-trend-modal-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.tt-trend-modal-sub {
+  margin-top: 3px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.tt-trend-modal-spacer {
+  flex: 1;
+}
+.tt-trend-modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.tt-trend-modal-close:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.tt-trend-modal-close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+.tt-trend-modal-chart {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 20px 28px 4px;
+}
+.tt-trend-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 16px 28px 20px;
+  border-top: 1px solid var(--border-subtle);
+}
+.tt-trend-modal-stats {
+  display: flex;
+  gap: 30px;
+}
+.tt-trend-modal-stats .stat b {
+  display: block;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
+}
+.tt-trend-modal-stats .stat b.cost {
+  color: var(--success-text);
+}
+.tt-trend-modal-stats .stat span {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.tt-trend-modal-stats .stat span.mark {
+  display: block;
+  color: var(--text-tertiary);
+}
+
 /* ---- narrow fallback (desktop Tauri window can be resized) ---- */
 @media (max-width: 860px) {
   .tt-b8-grid {

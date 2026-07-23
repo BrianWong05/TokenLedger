@@ -213,7 +213,9 @@ describe('Overview presentation', () => {
     const card = Array.from(c.querySelectorAll('.tt-card')).find(
       (el) => el.querySelector('.tt-title')?.textContent === 'Usage over time',
     )!;
-    const svg = card.querySelector('svg')!;
+    // The card header's Enlarge control carries its own icon svg; the chart is
+    // the svg that holds the bars.
+    const svg = Array.from(card.querySelectorAll('svg')).find((s) => s.querySelector('rect'))!;
 
     // Bars paint from the plot's left edge rightward; the y labels live in the
     // gutter left of it, end-anchored so they grow away from the bars. Drawing
