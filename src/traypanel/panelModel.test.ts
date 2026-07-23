@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dayWindows, panelModel } from './panelModel';
+import { panelModel, periodWindows } from './panelModel';
 import { DEFAULT_SETTINGS } from '../settings/settings';
 import type { BreakdownRow, Summary } from '../types';
 
@@ -90,15 +90,32 @@ describe('panelModel', () => {
   });
 });
 
-describe('dayWindows', () => {
-  it('brackets the local calendar day, end-exclusive, and mirrors yesterday up to now', () => {
-    const now = new Date(2026, 5, 15, 10, 30, 0); // June 15, 10:30 local
-    const w = dayWindows(now);
-    expect(w.todayStart).toBe(Math.floor(new Date(2026, 5, 15).getTime() / 1000));
-    expect(w.todayEnd).toBe(Math.floor(new Date(2026, 5, 16).getTime() / 1000));
-    expect(w.todayStart).toBeLessThanOrEqual(Math.floor(now.getTime() / 1000));
-    // Yesterday's window is clamped exactly 24h behind now (so-far vs so-far).
-    expect(w.yEnd).toBe(Math.floor(now.getTime() / 1000) - 86_400);
-    expect(w.yStart).toBe(Math.floor(new Date(2026, 5, 14).getTime() / 1000));
+describe('periodWindows', () => {
+  const now = new Date(2026, 5, 15, 10, 30, 0); // June 15, 10:30 local
+  const mid = (d: number) => Math.floor(new Date(2026, 5, d).getTime() / 1000);
+
+  it('today brackets the local calendar day; comparison clamped to now − 24h', () => {
+    const w = periodWindows('today', now);
+    expect(w.start).toBe(mid(15));
+    expect(w.end).toBe(mid(16));
+    // so-far vs so-far: yesterday up to the same time.
+    expect(w.prevStart).toBe(mid(14));
+    expect(w.prevEnd).toBe(Math.floor(now.getTime() / 1000) - 86_400);
+  });
+
+  it('yesterday is the full previous day vs the full day before it', () => {
+    const w = periodWindows('yesterday', now);
+    expect(w.start).toBe(mid(14));
+    expect(w.end).toBe(mid(15));
+    expect(w.prevStart).toBe(mid(13));
+    expect(w.prevEnd).toBe(mid(14));
+  });
+
+  it('30 days trails 30 calendar days including today vs the previous 30', () => {
+    const w = periodWindows('days30', now);
+    expect(w.start).toBe(Math.floor(new Date(2026, 4, 17).getTime() / 1000)); // May 17
+    expect(w.end).toBe(mid(16)); // through today, end-exclusive tomorrow
+    expect(w.prevStart).toBe(Math.floor(new Date(2026, 3, 17).getTime() / 1000)); // Apr 17
+    expect(w.prevEnd).toBe(Math.floor(new Date(2026, 4, 17).getTime() / 1000));
   });
 });

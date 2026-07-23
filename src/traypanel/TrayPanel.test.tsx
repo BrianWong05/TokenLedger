@@ -126,7 +126,7 @@ describe('TrayPanel', () => {
     // the Today figures pulse so an unchanged total still reads as a
     // refresh happening.
     expect(container.querySelector('.tp-spin')).not.toBeNull();
-    expect(container.querySelector('.tp-cost-row.tp-pulse')).not.toBeNull();
+    expect(container.querySelector('.tp-figures.tp-pulse')).not.toBeNull();
     expect(rescan.disabled).toBe(true);
     await act(async () => rescan.click());
     expect(ledger.calls.scan.length).toBe(1);
@@ -136,6 +136,39 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-spin')).toBeNull();
     expect(container.querySelector('.tp-pulse')).toBeNull();
     expect(rescan.disabled).toBe(false);
+  });
+
+  it('period segments switch the fetched window and refetch without the skeleton', async () => {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const settings = makeFakeSettings();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings }} />);
+    });
+    await settle();
+
+    const segs = () => Array.from(container.querySelectorAll('.tp-seg-btn')) as HTMLButtonElement[];
+    expect(segs().map((b) => b.textContent)).toEqual(['Today', 'Yesterday', '30 days']);
+    expect(segs()[0].classList.contains('active')).toBe(true);
+
+    const before = ledger.calls.summary.length;
+    await act(async () => segs()[1].click());
+    await settle();
+
+    expect(segs()[1].classList.contains('active')).toBe(true);
+    expect(container.querySelector('.tp-skel')).toBeNull(); // snappy, no beat
+    expect(ledger.calls.summary.length).toBe(before + 2);
+
+    // The current window is yesterday's full local day, end-exclusive.
+    const now = new Date();
+    const mid = (o: number) =>
+      Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() + o).getTime() / 1000);
+    const filters = ledger.calls.summary[before][0] as { startTs: number; endTs: number };
+    expect(filters.startTs).toBe(mid(-1));
+    expect(filters.endTs).toBe(mid(0));
   });
 
   it('shows the loading skeleton while the panel load is in flight', async () => {

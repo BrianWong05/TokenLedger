@@ -96,25 +96,42 @@ export function panelModel(
   };
 }
 
-// [local midnight, next local midnight) for today, plus yesterday clamped to
-// now − 24h — same semantics as the Overview's local-day buckets and the bar
-// title's day_window in Rust, so the two surfaces can never disagree.
-// Epoch seconds, ends exclusive.
-export function dayWindows(now: Date): {
-  todayStart: number;
-  todayEnd: number;
-  yStart: number;
-  yEnd: number;
-} {
-  const mid = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+// The panel's period selector (design 2b's Today / Yesterday / 30 days).
+export type Period = 'today' | 'yesterday' | 'days30';
+
+// [start, end) plus the comparison window [prevStart, prevEnd) for the pace
+// delta, all local-calendar-day aligned (same semantics as the Overview's
+// day buckets and the bar title's day_window in Rust) and end-exclusive.
+// Epoch seconds. Today compares so-far vs yesterday clamped to now − 24h;
+// the completed periods compare full window vs the full window before it.
+export function periodWindows(
+  period: Period,
+  now: Date,
+): { start: number; end: number; prevStart: number; prevEnd: number } {
+  const mid = (offsetDays: number) =>
+    new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays);
   const sec = (d: Date) => Math.floor(d.getTime() / 1000);
-  const todayStart = mid(now);
-  const tomorrow = new Date(todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() + 1);
-  const yesterday = new Date(now.getTime() - 86_400_000);
-  return {
-    todayStart: sec(todayStart),
-    todayEnd: sec(tomorrow),
-    yStart: sec(mid(yesterday)),
-    yEnd: sec(now) - 86_400,
-  };
+  switch (period) {
+    case 'today':
+      return {
+        start: sec(mid(0)),
+        end: sec(mid(1)),
+        prevStart: sec(mid(-1)),
+        prevEnd: Math.floor(now.getTime() / 1000) - 86_400,
+      };
+    case 'yesterday':
+      return {
+        start: sec(mid(-1)),
+        end: sec(mid(0)),
+        prevStart: sec(mid(-2)),
+        prevEnd: sec(mid(-1)),
+      };
+    case 'days30':
+      return {
+        start: sec(mid(-29)),
+        end: sec(mid(1)),
+        prevStart: sec(mid(-59)),
+        prevEnd: sec(mid(-29)),
+      };
+  }
 }

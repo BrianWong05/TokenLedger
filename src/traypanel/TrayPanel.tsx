@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { dayWindows, panelModel, type PanelModel } from './panelModel';
+import { panelModel, periodWindows, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
 import type { Filters } from '../types';
@@ -65,6 +65,11 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   const [model, setModel] = useState<PanelModel | null>(null);
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [period, setPeriod] = useState<Period>('today');
+  // refresh() reads the ref so its identity doesn't churn on period change
+  // (the mount effect re-registering listeners on every switch would be
+  // wasteful); pickPeriod keeps ref and state in step.
+  const periodRef = useRef<Period>('today');
   const bodyRef = useRef<HTMLDivElement>(null);
   // Count-up for the two headline figures; unpriced (null) doesn't animate.
   const animCost = useCountUp(model?.costValue ?? 0);
@@ -81,15 +86,15 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
 
   const refresh = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
-    const w = dayWindows(new Date());
-    const today: Filters = { tools: [], models: [], project: null, startTs: w.todayStart, endTs: w.todayEnd };
-    const yday: Filters = { tools: [], models: [], project: null, startTs: w.yStart, endTs: w.yEnd };
+    const w = periodWindows(periodRef.current, new Date());
+    const current: Filters = { tools: [], models: [], project: null, startTs: w.start, endTs: w.end };
+    const prev: Filters = { tools: [], models: [], project: null, startTs: w.prevStart, endTs: w.prevEnd };
     const [fetched] = await Promise.all([
       Promise.allSettled([
         Promise.all([
-          ledger.summary(today),
-          ledger.summary(yday),
-          ledger.breakdown('tool', today),
+          ledger.summary(current),
+          ledger.summary(prev),
+          ledger.breakdown('tool', current),
           settings.get(),
         ]),
       ]),
@@ -131,6 +136,13 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
       .catch(() => {});
   }, [model]);
 
+  const pickPeriod = (p: Period) => {
+    if (p === periodRef.current) return;
+    periodRef.current = p;
+    setPeriod(p);
+    void refresh(); // no skeleton beat on a switch — it should feel snappy
+  };
+
   const rescan = async () => {
     if (scanning) return; // coalesce double-clicks; scans serialize anyway
     setScanning(true);
@@ -150,24 +162,44 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
   return (
     <div className="tp" ref={bodyRef}>
       <div className="tp-header">
-        <div className="tp-caption-row">
-          <span className="tp-caption">Today</span>
-          {!loading && model?.delta && (
-            <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
-          )}
+        <div className="tp-seg" role="tablist">
+          {(
+            [
+              ['today', 'Today'],
+              ['yesterday', 'Yesterday'],
+              ['days30', '30 days'],
+            ] as [Period, string][]
+          ).map(([p, label]) => (
+            <button
+              key={p}
+              role="tab"
+              aria-selected={period === p}
+              className={period === p ? 'tp-seg-btn active' : 'tp-seg-btn'}
+              onClick={() => pickPeriod(p)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
         {loading ? (
-          <div className="tp-cost-row">
-            <span className="tp-skel tp-skel-cost" />
+          <div className="tp-figures">
+            <div className="tp-cost-row">
+              <span className="tp-skel tp-skel-cost" />
+            </div>
             <span className="tp-skel tp-skel-sub" />
           </div>
         ) : model?.empty ? (
-          <div className="tp-empty">No usage yet</div>
+          <div className="tp-empty">{period === 'today' ? 'No usage yet' : 'No usage'}</div>
         ) : (
-          <div className={scanning ? 'tp-cost-row tp-pulse' : 'tp-cost-row'}>
-            <span className="tp-cost">
-              {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
-            </span>
+          <div className={scanning ? 'tp-figures tp-pulse' : 'tp-figures'}>
+            <div className="tp-cost-row">
+              <span className="tp-cost">
+                {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
+              </span>
+              {model?.delta && (
+                <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
+              )}
+            </div>
             <span className="tp-sub">
               {model ? `${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
             </span>
