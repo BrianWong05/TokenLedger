@@ -78,6 +78,12 @@ export const overview = {
     'overview.trend.byModel': 'By model',
     'overview.trend.moreModels': 'more models',
     'overview.trend.exportCsv': 'Export CSV',
+    // interval selector — adjective forms, so the options can't be confused
+    // with the window presets (Day/Week/Month) sitting beside them
+    'overview.trend.int.auto': 'Auto',
+    'overview.trend.int.day': 'Daily',
+    'overview.trend.int.week': 'Weekly',
+    'overview.trend.int.month': 'Monthly',
 
     // token breakdown
     'overview.tokenBreakdown': 'Token Breakdown',
@@ -225,6 +231,12 @@ export const overview = {
     'overview.trend.byModel': '依模型',
     'overview.trend.moreModels': '個其他模型',
     'overview.trend.exportCsv': '匯出 CSV',
+    // interval selector — adjective forms, so the options can't be confused
+    // with the window presets (Day/Week/Month) sitting beside them
+    'overview.trend.int.auto': '自動',
+    'overview.trend.int.day': '每日',
+    'overview.trend.int.week': '每週',
+    'overview.trend.int.month': '每月',
 
     'overview.tokenBreakdown': 'Token 明細',
     'overview.cacheHitRate': '快取命中率',

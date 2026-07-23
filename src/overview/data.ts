@@ -399,6 +399,10 @@ export interface TrendSlice {
 // single-day window come from a separately-fetched hourPoints. `from`/`to` are
 // the effective window bounds (the custom inputs, else firstIso/lastIso); they
 // only matter for a custom range (windowOf ignores them for presets).
+// `override` pins the bucket size in place of the automatic fit (the enlarge's
+// interval selector); callers wanting the automatic rule pass nothing. Hour is
+// excluded by type — hourly bucketing exists only via the automatic Day-window
+// rule, which is also the only path with hourly data.
 export function trendSlice(
   allPoints: SeriesPoint[],
   hourPoints: SeriesPoint[],
@@ -409,12 +413,13 @@ export function trendSlice(
   lastIso: string,
   now: Date = new Date(),
   lang: Lang = 'en',
+  override?: Exclude<Granularity, 'hour'>,
 ): TrendSlice {
   const win = windowOf(range, from, to, now);
   const rpts = pointsIn(allPoints, win);
   const winFrom = win.fromIso ?? firstIso;
   const winTo = win.toIso ?? lastIso;
-  const per = granularityOf(range, calendarSpan(winFrom, winTo));
+  const per = override ?? granularityOf(range, calendarSpan(winFrom, winTo));
   const trend =
     per === 'hour'
       ? bucketsFromPoints(hourPoints, 'hour', winFrom, winTo, lang)

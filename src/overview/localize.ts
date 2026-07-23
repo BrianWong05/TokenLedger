@@ -99,6 +99,14 @@ export const SEL_HEADING_KEY: Record<string, OverviewKey> = {
   month: 'overview.trend.selMonth',
 };
 
+// Bar-interval option ('auto' | explicit granularity) -> its adjective label.
+export const INTERVAL_LABEL_KEY: Record<string, OverviewKey> = {
+  auto: 'overview.trend.int.auto',
+  day: 'overview.trend.int.day',
+  week: 'overview.trend.int.week',
+  month: 'overview.trend.int.month',
+};
+
 // Render a USD Cost in the Display Currency, preserving the ≥ (Partial Cost)
 // prefix and null→unpriced label. USD delegates to lib/format so it is
 // byte-identical to today (including adaptive precision); any other currency

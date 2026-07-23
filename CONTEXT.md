@@ -43,10 +43,12 @@ _Avoid_: Heatmap, contribution graph, calendar
 **Trend**:
 The Overview's presentation of the Ledger as consumption over time within the
 selected date window: tokens per bucket — an hour, day, week, or month, chosen
-to fit the window — stacked by Source. Its Enlarge presents the same view
-full-screen with a date window of its own, independent of the Overview's and
-forgotten on close, plus an inspector that always holds exactly one bucket:
-its rank in the window, per-Model split, and its own exactly-computed Cost.
+automatically to fit the window — stacked by Source. Its Enlarge presents the
+same view full-screen with a date window of its own and, if wanted, an
+explicitly chosen bucket size (daily, weekly, or monthly) in place of the
+automatic fit — both independent of the Overview's and forgotten on close —
+plus an inspector that always holds exactly one bucket: its rank in the
+window, per-Model split, and its own exactly-computed Cost.
 _Avoid_: Chart, graph, histogram
 
 **Pricing**:

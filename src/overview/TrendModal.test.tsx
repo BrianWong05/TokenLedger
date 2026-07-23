@@ -275,13 +275,17 @@ describe('Usage-trend Enlarge', () => {
     expect(dialog()).not.toBeNull();
   });
 
-  it('has all five presets in its own selector, opening on the page range', async () => {
+  it('has the interval options and all five presets in its selectors, opening on Auto + the page range', async () => {
     const { container: c } = await mount();
     await open(c);
     const labels = Array.from(dialog()!.querySelectorAll('.tt-seg button')).map((b) => b.textContent);
-    expect(labels).toEqual(['Day', 'Week', 'Month', 'Total', 'Custom']);
-    // Page default range is Total → the dialog opens on Total.
+    expect(labels).toEqual(['Auto', 'Daily', 'Weekly', 'Monthly', 'Day', 'Week', 'Month', 'Total', 'Custom']);
+    // Page default range is Total → the dialog opens on Total, interval on Auto.
     expect(modalRangeButton('Total').className).toContain('active');
+    expect(modalRangeButton('Auto').className).toContain('active');
+    // The Trend card itself has no interval control.
+    const cardButtons = Array.from(c.querySelectorAll('.tt-card button')).map((b) => b.textContent);
+    expect(cardButtons).not.toContain('Daily');
   });
 
   it('reveals a Custom from/to date row when Custom is picked', async () => {
@@ -540,6 +544,89 @@ describe('Usage-trend Enlarge', () => {
     // inspector folds into its "2 more models" row.
     expect(contents).toContain('m6');
     expect(contents).toContain('c2');
+  });
+
+  // ~200 days of span, so the Total window's automatic fit is monthly — the
+  // seed where an explicit Daily/Weekly override visibly re-buckets.
+  const longSeed = () => [
+    pt({ bucket: daysAgo(200), source: 'claude', totalTokens: 400, byModel: { m1: 400 } }),
+    pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 300, byModel: { m1: 300 } }),
+  ];
+
+  it('re-buckets a months-long Total window on an explicit interval, resetting to the new peak', async () => {
+    const { container: c } = await mount({}, longSeed());
+    await open(c);
+    // Auto on ~201 days of span → monthly buckets (a handful of bars).
+    const autoBars = barGroups().length;
+    expect(autoBars).toBeLessThan(20);
+    expect(inspText()).toContain('Selected month');
+    const xLabels = () =>
+      Array.from(dialog()!.querySelectorAll('svg text'))
+        .filter((el) => el.getAttribute('text-anchor') === 'middle')
+        .map((el) => el.textContent)
+        .join(',');
+    const monthLabels = xLabels();
+
+    // Hover a real non-peak selection first, so the interval change below
+    // proves an actual reset — not just the default-peak fallback.
+    await hoverBar(autoBars - 1); // the current month (300) — not the peak
+    expect(inspText()).toContain('#2 /');
+
+    await act(async () => modalRangeButton('Daily').click());
+    // One bar per day of the window, the x-axis relabeled, and the selection
+    // snapped back to the (daily) peak.
+    expect(barGroups().length).toBe(201);
+    expect(xLabels()).not.toBe(monthLabels);
+    expect(inspText()).toContain('Selected day');
+    expect(inspText()).toContain('#1 / 201');
+    expect(inspText()).toContain('400');
+
+    await act(async () => modalRangeButton('Weekly').click());
+    expect(inspText()).toContain('Selected week');
+    expect(barGroups().length).toBeGreaterThan(20);
+    expect(barGroups().length).toBeLessThan(autoBars + 35);
+  });
+
+  it('keeps the override across a window-preset change', async () => {
+    const { container: c } = await mount({}, longSeed());
+    await open(c);
+    await act(async () => modalRangeButton('Monthly').click());
+    expect(inspText()).toContain('Selected month');
+
+    // Week's automatic fit is daily — the Monthly override must win.
+    await act(async () => modalRangeButton('Week').click());
+    expect(modalRangeButton('Monthly').className).toContain('active');
+    expect(inspText()).toContain('Selected month');
+    expect(barGroups().length).toBeLessThan(3); // a week spans at most two months
+  });
+
+  it('reopens on Auto after an explicit interval', async () => {
+    const { container: c } = await mount({}, longSeed());
+    await open(c);
+    await act(async () => modalRangeButton('Daily').click());
+    expect(inspText()).toContain('Selected day');
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await open(c);
+    expect(modalRangeButton('Auto').className).toContain('active');
+    expect(inspText()).toContain('Selected month'); // the automatic fit again
+  });
+
+  it('bounds the bucket cost and CSV filename to the chosen interval', async () => {
+    const { container: c, ledger, exporter } = await mount({}, longSeed());
+    await open(c);
+    await act(async () => modalRangeButton('Daily').click());
+    await settle(1);
+
+    // The peak day bucket's cost fetch carries exact day bounds…
+    const bounded = ledger.calls.summary.map((a) => a[0] as Filters);
+    expect(bounded.some((f) => f.startTs === dayTs(200) && f.endTs === dayTs(199))).toBe(true);
+
+    // …and the CSV filename takes the daily form.
+    await act(async () => exportBtn().click());
+    expect(exporter.calls[0][0]).toBe(`usage-${daysAgo(200)}.csv`);
   });
 
   it('disables Export when the selected bucket has no usage', async () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, stackModels, trendSlice, type Bucket } from './data';
+import { bucketCsv, bucketFilters, csvFilename, modelColor, rangeToFilters, stackModels, trendSlice, type Bucket, type Granularity } from './data';
 import { TOOLS, RANGES_8B, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
@@ -8,6 +8,7 @@ import { fmtPct, fmtTok } from '../lib/format';
 import {
   fmtIsoDateL,
   formatDisplayCost,
+  INTERVAL_LABEL_KEY,
   monthShortL,
   PER_UNIT_KEY,
   RANGE_LABEL_KEY,
@@ -22,7 +23,9 @@ import { useDialogChrome } from './useDialogChrome';
 // Design 1b — the Usage-trend card's full-screen enlarge. A centered dialog
 // over the dimmed dashboard with a window of its own: the Day/Week/Month/Total/
 // Custom selector, initialized from the Overview's window and discarded on
-// close (the dashboard behind never moves). The stacked-by-tool chart, footer
+// close (the dashboard behind never moves), plus a bar-interval selector
+// (Auto · Daily · Weekly · Monthly) pinning the bucket size in place of the
+// automatic fit. The stacked-by-tool chart, footer
 // figures and Est. cost all describe the dialog's local window — buckets from
 // the shared trendSlice (its own hourly fetch for a Day window), Cost from a
 // per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
@@ -30,6 +33,11 @@ import { useDialogChrome } from './useDialogChrome';
 // bar is hovered — and the right-hand inspector reads it out (rank, delta vs
 // the window average, per-model split). The inspector's per-bucket Cost and CSV
 // export land in later slices.
+
+// Bar-interval options: Auto (the automatic fit) or an explicit bucket size.
+// No Hour override — a Day window's automatic hourly view already covers it.
+const INTERVALS = ['auto', 'day', 'week', 'month'] as const;
+type BarInterval = (typeof INTERVALS)[number];
 
 // Chart geometry in viewBox units (full-width, larger than the card).
 const VW = 1000;
@@ -80,6 +88,10 @@ export default function TrendModal({
   const [range, setRange] = useState<Range8b>(initialRange);
   const [customFrom, setCustomFrom] = useState(initialCustomFrom);
   const [customTo, setCustomTo] = useState(initialCustomTo);
+  // Bar interval, also dialog-local: opens on Auto, survives window changes
+  // within one open (an independent axis: the window says which slice, the
+  // interval says how finely it's bucketed), forgotten on close.
+  const [barInterval, setBarInterval] = useState<BarInterval>('auto');
   // Effective bounds — the raw custom inputs fall back to the data extent,
   // exactly as the store derives from/to (never the empty string).
   const from = customFrom || firstIso;
@@ -111,9 +123,10 @@ export default function TrendModal({
     }
   }, [range, from, to, ledger]);
 
+  const override: Exclude<Granularity, 'hour'> | undefined = barInterval === 'auto' ? undefined : barInterval;
   const { trend: data, per, modelTool, total } = useMemo(
-    () => trendSlice(allPoints, hourPoints, range, from, to, firstIso, lastIso, new Date(), lang),
-    [allPoints, hourPoints, range, from, to, firstIso, lastIso, lang],
+    () => trendSlice(allPoints, hourPoints, range, from, to, firstIso, lastIso, new Date(), lang, override),
+    [allPoints, hourPoints, range, from, to, firstIso, lastIso, lang, override],
   );
 
   const rangeLabel =
@@ -141,10 +154,11 @@ export default function TrendModal({
     summary === null ? '…' : formatDisplayCost(summary.cost, summary.hasUnpriced, settings, lang);
 
   // Exactly one bucket is always selected — moved by hovering a bar. The
-  // selection is keyed by bucket key AND its window: a window change (new winId)
-  // drops the old key back to the peak, while a background refresh (same window)
-  // keeps the key if it survives.
-  const winId = `${range}|${from}|${to}`;
+  // selection is keyed by bucket key AND its window AND the effective
+  // granularity: a window or interval change (new winId) drops the old key back
+  // to the peak, while a background refresh (same window+interval) keeps the
+  // key if it survives.
+  const winId = `${range}|${from}|${to}|${per}`;
   const [sel, setSel] = useState<{ win: string; key: string } | null>(null);
   const peak = data.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
   const activeKey = sel && sel.win === winId ? sel.key : null;
@@ -233,6 +247,13 @@ export default function TrendModal({
             </div>
           </div>
           <span className="tt-trend-modal-spacer" />
+          <div className="tt-seg">
+            {INTERVALS.map((iv) => (
+              <button key={iv} className={barInterval === iv ? 'active' : ''} onClick={() => setBarInterval(iv)}>
+                {t(INTERVAL_LABEL_KEY[iv])}
+              </button>
+            ))}
+          </div>
           <div className="tt-seg">
             {RANGES_8B.map((r) => (
               <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
