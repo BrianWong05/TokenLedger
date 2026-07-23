@@ -296,6 +296,13 @@ fn event_timestamp(message_ts_ms: Option<i64>, entry_ts_iso: Option<&str>) -> Op
         .or_else(|| entry_ts_iso.and_then(iso_to_epoch))
 }
 
+// The dedup_key of a modern entry (one with an id + entry timestamp), stable
+// across every copy. Its "{id}:{ts}" tail is the identity `entry_identity_from_key`
+// recovers for the fork/clone owner map — keep the two in lockstep.
+fn modern_key(kind: &str, id: &str, entry_ts_iso: &str) -> String {
+    format!("pi:{kind}:{id}:{entry_ts_iso}")
+}
+
 // A legacy pi Session (no entry ids) still deduplicates: identity is a hash of
 // stable usage-bearing fields, independent of the containing file and Session.
 fn legacy_dedup_key(
@@ -401,17 +408,18 @@ fn parse_file(
             None => last_comp,                       // legacy linear fallback
         };
         let row_ts = event_timestamp(v["message"]["timestamp"].as_i64(), entry_ts_iso.as_deref())
-            .or_else(|| entry_ts_iso.as_deref().and_then(iso_to_epoch))
             .unwrap_or(0);
 
         let mut delta = Delta::default();
 
         if entry_type == "model_change" {
+            // A Model change carries no content and no usage. Record it for the
+            // active-Model ancestry, then fall through so the shared update
+            // propagates the parent's composition unchanged (delta stays default):
+            // a descendant must keep its FULL ancestor context across the change.
             if let Some(id) = &id {
                 established_model.insert(id.clone(), nonempty(v["modelId"].as_str()));
-                parent_of.insert(id.clone(), parent_id.clone());
             }
-            continue; // Model changes carry no context and no usage.
         }
 
         if entry_type == "compaction" {
@@ -659,7 +667,7 @@ fn emit_assistant(
         return;
     };
     let dedup_key = match (id.as_deref(), entry_ts_iso) {
-        (Some(id), Some(ts)) => format!("pi:message:{id}:{ts}"),
+        (Some(id), Some(ts)) => modern_key("message", id, ts),
         _ => legacy_dedup_key("message", message_ts_ms, timestamp, entry_ts_iso, model.as_deref(), u),
     };
     let ctx = attribute_pi(before, u.billed());
@@ -687,7 +695,7 @@ fn emit_summary(
         return;
     };
     let dedup_key = match (id.as_deref(), entry_ts_iso) {
-        (Some(id), Some(ts)) => format!("pi:compaction:{id}:{ts}"),
+        (Some(id), Some(ts)) => modern_key("compaction", id, ts),
         _ => legacy_dedup_key("compaction", None, timestamp, entry_ts_iso, model.as_deref(), u),
     };
     let ctx = attribute_pi(before, u.billed());
@@ -716,7 +724,7 @@ fn emit_tool_result(
         return;
     };
     let dedup_key = match (id.as_deref(), entry_ts_iso) {
-        (Some(id), Some(ts)) => format!("pi:message:{id}:{ts}"),
+        (Some(id), Some(ts)) => modern_key("message", id, ts),
         _ => legacy_dedup_key("toolresult", message_ts_ms, timestamp, entry_ts_iso, None, u),
     };
     push_pi_event(events, source_file, dedup_key, timestamp, None, u, session_id, project, CtxTokens::default());
@@ -1213,6 +1221,17 @@ mod tests {
         assert!(a4b_tool.unwrap() > 0, "branch B inherited its own tool-call context");
         assert!(a4b_reas.unwrap() > 0, "branch B inherited its own reasoning context");
 
+        // a3b's parent is a model_change (mcb); the change must not sever the
+        // chain — a3b still sees its u1/a2/u2b ancestor prefix.
+        let a3b_messages: Option<i64> = conn
+            .query_row(
+                "SELECT ctx_messages FROM events WHERE source='pi' AND input_tokens = 50",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(a3b_messages.unwrap() > 0, "a model_change must not blank the ancestor context");
+
         // Every attributed pi event partitions billed exactly (messages + system +
         // reasoning) with tool ⊆ messages — the canonical invariants.
         crate::invariants::assert_partition_exact(&conn);
@@ -1272,6 +1291,16 @@ mod tests {
             .unwrap();
         assert_eq!(model.as_deref(), Some("changed-model"), "built-in summary inherits the branch Model");
         assert_eq!(ts, iso_to_epoch("2026-07-01T00:00:05.000Z").unwrap());
+        // The compaction's parent is a model_change (mc); it must still attribute
+        // the pre-compaction context rather than an empty (severed) one.
+        let cmp_messages: Option<i64> = conn
+            .query_row(
+                "SELECT ctx_messages FROM events WHERE source='pi' AND input_tokens = 500",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(cmp_messages.unwrap() > 0, "compaction reads pre-compaction context across the model_change");
 
         // Context: the pre-compaction Request (a2, input 30) saw the search tool in
         // its prefix; the post-compaction Request (a3, input 40) sees the summary +
