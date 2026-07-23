@@ -8,9 +8,9 @@ apparent uniformity is one line deep. The adapters deliberately differ on every
 axis a trait would have to abstract — inputs (a single directory for most,
 two paths for Gemini, a path slice for Antigravity, a live SQLite handle for
 Hermes), skip strategy (Claude resumes by byte offset, Codex/Gemini/Grok/
-Antigravity skip unchanged files, Hermes rescans every time), and write
+Antigravity/pi skip unchanged files, Hermes rescans every time), and write
 strategy (keep-max upsert for Claude's growing snapshots, dedup-insert for
-Codex, whole-session upsert for Hermes, replace-by-file for the rest — each
+Codex and pi, whole-session upsert for Hermes, replace-by-file for the rest — each
 encoding that Source's idempotency semantics). A trait would need a config
 blob and per-Source knobs to cover all three axes, relocating cheap wiring
 without concentrating any complexity: it fails the deletion test.

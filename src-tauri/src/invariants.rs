@@ -307,7 +307,7 @@ fn hermetic_seven_source_partition_invariants() {
         antigravity_conversations: base.join("antigravity"),
         // No CLI fixture: a missing root is scanned quietly (zero events, no error).
         antigravity_cli_conversations: base.join("antigravity-cli"),
-        pi_sessions: base.join("pi"),
+        pi_sessions: vec![base.join("pi")],
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();

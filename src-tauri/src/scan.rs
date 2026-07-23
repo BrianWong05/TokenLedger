@@ -1,5 +1,6 @@
+use std::ffi::OsStr;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
@@ -24,12 +25,29 @@ pub struct SourceRoots {
     // IDE and CLI conversation dirs share one SQLite schema; both scanned.
     pub antigravity_conversations: PathBuf,
     pub antigravity_cli_conversations: PathBuf,
-    pub pi_sessions: PathBuf,
+    pub pi_sessions: Vec<PathBuf>,
 }
 
 impl SourceRoots {
     pub fn default_roots() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+        let session_dir = std::env::var_os("PI_CODING_AGENT_SESSION_DIR");
+        let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR");
+        Self::from_home_and_pi_env(&home, session_dir.as_deref(), agent_dir.as_deref())
+    }
+
+    fn from_home_and_pi_env(
+        home: &Path,
+        session_dir: Option<&OsStr>,
+        agent_dir: Option<&OsStr>,
+    ) -> Self {
+        let mut pi_sessions = vec![home.join(".pi/agent/sessions")];
+        if let Some(path) = session_dir.and_then(|value| visible_pi_path(home, value)) {
+            pi_sessions.push(path);
+        }
+        if let Some(path) = agent_dir.and_then(|value| visible_pi_path(home, value)) {
+            pi_sessions.push(path.join("sessions"));
+        }
         SourceRoots {
             claude: home.join(".claude/projects"),
             codex: home.join(".codex/sessions"),
@@ -39,8 +57,22 @@ impl SourceRoots {
             grok_sessions: home.join(".grok/sessions"),
             antigravity_conversations: home.join(".gemini/antigravity/conversations"),
             antigravity_cli_conversations: home.join(".gemini/antigravity-cli/conversations"),
-            pi_sessions: home.join(".pi/agent/sessions"),
+            pi_sessions,
         }
+    }
+}
+
+fn visible_pi_path(home: &Path, value: &OsStr) -> Option<PathBuf> {
+    if value.is_empty() {
+        return None;
+    }
+    let path = Path::new(value);
+    if path == Path::new("~") {
+        return Some(home.to_path_buf());
+    }
+    match path.strip_prefix("~") {
+        Ok(rest) => Some(home.join(rest)),
+        Err(_) => Some(path.to_path_buf()),
     }
 }
 
@@ -99,7 +131,7 @@ pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::open_db;
+    use crate::db::{get_file_state, open_db};
     use crate::pricing::{self, OverrideRates};
     use crate::queries::{self, Filters};
     use std::fs;
@@ -119,6 +151,26 @@ mod tests {
     }
 
     #[test]
+    fn pi_roots_include_standard_and_visible_session_and_agent_overrides() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        let roots = SourceRoots::from_home_and_pi_env(
+            home.path(),
+            Some(OsStr::new("~/custom-sessions")),
+            Some(OsStr::new("~/custom-agent")),
+        );
+        assert_eq!(
+            roots.pi_sessions,
+            vec![
+                home.path().join(".pi/agent/sessions"),
+                home.path().join("custom-sessions"),
+                home.path().join("custom-agent/sessions"),
+            ],
+        );
+    }
+
+    #[test]
     fn default_roots_live_under_home() {
         let r = SourceRoots::default_roots();
         assert!(r.claude.ends_with(".claude/projects"));
@@ -133,7 +185,7 @@ mod tests {
         assert!(r
             .antigravity_cli_conversations
             .ends_with(".gemini/antigravity-cli/conversations"));
-        assert!(r.pi_sessions.ends_with(".pi/agent/sessions"));
+        assert!(r.pi_sessions[0].ends_with(".pi/agent/sessions"));
     }
 
     #[test]
@@ -144,7 +196,12 @@ mod tests {
         let pi_root = base.join("pi-sessions");
         let project_dir = pi_root.join("--Users-dev-projects-pi-demo--");
         fs::create_dir_all(&project_dir).unwrap();
-        fs::write(project_dir.join("session.jsonl"), PI_SESSION).unwrap();
+        let session_path = project_dir.join("session.jsonl");
+        fs::write(&session_path, PI_SESSION).unwrap();
+        let source_file = fs::canonicalize(&session_path)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
@@ -155,7 +212,7 @@ mod tests {
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
-            pi_sessions: pi_root,
+            pi_sessions: vec![pi_root],
         };
 
         let db_path = base.join("ledger.db");
@@ -235,6 +292,16 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 3);
+
+        fs::remove_file(session_path).unwrap();
+        let after_disappearance = run_scan(&mut conn, &roots);
+        assert_eq!(find(&after_disappearance, "pi").events_inserted, 0);
+        assert!(find(&after_disappearance, "pi").error.is_none());
+        assert!(get_file_state(&conn, &source_file).unwrap().is_none());
+        let retained: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(retained, 3, "missing source file never prunes Ledger usage");
         drop(conn);
 
         let mut durable_bytes = Vec::new();
@@ -275,6 +342,13 @@ mod tests {
         )
         .unwrap();
 
+        // A broken pi file sorts before a valid one. The valid file must still
+        // reach the Ledger, and the six existing Sources must still report.
+        let pi_root = base.join("pi");
+        fs::create_dir_all(&pi_root).unwrap();
+        fs::write(pi_root.join("a-broken.jsonl"), [0xff, b'\n']).unwrap();
+        fs::write(pi_root.join("b-valid.jsonl"), PI_SESSION).unwrap();
+
         // Everything else points at paths that do not exist.
         let roots = SourceRoots {
             claude: claude_root,
@@ -285,7 +359,7 @@ mod tests {
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
-            pi_sessions: base.join("no-pi"),
+            pi_sessions: vec![pi_root],
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -320,7 +394,19 @@ mod tests {
         assert_eq!(antigravity.events_inserted, 0);
         assert!(antigravity.error.is_none());
         let pi = find(&status, "pi");
-        assert_eq!(pi.events_inserted, 0);
-        assert!(pi.error.is_none());
+        assert_eq!(pi.events_inserted, 3, "valid pi file survives broken sibling");
+        assert!(pi
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("a-broken.jsonl")));
+
+        let pi_requests: i64 = conn
+            .query_row(
+                "SELECT SUM(api_calls) FROM events WHERE source = 'pi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pi_requests, 3);
     }
 }

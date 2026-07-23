@@ -422,7 +422,7 @@ mod tests {
             grok_sessions: dir.path().join("grok"),
             antigravity_conversations: dir.path().join("antigravity"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
-            pi_sessions: dir.path().join("pi"),
+            pi_sessions: vec![dir.path().join("pi")],
         };
         let state = AppState {
             db: Mutex::new(conn),
