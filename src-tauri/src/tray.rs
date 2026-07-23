@@ -91,8 +91,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(on_menu_event);
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone()).icon_as_template(true);
+    // Design 2b's chart-line glyph as a macOS template image (black + alpha;
+    // rasterized from the mock's mark into icons/tray.png). Not the app icon:
+    // that is still the stock Tauri logo, which reads as mush when templated.
+    if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray.png")) {
+        builder = builder.icon(icon).icon_as_template(true);
     }
     let tray = builder.build(app)?;
     app.manage(TrayMenu {
