@@ -83,6 +83,30 @@ describe('TrayPanel', () => {
     expect(actions).toEqual(['Open TokenLedger', 'Rescan now', 'Settings…', 'Quit TokenLedger']);
   });
 
+  it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
+    const piRow: BreakdownRow = {
+      ...toolRows[0],
+      key: 'pi',
+      totalTokens: 239,
+      requests: 3,
+      cost: 0.000805,
+    };
+    const ledger = makeFakeLedger({
+      summary: { ...summary, totalTokens: 239, requests: 3, cost: 0.000805 },
+      modelRows: [piRow],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    const row = container.querySelector('.tp-row')!;
+    expect(row.querySelector('.tp-row-label')?.textContent).toBe('pi');
+    expect(row.querySelector('img')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+  });
+
   it('renders all-Unattributed headline and Source Cost as unavailable', async () => {
     const ledger = makeFakeLedger({
       summary: { ...summary, totalTokens: 50, requests: 1, cost: null, unattributedTokens: 50 },

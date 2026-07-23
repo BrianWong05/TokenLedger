@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic six-Source fixture — not only
+// on every plain `cargo test` against a hermetic seven-Source fixture — not only
 // under the #[ignore] real-log e2e. The four assert_* helpers hold the exact
 // SQL + messages the e2e used to inline; both callers share them.
 //
@@ -73,7 +73,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic six-Source fixture + the default-run test that proves the four
+// Hermetic seven-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -259,6 +259,15 @@ fn gen_blob(
     f_len(1, &chat_model)
 }
 
+fn build_pi(base: &Path) {
+    let dir = base.join("pi/--Users-dev-projects-pi-demo--");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("session.jsonl"),
+        include_str!("adapters/fixtures/pi/basic-session.jsonl"),
+    ).unwrap();
+}
+
 fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
     let db = Connection::open(path).unwrap();
     db.execute_batch(
@@ -276,7 +285,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_six_source_partition_invariants() {
+fn hermetic_seven_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -286,6 +295,7 @@ fn hermetic_six_source_partition_invariants() {
     build_hermes(base);
     build_grok(base);
     build_antigravity(base);
+    build_pi(base);
 
     let roots = SourceRoots {
         claude: base.join("claude"),
@@ -297,6 +307,7 @@ fn hermetic_six_source_partition_invariants() {
         antigravity_conversations: base.join("antigravity"),
         // No CLI fixture: a missing root is scanned quietly (zero events, no error).
         antigravity_cli_conversations: base.join("antigravity-cli"),
+        pi_sessions: base.join("pi"),
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -304,8 +315,8 @@ fn hermetic_six_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the six Sources ingested events and reported no error.
-    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity"] {
+    // Every one of the seven Sources ingested events and reported no error.
+    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "pi"] {
         let s = status
             .sources
             .iter()
@@ -350,12 +361,12 @@ fn hermetic_six_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all six here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all seven here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 6,
-        "expected >=6 sources in ctx_buckets, got {}",
+        buckets.len() >= 7,
+        "expected >=7 sources in ctx_buckets, got {}",
         buckets.len()
     );
 

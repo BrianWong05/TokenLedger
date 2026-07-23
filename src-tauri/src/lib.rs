@@ -18,7 +18,7 @@ mod updater;
 #[cfg(test)]
 mod e2e_real_logs;
 
-// Shared cross-Source partition invariants + a hermetic six-Source test that
+// Shared cross-Source partition invariants + a hermetic seven-Source test that
 // runs them on synthetic logs every `cargo test`. Test-only, like e2e above.
 #[cfg(test)]
 mod invariants;
@@ -408,7 +408,7 @@ mod tests {
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
-    // functions. Empty fixture roots => 6 source statuses, zero events.
+    // functions. Empty fixture roots => 7 source statuses, zero events.
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
@@ -422,6 +422,7 @@ mod tests {
             grok_sessions: dir.path().join("grok"),
             antigravity_conversations: dir.path().join("antigravity"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
+            pi_sessions: dir.path().join("pi"),
         };
         let state = AppState {
             db: Mutex::new(conn),
@@ -431,7 +432,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 6);
+        assert_eq!(status.sources.len(), 7);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

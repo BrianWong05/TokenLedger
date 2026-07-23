@@ -10,6 +10,7 @@ use crate::adapters::codex::scan_codex;
 use crate::adapters::gemini::scan_gemini;
 use crate::adapters::grok::scan_grok;
 use crate::adapters::hermes::scan_hermes;
+use crate::adapters::pi::scan_pi;
 use crate::db::prune_missing_files;
 use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 
@@ -23,6 +24,7 @@ pub struct SourceRoots {
     // IDE and CLI conversation dirs share one SQLite schema; both scanned.
     pub antigravity_conversations: PathBuf,
     pub antigravity_cli_conversations: PathBuf,
+    pub pi_sessions: PathBuf,
 }
 
 impl SourceRoots {
@@ -37,6 +39,7 @@ impl SourceRoots {
             grok_sessions: home.join(".grok/sessions"),
             antigravity_conversations: home.join(".gemini/antigravity/conversations"),
             antigravity_cli_conversations: home.join(".gemini/antigravity-cli/conversations"),
+            pi_sessions: home.join(".pi/agent/sessions"),
         }
     }
 }
@@ -62,7 +65,7 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
 }
 
 pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
-    let mut sources = Vec::with_capacity(6);
+    let mut sources = Vec::with_capacity(7);
     sources.push(run_one("claude", || scan_claude(conn, &roots.claude)));
     sources.push(run_one("codex", || scan_codex(conn, &roots.codex)));
     sources.push(run_one("gemini", || {
@@ -79,6 +82,7 @@ pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
             ],
         )
     }));
+    sources.push(run_one("pi", || scan_pi(conn, &roots.pi_sessions)));
 
     // Ledger hygiene only: drops scanned_files rows for vanished paths.
     // Never deletes events (see prune_missing_files contract). Best-effort.
@@ -96,12 +100,15 @@ pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
 mod tests {
     use super::*;
     use crate::db::open_db;
+    use crate::pricing::{self, OverrideRates};
+    use crate::queries::{self, Filters};
     use std::fs;
     use std::path::PathBuf;
 
     // Minimal Claude assistant line (non-zero usage → one event ingested).
     // Shape matches real ~/.claude/projects/**/*.jsonl assistant records.
     const CLAUDE_LINE: &str = r#"{"type":"assistant","requestId":"req_test1","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/Users/dev/projects/alpha","message":{"id":"msg_test1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":10,"cache_creation_input_tokens":20,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":0}}}}"#;
+    const PI_SESSION: &str = include_str!("adapters/fixtures/pi/basic-session.jsonl");
 
     fn find<'a>(status: &'a ScanStatus, source: &str) -> &'a SourceStatus {
         status
@@ -126,6 +133,130 @@ mod tests {
         assert!(r
             .antigravity_cli_conversations
             .ends_with(".gemini/antigravity-cli/conversations"));
+        assert!(r.pi_sessions.ends_with(".pi/agent/sessions"));
+    }
+
+    #[test]
+    fn run_scan_ingests_pi_fixture_through_every_ledger_surface() {
+        std::env::set_var("TZ", "UTC");
+        let tmp = tempfile::tempdir().unwrap();
+        let base: PathBuf = tmp.path().to_path_buf();
+        let pi_root = base.join("pi-sessions");
+        let project_dir = pi_root.join("--Users-dev-projects-pi-demo--");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(project_dir.join("session.jsonl"), PI_SESSION).unwrap();
+
+        let roots = SourceRoots {
+            claude: base.join("no-claude"),
+            codex: base.join("no-codex"),
+            gemini_tmp: base.join("no-gemini"),
+            gemini_projects_json: base.join("no-projects.json"),
+            hermes_db: base.join("no-hermes.db"),
+            grok_sessions: base.join("no-grok"),
+            antigravity_conversations: base.join("no-antigravity"),
+            antigravity_cli_conversations: base.join("no-antigravity-cli"),
+            pi_sessions: pi_root,
+        };
+
+        let db_path = base.join("ledger.db");
+        let mut conn = open_db(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
+             VALUES ('pi-response-model', 0.000002, 0.000010, 0.0000005, 0.0000025, 0.000004)",
+            [],
+        ).unwrap();
+        pricing::set_override(&conn, "pi-fallback-model", OverrideRates {
+            input: Some(0.000001),
+            output: Some(0.000002),
+            cache_read: None,
+            cache_write: None,
+        }).unwrap();
+
+        let status = run_scan(&mut conn, &roots);
+        assert_eq!(status.sources.len(), 7);
+        assert_eq!(status.sources.last().unwrap().source, "pi");
+        let pi = find(&status, "pi");
+        assert_eq!(pi.events_inserted, 3);
+        assert_eq!(pi.lines_skipped, 2);
+        assert!(pi.error.is_none());
+
+        let summary = queries::summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(summary.input_tokens, 135);
+        assert_eq!(summary.output_tokens, 62);
+        assert_eq!(summary.cache_read_tokens, 23);
+        assert_eq!(summary.cache_write_tokens, 19);
+        assert_eq!(summary.total_tokens, 239);
+        assert_eq!(summary.requests, 3);
+        assert!((summary.cost.unwrap() - 0.000805).abs() < 1e-12);
+        assert!(summary.has_unpriced);
+        assert_eq!(summary.unpriced_models, vec!["pi-error-model".to_string()]);
+
+        let source_rows = queries::breakdown(&conn, "tool", &Filters::default()).unwrap();
+        let pi_source = source_rows.iter().find(|r| r.key.as_deref() == Some("pi")).unwrap();
+        assert_eq!(pi_source.total_tokens, 239);
+        assert_eq!(pi_source.requests, 3);
+        assert!((pi_source.cost.unwrap() - 0.000805).abs() < 1e-12);
+        assert!(pi_source.has_unpriced);
+
+        let model_rows = queries::breakdown(&conn, "model", &Filters::default()).unwrap();
+        assert_eq!(model_rows.len(), 3);
+        assert!(model_rows.iter().all(|r| r.source.as_deref() == Some("pi")));
+        assert!(model_rows.iter().all(|r| r.key.as_deref() != Some("pi-selected-model")));
+        let response = model_rows
+            .iter()
+            .find(|r| r.key.as_deref() == Some("pi-response-model"))
+            .unwrap();
+        assert_eq!(response.reasoning_tokens, Some(10));
+
+        let projects = queries::breakdown(&conn, "project", &Filters::default()).unwrap();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].key.as_deref(), Some("/Users/dev/projects/pi-demo"));
+        assert_eq!(projects[0].total_tokens, 239);
+
+        let series = queries::series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].source, "pi");
+        assert_eq!(series[0].total_tokens, 239);
+        assert_eq!(series[0].requests, 3);
+        assert_eq!(series[0].cache_write_tokens, 19);
+        assert!((series[0].cost - 0.000805).abs() < 1e-12);
+        assert_eq!(series[0].by_model.len(), 3);
+
+        let pricing_rows = pricing::model_pricing(&conn).unwrap();
+        for model in ["pi-response-model", "pi-fallback-model", "pi-error-model"] {
+            let row = pricing_rows.iter().find(|r| r.model == model).unwrap();
+            assert_eq!(row.tool, "pi");
+        }
+        assert!(pricing_rows.iter().all(|r| r.model != "pi-selected-model"));
+
+        let second = run_scan(&mut conn, &roots);
+        assert_eq!(find(&second, "pi").events_inserted, 0, "repeat scan is idempotent");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+        drop(conn);
+
+        let mut durable_bytes = Vec::new();
+        for suffix in ["", "-wal", "-shm"] {
+            if let Ok(bytes) = fs::read(format!("{}{}", db_path.display(), suffix)) {
+                durable_bytes.extend(bytes);
+            }
+        }
+        for private in [
+            "PRIVATE_PROMPT_SHOULD_NOT_PERSIST",
+            "PRIVATE_RESPONSE_SHOULD_NOT_PERSIST",
+            "PRIVATE_REASONING_SHOULD_NOT_PERSIST",
+            "PRIVATE_IMAGE_SHOULD_NOT_PERSIST",
+            "PRIVATE_TOOL_ARG_SHOULD_NOT_PERSIST",
+            "PRIVATE_TOOL_RESULT_SHOULD_NOT_PERSIST",
+            "PRIVATE_ERROR_SHOULD_NOT_PERSIST",
+        ] {
+            assert!(
+                !durable_bytes.windows(private.len()).any(|w| w == private.as_bytes()),
+                "private fixture content reached the Ledger: {private}",
+            );
+        }
     }
 
     #[test]
@@ -154,12 +285,14 @@ mod tests {
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
+            pi_sessions: base.join("no-pi"),
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 6);
+        assert_eq!(status.sources.len(), 7);
+        assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 
         // Claude still ingests its event even though hermes errors.
@@ -186,5 +319,8 @@ mod tests {
         let antigravity = find(&status, "antigravity");
         assert_eq!(antigravity.events_inserted, 0);
         assert!(antigravity.error.is_none());
+        let pi = find(&status, "pi");
+        assert_eq!(pi.events_inserted, 0);
+        assert!(pi.error.is_none());
     }
 }

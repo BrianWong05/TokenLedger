@@ -7,11 +7,27 @@ pub mod exec_class;
 pub mod gemini;
 pub mod grok;
 pub mod hermes;
+pub mod pi;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::db::get_file_state;
 use crate::types::FileState;
+
+pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            find_jsonl(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            out.push(path);
+        }
+    }
+}
 
 // Shared by the grok/antigravity adapters' whole-file skip check.
 pub(crate) fn file_state_of(path: &Path) -> FileState {
@@ -41,6 +57,13 @@ pub(crate) fn unchanged(
                 && prev.byte_offset == current.byte_offset
         }
         _ => current.size == 0 && current.mtime == 0, // no state: only a missing file is "unchanged"
+    }
+}
+
+pub(crate) fn rollup_worktree(cwd: &str) -> String {
+    match cwd.find("/.claude/worktrees/") {
+        Some(i) => cwd[..i].to_string(),
+        None => cwd.to_string(),
     }
 }
 

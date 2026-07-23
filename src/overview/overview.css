@@ -394,7 +394,7 @@
   transition: width 0.4s ease;
 }
 
-/* per-source cards (4-up; the 6 sources wrap 4+2); click selects the source
+/* per-source cards (4-up; the 7 sources wrap 4+3); click selects the source
    that drives the Overview */
 .tt-toolcards {
   display: grid;

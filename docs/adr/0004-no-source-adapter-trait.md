@@ -1,6 +1,6 @@
 # No Source-adapter trait: scan wiring stays explicit
 
-TokenLedger's six Source adapters are wired into the scan as six explicit
+TokenLedger's seven Source adapters are wired into the scan as seven explicit
 function calls (`scan.rs::run_scan`), not through a shared trait — a shape that
 looks like it is begging for one. Architecture reviews evaluated a `Source`
 trait twice (July 2026) and rejected it both times for the same reason: the

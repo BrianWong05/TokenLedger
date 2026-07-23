@@ -1,10 +1,11 @@
 use super::claude_ctx::{self, Composition};
 use super::exec_class;
+use super::{find_jsonl, rollup_worktree};
 use crate::db::{get_file_state, insert_events_keep_max_output, set_file_state};
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn scan_claude(conn: &mut Connection, projects_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
@@ -18,21 +19,6 @@ pub fn scan_claude(conn: &mut Connection, projects_root: &Path) -> SourceScanRes
         }
     }
     result
-}
-
-fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return, // missing directory => zero events, not an error
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            find_jsonl(&p, out);
-        } else if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-            out.push(p);
-        }
-    }
 }
 
 struct ParsedClaudeFile {
@@ -334,13 +320,6 @@ fn parse_line_event(v: &serde_json::Value, source_file: &str, encoded_dir: &str)
     })
 }
 
-fn rollup_worktree(cwd: &str) -> String {
-    match cwd.find("/.claude/worktrees/") {
-        Some(i) => cwd[..i].to_string(),
-        None => cwd.to_string(),
-    }
-}
-
 // Bash command-level facets (spec 2026-07-10-bash-exec-drilldown): classify
 // each Bash tool_use once, remember the classification by tool_use id so the
 // paired result's bytes book to the same command. Reads the line only —
@@ -391,6 +370,7 @@ mod tests {
     use super::*;
     use crate::db::open_db;
     use std::io::Write;
+    use std::path::PathBuf;
 
     fn fixtures() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/projects")

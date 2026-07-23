@@ -111,7 +111,7 @@ afterEach(() => {
 
 describe('Overview presentation', () => {
   it('sizes the hero proportion bar by each source token share', async () => {
-    // claude 300 + codex 100 = 400 → 75% / 25%; the other four sources are 0.
+    // claude 300 + codex 100 = 400 → 75% / 25%; the other five Sources are 0.
     const { container: c } = await mount({
       dayPoints: [
         pt({ source: 'claude', totalTokens: 300 }),
@@ -124,10 +124,50 @@ describe('Overview presentation', () => {
       c.querySelectorAll<HTMLElement>('.tt-split div'),
       (d) => d.style.width,
     );
-    // TOOLS order: claude, codex, gemini, hermes, grok, antigravity.
+    // TOOLS order: claude, codex, gemini, hermes, grok, antigravity, pi.
     expect(widths[0]).toBe('75%');
     expect(widths[1]).toBe('25%');
     expect(widths[2]).toBe('0%'); // CSSOM serializes fmtPct(0) "0.0%" → "0%"
+  });
+
+  it('renders lowercase pi after Google Antigravity with scan status and official mark', async () => {
+    const piModel: BreakdownRow = {
+      key: 'pi-response-model', source: 'pi', inputTokens: 135, outputTokens: 62,
+      cacheReadTokens: 23, cacheWriteTokens: 19, totalTokens: 239, requests: 3,
+      cost: 0.000805, reasoningTokens: 10, convs: 1, cacheEstimated: false,
+      hasUnpriced: false, unattributedTokens: 0,
+    };
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ source: 'antigravity', totalTokens: 100 }),
+        pt({ source: 'pi', totalTokens: 239, byModel: { 'pi-response-model': 239 } }),
+      ],
+      summary: { ...summary, totalTokens: 339, requests: 4 },
+      modelRows: [piModel],
+      projectRows: [{ ...piModel, key: '/Users/dev/projects/pi-demo', source: null }],
+      scan: {
+        scannedAt: 1_782_907_202,
+        sources: [
+          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, error: null },
+          { source: 'pi', eventsInserted: 3, linesSkipped: 2, error: null },
+        ],
+      },
+    });
+
+    const cards = Array.from(c.querySelectorAll<HTMLButtonElement>('.tt-toolcards button'));
+    expect(cards.map((card) => card.textContent?.trim())).toEqual([
+      expect.stringContaining('Antigravity'),
+      expect.stringContaining('pi'),
+    ]);
+    const piCard = cards[cards.length - 1];
+    expect(piCard.querySelector('img')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+    expect(Array.from(c.querySelectorAll('.tt-legend .item'), (item) => item.textContent)).toContain('pi');
+    expect(Array.from(c.querySelectorAll('.tt-sm-card .lbl'), (item) => item.textContent)).toContain('pi');
+    const projectTab = Array.from(c.querySelectorAll<HTMLButtonElement>('.tt-tbl-tabs button'))
+      .find((button) => button.textContent?.includes('Project Usage'))!;
+    await act(async () => projectTab.click());
+    expect(c.querySelector('.tt-tbl-row span')?.getAttribute('title')).toBe('/Users/dev/projects/pi-demo');
+    expect(c.querySelector('.tt-scan-foot')?.textContent).toContain('pi: 3 in / 2 skipped');
   });
 
   it('drives the rest of the Overview when a source card is selected', async () => {

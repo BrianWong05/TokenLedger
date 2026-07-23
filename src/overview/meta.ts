@@ -3,7 +3,7 @@
 // Range8b types. Pure constants and types, no fetching or reshaping (that lives
 // in data.ts), so components can pull in the meta without the reshapers.
 
-export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity';
+export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity' | 'pi';
 
 export interface ToolMeta {
   key: ToolKey;
@@ -21,6 +21,7 @@ export const TOOLS: ToolMeta[] = [
   { key: 'hermes', label: 'Hermes', source: 'Hermes', color: '#f472b6' },
   { key: 'grok', label: 'Grok', source: 'Grok Build', color: '#c3c8d2' },
   { key: 'antigravity', label: 'Antigravity', source: 'Google Antigravity', color: '#22d3ee' },
+  { key: 'pi', label: 'pi', source: 'pi', color: '#a3a3a3' },
 ];
 
 // The four canonical token categories (CONTEXT.md).
@@ -41,5 +42,5 @@ export const RANGES_8B: { key: Range8b; label: string; long: string }[] = [
 ];
 
 export function emptyByTool(): Record<ToolKey, number> {
-  return { claude: 0, codex: 0, gemini: 0, hermes: 0, grok: 0, antigravity: 0 };
+  return { claude: 0, codex: 0, gemini: 0, hermes: 0, grok: 0, antigravity: 0, pi: 0 };
 }

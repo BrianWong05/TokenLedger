@@ -59,6 +59,19 @@ describe('PricingPage', () => {
     expect(cells).toEqual(['$15.00', '$75.00', '$1.50', '$18.75']);
   });
 
+  it('renders pi Model ownership with the lowercase label and official mark', async () => {
+    const pricing = makeFakePricing([{
+      model: 'pi-response-model',
+      tool: 'pi',
+      overrideRates: null,
+      catalog: null,
+    }]);
+    const c = await mount(<PricingPage ports={{ pricing }} />);
+    const row = rowByModel(c, 'pi-response-model');
+    expect(row.querySelector('.tool')?.textContent?.trim()).toBe('pi');
+    expect(row.querySelector('img')?.getAttribute('src')).toMatch(/^data:image\/svg\+xml/);
+  });
+
   it('shows ≈ on cache-estimated cache cells and — for unpriced rows', async () => {
     const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
 

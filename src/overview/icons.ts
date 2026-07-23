@@ -8,6 +8,7 @@ import gemini from './icons/gemini.svg';
 import hermes from './icons/hermes.svg';
 import grok from './icons/grok.svg';
 import antigravity from './icons/antigravity.svg';
+import pi from './icons/pi.svg';
 
 export const TOOL_ICONS: Partial<Record<ToolKey, string>> = {
   claude,
@@ -16,4 +17,5 @@ export const TOOL_ICONS: Partial<Record<ToolKey, string>> = {
   hermes,
   grok,
   antigravity,
+  pi,
 };

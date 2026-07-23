@@ -46,7 +46,7 @@ fn e2e_real_logs() {
     println!("  unpriced_models     {:?}", summary.unpriced_models);
     println!("  cache_hit_rate      {:.4}", summary.cache_hit_rate);
 
-    assert_eq!(status.sources.len(), 6, "expected all 6 sources to report");
+    assert_eq!(status.sources.len(), 7, "expected all 7 sources to report");
     assert!(
         summary.total_tokens > 0,
         "expected non-zero tokens scanning real logs"
@@ -54,7 +54,7 @@ fn e2e_real_logs() {
 
     // Context attribution invariants (spec 2026-07-10-context-breakdown).
     // The universal cross-Source invariants live in crate::invariants, shared
-    // with the hermetic six-Source test so both exercise identical SQL.
+    // with the hermetic seven-Source test so both exercise identical SQL.
     crate::invariants::assert_partition_exact(&conn);
     crate::invariants::assert_secondary_subset(&conn);
     crate::invariants::assert_hermes_ctx_null(&conn);
