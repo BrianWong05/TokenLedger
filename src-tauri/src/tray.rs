@@ -660,6 +660,21 @@ mod tests {
         assert_eq!(rows[0].1, "Claude — 1.8M · ≥ $6.12");
     }
 
+    // Asset guard: the bundled PNGs must decode through the same strict
+    // decoder the app uses (tauri's png feature) — sips/CoreImage accepting
+    // a file proves nothing, and a corrupt asset fails silently at runtime
+    // (icon-less tray, icon-less rows).
+    #[test]
+    fn bundled_tray_icons_decode() {
+        for key in ["claude", "codex", "gemini", "hermes", "grok", "antigravity"] {
+            assert!(source_icon(key).is_some(), "menu icon for {key} must decode");
+        }
+        assert!(
+            Image::from_bytes(include_bytes!("../icons/tray.png")).is_ok(),
+            "tray template icon must decode"
+        );
+    }
+
     #[test]
     fn day_window_brackets_the_local_calendar_day() {
         // Pinned to UTC like every queries.rs bucket test: parallel test
