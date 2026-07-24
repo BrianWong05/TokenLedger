@@ -353,16 +353,19 @@ pub fn run() {
                 }
             });
 
-            // Refresh LiteLLM prices off the main thread; any fetch failure falls
-            // back to the cached/bundled snapshot inside load_prices_json. The
-            // blocking network fetch runs BEFORE the DB lock so scan/summary/etc.
-            // never block behind it on cold start.
+            // Refresh both price catalogs off the main thread; each loader falls
+            // back to its cached snapshot on a fetch failure (LiteLLM then to its
+            // bundled copy, OpenRouter to None — ADR-0003). BOTH blocking network
+            // fetches run BEFORE the DB lock so scan/summary/etc. never block
+            // behind them on cold start.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                let json = pricing::load_prices_json(&data_dir); // no lock, network here
+                // no lock held: network here
+                let litellm = pricing::load_prices_json(&data_dir);
+                let openrouter = pricing::load_openrouter_json(&data_dir);
                 let state = handle.state::<AppState>();
                 if let Ok(mut db) = state.db.lock() {
-                    let _ = pricing::rebuild_prices(&mut db, &json);
+                    let _ = pricing::rebuild_prices(&mut db, &litellm, openrouter.as_deref());
                 };
                 // Tell the frontend so it re-fetches costs: without this, a
                 // fresh install renders 'unpriced' until the next range change.

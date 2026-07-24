@@ -10,9 +10,12 @@ const CANONICAL: &[&str] = &["anthropic", "openai", "gemini", "vertex_ai-languag
 const LITELLM_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
-/// The `catalog` value stored on a price row, and the origin string the Pricing
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/models";
+
+/// The `catalog` values stored on a price row, and the origin strings the Pricing
 /// tab renders (see the frontend's originLabel).
 const CATALOG_LITELLM: &str = "litellm";
+const CATALOG_OPENROUTER: &str = "openrouter";
 
 /// lowercase -> strip through last '/' -> strip a trailing `-YYYYMMDD` suffix.
 pub fn normalize_model(raw: &str) -> String {
@@ -58,8 +61,11 @@ impl Rates {
     /// Cache tokens were used but their rate is missing → the model is
     /// Cache-Estimated (CONTEXT.md).
     /// ponytail: prices store an absent cache rate as 0.0, so "no rate" == 0.0
-    /// here; distinguish-explicit-zero needs nullable price columns — add if a
-    /// catalog ever prices cache at $0.
+    /// here. A catalog now DOES quote $0 — OpenRouter's ":free" models — and the
+    /// deliberate answer is to drop those entries (see or_cost) rather than let a
+    /// free Model and an unknown price look alike. Telling the two apart properly
+    /// still needs nullable price columns end to end; add them if a free Model
+    /// ever needs a real $0 Cost rather than being left Unpriced.
     pub fn cache_gap(&self, cache_read: i64, w5: i64, w1: i64) -> bool {
         (cache_read > 0 && self.cache_read == 0.0)
             || (w5 > 0 && self.cache_write_5m == 0.0)
@@ -99,6 +105,54 @@ fn cost(entry: &serde_json::Value, key: &str) -> Option<f64> {
     entry.get(key).and_then(|v| v.as_f64())
 }
 
+/// One OpenRouter price field. They arrive as decimal STRINGS, and its ":free"
+/// models quote exactly "0" — mapped to None because this codebase stores an
+/// absent rate as 0.0, so an explicit zero and a missing rate are the same value
+/// once written. That collapse is what makes the both-none skip below cover
+/// "free model" as well as "no prices quoted".
+fn or_cost(pricing: &serde_json::Value, key: &str) -> Option<f64> {
+    let v: f64 = pricing.get(key)?.as_str()?.parse().ok()?;
+    (v != 0.0).then_some(v)
+}
+
+/// Candidate rows from an OpenRouter catalog payload, keyed by its raw vendor-
+/// prefixed id. Mirrors the LiteLLM loop's rule: an entry with neither a prompt
+/// nor a completion price contributes nothing.
+fn openrouter_rows(json: &str) -> Result<Vec<(String, Row)>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("parse openrouter json: {e}"))?;
+    let data = root
+        .get("data")
+        .and_then(|d| d.as_array())
+        .ok_or_else(|| "openrouter json has no data array".to_string())?;
+
+    let mut out = Vec::new();
+    for entry in data {
+        let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(pricing) = entry.get("pricing") else {
+            continue;
+        };
+        let input = or_cost(pricing, "prompt");
+        let output = or_cost(pricing, "completion");
+        if input.is_none() && output.is_none() {
+            continue;
+        }
+        out.push((
+            id.to_string(),
+            Row {
+                input,
+                output,
+                cache_read: or_cost(pricing, "input_cache_read"),
+                cw5m: or_cost(pricing, "input_cache_write"),
+                cw1h: or_cost(pricing, "input_cache_write_1h"),
+            },
+        ));
+    }
+    Ok(out)
+}
+
 /// Write one price row for `catalog`, LEAVING an existing row alone. Precedence
 /// lives in the order rebuild_prices runs its passes: the first pass to claim a
 /// Model key owns it, so every later pass must not overwrite. (Hence OR IGNORE
@@ -130,10 +184,23 @@ fn write_price_row(
     Ok(())
 }
 
-/// Rebuild the `prices` table from a LiteLLM JSON snapshot. Writes an exact row
-/// (model = the raw LiteLLM key) for every entry with a non-null input OR output
-/// cost, plus guarded normalized fallback rows. Returns the row count.
-pub fn rebuild_prices(conn: &mut Connection, litellm_json: &str) -> Result<u64, String> {
+/// Rebuild the `prices` table from the catalog snapshots. Writes an exact row
+/// (model = the raw catalog key) for every entry with a non-null input OR output
+/// cost, plus guarded normalized fallback rows, in ADR-0003 precedence order.
+/// `openrouter_json` is None when that catalog could not be read at all, which
+/// degrades to LiteLLM-only resolution. Returns the row count.
+pub fn rebuild_prices(
+    conn: &mut Connection,
+    litellm_json: &str,
+    openrouter_json: Option<&str>,
+) -> Result<u64, String> {
+    // A malformed OpenRouter payload drops the tier rather than failing the whole
+    // rebuild: losing one fallback catalog leaves Models Unpriced, while aborting
+    // would leave EVERY Model unpriced. Same outcome as never reaching the host.
+    let or_rows = openrouter_json
+        .map(|j| openrouter_rows(j).unwrap_or_default())
+        .unwrap_or_default();
+
     let root: serde_json::Value =
         serde_json::from_str(litellm_json).map_err(|e| format!("parse litellm json: {e}"))?;
     let obj = root
@@ -193,16 +260,24 @@ pub fn rebuild_prices(conn: &mut Connection, litellm_json: &str) -> Result<u64, 
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM prices", []).map_err(|e| e.to_string())?;
-    // Ordered precedence passes, highest first; write_price_row never overwrites a
-    // key an earlier pass claimed. Exact raw-key matches outrank normalized ones
-    // (ADR-0003), so they are written first. This is the same outcome the previous
-    // normalized-then-exact-overwrite order produced, restructured so a second
-    // catalog slots in as further passes rather than another overwrite rule.
+    // The five-tier resolution order of ADR-0003, minus the Override tier (which
+    // lives in RateMap, not here), run as ordered passes: write_price_row never
+    // overwrites a key an earlier pass claimed, so the first claimant wins.
+    // Exact raw-key matches outrank normalized ones, and an exact OpenRouter id
+    // outranks a normalized LiteLLM match — a vendor-qualified exact hit is
+    // stronger evidence than normalizing onto some reseller's row.
     for (model, row) in &exact {
         write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
+    for (model, row) in &or_rows {
+        write_price_row(&tx, model, row, CATALOG_OPENROUTER).map_err(|e| e.to_string())?;
+    }
     for (model, (row, _)) in &norm {
         write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
+    }
+    for (model, row) in &or_rows {
+        write_price_row(&tx, &normalize_model(model), row, CATALOG_OPENROUTER)
+            .map_err(|e| e.to_string())?;
     }
     let count: u64 = tx
         .query_row("SELECT COUNT(*) FROM prices", [], |r| r.get(0))
@@ -232,13 +307,34 @@ pub fn load_prices_json(cache_dir: &Path) -> String {
     include_str!("../resources/model_prices.json").to_string()
 }
 
-/// Fetch the latest LiteLLM snapshot and rebuild the prices table.
+/// Fetch the latest OpenRouter catalog (10s timeout) and return its JSON. Does NO
+/// DB work, for the same reason load_prices_json doesn't. On fetch failure falls
+/// back to the cached file, then None — unlike LiteLLM there is no bundled
+/// snapshot, so a machine that has never reached OpenRouter simply resolves
+/// without the tier, which is exactly the pre-OpenRouter behaviour (ADR-0003).
+pub fn load_openrouter_json(cache_dir: &Path) -> Option<String> {
+    let cache_file = cache_dir.join("openrouter_models.json");
+    let fetched = ureq::get(OPENROUTER_URL)
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .ok()
+        .and_then(|resp| resp.into_string().ok());
+    if let Some(body) = fetched {
+        let _ = std::fs::create_dir_all(cache_dir);
+        let _ = std::fs::write(&cache_file, &body);
+        return Some(body);
+    }
+    std::fs::read_to_string(&cache_file).ok()
+}
+
+/// Fetch both catalogs and rebuild the prices table.
 /// Production splits these two steps (fetch outside the DB lock); this convenience
 /// wrapper is retained for the e2e test, hence test-only in non-test builds.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, String> {
-    let json = load_prices_json(cache_dir);
-    rebuild_prices(conn, &json)
+    let litellm = load_prices_json(cache_dir);
+    let openrouter = load_openrouter_json(cache_dir);
+    rebuild_prices(conn, &litellm, openrouter.as_deref())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -542,14 +638,14 @@ mod tests {
     fn rebuild_counts_distinct_rows() {
         let (_d, mut conn) = test_conn();
         // 5 exact rows + 4 normalized keys, unioned = 6 distinct model rows.
-        let n = rebuild_prices(&mut conn, FIXTURE).unwrap();
+        let n = rebuild_prices(&mut conn, FIXTURE, None).unwrap();
         assert_eq!(n, 6);
     }
 
     #[test]
     fn exact_wins_and_null_reseller_does_not_pollute() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         // gpt-5.4 exact hit.
         assert_eq!(rm.resolve("gpt-5.4").unwrap().input, 2.5e-06);
@@ -561,7 +657,7 @@ mod tests {
     #[test]
     fn canonical_wins_normalized_collision() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         // Not an exact key -> normalized to gemini-2.5-flash; canonical 3e-07
         // must win over the 2.5e-06 reseller.
@@ -571,7 +667,7 @@ mod tests {
     #[test]
     fn claude_cache_rates_and_1h_fallback() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         let r = rm.resolve("claude-sonnet-4-5").unwrap();
         assert_eq!(r.cache_read, 3e-07);
@@ -586,7 +682,7 @@ mod tests {
     #[test]
     fn unknown_model_is_none() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         assert_eq!(rm.resolve("totally-unknown-model"), None);
     }
@@ -594,7 +690,7 @@ mod tests {
     #[test]
     fn override_wins_fills_none_and_applies_cache_write_both_ttls() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
         set_override(
             &conn,
             "gemini-2.5-flash",
@@ -648,7 +744,7 @@ mod tests {
     #[test]
     fn model_pricing_omits_unattributed_usage() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
         seed_event(&conn, "priced-full", "claude");
         conn.execute(
             "INSERT INTO events (dedup_key, source, timestamp, model, input_tokens, source_file) \
@@ -664,7 +760,7 @@ mod tests {
     #[test]
     fn model_pricing_splits_override_and_catalog() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
         seed_event(&conn, "priced-no-cache", "codex");
         seed_event(&conn, "priced-full", "claude");
         seed_event(&conn, "unpriced-x", "grok");
@@ -719,10 +815,150 @@ mod tests {
         assert_eq!(get("multi").tool, "gemini");
     }
 
+    // The five-tier resolution fixtures (ADR-0003). LiteLLM covers `priced-full`
+    // under its exact key, and `glm-5.2` ONLY via normalization of a reseller key
+    // — the real-world shape that motivated putting openrouter-exact above
+    // litellm-normalized (Cloudflare's rate is 1.8x the vendor's).
+    const TIER_LITELLM: &str = r#"{
+      "cloudflare/@cf/zai-org/glm-5.2": {
+        "input_cost_per_token": 1.4e-06,
+        "output_cost_per_token": 4.4e-06,
+        "litellm_provider": "cloudflare"
+      },
+      "priced-full": {
+        "input_cost_per_token": 3e-06,
+        "output_cost_per_token": 6e-06,
+        "litellm_provider": "openai"
+      }
+    }"#;
+
+    // Field names verified against the real openrouter.ai/api/v1/models payload:
+    // decimal STRINGS, and `:free` models priced at exactly "0".
+    const TIER_OPENROUTER: &str = r#"{
+      "data": [
+        { "id": "z-ai/glm-5.2",
+          "pricing": { "prompt": "0.0000007742", "completion": "0.0000024332",
+                       "input_cache_read": "0.00000014378" } },
+        { "id": "anthropic/claude-opus-5",
+          "pricing": { "prompt": "0.000005", "completion": "0.000025",
+                       "input_cache_read": "0.0000005", "input_cache_write": "0.00000625",
+                       "input_cache_write_1h": "0.00001" } },
+        { "id": "openai/priced-full",
+          "pricing": { "prompt": "0.00009", "completion": "0.00009" } },
+        { "id": "poolside/laguna-s:free",
+          "pricing": { "prompt": "0", "completion": "0" } },
+        { "id": "vendor/no-prices", "pricing": {} }
+      ]
+    }"#;
+
+    fn tier_map(conn: &mut Connection) -> RateMap {
+        rebuild_prices(conn, TIER_LITELLM, Some(TIER_OPENROUTER)).unwrap();
+        RateMap::load(conn).unwrap()
+    }
+
+    #[test]
+    fn openrouter_exact_outranks_litellm_normalized() {
+        let (_d, mut conn) = test_conn();
+        let rm = tier_map(&mut conn);
+        // The raw Model name matches an OpenRouter id exactly; LiteLLM reaches it
+        // only by normalizing a Cloudflare reseller key. Exact evidence wins.
+        let (origin, r) = rm.resolve_catalog("z-ai/glm-5.2").unwrap();
+        assert_eq!(origin, "openrouter");
+        assert_eq!(r.input, 7.742e-07);
+        assert_eq!(r.output, 2.4332e-06);
+    }
+
+    #[test]
+    fn openrouter_normalized_fills_a_litellm_gap() {
+        let (_d, mut conn) = test_conn();
+        let rm = tier_map(&mut conn);
+        // No LiteLLM coverage at all; OpenRouter's vendor-prefixed id normalizes
+        // onto the raw name. All four token categories carry across.
+        let (origin, r) = rm.resolve_catalog("claude-opus-5").unwrap();
+        assert_eq!(origin, "openrouter");
+        assert_eq!(r.input, 5e-06);
+        assert_eq!(r.output, 2.5e-05);
+        assert_eq!(r.cache_read, 5e-07);
+        assert_eq!(r.cache_write_5m, 6.25e-06);
+        assert_eq!(r.cache_write_1h, 1e-05);
+    }
+
+    #[test]
+    fn litellm_exact_outranks_openrouter() {
+        let (_d, mut conn) = test_conn();
+        let rm = tier_map(&mut conn);
+        let (origin, r) = rm.resolve_catalog("priced-full").unwrap();
+        assert_eq!(origin, "litellm");
+        assert_eq!(r.input, 3e-06, "LiteLLM's exact key, not OpenRouter's 9e-05");
+    }
+
+    #[test]
+    fn override_outranks_both_catalogs() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER)).unwrap();
+        set_override(
+            &conn,
+            "z-ai/glm-5.2",
+            OverrideRates { input: Some(9e-06), output: None, cache_read: None, cache_write: None },
+        )
+        .unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        assert_eq!(rm.resolve("z-ai/glm-5.2").unwrap().input, 9e-06);
+        // resolve_catalog still reports the catalog match, ignoring the Override.
+        assert_eq!(rm.resolve_catalog("z-ai/glm-5.2").unwrap().0, "openrouter");
+    }
+
+    #[test]
+    fn zero_priced_openrouter_entries_are_skipped() {
+        let (_d, mut conn) = test_conn();
+        let rm = tier_map(&mut conn);
+        // A ":free" model priced at "0" must stay Unpriced, not become a $0 rate:
+        // prices store an absent rate as 0.0, so the two would be indistinguishable
+        // (CONTEXT.md, Unpriced). Same for an entry carrying no prices at all.
+        assert_eq!(rm.resolve_catalog("poolside/laguna-s:free"), None);
+        assert_eq!(rm.resolve_catalog("vendor/no-prices"), None);
+    }
+
+    #[test]
+    fn an_absent_openrouter_catalog_degrades_to_litellm_only() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, TIER_LITELLM, None).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        // Exactly today's behaviour: the normalized Cloudflare row is the only match.
+        let (origin, r) = rm.resolve_catalog("z-ai/glm-5.2").unwrap();
+        assert_eq!(origin, "litellm");
+        assert_eq!(r.input, 1.4e-06);
+        assert_eq!(rm.resolve_catalog("claude-opus-5"), None);
+    }
+
+    #[test]
+    fn an_openrouter_model_without_cache_rates_is_cache_estimated() {
+        let (_d, mut conn) = test_conn();
+        let rm = tier_map(&mut conn);
+        // glm-5.2 prices cache READS but not cache writes -> Cache-Estimated.
+        let r = rm.resolve("z-ai/glm-5.2").unwrap();
+        assert!(!r.cache_gap(100, 0, 0), "cache reads are priced");
+        assert!(r.cache_gap(0, 100, 0), "cache writes are not");
+    }
+
+    #[test]
+    fn openrouter_ids_and_normalized_keys_occupy_disjoint_key_spaces() {
+        // Write-time precedence over ONE Model keyspace is equivalent to a
+        // four-tier read-time resolve only because these two never collide:
+        // every OpenRouter id is vendor-prefixed, and normalization strips
+        // through the last '/'. Verified against the live 345-model payload.
+        let root: serde_json::Value = serde_json::from_str(TIER_OPENROUTER).unwrap();
+        for entry in root["data"].as_array().unwrap() {
+            let id = entry["id"].as_str().unwrap();
+            assert!(id.contains('/'), "OpenRouter id {id} is not vendor-prefixed");
+            assert!(!normalize_model(id).contains('/'), "normalized {id} kept a separator");
+        }
+    }
+
     #[test]
     fn catalog_origin_is_read_from_storage_not_hardcoded() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
         // The rebuild must RECORD its catalog, not leave it for the read side to
         // assume: RateMap reads a NULL catalog as "litellm", so without this every
         // assertion below would still pass if write_price_row bound NULL.
@@ -753,7 +989,7 @@ mod tests {
     #[test]
     fn a_price_row_predating_the_catalog_column_reads_as_litellm() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
         // What the v9 migration leaves behind: a row with no catalog recorded.
         // Every pre-v9 row came from the one catalog then read, so it reports that.
         conn.execute(
@@ -769,7 +1005,7 @@ mod tests {
     #[test]
     fn override_set_delete_roundtrip_via_model_pricing() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
         seed_event(&conn, "priced-full", "claude");
 
         let find = |list: &[ModelPricing]| {
