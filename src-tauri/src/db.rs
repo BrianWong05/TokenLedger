@@ -216,6 +216,16 @@ CREATE TABLE IF NOT EXISTS pi_tool_owner (
 );
 PRAGMA user_version = 8;";
 
+// v9: record which catalog supplied each List Price, so the origin reported to
+// the Pricing tab is stored data rather than a hardcoded constant (ADR-0003).
+// Existing rows leave it NULL and RateMap reads that as "litellm" — every
+// pre-v9 row came from the one catalog then read. Scan-state is not cleared:
+// prices are rebuilt from the catalog at every start, independent of the Ledger.
+// No BEGIN/COMMIT: migrate() wraps the batch.
+const SCHEMA_V9: &str = "\
+ALTER TABLE prices ADD COLUMN catalog TEXT;
+PRAGMA user_version = 9;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -388,7 +398,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 8) and no-ops.
+    // the committed user_version (currently 9) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -415,6 +425,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 8 {
             conn.execute_batch(SCHEMA_V8)?;
+        }
+        if version < 9 {
+            conn.execute_batch(SCHEMA_V9)?;
         }
         Ok(())
     };
@@ -750,7 +763,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner"] {
             let count: i64 = conn
                 .query_row(
@@ -780,7 +793,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
     }
 
     #[test]
@@ -833,7 +846,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 8);
+        assert_eq!(version, 9);
         let model_not_null: i64 = conn.query_row(
             "SELECT [notnull] FROM pragma_table_info('events') WHERE name = 'model'",
             [],
@@ -876,11 +889,85 @@ mod tests {
     }
 
     #[test]
+    fn v8_db_gains_the_price_catalog_column_without_losing_ledger_or_prices() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                 cache_write_1h_tokens, source_file) \
+                 VALUES ('claude:old:1','claude',123,'claude-existing','/p',2,10,20,3,4,5,'f')",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO prices (model, input_per_tok, output_per_tok) \
+                 VALUES ('claude-existing', 0.000001, 0.000002)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO price_overrides (model, input_per_tok, output_per_tok) \
+                 VALUES ('claude-existing', 0.000009, 0.000010)",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,7)",
+                [],
+            ).unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 9);
+        let has_catalog: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('prices') WHERE name = 'catalog'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(has_catalog, 1, "prices must record which catalog supplied each row");
+
+        // The Ledger, the List Price, and the Override all survive untouched.
+        let usage: (i64, i64, i64, i64, i64, i64) = conn.query_row(
+            "SELECT api_calls, input_tokens, output_tokens, cache_read_tokens, \
+             cache_write_5m_tokens, cache_write_1h_tokens FROM events",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).unwrap();
+        assert_eq!(usage, (2, 10, 20, 3, 4, 5));
+        let price: (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT input_per_tok, output_per_tok FROM prices WHERE model = 'claude-existing'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(price, (Some(0.000001), Some(0.000002)));
+        let override_rates: (Option<f64>, Option<f64>) = conn.query_row(
+            "SELECT input_per_tok, output_per_tok FROM price_overrides WHERE model = 'claude-existing'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(override_rates, (Some(0.000009), Some(0.000010)));
+
+        // Scan state is NOT cleared: prices rebuild from the catalog on their own,
+        // so this migration has no reason to force a re-parse of the logs. Four
+        // sibling migrations DO clear it, so the seeded row must survive verbatim.
+        let scanned: (String, i64) = conn.query_row(
+            "SELECT path, byte_offset FROM scanned_files",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(scanned, ("f".to_string(), 7), "scan state must survive the migration");
+    }
+
+    #[test]
     fn v1_db_migrates_to_v2_preserving_events() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         // Build a genuine v1 database by hand (SCHEMA still writes user_version 1),
-        // then prove open_db chains every migration through v8 in one shot.
+        // then prove open_db chains every migration through v9 in one shot.
         {
             let conn = Connection::open(&path).unwrap();
             conn.execute_batch(SCHEMA).unwrap();
@@ -900,7 +987,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -1031,7 +1118,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -1137,7 +1224,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
     }
 
     #[test]
@@ -1298,7 +1385,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1383,7 +1470,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1420,7 +1507,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 8);
+        assert_eq!(v, 9);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",

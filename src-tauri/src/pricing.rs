@@ -10,6 +10,10 @@ const CANONICAL: &[&str] = &["anthropic", "openai", "gemini", "vertex_ai-languag
 const LITELLM_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
 
+/// The `catalog` value stored on a price row, and the origin string the Pricing
+/// tab renders (see the frontend's originLabel).
+const CATALOG_LITELLM: &str = "litellm";
+
 /// lowercase -> strip through last '/' -> strip a trailing `-YYYYMMDD` suffix.
 pub fn normalize_model(raw: &str) -> String {
     let lower = raw.to_lowercase();
@@ -95,14 +99,24 @@ fn cost(entry: &serde_json::Value, key: &str) -> Option<f64> {
     entry.get(key).and_then(|v| v.as_f64())
 }
 
-fn write_price_row(conn: &Connection, model: &str, row: &Row) -> rusqlite::Result<()> {
+/// Write one price row for `catalog`, LEAVING an existing row alone. Precedence
+/// lives in the order rebuild_prices runs its passes: the first pass to claim a
+/// Model key owns it, so every later pass must not overwrite. (Hence OR IGNORE
+/// rather than the OR REPLACE this used when a single pass could only be
+/// overwritten by the one authoritative exact-key pass that followed it.)
+fn write_price_row(
+    conn: &Connection,
+    model: &str,
+    row: &Row,
+    catalog: &str,
+) -> rusqlite::Result<()> {
     // 1h TTL falls back to the 5m rate when absent; null -> 0 at write time.
     let cw5m = row.cw5m.unwrap_or(0.0);
     let cw1h = row.cw1h.or(row.cw5m).unwrap_or(0.0);
     conn.execute(
-        "INSERT OR REPLACE INTO prices \
-         (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR IGNORE INTO prices \
+         (model, input_per_tok, output_per_tok, cache_read_per_tok, cache_write_5m_per_tok, cache_write_1h_per_tok, catalog) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params![
             model,
             row.input.unwrap_or(0.0),
@@ -110,6 +124,7 @@ fn write_price_row(conn: &Connection, model: &str, row: &Row) -> rusqlite::Resul
             row.cache_read.unwrap_or(0.0),
             cw5m,
             cw1h,
+            catalog,
         ],
     )?;
     Ok(())
@@ -178,12 +193,16 @@ pub fn rebuild_prices(conn: &mut Connection, litellm_json: &str) -> Result<u64, 
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM prices", []).map_err(|e| e.to_string())?;
-    // Normalized rows first; exact rows overwrite on key collision (exact is authoritative).
-    for (model, (row, _)) in &norm {
-        write_price_row(&tx, model, row).map_err(|e| e.to_string())?;
-    }
+    // Ordered precedence passes, highest first; write_price_row never overwrites a
+    // key an earlier pass claimed. Exact raw-key matches outrank normalized ones
+    // (ADR-0003), so they are written first. This is the same outcome the previous
+    // normalized-then-exact-overwrite order produced, restructured so a second
+    // catalog slots in as further passes rather than another overwrite rule.
     for (model, row) in &exact {
-        write_price_row(&tx, model, row).map_err(|e| e.to_string())?;
+        write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
+    }
+    for (model, (row, _)) in &norm {
+        write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
     let count: u64 = tx
         .query_row("SELECT COUNT(*) FROM prices", [], |r| r.get(0))
@@ -299,7 +318,8 @@ pub fn delete_override(conn: &Connection, model: &str) -> rusqlite::Result<()> {
 }
 
 pub struct RateMap {
-    prices: HashMap<String, Rates>,
+    /// Model key -> (originating catalog, rates).
+    prices: HashMap<String, (String, Rates)>,
     overrides: HashMap<String, Rates>,
 }
 
@@ -308,11 +328,15 @@ impl RateMap {
         let mut prices = HashMap::new();
         let mut stmt = conn.prepare(
             "SELECT model, input_per_tok, output_per_tok, cache_read_per_tok, \
-             cache_write_5m_per_tok, cache_write_1h_per_tok FROM prices",
+             cache_write_5m_per_tok, cache_write_1h_per_tok, catalog FROM prices",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
+                // NULL catalog = a row written before v9, when LiteLLM was the
+                // only catalog read. The next rebuild overwrites it anyway.
+                r.get::<_, Option<String>>(6)?
+                    .unwrap_or_else(|| CATALOG_LITELLM.to_string()),
                 Rates {
                     input: r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
                     output: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
@@ -323,8 +347,8 @@ impl RateMap {
             ))
         })?;
         for row in rows {
-            let (m, rt) = row?;
-            prices.insert(m, rt);
+            let (m, catalog, rt) = row?;
+            prices.insert(m, (catalog, rt));
         }
 
         let mut overrides = HashMap::new();
@@ -363,18 +387,14 @@ impl RateMap {
     }
 
     /// The catalog tier of `resolve`, ignoring overrides: exact raw key ->
-    /// normalized key, reporting which catalog matched. v1 reads only LiteLLM
-    /// (ADR-0003), so a hit is always "litellm"; the OpenRouter fallback tier
-    /// plugs in right here when it lands.
-    /// ponytail: origin hardcoded "litellm" until the prices table carries a
-    /// per-row source column — add that column with the OpenRouter tier.
-    pub fn resolve_catalog(&self, raw_model: &str) -> Option<(&'static str, Rates)> {
-        if let Some(r) = self.prices.get(raw_model) {
-            return Some(("litellm", *r));
-        }
+    /// normalized key, reporting which catalog matched. Two probes suffice
+    /// because rebuild_prices' ordered passes already decided which pass owns
+    /// each key, so a key's stored row IS its highest-precedence match.
+    pub fn resolve_catalog(&self, raw_model: &str) -> Option<(&str, Rates)> {
         self.prices
-            .get(&normalize_model(raw_model))
-            .map(|r| ("litellm", *r))
+            .get(raw_model)
+            .or_else(|| self.prices.get(&normalize_model(raw_model)))
+            .map(|(catalog, r)| (catalog.as_str(), *r))
     }
 }
 
@@ -697,6 +717,53 @@ mod tests {
 
         // Most-frequent Source wins the `tool`.
         assert_eq!(get("multi").tool, "gemini");
+    }
+
+    #[test]
+    fn catalog_origin_is_read_from_storage_not_hardcoded() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        // The rebuild must RECORD its catalog, not leave it for the read side to
+        // assume: RateMap reads a NULL catalog as "litellm", so without this every
+        // assertion below would still pass if write_price_row bound NULL.
+        let stored: Option<String> = conn
+            .query_row("SELECT catalog FROM prices WHERE model = 'priced-full'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some(CATALOG_LITELLM));
+
+        // A row attributed to another catalog must report THAT catalog — the origin
+        // is data, not a constant chosen by the resolver.
+        conn.execute(
+            "INSERT OR REPLACE INTO prices (model, input_per_tok, output_per_tok, catalog) \
+             VALUES ('from-elsewhere', 1e-06, 2e-06, 'openrouter')",
+            [],
+        )
+        .unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        assert_eq!(rm.resolve_catalog("from-elsewhere").unwrap().0, "openrouter");
+        assert_eq!(rm.resolve_catalog("priced-full").unwrap().0, CATALOG_LITELLM);
+
+        // And the origin reaches the Pricing tab unchanged.
+        seed_event(&conn, "from-elsewhere", "hermes");
+        let list = model_pricing(&conn).unwrap();
+        let row = list.iter().find(|m| m.model == "from-elsewhere").unwrap();
+        assert_eq!(row.catalog.as_ref().unwrap().origin, "openrouter");
+    }
+
+    #[test]
+    fn a_price_row_predating_the_catalog_column_reads_as_litellm() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE).unwrap();
+        // What the v9 migration leaves behind: a row with no catalog recorded.
+        // Every pre-v9 row came from the one catalog then read, so it reports that.
+        conn.execute(
+            "INSERT OR REPLACE INTO prices (model, input_per_tok, output_per_tok, catalog) \
+             VALUES ('legacy-row', 1e-06, 2e-06, NULL)",
+            [],
+        )
+        .unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        assert_eq!(rm.resolve_catalog("legacy-row").unwrap().0, CATALOG_LITELLM);
     }
 
     #[test]
