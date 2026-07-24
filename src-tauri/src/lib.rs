@@ -43,6 +43,53 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub roots: SourceRoots,
     pub scan_lock: Mutex<()>,
+    /// Model names already looked up against the catalogs during this run of the
+    /// app. In memory only, so it resets on restart: a Model no catalog carries
+    /// costs one fetch per launch instead of one per scan, and nothing about a
+    /// failed lookup is worth persisting.
+    pub price_lookups: Mutex<std::collections::HashSet<String>>,
+}
+
+/// Fetch both price catalogs and rebuild the prices table, then tell the frontend
+/// so open views re-fetch their Cost figures. The blocking fetches run BEFORE the
+/// DB lock is taken, so scanning and querying never wait on the network. Shared
+/// by start-up and the newly-unpriced trigger so the two cannot drift apart.
+fn refresh_catalogs(app: &AppHandle) {
+    let Ok(data_dir) = app.path().app_data_dir() else {
+        return;
+    };
+    // No lock held: network here.
+    let litellm = pricing::load_prices_json(&data_dir);
+    let openrouter = pricing::load_openrouter_json(&data_dir);
+    let state = app.state::<AppState>();
+    if let Ok(mut db) = state.db.lock() {
+        let _ = pricing::rebuild_prices(&mut db, &litellm, openrouter.as_deref());
+    }
+    // Without this a fresh install renders 'unpriced' until the next range change.
+    let _ = app.emit("prices-rebuilt", ());
+}
+
+/// If a scan left the Ledger holding a Model that resolves to no rate and that we
+/// have not tried yet this run, re-read the catalogs once for it — the catalogs
+/// are otherwise only read at launch, so a Model first used mid-session would stay
+/// Unpriced until a restart. Spawns, so a scan never waits on the network.
+fn lookup_new_unpriced(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let fresh = {
+        let (Ok(db), Ok(mut attempted)) = (state.db.lock(), state.price_lookups.lock()) else {
+            return;
+        };
+        let fresh = pricing::models_needing_lookup(&db, &attempted).unwrap_or_default();
+        // Record before fetching, not after: a Model no catalog covers must not
+        // re-fetch on every subsequent scan just because the lookup found nothing.
+        attempted.extend(fresh.iter().cloned());
+        fresh
+    };
+    if fresh.is_empty() {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || refresh_catalogs(&handle));
 }
 
 // The one scan path, shared by the `scan` command and the tray's "Scan now" so
@@ -59,6 +106,12 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
         run_scan(&mut db, &state.roots)
     };
     tray::refresh(app);
+    // Release scan_lock BEFORE the lookup: it reads the whole prices table to
+    // decide, and holding the scan gate across that would delay the next scan for
+    // no reason. Both the `scan` command and the tray's "Scan now" reach this, so
+    // where the scan started never changes whether a Model gets looked up.
+    drop(_guard);
+    lookup_new_unpriced(app);
     Ok(status)
 }
 
@@ -304,6 +357,7 @@ pub fn run() {
                 db: Mutex::new(conn),
                 roots: SourceRoots::default_roots(),
                 scan_lock: Mutex::new(()),
+                price_lookups: Mutex::new(Default::default()),
             });
 
             tray::build(app.handle())?;
@@ -355,22 +409,10 @@ pub fn run() {
 
             // Refresh both price catalogs off the main thread; each loader falls
             // back to its cached snapshot on a fetch failure (LiteLLM then to its
-            // bundled copy, OpenRouter to None — ADR-0003). BOTH blocking network
-            // fetches run BEFORE the DB lock so scan/summary/etc. never block
-            // behind them on cold start.
+            // bundled copy, OpenRouter to None — ADR-0003). Scans re-run this same
+            // routine whenever they surface a Model no catalog covers.
             let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                // no lock held: network here
-                let litellm = pricing::load_prices_json(&data_dir);
-                let openrouter = pricing::load_openrouter_json(&data_dir);
-                let state = handle.state::<AppState>();
-                if let Ok(mut db) = state.db.lock() {
-                    let _ = pricing::rebuild_prices(&mut db, &litellm, openrouter.as_deref());
-                };
-                // Tell the frontend so it re-fetches costs: without this, a
-                // fresh install renders 'unpriced' until the next range change.
-                let _ = handle.emit("prices-rebuilt", ());
-            });
+            std::thread::spawn(move || refresh_catalogs(&handle));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -431,6 +473,7 @@ mod tests {
             db: Mutex::new(conn),
             roots,
             scan_lock: Mutex::new(()),
+            price_lookups: Mutex::new(Default::default()),
         };
 
         let mut db = state.db.lock().unwrap();

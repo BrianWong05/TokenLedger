@@ -3,6 +3,6 @@ import type { RatesPerTok } from "./RatesPerTok";
 
 /**
  * A catalog List Price match: which catalog it came from (ADR-0003) and its
- * rates. `origin` is "litellm" | "openrouter"; v1 only reads LiteLLM.
+ * rates. `origin` is "litellm" | "openrouter", read from the row that matched.
  */
 export type CatalogRates = { origin: string, rates: RatesPerTok, };

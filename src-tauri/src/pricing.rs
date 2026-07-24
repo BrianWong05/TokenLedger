@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use ts_rs::TS;
 
@@ -105,37 +105,51 @@ fn cost(entry: &serde_json::Value, key: &str) -> Option<f64> {
     entry.get(key).and_then(|v| v.as_f64())
 }
 
-/// One OpenRouter price field. They arrive as decimal STRINGS, and its ":free"
-/// models quote exactly "0" — mapped to None because this codebase stores an
-/// absent rate as 0.0, so an explicit zero and a missing rate are the same value
-/// once written. That collapse is what makes the both-none skip below cover
-/// "free model" as well as "no prices quoted".
-fn or_cost(pricing: &serde_json::Value, key: &str) -> Option<f64> {
+/// One OpenRouter price field. They arrive as decimal STRINGS. Only a strictly
+/// positive rate is a rate; everything else maps to None:
+/// - `"0"` — its ":free" models. Absent rates are stored as 0.0 here, so keeping
+///   these would be indistinguishable from "no rate" anyway (see cache_gap).
+/// - `"-1"` — its router pseudo-models (`openrouter/auto`, `openrouter/fusion`)
+///   use -1 to mean "priced by whatever this routes to". Storing it would make
+///   Cost go NEGATIVE.
+/// - NaN, which fails `> 0.0` for free.
+/// This is also what lets the both-None skip below cover "free model", "router
+/// placeholder", and "no prices quoted" with one rule.
+fn openrouter_cost(pricing: &serde_json::Value, key: &str) -> Option<f64> {
     let v: f64 = pricing.get(key)?.as_str()?.parse().ok()?;
-    (v != 0.0).then_some(v)
+    (v > 0.0).then_some(v)
 }
 
 /// Candidate rows from an OpenRouter catalog payload, keyed by its raw vendor-
 /// prefixed id. Mirrors the LiteLLM loop's rule: an entry with neither a prompt
-/// nor a completion price contributes nothing.
-fn openrouter_rows(json: &str) -> Result<Vec<(String, Row)>, String> {
-    let root: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| format!("parse openrouter json: {e}"))?;
-    let data = root
-        .get("data")
-        .and_then(|d| d.as_array())
-        .ok_or_else(|| "openrouter json has no data array".to_string())?;
+/// nor a completion price contributes nothing. A malformed payload yields no
+/// rows rather than an error — losing the tier is survivable, and the caller
+/// treats "unreadable" and "unreachable" identically (ADR-0003).
+fn openrouter_rows(json: &str) -> Vec<(String, Row)> {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(json) else {
+        return Vec::new();
+    };
+    let Some(data) = root.get("data").and_then(|d| d.as_array()) else {
+        return Vec::new();
+    };
 
     let mut out = Vec::new();
     for entry in data {
         let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
             continue;
         };
+        // Load-bearing invariant, enforced rather than assumed (ADR-0003): exact
+        // ids must stay OUT of the normalized keyspace, or write-time precedence
+        // would stop matching the documented tier order. Every id OpenRouter has
+        // ever served is vendor-prefixed; a bare one is dropped, not trusted.
+        if !id.contains('/') {
+            continue;
+        }
         let Some(pricing) = entry.get("pricing") else {
             continue;
         };
-        let input = or_cost(pricing, "prompt");
-        let output = or_cost(pricing, "completion");
+        let input = openrouter_cost(pricing, "prompt");
+        let output = openrouter_cost(pricing, "completion");
         if input.is_none() && output.is_none() {
             continue;
         }
@@ -144,13 +158,13 @@ fn openrouter_rows(json: &str) -> Result<Vec<(String, Row)>, String> {
             Row {
                 input,
                 output,
-                cache_read: or_cost(pricing, "input_cache_read"),
-                cw5m: or_cost(pricing, "input_cache_write"),
-                cw1h: or_cost(pricing, "input_cache_write_1h"),
+                cache_read: openrouter_cost(pricing, "input_cache_read"),
+                cw5m: openrouter_cost(pricing, "input_cache_write"),
+                cw1h: openrouter_cost(pricing, "input_cache_write_1h"),
             },
         ));
     }
-    Ok(out)
+    out
 }
 
 /// Write one price row for `catalog`, LEAVING an existing row alone. Precedence
@@ -194,12 +208,7 @@ pub fn rebuild_prices(
     litellm_json: &str,
     openrouter_json: Option<&str>,
 ) -> Result<u64, String> {
-    // A malformed OpenRouter payload drops the tier rather than failing the whole
-    // rebuild: losing one fallback catalog leaves Models Unpriced, while aborting
-    // would leave EVERY Model unpriced. Same outcome as never reaching the host.
-    let or_rows = openrouter_json
-        .map(|j| openrouter_rows(j).unwrap_or_default())
-        .unwrap_or_default();
+    let openrouter = openrouter_json.map(openrouter_rows).unwrap_or_default();
 
     let root: serde_json::Value =
         serde_json::from_str(litellm_json).map_err(|e| format!("parse litellm json: {e}"))?;
@@ -269,13 +278,18 @@ pub fn rebuild_prices(
     for (model, row) in &exact {
         write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
-    for (model, row) in &or_rows {
+    for (model, row) in &openrouter {
         write_price_row(&tx, model, row, CATALOG_OPENROUTER).map_err(|e| e.to_string())?;
     }
     for (model, (row, _)) in &norm {
         write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
-    for (model, row) in &or_rows {
+    // ponytail: this pass takes first-in-payload when two OpenRouter ids share a
+    // normalized tail, with none of the canonical-provider tiebreak the LiteLLM
+    // normalized pass applies — the live 345-model payload has zero such
+    // collisions, and a colliding pair is only reachable when LiteLLM covers the
+    // Model not at all. Give it the same guard if OpenRouter ever ships one.
+    for (model, row) in &openrouter {
         write_price_row(&tx, &normalize_model(model), row, CATALOG_OPENROUTER)
             .map_err(|e| e.to_string())?;
     }
@@ -286,35 +300,13 @@ pub fn rebuild_prices(
     Ok(count)
 }
 
-/// Fetch the latest LiteLLM snapshot (10s timeout) and return its JSON. Does NO DB
-/// work so callers can run the blocking network fetch outside the DB lock. On fetch
-/// failure falls back to the cached file, then the bundled snapshot.
-pub fn load_prices_json(cache_dir: &Path) -> String {
-    let cache_file = cache_dir.join("model_prices.json");
-    let fetched = ureq::get(LITELLM_URL)
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-        .ok()
-        .and_then(|resp| resp.into_string().ok());
-    if let Some(body) = fetched {
-        let _ = std::fs::create_dir_all(cache_dir);
-        let _ = std::fs::write(&cache_file, &body);
-        return body;
-    }
-    if let Ok(body) = std::fs::read_to_string(&cache_file) {
-        return body;
-    }
-    include_str!("../resources/model_prices.json").to_string()
-}
-
-/// Fetch the latest OpenRouter catalog (10s timeout) and return its JSON. Does NO
-/// DB work, for the same reason load_prices_json doesn't. On fetch failure falls
-/// back to the cached file, then None — unlike LiteLLM there is no bundled
-/// snapshot, so a machine that has never reached OpenRouter simply resolves
-/// without the tier, which is exactly the pre-OpenRouter behaviour (ADR-0003).
-pub fn load_openrouter_json(cache_dir: &Path) -> Option<String> {
-    let cache_file = cache_dir.join("openrouter_models.json");
-    let fetched = ureq::get(OPENROUTER_URL)
+/// Fetch a catalog (10s timeout), caching a successful body under `cache_name` and
+/// falling back to that cache when the fetch fails. Does NO DB work, so callers can
+/// run the blocking network call outside the DB lock. None = the host has never
+/// been reached and no cache exists yet.
+fn fetch_or_cached(url: &str, cache_dir: &Path, cache_name: &str) -> Option<String> {
+    let cache_file = cache_dir.join(cache_name);
+    let fetched = ureq::get(url)
         .timeout(std::time::Duration::from_secs(10))
         .call()
         .ok()
@@ -325,6 +317,20 @@ pub fn load_openrouter_json(cache_dir: &Path) -> Option<String> {
         return Some(body);
     }
     std::fs::read_to_string(&cache_file).ok()
+}
+
+/// The LiteLLM snapshot. Always yields JSON: a bundled snapshot backs the
+/// fetch/cache chain, so even a first run with no network prices something.
+pub fn load_prices_json(cache_dir: &Path) -> String {
+    fetch_or_cached(LITELLM_URL, cache_dir, "model_prices.json")
+        .unwrap_or_else(|| include_str!("../resources/model_prices.json").to_string())
+}
+
+/// The OpenRouter catalog. Unlike LiteLLM there is no bundled snapshot, so a
+/// machine that has never reached OpenRouter gets None and resolves without the
+/// tier — exactly the pre-OpenRouter behaviour (ADR-0003).
+pub fn load_openrouter_json(cache_dir: &Path) -> Option<String> {
+    fetch_or_cached(OPENROUTER_URL, cache_dir, "openrouter_models.json")
 }
 
 /// Fetch both catalogs and rebuild the prices table.
@@ -371,7 +377,7 @@ impl From<RatesPerTok> for OverrideRates {
 }
 
 /// A catalog List Price match: which catalog it came from (ADR-0003) and its
-/// rates. `origin` is "litellm" | "openrouter"; v1 only reads LiteLLM.
+/// rates. `origin` is "litellm" | "openrouter", read from the row that matched.
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
@@ -519,6 +525,38 @@ fn load_overrides_raw(conn: &Connection) -> rusqlite::Result<HashMap<String, Rat
         map.insert(m, rt);
     }
     Ok(map)
+}
+
+/// Models in the Ledger that resolve to no rate at all and have not been looked
+/// up yet this run — the trigger for re-reading the catalogs after a scan.
+/// An Overridden Model never appears: an Override IS a rate. Unattributed Usage
+/// has no Model, so it contributes nothing (ADR-0008). `attempted` is the
+/// caller's in-memory record of names already tried, which is what keeps a Model
+/// no catalog will ever carry to one fetch per run of the app.
+pub fn models_needing_lookup(
+    conn: &Connection,
+    attempted: &HashSet<String>,
+) -> rusqlite::Result<Vec<String>> {
+    let rates = RateMap::load(conn)?;
+    // No catalog loaded yet — the start-up refresh is still in flight, and a scan
+    // can beat it. Every Model would look Unpriced, so the whole Ledger would be
+    // marked attempted and a redundant second fetch would fire. A completed
+    // rebuild always leaves rows (LiteLLM ships a bundled snapshot), so empty
+    // here means "nothing read yet", never "nothing priced".
+    if rates.prices.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT model FROM events WHERE model IS NOT NULL ORDER BY model")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let model = row?;
+        if !attempted.contains(&model) && rates.resolve(&model).is_none() {
+            out.push(model);
+        }
+    }
+    Ok(out)
 }
 
 /// Every distinct Model in the Ledger with its Source, raw Override, and best
@@ -847,6 +885,10 @@ mod tests {
           "pricing": { "prompt": "0.00009", "completion": "0.00009" } },
         { "id": "poolside/laguna-s:free",
           "pricing": { "prompt": "0", "completion": "0" } },
+        { "id": "openrouter/auto",
+          "pricing": { "prompt": "-1", "completion": "-1" } },
+        { "id": "bare-id-no-vendor",
+          "pricing": { "prompt": "0.000001", "completion": "0.000002" } },
         { "id": "vendor/no-prices", "pricing": {} }
       ]
     }"#;
@@ -912,10 +954,15 @@ mod tests {
     fn zero_priced_openrouter_entries_are_skipped() {
         let (_d, mut conn) = test_conn();
         let rm = tier_map(&mut conn);
-        // A ":free" model priced at "0" must stay Unpriced, not become a $0 rate:
-        // prices store an absent rate as 0.0, so the two would be indistinguishable
-        // (CONTEXT.md, Unpriced). Same for an entry carrying no prices at all.
+        // A ":free" model priced at "0" is dropped. This is a KNOWN, accepted loss
+        // against CONTEXT.md's Unpriced rule ("a genuinely free Model and an
+        // unknown price never look alike") — storing $0 would break that rule too,
+        // since an absent rate is already stored as 0.0, and telling them apart
+        // needs nullable price columns end to end (see Rates::cache_gap).
         assert_eq!(rm.resolve_catalog("poolside/laguna-s:free"), None);
+        // A router placeholder priced at "-1" must never become a negative rate.
+        assert_eq!(rm.resolve_catalog("openrouter/auto"), None);
+        // And an entry carrying no prices at all.
         assert_eq!(rm.resolve_catalog("vendor/no-prices"), None);
     }
 
@@ -942,17 +989,29 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_ids_and_normalized_keys_occupy_disjoint_key_spaces() {
-        // Write-time precedence over ONE Model keyspace is equivalent to a
-        // four-tier read-time resolve only because these two never collide:
-        // every OpenRouter id is vendor-prefixed, and normalization strips
-        // through the last '/'. Verified against the live 345-model payload.
-        let root: serde_json::Value = serde_json::from_str(TIER_OPENROUTER).unwrap();
-        for entry in root["data"].as_array().unwrap() {
-            let id = entry["id"].as_str().unwrap();
-            assert!(id.contains('/'), "OpenRouter id {id} is not vendor-prefixed");
+    fn the_parser_enforces_the_disjoint_key_space_invariant() {
+        // Write-time precedence over ONE Model keyspace equals a five-tier
+        // read-time resolve only while exact ids and normalized keys cannot
+        // collide: every OpenRouter id is vendor-prefixed, and normalization
+        // strips through the last '/'. The parser ENFORCES the first half rather
+        // than trusting the payload, so a bare id can never enter the normalized
+        // keyspace and silently outrank a LiteLLM exact match.
+        let ids: Vec<String> = openrouter_rows(TIER_OPENROUTER).into_iter().map(|(m, _)| m).collect();
+        assert!(!ids.is_empty(), "fixture must yield rows for this to mean anything");
+        assert!(
+            !ids.iter().any(|id| id == "bare-id-no-vendor"),
+            "a non-vendor-prefixed id must be dropped, not stored as an exact key"
+        );
+        for id in &ids {
+            assert!(id.contains('/'), "stored OpenRouter id {id} is not vendor-prefixed");
             assert!(!normalize_model(id).contains('/'), "normalized {id} kept a separator");
         }
+    }
+
+    #[test]
+    fn a_malformed_openrouter_payload_yields_no_rows() {
+        assert!(openrouter_rows("not json at all").is_empty());
+        assert!(openrouter_rows(r#"{"nope": 1}"#).is_empty());
     }
 
     #[test]
@@ -1000,6 +1059,56 @@ mod tests {
         .unwrap();
         let rm = RateMap::load(&conn).unwrap();
         assert_eq!(rm.resolve_catalog("legacy-row").unwrap().0, CATALOG_LITELLM);
+    }
+
+    #[test]
+    fn models_needing_lookup_returns_an_unpriced_model_once_and_skips_the_rest() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        seed_event(&conn, "priced-full", "claude"); // has a catalog List Price
+        seed_event(&conn, "brand-new-model", "claude"); // no rate anywhere
+        seed_event(&conn, "hand-priced", "hermes"); // no catalog rate, but Overridden
+        set_override(
+            &conn,
+            "hand-priced",
+            OverrideRates { input: Some(1e-06), output: None, cache_read: None, cache_write: None },
+        )
+        .unwrap();
+        // Unattributed Usage has no Model, so it can never need a lookup (ADR-0008).
+        conn.execute(
+            "INSERT INTO events (dedup_key, source, timestamp, model, input_tokens, source_file) \
+             VALUES ('pi:tool-result:1', 'pi', 0, NULL, 100, 'pi.jsonl')",
+            [],
+        )
+        .unwrap();
+
+        let mut attempted = HashSet::new();
+        let fresh = models_needing_lookup(&conn, &attempted).unwrap();
+        assert_eq!(fresh, vec!["brand-new-model".to_string()]);
+
+        // Recording the attempt stops it coming back: one lookup per Model per run,
+        // so a Model no catalog will ever carry cannot fetch on every scan.
+        attempted.extend(fresh);
+        assert!(models_needing_lookup(&conn, &attempted).unwrap().is_empty());
+    }
+
+    #[test]
+    fn models_needing_lookup_is_empty_before_any_catalog_has_loaded() {
+        let (_d, conn) = test_conn();
+        // Cold start: the frontend's first scan can land before the start-up
+        // refresh finishes, leaving prices empty. Every Model would look Unpriced,
+        // so the whole Ledger would be marked attempted and a redundant second
+        // fetch would fire. With no catalog loaded there is nothing to conclude.
+        seed_event(&conn, "priced-full", "claude");
+        seed_event(&conn, "brand-new-model", "claude");
+        assert!(models_needing_lookup(&conn, &HashSet::new()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn models_needing_lookup_is_empty_for_an_empty_ledger() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        assert!(models_needing_lookup(&conn, &HashSet::new()).unwrap().is_empty());
     }
 
     #[test]
