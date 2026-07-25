@@ -14,19 +14,27 @@ use ts_rs::TS;
 /// (carries GLM and DeepSeek), `perplexity` (carries Mistral), and the cloud
 /// platforms generally.
 ///
-/// What the rule does NOT buy: two members can still publish the SAME Model, and
-/// then key order decides. `gemini` and `vertex_ai-language-models` are both
-/// Google and contest 27 normalized keys, 3 at different prices — pre-existing,
-/// left alone here because settling it would move rates, which this change must
-/// not. canonical_providers_never_disagree_on_a_price pins that so it cannot
-/// quietly worsen, and every_canonical_provider_prices_something keeps inert
-/// names out.
+/// ORDER IS LOAD-BEARING. Two members can publish the SAME Model, and the one
+/// listed FIRST sets its List Price (see canonical_rank). `gemini` and
+/// `vertex_ai-language-models` are the case that forces the rule: two Google
+/// surfaces for one Model, contesting 27 normalized keys and quoting different
+/// rates on 3 of them. `gemini` leads because the Gemini API is the surface
+/// these Sources actually bill against — Gemini CLI and Antigravity record bare
+/// Model ids and default to it, while Vertex is opt-in behind a GCP project. So
+/// where Google publishes two rate cards for one Model, the direct one is the
+/// Model's List Price and Vertex's is the platform's. Vertex stays a member: its
+/// rate must still beat a reseller's on the Models only Vertex carries.
+///
+/// The publisher-rate tier cannot settle this one. It identifies a publisher by
+/// matching a host's tag vendor to the Model's own vendor in OpenRouter's host
+/// listing, and Google does not serve Gemini there (ADR-0009), so no Gemini
+/// Model ever reaches that tier and this list stays the only thing deciding.
 ///
 /// ponytail: a hand-curated list, only partly machine-checkable — a member that
-/// resells another lab's Model at an identical price is invisible to both tests,
+/// resells another lab's Model at an identical price is invisible to the tests,
 /// so additions need a human to apply the rule above. The durable fix is deriving
 /// publisher identity structurally from the Model's own vendor rather than from a
-/// list, which is what the publisher-rate tier does.
+/// list, which is what the publisher-rate tier does where it can reach.
 const CANONICAL: &[&str] = &[
     "anthropic",
     "openai",
@@ -41,6 +49,14 @@ const CANONICAL: &[&str] = &[
     "ai21",
     "moonshot",
 ];
+
+/// Where `provider` ranks among the publishers — **lower wins**, non-members
+/// last. The whole reason CANONICAL is an ordered slice and not a set: it settles
+/// a collision between two publishers as well as one between a publisher and a
+/// reseller, so no rate is ever picked by which key happens to sort first.
+fn canonical_rank(provider: &str) -> usize {
+    CANONICAL.iter().position(|p| *p == provider).unwrap_or(usize::MAX)
+}
 
 const LITELLM_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -347,8 +363,8 @@ pub fn rebuild_prices(
         .as_object()
         .ok_or_else(|| "litellm json is not an object".to_string())?;
 
-    let mut exact: Vec<(String, Row)> = Vec::new();
-    let mut norm: HashMap<String, (Row, bool)> = HashMap::new(); // key -> (row, canonical)
+    let mut exact: Vec<(String, Row, usize)> = Vec::new(); // (key, row, publisher rank)
+    let mut norm: HashMap<String, (Row, usize)> = HashMap::new(); // key -> (row, best rank)
 
     for (key, entry) in obj {
         let input = cost(entry, "input_cost_per_token");
@@ -364,28 +380,31 @@ pub fn rebuild_prices(
             cw5m: cost(entry, "cache_creation_input_token_cost"),
             cw1h: cost(entry, "cache_creation_input_token_cost_above_1hr"),
         };
-        exact.push((key.clone(), row.clone()));
-
-        let canonical = entry
+        let rank = entry
             .get("litellm_provider")
             .and_then(|v| v.as_str())
-            .map(|p| CANONICAL.contains(&p))
-            .unwrap_or(false);
+            .map(canonical_rank)
+            .unwrap_or(usize::MAX);
+        exact.push((key.clone(), row.clone(), rank));
+
         let nkey = normalize_model(key);
         match norm.get_mut(&nkey) {
             None => {
-                norm.insert(nkey, (row, canonical));
+                norm.insert(nkey, (row, rank));
             }
-            Some((existing, existing_canon)) => {
-                let new_wins = canonical && !*existing_canon;
+            Some((existing, existing_rank)) => {
+                // Strictly better rank wins, so two publishers settle by CANONICAL
+                // order and two non-members (both usize::MAX) still settle by key
+                // order — nobody outranks anybody there.
+                let new_wins = rank < *existing_rank;
                 if new_wins {
-                    // New (canonical) row wins; keep an old non-null field only where new is null.
+                    // New (better-ranked) row wins; keep an old non-null field only where new is null.
                     existing.input = row.input.or(existing.input);
                     existing.output = row.output.or(existing.output);
                     existing.cache_read = row.cache_read.or(existing.cache_read);
                     existing.cw5m = row.cw5m.or(existing.cw5m);
                     existing.cw1h = row.cw1h.or(existing.cw1h);
-                    *existing_canon = true;
+                    *existing_rank = rank;
                 } else {
                     // New row does not win; only fill fields the existing row lacks.
                     existing.input = existing.input.or(row.input);
@@ -409,7 +428,7 @@ pub fn rebuild_prices(
         .map(|p| {
             let mut row = p.rates.clone();
             let nkey = normalize_model(&p.model_id);
-            if let Some(fill) = exact.iter().find(|(k, _)| *k == p.model_id).map(|(_, r)| r)
+            if let Some(fill) = exact.iter().find(|(k, ..)| *k == p.model_id).map(|(_, r, _)| r)
                 .or_else(|| norm.get(&nkey).map(|(r, _)| r))
             {
                 row.input = row.input.or(fill.input);
@@ -441,7 +460,19 @@ pub fn rebuild_prices(
         write_price_row(&tx, &normalize_model(&p.model_id), row, &p.publisher)
             .map_err(|e| e.to_string())?;
     }
-    for (model, row) in &exact {
+    for (model, row, rank) in &exact {
+        // A Model's bare name is also its normalized name, so an exact key spelled
+        // that way claims the slot the normalized merge is for — and claims it
+        // whatever the catalog's spelling convention happens to imply about whose
+        // rate it is. LiteLLM spells Google's bare Gemini keys as Vertex's and
+        // prefixes the direct API's `gemini/`, so without this a Ledger's
+        // `gemini-2.0-flash-001` would price at the Vertex rate no matter what
+        // CANONICAL says. Yield the slot to a better-ranked publisher's merged
+        // row; a prefixed key never matches a normalized one, so its own row is
+        // untouched.
+        if norm.get(model).is_some_and(|(_, best)| best < rank) {
+            continue;
+        }
         write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
     for (model, (row, _)) in &norm {
@@ -1316,21 +1347,20 @@ mod tests {
       }
     }"#;
 
-    // The one place two canonical providers legitimately contest keys: both are
-    // Google surfaces for the same Models. Pre-existing and priced differently;
-    // see the CANONICAL doc comment.
-    const KNOWN_CANONICAL_OVERLAP: [&str; 2] = ["gemini", "vertex_ai-language-models"];
-
     #[test]
-    fn canonical_providers_never_disagree_on_a_price() {
-        // The safety property the guard actually needs, checked against the bundled
-        // snapshot rather than asserted in a comment: when two members contest a
-        // normalized key, key order picks the winner, so they had better quote the
-        // same rate. Note what this does NOT catch — a member reselling another
-        // lab's Model at the SAME price is invisible here, which is why the
-        // membership rule on CANONICAL stays a human check.
-        let root: serde_json::Value =
-            serde_json::from_str(include_str!("../resources/model_prices.json")).unwrap();
+    fn the_first_listed_canonical_provider_sets_a_contested_price() {
+        // When two publishers quote different rates for one Model, CANONICAL order
+        // decides — not key order, and not whichever spelling this catalog uses for
+        // the bare name. Checked end to end against the bundled snapshot, so both
+        // the normalized merge AND the exact pass have to honour it: `gemini` and
+        // `vertex_ai-language-models` disagree on 3 keys today, and every one of
+        // them has a bare Vertex key that would otherwise own the row outright.
+        //
+        // What this does NOT catch, and why CANONICAL membership stays a human
+        // check: a member reselling another lab's Model at the SAME price is
+        // invisible here.
+        let snapshot = include_str!("../resources/model_prices.json");
+        let root: serde_json::Value = serde_json::from_str(snapshot).unwrap();
         // (provider, input, output) per normalized key.
         type Quote<'a> = (&'a str, Option<f64>, Option<f64>);
         let mut by_key: HashMap<String, Vec<Quote>> = HashMap::new();
@@ -1338,7 +1368,7 @@ mod tests {
             let Some(p) = entry.get("litellm_provider").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if !CANONICAL.contains(&p) {
+            if canonical_rank(p) == usize::MAX {
                 continue;
             }
             let (i, o) = (cost(entry, "input_cost_per_token"), cost(entry, "output_cost_per_token"));
@@ -1348,30 +1378,48 @@ mod tests {
             by_key.entry(normalize_model(key)).or_default().push((p, i, o));
         }
 
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, snapshot, None, &[]).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+
+        let mut contested = 0;
         for (key, rows) in &by_key {
             let providers: HashSet<&str> = rows.iter().map(|r| r.0).collect();
-            if providers.len() < 2 {
-                continue;
-            }
             let prices: HashSet<(String, String)> =
                 rows.iter().map(|r| (format!("{:?}", r.1), format!("{:?}", r.2))).collect();
-            if prices.len() < 2 {
-                continue; // same Model, same rate — nothing for key order to get wrong
+            if providers.len() < 2 || prices.len() < 2 {
+                continue; // one publisher, or one rate — nothing to settle
             }
-            let unexpected: Vec<&str> = providers
-                .iter()
-                .copied()
-                .filter(|p| !KNOWN_CANONICAL_OVERLAP.contains(p))
-                .collect();
-            assert!(
-                unexpected.is_empty(),
-                "canonical providers {unexpected:?} quote different prices for `{key}`, so key \
-                 order rather than the guard decides which one a Model resolves to. Either one \
-                 of them is reselling a Model it does not publish and should leave CANONICAL, \
-                 or it is a second surface of the same publisher and belongs in \
-                 KNOWN_CANONICAL_OVERLAP."
-            );
+            contested += 1;
+            // Ranks are positions in CANONICAL, so two providers can never tie.
+            let winner = rows.iter().min_by_key(|r| canonical_rank(r.0)).unwrap().0;
+            let quoted = |f: fn(&Quote) -> Option<f64>| -> HashSet<String> {
+                rows.iter().filter(|r| r.0 == winner).filter_map(f).map(|v| format!("{v:?}")).collect()
+            };
+            let got = rm.resolve(key).unwrap_or_else(|| panic!("`{key}` resolved to nothing"));
+            // A field the winner leaves null may still be filled from a loser —
+            // that is the "never lose a rate" rule — so only assert what it quotes.
+            for (label, want, have) in [
+                ("input", quoted(|r| r.1), got.input),
+                ("output", quoted(|r| r.2), got.output),
+            ] {
+                if want.is_empty() {
+                    continue;
+                }
+                assert!(
+                    want.contains(&format!("{have:?}")),
+                    "`{key}` resolved to {label} {have:?}, but `{winner}` is the first CANONICAL \
+                     member that publishes it and quotes {want:?}. Either the tiebreak stopped \
+                     working, or `{winner}` is reselling a Model it does not publish and should \
+                     leave CANONICAL."
+                );
+            }
         }
+        assert!(
+            contested >= 3,
+            "the snapshot no longer has publishers disagreeing on a price, so this test proves \
+             nothing — confirm that is real before deleting it"
+        );
     }
 
     #[test]
