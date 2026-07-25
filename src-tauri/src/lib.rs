@@ -28,7 +28,6 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_autostart::MacosLauncher;
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
@@ -364,13 +363,15 @@ fn save_csv(app: AppHandle, filename: String, contents: String) -> Result<bool, 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // Launch at login as a LaunchAgent that passes HIDDEN_FLAG, so an
-        // at-login start comes up hidden (tray only) while a manual launch does
-        // not. Enrollment itself is driven from the frontend (first-run dialog +
-        // Settings toggle → startup.ts).
+        // Launch at login passing HIDDEN_FLAG, so an at-login start comes up
+        // hidden (tray only) while a manual launch does not. Enrollment itself
+        // is driven from the frontend (first-run dialog + Settings toggle →
+        // startup.ts). The mechanism is the plugin's per-platform default — a
+        // LaunchAgent on macOS, a registry Run entry on Windows, a desktop
+        // entry on Linux. Do not set macos_launcher to say so: the setter is
+        // itself macOS-only and breaks the Windows and Linux builds.
         .plugin(
             tauri_plugin_autostart::Builder::new()
-                .macos_launcher(MacosLauncher::LaunchAgent)
                 .args([HIDDEN_FLAG])
                 .build(),
         )
