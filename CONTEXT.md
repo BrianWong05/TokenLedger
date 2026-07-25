@@ -73,19 +73,25 @@ edited — selecting a Model in the Overview opens this same editor in place.
 _Avoid_: Rate card, price list, models tab
 
 **Menu Bar Extra**:
-The application's resident presence in the system menu bar: an icon with
-Today's token total and Cost beside it, and the panel that icon toggles,
-presenting a selected window of the Ledger — headline Cost, tokens, Requests,
-pace against the window before it, Cost per bucket across the window,
-per-Source and per-Model figures, Cache Hit Rate, the costliest Project, and
-how long ago the last scan ran — plus the app actions. The two carry different
-windows on purpose: the bar title is always Today, the local calendar day,
-while the panel selects its own (Today, Yesterday, or the trailing 30 days) and
-everything it shows describes that selection. On a day with no usage the bar shows the icon alone. Every Cost
-figure follows the same rules as everywhere else: Partial Cost's "≥" marker,
-Unpriced never shown as $0, Display Currency honored.
+The application's resident presence in the system's status area — the one
+name for that presence on every platform, however the platform presents it.
+Its fullest form is an icon with Today's token total and Cost beside it, and
+the panel that icon toggles, presenting a selected window of the Ledger —
+headline Cost, tokens, Requests, pace against the window before it, Cost per
+bucket across the window, per-Source and per-Model figures, Cache Hit Rate,
+the costliest Project, and how long ago the last scan ran — plus the app
+actions. Where the platform cannot show text beside the icon, Today's figures
+move to the icon's hover text; where the platform delivers no icon clicks,
+there is no panel and the icon instead carries a menu — a read-only Today
+row plus the app actions — with the panel's read-out left to the Overview.
+The bar (or hover) figures and the panel carry different windows on purpose:
+the icon's figures are always Today, the local calendar day, while the panel
+selects its own (Today, Yesterday, or the trailing 30 days) and everything it
+shows describes that selection. On a day with no usage the icon stands alone.
+Every Cost figure follows the same rules as everywhere else: Partial Cost's
+"≥" marker, Unpriced never shown as $0, Display Currency honored.
 _Avoid_: Tray, status item, menu (ADR-0007 replaced the native menu with the
-panel)
+panel; the menu survives only where the platform delivers no icon clicks)
 
 ### Sources and granularity
 
