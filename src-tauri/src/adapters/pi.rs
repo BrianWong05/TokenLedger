@@ -79,6 +79,18 @@ fn nonempty(value: Option<&str>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty()).map(str::to_owned)
 }
 
+/// Whether a logged cwd is an absolute path — judged in the log's terms, not
+/// the host's. A session file records the machine that wrote it, so a POSIX
+/// cwd can perfectly well be read on Windows, where std's is_absolute wants a
+/// drive letter and would call "/Users/dev/x" relative and drop the Project.
+/// Accepts a POSIX root, a UNC root, and a drive letter; still rejects the
+/// relative cwd this filter exists for.
+fn is_absolute_cwd(cwd: &str) -> bool {
+    let b = cwd.as_bytes();
+    matches!(b.first(), Some(b'/' | b'\\'))
+        || matches!(b, [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic())
+}
+
 // Estimated size of a user message's content. Read transiently to size it; only
 // the estimate leaves — prompt text, images, and custom content are discarded.
 fn est_user_content(content: &Value) -> i64 {
@@ -376,7 +388,7 @@ fn parse_file(
             session_id = nonempty(v["id"].as_str());
             project = v["cwd"]
                 .as_str()
-                .filter(|cwd| Path::new(cwd).is_absolute())
+                .filter(|cwd| is_absolute_cwd(cwd))
                 .map(rollup_worktree);
             continue;
         }
@@ -1091,6 +1103,23 @@ mod tests {
         assert_eq!(parsed.events[0].timestamp, 1_782_907_207);
         assert_eq!(parsed.events[0].session_id.as_deref(), Some("s"));
         assert_eq!(parsed.events[0].project, None);
+    }
+
+    // A logged cwd is judged the same way whichever OS reads the file — the
+    // machine that wrote the session decides its flavour, not the one scanning
+    // it. Pinned here because the host-dependent version of this passed on
+    // macOS and dropped every POSIX Project on Windows.
+    #[test]
+    fn a_logged_cwd_is_absolute_by_its_own_flavour_not_the_hosts() {
+        for posix in ["/Users/dev/projects/pi-demo", "/projects/v1"] {
+            assert!(is_absolute_cwd(posix), "{posix}");
+        }
+        for windows in [r"C:\Users\dev\pi-demo", "D:/projects/v1", r"\\server\share"] {
+            assert!(is_absolute_cwd(windows), "{windows}");
+        }
+        for relative in ["relative/project", "", "pi-demo", "C:", "1:/nope"] {
+            assert!(!is_absolute_cwd(relative), "{relative}");
+        }
     }
 
     #[test]
