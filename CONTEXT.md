@@ -177,10 +177,19 @@ ever leaves USD, so changing Display Currency rewrites no data.
 _Avoid_: Local currency, FX conversion
 
 **List Price**:
-The public per-token rate for a Model, taken from a price catalog (a published
-list of model prices). A Model may be covered by more than one catalog; see
-ADR-0003 for how a single rate is chosen.
+The per-token rate set by the organisation that publishes a Model — Anthropic's
+for Claude, Z.AI's for GLM. One Model may be served by dozens of hosts at rates
+differing several-fold; only the publisher's is its List Price. A catalog is
+where that rate is looked up, never what makes it authoritative. See ADR-0003
+for how a single rate is chosen.
 _Avoid_: Rate card, tariff
+
+**Routed Rate**:
+A per-Model figure a catalog derives by routing across every host serving that
+Model, and so moved by whichever hosts are discounting rather than by any
+publisher's decision. Not a List Price: no organisation sets it, and a Cost
+computed from one is correspondingly weaker.
+_Avoid_: Market rate, blended price, list price
 
 **Override**:
 A user-supplied per-token rate for a Model that takes precedence over its List

@@ -4,8 +4,43 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use ts_rs::TS;
 
-/// Providers whose normalized entry wins a collision over prefixed resellers.
-const CANONICAL: &[&str] = &["anthropic", "openai", "gemini", "vertex_ai-language-models"];
+/// Providers whose normalized entry wins a collision over resellers — the model
+/// labs that publish the Models, so their rate IS the List Price (CONTEXT.md).
+///
+/// Membership rule: a provider belongs here only if every entry it publishes is
+/// its OWN Model. A cloud that also hosts other labs' Models must NOT be added,
+/// or a reseller's rate would win the very collision this list exists to settle.
+/// That rules out `tencent` (carries only DeepSeek Models), `volcengine`
+/// (carries GLM and DeepSeek), `perplexity` (carries Mistral), and the cloud
+/// platforms generally.
+///
+/// What the rule does NOT buy: two members can still publish the SAME Model, and
+/// then key order decides. `gemini` and `vertex_ai-language-models` are both
+/// Google and contest 27 normalized keys, 3 at different prices — pre-existing,
+/// left alone here because settling it would move rates, which this change must
+/// not. canonical_providers_never_disagree_on_a_price pins that so it cannot
+/// quietly worsen, and every_canonical_provider_prices_something keeps inert
+/// names out.
+///
+/// ponytail: a hand-curated list, only partly machine-checkable — a member that
+/// resells another lab's Model at an identical price is invisible to both tests,
+/// so additions need a human to apply the rule above. The durable fix is deriving
+/// publisher identity structurally from the Model's own vendor rather than from a
+/// list, which is what the publisher-rate tier does.
+const CANONICAL: &[&str] = &[
+    "anthropic",
+    "openai",
+    "gemini",
+    "vertex_ai-language-models",
+    "zai",
+    "deepseek",
+    "minimax",
+    "xai",
+    "mistral",
+    "cohere",
+    "ai21",
+    "moonshot",
+];
 
 const LITELLM_URL: &str =
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -61,11 +96,13 @@ impl Rates {
     /// Cache tokens were used but their rate is missing → the model is
     /// Cache-Estimated (CONTEXT.md).
     /// ponytail: prices store an absent cache rate as 0.0, so "no rate" == 0.0
-    /// here. A catalog now DOES quote $0 — OpenRouter's ":free" models — and the
-    /// deliberate answer is to drop those entries (see or_cost) rather than let a
-    /// free Model and an unknown price look alike. Telling the two apart properly
-    /// still needs nullable price columns end to end; add them if a free Model
-    /// ever needs a real $0 Cost rather than being left Unpriced.
+    /// here. BOTH catalogs quote genuine $0 — OpenRouter's ":free" models, and
+    /// LiteLLM entries where the publisher gives a Model away (zai/glm-4.7-flash).
+    /// OpenRouter's are dropped (see openrouter_cost); LiteLLM's are kept, so ~120
+    /// of its entries store 0.0 meaning "free" and are indistinguishable from "no
+    /// rate". Telling the two apart needs nullable price columns end to end; add
+    /// them if a free Model ever needs a real $0 Cost rather than reading as
+    /// rate-less.
     pub fn cache_gap(&self, cache_read: i64, w5: i64, w1: i64) -> bool {
         (cache_read > 0 && self.cache_read == 0.0)
             || (w5 > 0 && self.cache_write_5m == 0.0)
@@ -896,6 +933,132 @@ mod tests {
     fn tier_map(conn: &mut Connection) -> RateMap {
         rebuild_prices(conn, TIER_LITELLM, Some(TIER_OPENROUTER)).unwrap();
         RateMap::load(conn).unwrap()
+    }
+
+    // A publisher and a reseller carrying the SAME Model under prefixed keys, so
+    // neither claims the normalized key outright and the collision guard decides.
+    // Key order matters: serde_json sorts object keys, so "azure_ai/..." is merged
+    // before "zai/..." — the adversarial direction, where the reseller would win
+    // on order alone.
+    const GUARD_RESELLER_FIRST: &str = r#"{
+      "azure_ai/lab-model": {
+        "input_cost_per_token": 4e-06,
+        "output_cost_per_token": 8e-06,
+        "litellm_provider": "azure_ai"
+      },
+      "zai/lab-model": {
+        "input_cost_per_token": 1e-06,
+        "output_cost_per_token": 2e-06,
+        "litellm_provider": "zai"
+      }
+    }"#;
+
+    // The mirror: the publisher's key sorts FIRST. Guards against a future change
+    // that inverts the tiebreak and only looks correct in one direction.
+    const GUARD_PUBLISHER_FIRST: &str = r#"{
+      "deepseek/lab-model": {
+        "input_cost_per_token": 1e-06,
+        "output_cost_per_token": 2e-06,
+        "litellm_provider": "deepseek"
+      },
+      "zzz-reseller/lab-model": {
+        "input_cost_per_token": 4e-06,
+        "output_cost_per_token": 8e-06,
+        "litellm_provider": "zzz-reseller"
+      }
+    }"#;
+
+    // The one place two canonical providers legitimately contest keys: both are
+    // Google surfaces for the same Models. Pre-existing and priced differently;
+    // see the CANONICAL doc comment.
+    const KNOWN_CANONICAL_OVERLAP: [&str; 2] = ["gemini", "vertex_ai-language-models"];
+
+    #[test]
+    fn canonical_providers_never_disagree_on_a_price() {
+        // The safety property the guard actually needs, checked against the bundled
+        // snapshot rather than asserted in a comment: when two members contest a
+        // normalized key, key order picks the winner, so they had better quote the
+        // same rate. Note what this does NOT catch — a member reselling another
+        // lab's Model at the SAME price is invisible here, which is why the
+        // membership rule on CANONICAL stays a human check.
+        let root: serde_json::Value =
+            serde_json::from_str(include_str!("../resources/model_prices.json")).unwrap();
+        // (provider, input, output) per normalized key.
+        type Quote<'a> = (&'a str, Option<f64>, Option<f64>);
+        let mut by_key: HashMap<String, Vec<Quote>> = HashMap::new();
+        for (key, entry) in root.as_object().unwrap() {
+            let Some(p) = entry.get("litellm_provider").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !CANONICAL.contains(&p) {
+                continue;
+            }
+            let (i, o) = (cost(entry, "input_cost_per_token"), cost(entry, "output_cost_per_token"));
+            if i.is_none() && o.is_none() {
+                continue; // rebuild_prices skips these, so they can never collide
+            }
+            by_key.entry(normalize_model(key)).or_default().push((p, i, o));
+        }
+
+        for (key, rows) in &by_key {
+            let providers: HashSet<&str> = rows.iter().map(|r| r.0).collect();
+            if providers.len() < 2 {
+                continue;
+            }
+            let prices: HashSet<(String, String)> =
+                rows.iter().map(|r| (format!("{:?}", r.1), format!("{:?}", r.2))).collect();
+            if prices.len() < 2 {
+                continue; // same Model, same rate — nothing for key order to get wrong
+            }
+            let unexpected: Vec<&str> = providers
+                .iter()
+                .copied()
+                .filter(|p| !KNOWN_CANONICAL_OVERLAP.contains(p))
+                .collect();
+            assert!(
+                unexpected.is_empty(),
+                "canonical providers {unexpected:?} quote different prices for `{key}`, so key \
+                 order rather than the guard decides which one a Model resolves to. Either one \
+                 of them is reselling a Model it does not publish and should leave CANONICAL, \
+                 or it is a second surface of the same publisher and belongs in \
+                 KNOWN_CANONICAL_OVERLAP."
+            );
+        }
+    }
+
+    #[test]
+    fn every_canonical_provider_prices_something() {
+        // A provider with no priced entries is inert: rebuild_prices skips null-
+        // priced entries before the guard runs, so listing it is decoration.
+        let root: serde_json::Value =
+            serde_json::from_str(include_str!("../resources/model_prices.json")).unwrap();
+        let obj = root.as_object().unwrap();
+        for p in CANONICAL {
+            let priced = obj.values().filter(|e| {
+                e.get("litellm_provider").and_then(|v| v.as_str()) == Some(p)
+                    && (cost(e, "input_cost_per_token").is_some()
+                        || cost(e, "output_cost_per_token").is_some())
+            });
+            assert!(priced.count() > 0, "CANONICAL lists `{p}`, which prices nothing");
+        }
+    }
+
+    #[test]
+    fn a_publisher_row_beats_a_reseller_row_whichever_sorts_first() {
+        // Neither fixture has a bare "lab-model" key, so the normalized key is
+        // genuinely contested and only the guard settles it. Resolve a raw name
+        // that is nobody's exact key, forcing the normalized lookup.
+        for (fixture, label) in [
+            (GUARD_RESELLER_FIRST, "reseller sorts first"),
+            (GUARD_PUBLISHER_FIRST, "publisher sorts first"),
+        ] {
+            let (_d, mut conn) = test_conn();
+            rebuild_prices(&mut conn, fixture, None).unwrap();
+            let rm = RateMap::load(&conn).unwrap();
+            let r = rm.resolve("some-host/lab-model").unwrap();
+            assert_eq!(r.input, 1e-06, "publisher's rate must win ({label})");
+            assert_eq!(r.output, 2e-06, "publisher's rate must win ({label})");
+        }
     }
 
     #[test]
