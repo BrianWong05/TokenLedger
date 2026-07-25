@@ -24,7 +24,7 @@ export interface PanelRow {
 // stroke) stays in the panel, the shape and the read-out are decided here.
 export interface PanelSpark {
   points: number[]; // 0..1 of the period's peak, one per bucket, gaps zero-filled
-  bucketLabel: string; // "hourly" | "daily"
+  ticks: string[]; // sparse x labels — first, middle, last — spread across the points
   peak: string; // "peak 14:00 · $101.15"
 }
 
@@ -135,6 +135,9 @@ interface Cell extends CostCompleteness {
 
 const emptyCell = (): Cell => ({ cost: 0, totalTokens: 0, hasUnpriced: false, unattributedTokens: 0 });
 
+// A bucket key as the axis says it: "2026-06-15 14:00" → "14:00"; "2026-06-15" → "06-15".
+const tickLabel = (key: string) => (key.includes(' ') ? key.slice(11) : key.slice(5));
+
 // The period's Cost per bucket. Series points arrive per (bucket, Source), so
 // a bucket's figure is the sum across the Sources that ran in it.
 function sparkline(
@@ -159,18 +162,23 @@ function sparkline(
 
   const keys = bucketKeys(extras.period, extras.now);
   const row = keys.map((k) => cells.get(k) ?? emptyCell());
-  // One bucket is a dot, not a line; and a period whose whole Cost is zero has
-  // no shape to normalise against.
-  if (row.filter((c) => c.totalTokens > 0).length < 2) return null;
+  // Usage somewhere is enough to draw: a day 40 minutes old has one hour slot,
+  // and hiding its chart reads as breakage rather than as a young day. The
+  // view draws a lone bucket as a point. A period whose whole Cost is zero
+  // still has no shape to normalise against.
+  if (!row.some((c) => c.totalTokens > 0)) return null;
   const peak = row.reduce((a, b) => (b.cost > a.cost ? b : a), row[0]);
   if (peak.cost <= 0) return null;
 
-  const key = keys[row.indexOf(peak)];
+  // Three labels at most — ends and middle. They read as the axis, and they
+  // say the bucket size on their own ("14:00" is an hour, "06-15" a day), so
+  // no separate hourly/daily caption is needed. A short window collapses to
+  // the labels it actually has.
+  const at = [...new Set([0, Math.floor((keys.length - 1) / 2), keys.length - 1])];
   return {
     points: row.map((c) => c.cost / peak.cost),
-    bucketLabel: seriesBucket(extras.period) === 'hour' ? 'hourly' : 'daily',
-    // "2026-06-15 14:00" → "14:00"; "2026-06-15" → "06-15".
-    peak: `peak ${key.includes(' ') ? key.slice(11) : key.slice(5)} · ${cost(peak, settings, lang)}`,
+    ticks: at.map((i) => tickLabel(keys[i])),
+    peak: `peak ${tickLabel(keys[row.indexOf(peak)])} · ${cost(peak, settings, lang)}`,
   };
 }
 

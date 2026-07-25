@@ -23,16 +23,24 @@ export interface TrayPanelPorts {
 const PANEL_WIDTH = 300;
 
 // Sparkline geometry: the model hands over one normalised value per bucket,
-// the view decides what that looks like in its 260×44 box.
+// the view decides what that looks like in its 260×44 box. The horizontal
+// inset keeps the stroke and the now-dot off the box edges, where half of
+// either would be clipped.
 const SPARK_W = 260;
 const SPARK_H = 44;
-function sparkPath(points: number[]): string {
+const SPARK_PAD = 3;
+function sparkXY(points: number[], i: number): [number, number] {
   const last = Math.max(1, points.length - 1);
+  return [
+    SPARK_PAD + (i / last) * (SPARK_W - SPARK_PAD * 2),
+    SPARK_H - 4 - points[i] * (SPARK_H - 10),
+  ];
+}
+function sparkPath(points: number[]): string {
   return points
-    .map((p, i) => {
-      const x = ((i / last) * SPARK_W).toFixed(1);
-      const y = (SPARK_H - 4 - p * (SPARK_H - 8)).toFixed(1);
-      return `${i ? 'L' : 'M'}${x} ${y}`;
+    .map((_, i) => {
+      const [x, y] = sparkXY(points, i);
+      return `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`;
     })
     .join(' ');
 }
@@ -292,16 +300,33 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
             preserveAspectRatio="none"
             aria-hidden="true"
           >
-            <path
-              className="tp-spark-area"
-              d={`${sparkPath(model.spark.points)} L${SPARK_W} ${SPARK_H} L0 ${SPARK_H} Z`}
+            {/* One bucket is a point, not a line: the area would close into a
+                triangle spanning the whole box, drawing a fall that never
+                happened. The now-dot marks the latest bucket either way. */}
+            {model.spark.points.length > 1 && (
+              <>
+                <path
+                  className="tp-spark-area"
+                  d={`${sparkPath(model.spark.points)} L${SPARK_W - SPARK_PAD} ${SPARK_H} L${SPARK_PAD} ${SPARK_H} Z`}
+                />
+                <path className="tp-spark-line" d={sparkPath(model.spark.points)} />
+              </>
+            )}
+            <circle
+              className="tp-spark-now"
+              cx={sparkXY(model.spark.points, model.spark.points.length - 1)[0]}
+              cy={sparkXY(model.spark.points, model.spark.points.length - 1)[1]}
+              r="2.5"
             />
-            <path className="tp-spark-line" d={sparkPath(model.spark.points)} />
           </svg>
+          {/* The axis: first tick sits at the left edge, last at the right,
+              middle between them — space-between puts each where its bucket is. */}
           <div className="tp-spark-cap">
-            <span>{model.spark.bucketLabel}</span>
-            <span>{model.spark.peak}</span>
+            {model.spark.ticks.map((t) => (
+              <span key={t}>{t}</span>
+            ))}
           </div>
+          <div className="tp-spark-cap tp-spark-peak">{model.spark.peak}</div>
         </div>
       )}
 

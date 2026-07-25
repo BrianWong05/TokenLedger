@@ -105,6 +105,7 @@ body.tp-window #root {
 .tp-spark svg { display: block; width: 100%; height: 44px; }
 .tp-spark-area { fill: #7c6bf2; fill-opacity: 0.16; }
 .tp-spark-line { fill: none; stroke: #a99dff; stroke-width: 1.5; }
+.tp-spark-now { fill: #a99dff; }
 .tp-spark-cap {
   display: flex;
   justify-content: space-between;
@@ -113,6 +114,7 @@ body.tp-window #root {
   font-size: 10.5px;
   color: #6e6e76;
 }
+.tp-spark-peak { justify-content: flex-end; margin-top: 1px; }
 
 /* Models: the Source rows' idiom, with the owning Source's colour as a dot in
    place of its icon. Long Model names ellipsize so the columns stay aligned. */
