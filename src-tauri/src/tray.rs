@@ -1,34 +1,59 @@
 // The Menu Bar Extra (CONTEXT.md): TokenLedger's resident menu-bar presence
-// per ADR-0005 — the app lives here, not in a window you keep open. The tray
-// shows a live bar title (Today's tokens + Cost, computed here) and toggles
+// per ADR-0005 — the app lives here, not in a window you keep open. Today's
+// tokens + Cost are computed here once and reach the user by whatever route
+// the platform offers (ADR-0010): beside the icon on macOS, in the icon's
+// hover text on Windows, as the first row of a menu on Linux. The icon toggles
 // the traypanel webview window, which renders design 2b pixel-faithfully per
-// ADR-0007 (superseding ADR-0006's native menu). Panel content and actions
-// live in src/traypanel/; this file is the title math plus window glue.
+// ADR-0007 (superseding ADR-0006's native menu) — except on Linux, whose tray
+// delivers no click to toggle it with, and which gets the menu instead. Panel
+// content and actions live in src/traypanel/; this file is the title math plus
+// window glue.
 use tauri::image::Image;
-use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+#[cfg(target_os = "linux")]
+use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+#[cfg(not(target_os = "linux"))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
-// Held so each scan can rewrite the bar title in place.
+// Held so each scan can rewrite Today's figures in place.
 pub struct Tray {
     tray: TrayIcon<Wry>,
+    // Re-texted rather than rebuilt, so a menu open under the user's cursor is
+    // never yanked out from beneath it.
+    #[cfg(target_os = "linux")]
+    today: MenuItem<Wry>,
 }
 
-/// Builds the tray once, from setup: template glyph, live title, and a click
-/// handler that toggles the panel.
+/// Builds the tray once, from setup: template glyph, live figures, and the way
+/// in — a click that toggles the panel, or on Linux a menu.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    let mut builder = TrayIconBuilder::new()
-        .show_menu_on_left_click(false)
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                rect,
-                ..
-            } = event
-            {
-                toggle_panel(tray.app_handle(), rect);
-            }
-        });
+    let mut builder = TrayIconBuilder::new();
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        builder = builder
+            .show_menu_on_left_click(false)
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    rect,
+                    ..
+                } = event
+                {
+                    toggle_panel(tray.app_handle(), rect);
+                }
+            });
+    }
+
+    #[cfg(target_os = "linux")]
+    let (menu, today) = build_menu(app)?;
+    #[cfg(target_os = "linux")]
+    {
+        builder = builder.menu(&menu).on_menu_event(on_menu_event);
+    }
+
     // Design 2b's chart-line glyph as a macOS template image (black + alpha;
     // rasterized from the mock's mark into icons/tray.png). Not the app icon:
     // that is still the stock Tauri logo, which reads as mush when templated.
@@ -36,16 +61,68 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         builder = builder.icon(icon).icon_as_template(true);
     }
     let tray = builder.build(app)?;
-    app.manage(Tray { tray });
+    app.manage(Tray {
+        tray,
+        #[cfg(target_os = "linux")]
+        today,
+    });
     refresh(app);
     Ok(())
+}
+
+/// The Linux menu (ADR-0010), returning it with the Today row that refresh
+/// re-texts. Today's figures lead and are disabled: they are a read-out, not
+/// somewhere to click through to. ADR-0006's amendment records that choice
+/// failing sign-off once on macOS, where disabled grey was too dim to read —
+/// if GTK's is too, enabled-but-inert is the fix that ADR already landed.
+#[cfg(target_os = "linux")]
+fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
+    let today = MenuItem::with_id(app, "today", today_row(None), false, None::<&str>)?;
+    let menu = Menu::new(app)?;
+    menu.append(&today)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(
+        app,
+        "open",
+        "Open TokenLedger",
+        true,
+        None::<&str>,
+    )?)?;
+    menu.append(&MenuItem::with_id(app, "scan", "Scan now", true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?)?;
+    Ok((menu, today))
+}
+
+/// The Linux menu's three actions, each the same one the panel invokes
+/// elsewhere.
+#[cfg(target_os = "linux")]
+fn on_menu_event(app: &AppHandle, event: MenuEvent) {
+    match event.id().as_ref() {
+        "open" => show_main(app),
+        "scan" => {
+            // Off the UI thread: a scan can take a moment. On completion, emit
+            // the one event a visible Overview listens for so it re-reads the
+            // Ledger. scan_now refreshes the tray itself.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if crate::scan_now(&app).is_ok() {
+                    let _ = app.emit("prices-rebuilt", ());
+                }
+            });
+        }
+        "quit" => app.exit(0),
+        _ => {}
+    }
 }
 
 /// Show the panel beside the tray icon, or hide it if it's already up. Where
 /// the panel lands is panel_position's business; this gathers the icon rect,
 /// the panel size, and the work area of the monitor holding the icon. The
 /// panel refetches on every show via the panel-shown event; hide-on-blur lives
-/// in lib.rs's window-event handler.
+/// in lib.rs's window-event handler. Absent on Linux, which never delivers the
+/// click that would call it.
+#[cfg(not(target_os = "linux"))]
 fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
     let Some(w) = app.get_webview_window("traypanel") else {
         return;
@@ -86,6 +163,7 @@ fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
 
 /// The tray's icon rect in physical pixels — the one unit panel_position
 /// speaks, so the Logical/Physical split stops here.
+#[cfg(not(target_os = "linux"))]
 fn px_rect(rect: tauri::Rect, scale: f64) -> PxRect {
     let (x, y) = match rect.position {
         tauri::Position::Physical(p) => (f64::from(p.x), f64::from(p.y)),
@@ -108,11 +186,12 @@ pub fn show_main(app: &AppHandle) {
     }
 }
 
-/// Recomputes the bar title (Today's Summary + Settings → tray_title) and
-/// rewrites it in place. Called after every scan and on settings save; no-op
-/// until the tray exists. The db lock is released before set_title: it hops
-/// to the main thread, and sync commands on the main thread take the same
-/// lock — holding it here would deadlock.
+/// Recomputes Today's figures (Today's Summary + Settings → tray_title) and
+/// rewrites them in place, wherever this platform shows them. Called after
+/// every scan and on settings save; no-op until the tray exists. The db lock
+/// is released before show_today: every one of those calls hops to the main
+/// thread, and sync commands on the main thread take the same lock — holding
+/// it here would deadlock.
 pub fn refresh(app: &AppHandle) {
     let Some(tray) = app.try_state::<Tray>() else {
         return;
@@ -140,7 +219,20 @@ pub fn refresh(app: &AppHandle) {
         };
         tray_title(&today, &settings)
     };
-    let _ = tray.tray.set_title(title.as_deref());
+    show_today(&tray, title.as_deref());
+}
+
+/// Puts Today's figures wherever this platform can show them. The three calls
+/// are not interchangeable: set_title does nothing on Windows and set_tooltip
+/// nothing on Linux, which is the whole reason the Menu Bar Extra wears three
+/// faces (ADR-0010).
+fn show_today(tray: &Tray, title: Option<&str>) {
+    #[cfg(target_os = "macos")]
+    let _ = tray.tray.set_title(title);
+    #[cfg(target_os = "windows")]
+    let _ = tray.tray.set_tooltip(title);
+    #[cfg(target_os = "linux")]
+    let _ = tray.today.set_text(today_row(title));
 }
 
 // --- Panel placement ---
@@ -179,7 +271,9 @@ enum Edge {
 /// Where to put the panel so it hangs off the tray icon and stays on-screen.
 /// Anchored to the boundary between the status area and the work area (a gap
 /// clear of it), aligned with the icon's trailing edge along the bar, then
-/// held inside the work area.
+/// held inside the work area. Pure, so it stays compiled on Linux too and its
+/// tests run on every platform of the matrix — only the caller is absent there.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 fn panel_position(icon: PxRect, work: PxRect, panel: (f64, f64), gap: f64) -> (f64, f64) {
     let (pw, ph) = panel;
     let (x, y) = match status_edge(icon, work) {
@@ -250,6 +344,18 @@ fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Setti
             format!("{toks} · {marker}{cost}", cost = fmt_cost(c, settings))
         }
     })
+}
+
+/// The Linux menu's Today row. The bar title is simply absent on a no-usage
+/// day — the icon stands alone — but a menu row has to say something, so the
+/// same silence is spelt out. Prefixed because a menu row, unlike a title
+/// welded to the icon, has to name what it is counting.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn today_row(title: Option<&str>) -> String {
+    match title {
+        Some(t) => format!("Today: {t}"),
+        None => "No usage today".to_string(),
+    }
 }
 
 /// Token total in the frontend's compact form (format.ts
@@ -449,6 +555,17 @@ mod tests {
         assert_eq!(t(999_999), "1M");
         assert_eq!(t(847), "847");
         assert_eq!(t(1_912_345_678), "1.91B");
+    }
+
+    // --- Menu row (Linux) ---
+
+    // The bar title can simply be absent on a no-usage day; a menu row cannot,
+    // so the icon-alone rule becomes words there.
+    #[test]
+    fn the_menu_row_carries_todays_figures_and_says_so_when_there_are_none() {
+        assert_eq!(today_row(Some("3.4M · $12.84")), "Today: 3.4M · $12.84");
+        assert_eq!(today_row(Some("964.2K")), "Today: 964.2K");
+        assert_eq!(today_row(None), "No usage today");
     }
 
     // --- Panel placement ---

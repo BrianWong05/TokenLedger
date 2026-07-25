@@ -409,6 +409,17 @@ pub fn run() {
 
             tray::build(app.handle())?;
 
+            // No panel on Linux (ADR-0010): its tray delivers no click to
+            // toggle one, so the window would be a webview nobody can open.
+            // ponytail: destroyed rather than never built — tauri.conf.json has
+            // no per-platform window list, and the cost is one hidden webview
+            // for the moments before setup runs. Declare the panel window in
+            // Rust under cfg(not(linux)) if that start-up cost ever shows.
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("traypanel") {
+                let _ = w.destroy();
+            }
+
             // Hidden at-login start vs. normal launch: the window is created
             // hidden (tauri.conf.json visible:false) so there is no flash; show
             // it unless HIDDEN_FLAG is present. Either way the webview loads and
