@@ -116,6 +116,11 @@ describe('sceneBounds', () => {
     const cols = Math.max(1, ...DAYS.map((d) => d.col)) + 1;
     const cx = cols / 2;
     const cy = 3.5;
+    // One assertion at the end rather than four per point: this walks a year of
+    // days across three pitches and eight yaws, and paying expect()'s overhead
+    // ~280k times took the file past its timeout on a slower machine. Same
+    // coverage, and a corner that escapes now reports where it went.
+    const escaped: string[] = [];
     // Pitch range extremes + default; a spread of yaws around the full circle.
     for (const pitch of [0.3, INITIAL_VIEW.pitch, 1.15]) {
       const b = sceneBounds(DAYS, pitch);
@@ -129,15 +134,18 @@ describe('sceneBounds', () => {
           ]) {
             for (const z of [0, d.level * ZUNIT]) {
               const [sx, sy] = projectPoint(gx - cx, gy - cy, z, yaw, pitch);
-              expect(sx).toBeGreaterThanOrEqual(b.minX);
-              expect(sx).toBeLessThanOrEqual(b.maxX);
-              expect(sy).toBeGreaterThanOrEqual(b.minY);
-              expect(sy).toBeLessThanOrEqual(b.maxY);
+              if (sx < b.minX || sx > b.maxX || sy < b.minY || sy > b.maxY) {
+                escaped.push(
+                  `pitch ${pitch} yaw ${yaw}: (${sx}, ${sy}) outside ` +
+                    `x[${b.minX}, ${b.maxX}] y[${b.minY}, ${b.maxY}]`,
+                );
+              }
             }
           }
         }
       }
     }
+    expect(escaped.slice(0, 5)).toEqual([]);
   });
 });
 
