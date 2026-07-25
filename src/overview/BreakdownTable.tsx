@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react';
 import { type TableRow } from './data';
 import { fmtIsoDateL, useOverviewT, type OverviewKey } from './localize';
+import { basename } from '../lib/format';
 
 type Tab = 'daily' | 'projects';
 type SortKey = keyof TableRow;
@@ -15,9 +16,6 @@ const NUMCOLS: { key: SortKey; labelKey: OverviewKey }[] = [
 ];
 
 const fmtInt = (n: number) => n.toLocaleString('en-US');
-
-// Project rows carry a full path; the last segment is the readable name.
-const basename = (p: string) => p.split('/').filter(Boolean).pop() ?? p;
 
 // Daily breakdown / project usage — a tabbed, click-to-sort table (design 8b).
 function BreakdownTable({

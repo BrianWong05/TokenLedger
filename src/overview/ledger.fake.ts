@@ -22,10 +22,14 @@ interface Deferred {
 
 interface Data {
   scan: ScanStatus;
+  lastScan: number;
   dayPoints: SeriesPoint[];
   hourPoints: SeriesPoint[];
   summary: Summary;
   modelRows: BreakdownRow[];
+  // Source rows (breakdown('tool')); falls back to modelRows so the callers
+  // that only care about one list stay a one-field seed.
+  toolRows?: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResourceCount[];
   ctxBuckets: CtxBuckets[];
@@ -52,13 +56,14 @@ const EMPTY_SUMMARY: Summary = {
 export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
   const data: Data = {
     scan: { sources: [], scannedAt: 0 },
+    lastScan: 0,
     dayPoints: [], hourPoints: [], summary: EMPTY_SUMMARY,
     modelRows: [], projectRows: [], ctxResources: [], ctxBuckets: [],
     ctxTools: [], ctxExec: [],
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
-    scan: [], series: [], summary: [], breakdown: [],
+    scan: [], lastScan: [], series: [], summary: [], breakdown: [],
     ctxResources: [], ctxBuckets: [], ctxTools: [], ctxExec: [],
   };
   const fails = new Map<string, unknown>();
@@ -69,9 +74,13 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
   const cannedFor = (method: string, args: unknown[]): unknown => {
     switch (method) {
       case 'scan': return data.scan;
+      case 'lastScan': return data.lastScan;
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
-      case 'breakdown': return args[0] === 'project' ? data.projectRows : data.modelRows;
+      case 'breakdown':
+        if (args[0] === 'project') return data.projectRows;
+        if (args[0] === 'tool') return data.toolRows ?? data.modelRows;
+        return data.modelRows;
       case 'ctxResources': return data.ctxResources;
       case 'ctxBuckets': return data.ctxBuckets;
       case 'ctxTools': return data.ctxTools;
@@ -98,10 +107,11 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     data,
     calls,
     scan: () => respond('scan', []) as Promise<ScanStatus>,
+    lastScan: () => respond('lastScan', []) as Promise<number>,
     series: (filters: Filters, bucket: 'day' | 'hour') =>
       respond('series', [filters, bucket]) as Promise<SeriesPoint[]>,
     summary: (filters: Filters) => respond('summary', [filters]) as Promise<Summary>,
-    breakdown: (by: 'model' | 'project', filters: Filters) =>
+    breakdown: (by: 'model' | 'project' | 'tool', filters: Filters) =>
       respond('breakdown', [by, filters]) as Promise<BreakdownRow[]>,
     ctxResources: (filters: Filters) =>
       respond('ctxResources', [filters]) as Promise<CtxResourceCount[]>,
