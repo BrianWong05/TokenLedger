@@ -41,9 +41,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Show the panel under the tray icon (right edges aligned), or hide it if
-/// it's already up. The panel refetches on every show via the panel-shown
-/// event; hide-on-blur lives in lib.rs's window-event handler.
+/// Show the panel beside the tray icon, or hide it if it's already up. Where
+/// the panel lands is panel_position's business; this gathers the icon rect,
+/// the panel size, and the work area of the monitor holding the icon. The
+/// panel refetches on every show via the panel-shown event; hide-on-blur lives
+/// in lib.rs's window-event handler.
 fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
     let Some(w) = app.get_webview_window("traypanel") else {
         return;
@@ -53,21 +55,47 @@ fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
         return;
     }
     let scale = w.scale_factor().unwrap_or(2.0);
-    let pos = match rect.position {
-        tauri::Position::Physical(p) => (f64::from(p.x), f64::from(p.y)),
-        tauri::Position::Logical(l) => (l.x * scale, l.y * scale),
-    };
-    let size = match rect.size {
-        tauri::Size::Physical(s) => (f64::from(s.width), f64::from(s.height)),
-        tauri::Size::Logical(l) => (l.width * scale, l.height * scale),
-    };
-    let panel_w = w.outer_size().map(|s| f64::from(s.width)).unwrap_or(300.0 * scale);
-    let x = pos.0 + size.0 - panel_w;
-    let y = pos.1 + size.1 + 4.0 * scale;
+    let icon = px_rect(rect, scale);
+    let panel = w
+        .outer_size()
+        .map(|s| (f64::from(s.width), f64::from(s.height)))
+        .unwrap_or((300.0 * scale, 480.0 * scale));
+    // An unresolvable monitor collapses the work area to the icon, which
+    // disables clamping (see clamp) and leaves the anchored position standing.
+    let (cx, cy) = icon.center();
+    let work = w
+        .monitor_from_point(cx, cy)
+        .ok()
+        .flatten()
+        .map(|m| {
+            let a = m.work_area();
+            PxRect {
+                x: f64::from(a.position.x),
+                y: f64::from(a.position.y),
+                w: f64::from(a.size.width),
+                h: f64::from(a.size.height),
+            }
+        })
+        .unwrap_or(icon);
+    let (x, y) = panel_position(icon, work, panel, 4.0 * scale);
     let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
     let _ = w.show();
     let _ = w.set_focus();
     let _ = app.emit_to("traypanel", "panel-shown", ());
+}
+
+/// The tray's icon rect in physical pixels — the one unit panel_position
+/// speaks, so the Logical/Physical split stops here.
+fn px_rect(rect: tauri::Rect, scale: f64) -> PxRect {
+    let (x, y) = match rect.position {
+        tauri::Position::Physical(p) => (f64::from(p.x), f64::from(p.y)),
+        tauri::Position::Logical(l) => (l.x * scale, l.y * scale),
+    };
+    let (w, h) = match rect.size {
+        tauri::Size::Physical(s) => (f64::from(s.width), f64::from(s.height)),
+        tauri::Size::Logical(l) => (l.width * scale, l.height * scale),
+    };
+    PxRect { x, y, w, h }
 }
 
 /// Show + focus the main window; the panel's Open action and open_settings
@@ -113,6 +141,91 @@ pub fn refresh(app: &AppHandle) {
         tray_title(&today, &settings)
     };
     let _ = tray.tray.set_title(title.as_deref());
+}
+
+// --- Panel placement ---
+// Pure: constructed inputs in, a position out. The Tauri glue above stays thin.
+
+/// A rectangle in physical pixels, the unit every figure here is in.
+#[derive(Clone, Copy, Debug)]
+struct PxRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+impl PxRect {
+    fn right(&self) -> f64 {
+        self.x + self.w
+    }
+    fn bottom(&self) -> f64 {
+        self.y + self.h
+    }
+    fn center(&self) -> (f64, f64) {
+        (self.x + self.w / 2.0, self.y + self.h / 2.0)
+    }
+}
+
+/// Which screen edge the status area sits on — the menu bar's top on macOS,
+/// wherever the user parked the taskbar on Windows.
+enum Edge {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+/// Where to put the panel so it hangs off the tray icon and stays on-screen.
+/// Anchored to the boundary between the status area and the work area (a gap
+/// clear of it), aligned with the icon's trailing edge along the bar, then
+/// held inside the work area.
+fn panel_position(icon: PxRect, work: PxRect, panel: (f64, f64), gap: f64) -> (f64, f64) {
+    let (pw, ph) = panel;
+    let (x, y) = match status_edge(icon, work) {
+        Edge::Top => (icon.right() - pw, icon.bottom().max(work.y) + gap),
+        Edge::Bottom => (icon.right() - pw, icon.y.min(work.bottom()) - gap - ph),
+        Edge::Left => (icon.right().max(work.x) + gap, icon.bottom() - ph),
+        Edge::Right => (icon.x.min(work.right()) - gap - pw, icon.bottom() - ph),
+    };
+    (
+        clamp_or_leave(x, work.x, work.right() - pw),
+        clamp_or_leave(y, work.y, work.bottom() - ph),
+    )
+}
+
+/// Which edge the status area runs along, read from where the icon sits
+/// relative to the work area: a menu bar or taskbar is excluded from the work
+/// area, so its icons lie outside the edge they occupy. Reading which side the
+/// icon falls outside — rather than which edge it is nearest — is what keeps
+/// an icon in a screen corner, close to two edges at once, on the bar it
+/// actually sits in.
+/// ponytail: Top doubles as the fallback for an icon that lands inside the
+/// work area, which means the platform did not exclude its bar — it is macOS's
+/// fixed truth and matches the pre-work-area behavior. Ask the platform for
+/// the bar's own orientation if one ever reports a work area covering it.
+fn status_edge(icon: PxRect, work: PxRect) -> Edge {
+    let (cx, cy) = icon.center();
+    if cy > work.bottom() {
+        Edge::Bottom
+    } else if cx < work.x {
+        Edge::Left
+    } else if cx > work.right() {
+        Edge::Right
+    } else {
+        Edge::Top
+    }
+}
+
+/// Clamps, except that a range too small to hold the panel — or an unknown
+/// work area, which the caller collapses to the icon — leaves the anchored
+/// position alone rather than inventing a corner out of an inverted range.
+fn clamp_or_leave(v: f64, lo: f64, hi: f64) -> f64 {
+    if hi < lo {
+        v
+    } else {
+        v.clamp(lo, hi)
+    }
 }
 
 // --- Menu Bar Extra title (design 2b) ---
@@ -336,6 +449,100 @@ mod tests {
         assert_eq!(t(999_999), "1M");
         assert_eq!(t(847), "847");
         assert_eq!(t(1_912_345_678), "1.91B");
+    }
+
+    // --- Panel placement ---
+    // Physical pixels throughout. macOS numbers are a 3024×1964 retina screen
+    // (scale 2, 48px menu bar, 600×960 panel); the Windows ones a 1920×1080
+    // screen (scale 1, 48px taskbar, 300×480 panel).
+
+    const MAC_ICON: PxRect = PxRect { x: 2600.0, y: 0.0, w: 60.0, h: 48.0 };
+    const MAC_WORK: PxRect = PxRect { x: 0.0, y: 48.0, w: 3024.0, h: 1916.0 };
+    const MAC_PANEL: (f64, f64) = (600.0, 960.0);
+
+    // Today's macOS placement, pinned: below the icon, right edges aligned.
+    #[test]
+    fn menu_bar_opens_the_panel_below_the_icon_right_aligned() {
+        assert_eq!(
+            panel_position(MAC_ICON, MAC_WORK, MAC_PANEL, 8.0),
+            (2060.0, 56.0)
+        );
+    }
+
+    #[test]
+    fn bottom_taskbar_opens_the_panel_above_the_icon() {
+        let icon = PxRect { x: 1700.0, y: 1044.0, w: 24.0, h: 24.0 };
+        let work = PxRect { x: 0.0, y: 0.0, w: 1920.0, h: 1032.0 };
+        // Right edges aligned; panel sits a gap above the taskbar, not above
+        // the icon — icons are padded inside the bar, so anchoring to the icon
+        // alone would overlap it.
+        assert_eq!(panel_position(icon, work, (300.0, 480.0), 4.0), (1424.0, 548.0));
+    }
+
+    #[test]
+    fn top_taskbar_opens_the_panel_below_the_icon() {
+        let icon = PxRect { x: 1700.0, y: 12.0, w: 24.0, h: 24.0 };
+        let work = PxRect { x: 0.0, y: 48.0, w: 1920.0, h: 1032.0 };
+        assert_eq!(panel_position(icon, work, (300.0, 480.0), 4.0), (1424.0, 52.0));
+    }
+
+    #[test]
+    fn left_taskbar_opens_the_panel_to_the_right_of_the_icon() {
+        let icon = PxRect { x: 12.0, y: 900.0, w: 24.0, h: 24.0 };
+        let work = PxRect { x: 48.0, y: 0.0, w: 1872.0, h: 1080.0 };
+        // Bottom edges aligned — the vertical mirror of the right-alignment a
+        // horizontal bar gets.
+        assert_eq!(panel_position(icon, work, (300.0, 480.0), 4.0), (52.0, 444.0));
+    }
+
+    #[test]
+    fn right_taskbar_opens_the_panel_to_the_left_of_the_icon() {
+        let icon = PxRect { x: 1896.0, y: 900.0, w: 24.0, h: 24.0 };
+        let work = PxRect { x: 0.0, y: 0.0, w: 1872.0, h: 1080.0 };
+        assert_eq!(panel_position(icon, work, (300.0, 480.0), 4.0), (1568.0, 444.0));
+    }
+
+    // A tray icon in the screen's corner is close to two edges at once. It
+    // still belongs to the bar it sits in, so the panel opens above it — not
+    // flipped to its left as a nearest-edge reading would have it.
+    #[test]
+    fn corner_icon_belongs_to_the_bar_it_sits_in() {
+        let icon = PxRect { x: 1890.0, y: 1044.0, w: 24.0, h: 24.0 };
+        let work = PxRect { x: 0.0, y: 0.0, w: 1920.0, h: 1032.0 };
+        assert_eq!(panel_position(icon, work, (300.0, 480.0), 4.0), (1614.0, 548.0));
+    }
+
+    // An icon far enough along the bar that the aligned edge would hang off
+    // the screen: the panel slides back inside rather than rendering partly
+    // off-monitor.
+    #[test]
+    fn panel_stays_inside_the_work_area() {
+        let icon = PxRect { x: 40.0, y: 0.0, w: 60.0, h: 48.0 };
+        assert_eq!(
+            panel_position(icon, MAC_WORK, MAC_PANEL, 8.0),
+            (0.0, 56.0)
+        );
+    }
+
+    // A screen too short for the panel: no placement fits, so it stays against
+    // the bar it belongs to (top cut off) rather than being jammed to a corner
+    // that would cover the bar as well.
+    #[test]
+    fn screen_too_small_for_the_panel_keeps_it_against_the_bar() {
+        let icon = PxRect { x: 700.0, y: 370.0, w: 24.0, h: 24.0 };
+        let work = PxRect { x: 0.0, y: 0.0, w: 800.0, h: 360.0 };
+        assert_eq!(panel_position(icon, work, (300.0, 480.0), 4.0), (424.0, -124.0));
+    }
+
+    // Degenerate work area (an unresolvable monitor collapses it to the icon):
+    // the anchored position stands, which is exactly the pre-work-area
+    // behavior — never a nonsense corner.
+    #[test]
+    fn unknown_work_area_leaves_the_anchored_position_alone() {
+        assert_eq!(
+            panel_position(MAC_ICON, MAC_ICON, MAC_PANEL, 8.0),
+            (2060.0, 56.0)
+        );
     }
 
     // Asset guard: the bundled template glyph must decode through the same
