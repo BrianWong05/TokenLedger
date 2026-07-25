@@ -9,7 +9,7 @@ import type { ModelPricing, RatesPerTok, Settings } from '../types';
 import type { PricingPort } from './pricing';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
 import { TOOL_ICONS } from '../overview/icons';
-import { fill, originLabel, toolMeta, toolLabel, fmtRate } from './pricing.derive';
+import { fill, originLabelQualified, toolMeta, toolLabel, fmtRate } from './pricing.derive';
 
 const FIELDS: { key: keyof RatesPerTok; labelKey: 'pricing.col.input' | 'pricing.col.output' | 'pricing.col.cacheRead' | 'pricing.col.cacheWrite' }[] = [
   { key: 'input', labelKey: 'pricing.col.input' },
@@ -38,6 +38,11 @@ export default function OverrideEditor({
   const { t } = useT();
   const hasOverride = !!model.overrideRates;
   const catalog = model.catalog;
+  // Names who set the rate, the way the rates table does — a publisher by name,
+  // a catalog by name, and a Routed Rate qualified, since overriding a
+  // publisher's List Price and overriding a routed average are different calls.
+  const sourceName = (origin: string) =>
+    originLabelQualified(origin, t('pricing.editor.routedSuffix'));
 
   const [values, setValues] = useState<Record<keyof RatesPerTok, string>>(() => ({
     input: toInput(model.overrideRates?.input),
@@ -118,12 +123,12 @@ export default function OverrideEditor({
           {hasOverride ? (
             <div className="tl-pr-explain">
               {catalog
-                ? fill(t('pricing.editor.overrideExplain'), { origin: originLabel(catalog.origin) })
+                ? fill(t('pricing.editor.overrideExplain'), { origin: sourceName(catalog.origin) })
                 : t('pricing.editor.overrideExplainNoCatalog')}
             </div>
           ) : catalog ? (
             <div className="tl-pr-explain">
-              {fill(t('pricing.editor.catalogExplain'), { origin: originLabel(catalog.origin) })}
+              {fill(t('pricing.editor.catalogExplain'), { origin: sourceName(catalog.origin) })}
             </div>
           ) : (
             <div className="tl-pr-unpriced-box">
@@ -139,7 +144,7 @@ export default function OverrideEditor({
               const p = parsed[i];
               const catRate = catalog?.rates[key];
               const caption = catRate != null
-                ? fill(t('pricing.editor.replaces'), { origin: catalog ? originLabel(catalog.origin) : '', price: fmtRate(catRate) })
+                ? fill(t('pricing.editor.replaces'), { origin: catalog ? sourceName(catalog.origin) : '', price: fmtRate(catRate) })
                 : t('pricing.editor.noCatalogRate');
               return (
                 <div className="tl-pr-field" key={key}>

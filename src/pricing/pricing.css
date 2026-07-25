@@ -2,7 +2,7 @@
    Layout reads the shell's shared tokens (--card/--border/--text/--muted/--accent).
    The amber (unpriced/cache-estimated → warning family) and violet (override →
    accent family) roles now point at the DS semantic tokens in index.css, so the
-   light/dark deltas come from there — no local [data-theme] block. The four
+   light/dark deltas come from there — no local [data-theme] block. The five
    color-mix tints are the only component-specific values (no single DS token fits);
    each is a theme-aware mix over a DS token, so it adapts per theme on its own. */
 .tl-page-pricing {
@@ -13,6 +13,10 @@
   --pr-amber-badge-bd: color-mix(in srgb, var(--warning) 38%, transparent);
   --pr-amber-row: color-mix(in srgb, var(--warning) 5%, transparent);
   --pr-amber-dash: color-mix(in srgb, var(--warning) 40%, transparent);
+  /* Derived from the text colour, not --pr-neu-bd: that is tuned for a badge with
+     a background fill behind it and all but vanishes on a transparent one in the
+     light theme. */
+  --pr-muted-dash: color-mix(in srgb, var(--muted) 45%, transparent);
   --pr-banner-bg: var(--warning-subtle);
   --pr-banner-bd: color-mix(in srgb, var(--warning) 32%, transparent);
   --pr-violet-fg: var(--text-accent);
@@ -298,6 +302,15 @@
   background: transparent;
   border: 1px dashed var(--pr-amber-dash);
   color: var(--pr-amber-fg);
+}
+/* Routed Rate: dashed like cache-est so it reads as "less solid", but muted
+   rather than amber — it is a weaker source, not a gap in the data. */
+.tl-pr-badge.routed {
+  background: transparent;
+  border: 1px dashed var(--pr-muted-dash);
+  color: var(--muted);
+  font-weight: 500;
+  cursor: help;
 }
 
 /* rate cells */

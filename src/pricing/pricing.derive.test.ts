@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { seedPricing } from './pricing.fake';
 import {
-  modelState, filterModels, chipCounts, fmtRate, fill, resolvedRates, originLabel,
+  modelState, filterModels, chipCounts, fmtRate, fill, resolvedRates, originLabel, isRoutedRate,
 } from './pricing.derive';
 import type { ModelPricing } from '../types';
 
@@ -83,6 +83,41 @@ describe('originLabel', () => {
   it('maps catalog origins to display names', () => {
     expect(originLabel('litellm')).toBe('LiteLLM');
     expect(originLabel('openrouter')).toBe('OpenRouter');
+  });
+
+  it('passes a publisher name through as its own label', () => {
+    // A publisher rate carries the publishing organisation's name, which is
+    // already how it should read — the column names who set the rate.
+    expect(originLabel('Z.AI')).toBe('Z.AI');
+    expect(originLabel('Anthropic')).toBe('Anthropic');
+  });
+});
+
+describe('isRoutedRate', () => {
+  const withOrigin = (origin: string | null) =>
+    ({
+      model: 'm',
+      tool: 'claude',
+      overrideRates: null,
+      catalog: origin === null ? null : { origin, rates: { input: 1, output: 1, cacheRead: null, cacheWrite: null } },
+    }) as ModelPricing;
+
+  it('is true only for the routed tier, never for a published rate', () => {
+    expect(isRoutedRate(withOrigin('openrouter'))).toBe(true);
+    expect(isRoutedRate(withOrigin('litellm'))).toBe(false);
+    // A publisher's own rate is a List Price, however it was fetched.
+    expect(isRoutedRate(withOrigin('Z.AI'))).toBe(false);
+    expect(isRoutedRate(withOrigin(null))).toBe(false);
+  });
+
+  it('is false once an Override supersedes the routed figure', () => {
+    // The Override is the active rate, so that is what the interface reports —
+    // qualifying the figure it replaced would only confuse.
+    const overridden = {
+      ...withOrigin('openrouter'),
+      overrideRates: { input: 1, output: 1, cacheRead: null, cacheWrite: null },
+    } as ModelPricing;
+    expect(isRoutedRate(overridden)).toBe(false);
   });
 });
 

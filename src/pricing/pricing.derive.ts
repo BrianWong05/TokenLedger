@@ -36,13 +36,40 @@ export function toolLabel(tool: string): string {
   return toolMeta(tool)?.source ?? tool;
 }
 
+// The two catalog ids an origin can carry. Anything else is a publisher's name
+// (ADR-0009), which is why these are compared against rather than enumerated.
+const LITELLM_ORIGIN = 'litellm';
+const ROUTED_ORIGIN = 'openrouter';
+
 // An origin is either one of the two catalog ids or, when the rate came from the
 // Model's own publisher, that publisher's name as the catalog reports it ("Z.AI",
-// "Anthropic"). Those read fine as-is; #52 owns how they are actually presented.
+// "Anthropic"). Those read fine as-is.
 export function originLabel(origin: string): string {
-  if (origin === 'litellm') return 'LiteLLM';
-  if (origin === 'openrouter') return 'OpenRouter';
+  if (origin === LITELLM_ORIGIN) return 'LiteLLM';
+  if (origin === ROUTED_ORIGIN) return 'OpenRouter';
   return origin;
+}
+
+// The source in prose, for the Override editor, where there is no second badge to
+// carry the qualifier: "Anthropic", "LiteLLM", "OpenRouter (routed)". Keyed off
+// the origin rather than isRoutedRate because the editor always talks about the
+// CATALOG rate — the one an Override replaces or falls back to — which is still
+// worth qualifying while an Override is active. The suffix is passed in so this
+// stays free of i18n, like every other function here.
+export function originLabelQualified(origin: string, routedSuffix: string): string {
+  return originLabel(origin) + (origin === ROUTED_ORIGIN ? routedSuffix : '');
+}
+
+// A Routed Rate is blended across every host serving the Model and moves with
+// their discounts — no publisher sets it (CONTEXT.md), so it is the one catalog
+// figure the interface must not let pass for a published rate. Since ADR-0009 the
+// OpenRouter origin means exactly this tier: a publisher rate read from that same
+// catalog carries the publisher's name instead.
+//
+// False once an Override exists: the Override is then the active rate and what
+// the interface reports, so qualifying the superseded figure would only confuse.
+export function isRoutedRate(m: ModelPricing): boolean {
+  return !m.overrideRates && m.catalog?.origin === ROUTED_ORIGIN;
 }
 
 // case-insensitive match on model name OR tool label, then the state filter.

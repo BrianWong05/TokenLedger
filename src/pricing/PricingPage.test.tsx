@@ -129,6 +129,36 @@ describe('PricingPage', () => {
     expect(rows(c)).toHaveLength(12);
   });
 
+  it('names who set each rate, and marks a routed one as weaker', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    const source = (name: string) =>
+      Array.from(rowByModel(c, name).querySelectorAll('.tl-pr-badge')).map((b) => b.textContent);
+
+    // A publisher's own rate names the publisher, not the catalog that carried it.
+    expect(source('claude-opus-4-8')).toEqual(['Anthropic']);
+    // A catalog rate still names the catalog.
+    expect(source('claude-sonnet-4-8')).toEqual(['LiteLLM']);
+    // A Routed Rate is qualified, so it cannot pass for a published price.
+    expect(source('gemini-3-flash')).toEqual(['OpenRouter', 'Routed']);
+
+    // The qualifier is visible in the table, not hidden behind a hover.
+    const routed = rowByModel(c, 'gemini-3-flash').querySelector('.tl-pr-badge.routed')!;
+    expect(routed.textContent).toBe('Routed');
+    expect(routed.getAttribute('title')).toContain('publisher');
+    // ...and never appears on a published rate.
+    expect(rowByModel(c, 'claude-opus-4-8').querySelector('.tl-pr-badge.routed')).toBeNull();
+    expect(rowByModel(c, 'claude-sonnet-4-8').querySelector('.tl-pr-badge.routed')).toBeNull();
+  });
+
+  it('shows the Override, not the routed source, when a Model is overridden', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    // hermes-4-405b has an Override over an OpenRouter catalog entry: the active
+    // rate is the Override, so the row must not advertise a Routed Rate.
+    const badges = Array.from(rowByModel(c, 'hermes-4-405b').querySelectorAll('.tl-pr-badge'))
+      .map((b) => b.textContent);
+    expect(badges).toEqual(['Override']);
+  });
+
   it('re-reads the catalogs on demand and reloads the rates', async () => {
     const pricing = makeFakePricing();
     const c = await mount(<PricingPage ports={{ pricing }} />);

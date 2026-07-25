@@ -107,12 +107,36 @@ describe('OverrideEditor', () => {
     expect(note!.textContent).toContain('HKD');
   });
 
-  it('captions each field with the catalog rate it would replace', async () => {
-    const { container } = await open(model('hermes-4-405b')); // OpenRouter catalog present
-    const caption = container.querySelector('.tl-pr-field .caption')!.textContent;
-    expect(caption).toContain('Replaces OpenRouter');
+  const caption = (c: HTMLElement) => c.querySelector('.tl-pr-field .caption')!.textContent!;
+
+  it('captions each field with the rate it would replace, naming all three sources', async () => {
+    // A Routed Rate is qualified here too — the table carries that on a badge,
+    // and the editor has no badge, so it says it in the caption instead.
+    const routed = await open(model('hermes-4-405b'));
+    expect(caption(routed.container)).toContain('Replaces OpenRouter (routed)');
+
+    // A publisher's own List Price names the publisher, unqualified.
+    const published = await open(model('claude-opus-4-8'));
+    expect(caption(published.container)).toContain('Replaces Anthropic');
+    expect(caption(published.container)).not.toContain('routed');
+
+    // A primary-catalog rate names the catalog, unqualified.
+    const catalog = await open(model('claude-sonnet-4-8'));
+    expect(caption(catalog.container)).toContain('Replaces LiteLLM');
+    expect(caption(catalog.container)).not.toContain('routed');
+
     // unpriced model -> no catalog rate
     const unp = await open(model('hermes-4-70b'));
-    expect(unp.container.querySelector('.tl-pr-field .caption')!.textContent).toBe('No catalog rate');
+    expect(caption(unp.container)).toBe('No catalog rate');
+  });
+
+  it('does not call a publisher a catalog', async () => {
+    // "This model uses the rate from Anthropic", never "its Anthropic catalog
+    // rate" — the whole point of this wave is naming who set the rate.
+    const { container } = await open(model('claude-opus-4-8'));
+    const body = container.textContent!;
+    expect(body).toContain('Anthropic');
+    expect(body).not.toContain('Anthropic catalog');
+    expect(body).not.toContain('LiteLLM');
   });
 });

@@ -20,7 +20,8 @@ export function seedPricing(): ModelPricing[] {
   });
   const cat = (origin: string, r: RatesPerTok) => ({ origin, rates: r });
   return [
-    { model: 'claude-opus-4-8', tool: 'claude', overrideRates: null, catalog: cat('litellm', rates(15, 75, 1.5, 18.75)) },
+    // Publisher rate (ADR-0009 tier 2): the origin is the publisher's name, not a catalog id.
+    { model: 'claude-opus-4-8', tool: 'claude', overrideRates: null, catalog: cat('Anthropic', rates(15, 75, 1.5, 18.75)) },
     { model: 'claude-sonnet-4-8', tool: 'claude', overrideRates: null, catalog: cat('litellm', rates(3, 15, 0.3, 3.75)) },
     { model: 'claude-haiku-4-5', tool: 'claude', overrideRates: null, catalog: cat('litellm', rates(0.8, 4, 0.08, 1)) },
     // Cache-Estimated: input + output priced, both cache rates null.

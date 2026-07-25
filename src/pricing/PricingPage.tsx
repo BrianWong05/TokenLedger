@@ -14,7 +14,7 @@ import { TOOL_ICONS } from '../overview/icons';
 import OverrideEditor from './OverrideEditor';
 import {
   modelState, resolvedRates, filterModels, chipCounts, fmtRate,
-  toolMeta, toolLabel, originLabel, fill, type PriceFilter,
+  toolMeta, toolLabel, originLabel, isRoutedRate, fill, type PriceFilter,
 } from './pricing.derive';
 
 const CHIPS: { key: PriceFilter; labelKey: 'pricing.chip.all' | 'pricing.chip.unpriced' | 'pricing.chip.override' | 'pricing.chip.est'; count: (c: ReturnType<typeof chipCounts>) => number }[] = [
@@ -234,6 +234,13 @@ function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: Re
 
       <div className="tl-pr-badges">
         <span className={'tl-pr-badge ' + source.cls}>{source.text}</span>
+        {/* A Routed Rate is nobody's published price, so it must not sit in this
+            column looking like one. Qualified in place, the way Cache est. is. */}
+        {isRoutedRate(m) && (
+          <span className="tl-pr-badge routed" title={t('pricing.badge.routedTitle')}>
+            {t('pricing.badge.routed')}
+          </span>
+        )}
         {state === 'est' && <span className="tl-pr-badge cache-est">{t('pricing.badge.cacheEst')}</span>}
       </div>
 
