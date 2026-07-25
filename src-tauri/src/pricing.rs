@@ -230,9 +230,21 @@ fn openrouter_rows(json: &str) -> Vec<(String, Row)> {
 pub struct PublisherRate {
     pub model_id: String,
     pub publisher: String,
-    pub fetched_at: i64,
     #[serde(flatten)]
     rates: Row,
+}
+
+/// One cached lookup: when we last asked, and what came back.
+///
+/// `rate: None` is a real answer — "this publisher does not host this Model" —
+/// not an absence of one, and recording it is what keeps such Models from being
+/// re-asked on every single refresh. Four of sixteen Models in a real Ledger
+/// answer this way, and left unrecorded they would sort ahead of everything else
+/// forever and starve the Models that do have a rate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PublisherLookup {
+    fetched_at: i64,
+    rate: Option<PublisherRate>,
 }
 
 /// The publisher's own entry in a per-Model host listing.
@@ -247,7 +259,7 @@ pub struct PublisherRate {
 /// Gemini here), or the payload is unusable. Hosts are listed cheapest-first and
 /// a publisher may offer several tiers, so the first match is taken: the
 /// standard tier, not a premium `fast` variant.
-fn publisher_rate(json: &str, fetched_at: i64) -> Option<PublisherRate> {
+fn publisher_rate(json: &str) -> Option<PublisherRate> {
     let root: serde_json::Value = serde_json::from_str(json).ok()?;
     let data = root.get("data")?;
     let model_id = data.get("id")?.as_str()?;
@@ -273,7 +285,6 @@ fn publisher_rate(json: &str, fetched_at: i64) -> Option<PublisherRate> {
                 .and_then(|v| v.as_str())
                 .unwrap_or(publisher)
                 .to_string(),
-            fetched_at,
             rates: Row {
                 input,
                 output,
@@ -519,20 +530,95 @@ pub fn ledger_publisher_targets(
     Ok(out)
 }
 
+/// How long a publisher rate stays fresh. Publishers change their list prices
+/// rarely — far more rarely than the app refreshes — so re-reading one that was
+/// read today buys nothing, and a slightly old publisher rate is still a
+/// publisher rate. This is what makes steady state nearly free however large the
+/// Ledger grows: most refreshes find everything fresh and issue no requests.
+const PUBLISHER_RATE_MAX_AGE: i64 = 24 * 60 * 60;
+
+/// Most publisher reads any one refresh will issue. The staleness window cannot
+/// help on a cold cache, where every Model is due at once, so this bounds that:
+/// a large Ledger fills in across several refreshes instead of firing hundreds of
+/// requests at launch. Chosen to keep a cold start to a handful of refreshes at
+/// realistic Ledger sizes, not from a measurement — reads run eight at a time and
+/// each can wait out a 10s timeout, so this caps count, not wall-clock.
+const PUBLISHER_READ_CEILING: usize = 50;
+
+/// Which publisher rates to read now, and how many were left for later.
+struct PublisherReads {
+    due: Vec<String>,
+    deferred: usize,
+}
+
+/// Decide which Models to read a publisher rate for, bounded twice: by the
+/// staleness window, and by a ceiling on one refresh's worth of requests.
+///
+/// Never-asked Models sort first — nothing is known about them at all — then
+/// least-recently-asked, so repeated refreshes converge on full coverage instead
+/// of re-reading the same subset. Ties keep target order, which is itself sorted,
+/// so the choice is stable across refreshes. Takes `now` and `ceiling` as
+/// arguments rather than reading a clock or a constant, so the whole decision is
+/// testable without threads or network.
+fn publisher_reads_due(
+    targets: &[String],
+    cached: &HashMap<String, PublisherLookup>,
+    now: i64,
+    ceiling: usize,
+) -> PublisherReads {
+    // saturating: fetched_at is deserialized from a file a user can edit, and an
+    // absurd value must not panic a debug build.
+    let mut due: Vec<&String> = targets
+        .iter()
+        .filter(|id| {
+            cached
+                .get(*id)
+                .is_none_or(|l| now.saturating_sub(l.fetched_at) >= PUBLISHER_RATE_MAX_AGE)
+        })
+        .collect();
+    due.sort_by_key(|id| cached.get(*id).map_or(i64::MIN, |l| l.fetched_at));
+
+    let deferred = due.len().saturating_sub(ceiling);
+    PublisherReads {
+        due: due.into_iter().take(ceiling).cloned().collect(),
+        deferred,
+    }
+}
+
+/// Fold read results into the cache, stamped with when they were read.
+///
+/// Every entry here is an answer, including `None` — "the host listing was read
+/// and the publisher is not in it". Recording that is what stops such a Model
+/// looking never-asked forever, sorting ahead of everything else on every
+/// refresh, and starving the Models that do have a rate. Requests that FAILED
+/// never reach this function, so a network blink is not mistaken for an answer.
+fn record_lookups(
+    cached: &mut HashMap<String, PublisherLookup>,
+    fetched: Vec<(String, Option<PublisherRate>)>,
+    now: i64,
+) {
+    for (model_id, rate) in fetched {
+        cached.insert(model_id, PublisherLookup { fetched_at: now, rate });
+    }
+}
+
 /// Read each Model's publisher rate, one request per Model. Does NO DB work, for
 /// the same reason the catalog loaders don't.
 ///
-/// Every rate is cached to one snapshot file. A Model whose read fails keeps its
-/// cached rate rather than losing its List Price to a flaky network, and a Model
-/// whose publisher does not host it caches nothing, so it is retried next time —
-/// cheap, because that answer only changes when a publisher starts self-hosting.
+/// Every lookup is cached to one snapshot file, INCLUDING the answer "this
+/// publisher does not host this Model" — that is a real answer that ages like any
+/// other. A request that fails is not: nothing is recorded, so the Model keeps
+/// whatever rate it had and is asked again next refresh rather than being written
+/// off for a day because the network blinked.
 ///
-/// ponytail: unbounded — every Ledger Model is read on every refresh, which is
-/// fine at ~16 Models and is not at 200. Bounding it with a staleness window and
-/// a per-refresh ceiling is #51; `fetched_at` is already recorded for it.
+/// Bounded by publisher_reads_due: only stale or never-asked Models are read, at
+/// most PUBLISHER_READ_CEILING of them per refresh. Anything deferred keeps
+/// whatever rate it already had — a cached publisher rate, or a catalog rate —
+/// so bounding the work can never turn a priced Model Unpriced. Returns every
+/// rate we hold for `ids`, read this time or not.
 pub fn load_publisher_rates(cache_dir: &Path, ids: &[String]) -> Vec<PublisherRate> {
     let cache_file = cache_dir.join("openrouter_publishers.json");
-    let mut cached: HashMap<String, PublisherRate> = std::fs::read_to_string(&cache_file)
+    let mut cached: HashMap<String, PublisherLookup> = std::fs::read_to_string(&cache_file)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
@@ -542,12 +628,29 @@ pub fn load_publisher_rates(cache_dir: &Path, ids: &[String]) -> Vec<PublisherRa
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
+    let reads = publisher_reads_due(ids, &cached, now, PUBLISHER_READ_CEILING);
+    if reads.deferred > 0 {
+        // ponytail: stderr is the only channel this app has — it has no logger,
+        // and a packaged build discards it. Partial coverage still must not pass
+        // silently, so say it here until there is somewhere in the interface to
+        // say it; the Pricing tab is the right home once #52 lands.
+        eprintln!(
+            "tokenledger: read {} publisher rates, deferred {} to a later refresh",
+            reads.due.len(),
+            reads.deferred
+        );
+    }
+    // NOT `ids` — only what is due is read, but every id's rate is returned below.
+    let to_read = &reads.due;
+
     // ponytail: fixed fan-out over scoped threads rather than an async runtime —
     // ureq is blocking and this is the only concurrent fetch in the app.
     const LANES: usize = 8;
-    let fetched: Vec<PublisherRate> = std::thread::scope(|scope| {
-        let handles: Vec<_> = ids
-            .chunks(ids.len().div_ceil(LANES).max(1))
+    // Per id: Some(answer) when the host listing was read — the answer itself may
+    // be None, meaning no publisher — and nothing at all when the request failed.
+    let fetched: Vec<(String, Option<PublisherRate>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = to_read
+            .chunks(to_read.len().div_ceil(LANES).max(1))
             .map(|chunk| {
                 scope.spawn(move || {
                     chunk
@@ -560,7 +663,7 @@ pub fn load_publisher_rates(cache_dir: &Path, ids: &[String]) -> Vec<PublisherRa
                                 .ok()?
                                 .into_string()
                                 .ok()?;
-                            publisher_rate(&body, now)
+                            Some((id.clone(), publisher_rate(&body)))
                         })
                         .collect::<Vec<_>>()
                 })
@@ -569,14 +672,15 @@ pub fn load_publisher_rates(cache_dir: &Path, ids: &[String]) -> Vec<PublisherRa
         handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
     });
 
-    for rate in fetched {
-        cached.insert(rate.model_id.clone(), rate);
-    }
+    record_lookups(&mut cached, fetched, now);
     let _ = std::fs::create_dir_all(cache_dir);
     if let Ok(body) = serde_json::to_string(&cached) {
         let _ = std::fs::write(&cache_file, body);
     }
-    ids.iter().filter_map(|id| cached.get(id).cloned()).collect()
+    // Every requested Model we hold a rate for, NOT just the ones read this time:
+    // a deferred Model keeps the publisher rate it already had rather than falling
+    // back to LiteLLM or a Routed Rate until its turn comes round.
+    ids.iter().filter_map(|id| cached.get(id).and_then(|l| l.rate.clone())).collect()
 }
 
 /// Fetch both catalogs and rebuild the prices table.
@@ -1320,11 +1424,10 @@ mod tests {
 
     #[test]
     fn publisher_rate_picks_the_publishers_own_endpoint() {
-        let p = publisher_rate(HOSTS_GLM, 1000).unwrap();
+        let p = publisher_rate(HOSTS_GLM).unwrap();
         assert_eq!(p.model_id, "z-ai/glm-5.2");
         assert_eq!(p.publisher, "Z.AI");
-        assert_eq!(p.fetched_at, 1000);
-        // Not StreamLake's cheaper 0.7455, and not Cloudflare's identical-looking
+                // Not StreamLake's cheaper 0.7455, and not Cloudflare's identical-looking
         // 1.4 — the publisher's own entry, which also carries a cache read rate.
         assert_eq!(p.rates.input, Some(1.4e-06));
         assert_eq!(p.rates.output, Some(4.4e-06));
@@ -1335,7 +1438,7 @@ mod tests {
 
     #[test]
     fn publisher_rate_is_none_when_the_publisher_does_not_host_the_model() {
-        assert!(publisher_rate(HOSTS_NO_PUBLISHER, 0).is_none());
+        assert!(publisher_rate(HOSTS_NO_PUBLISHER).is_none());
     }
 
     #[test]
@@ -1348,7 +1451,7 @@ mod tests {
             // Publisher present but quotes nothing priceable.
             r#"{"data":{"id":"z-ai/x","endpoints":[{"provider_name":"Z.AI","tag":"z-ai","pricing":{"prompt":"0","completion":"0"}}]}}"#,
         ] {
-            assert!(publisher_rate(bad, 0).is_none(), "should reject: {bad}");
+            assert!(publisher_rate(bad).is_none(), "should reject: {bad}");
         }
     }
 
@@ -1387,7 +1490,7 @@ mod tests {
     #[test]
     fn a_publisher_rate_outranks_every_catalog() {
         let (_d, mut conn) = test_conn();
-        let publisher = publisher_rate(HOSTS_GLM, 0).unwrap();
+        let publisher = publisher_rate(HOSTS_GLM).unwrap();
         rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         // Beats the Cloudflare row reached by normalization AND the routed rate,
@@ -1401,7 +1504,7 @@ mod tests {
     #[test]
     fn the_primary_catalog_fills_fields_the_publisher_omits() {
         let (_d, mut conn) = test_conn();
-        let publisher = publisher_rate(HOSTS_LAB_FABLE, 0).unwrap();
+        let publisher = publisher_rate(HOSTS_LAB_FABLE).unwrap();
         rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         let (origin, r) = rm.resolve_catalog("lab-fable").unwrap();
@@ -1418,7 +1521,7 @@ mod tests {
     fn a_model_whose_publisher_does_not_host_it_falls_to_the_catalog() {
         let (_d, mut conn) = test_conn();
         // Parsing the listing yields no publisher, so nothing reaches tier 2.
-        assert!(publisher_rate(HOSTS_NO_PUBLISHER, 0).is_none());
+        assert!(publisher_rate(HOSTS_NO_PUBLISHER).is_none());
         rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         let (origin, r) = rm.resolve_catalog("priced-full").unwrap();
@@ -1426,6 +1529,205 @@ mod tests {
         // Unchanged, rate and all — not OpenRouter's 9e-05 for the same Model.
         assert_eq!(r.input, 3e-06);
         assert_eq!(r.output, 6e-06);
+    }
+
+    /// A cached lookup that found a rate.
+    fn cached_at(model_id: &str, fetched_at: i64) -> (String, PublisherLookup) {
+        (model_id.to_string(), lookup_at(model_id, fetched_at, true))
+    }
+
+    /// `hosted: false` is the recorded answer "this publisher does not host it".
+    fn lookup_at(model_id: &str, fetched_at: i64, hosted: bool) -> PublisherLookup {
+        PublisherLookup {
+            fetched_at,
+            rate: hosted.then(|| PublisherRate {
+                model_id: model_id.to_string(),
+                publisher: "Lab".to_string(),
+                rates: Row {
+                    input: Some(1e-06),
+                    output: Some(2e-06),
+                    cache_read: None,
+                    cw5m: None,
+                    cw1h: None,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn publisher_reads_skip_rates_that_are_still_fresh() {
+        let now = 1_000_000;
+        let targets = vec!["a/one".to_string(), "b/two".to_string(), "c/three".to_string()];
+        let cached: HashMap<String, PublisherLookup> = [
+            cached_at("a/one", now),                              // just read
+            cached_at("b/two", now - PUBLISHER_RATE_MAX_AGE - 1),      // gone stale
+        ]
+        .into_iter()
+        .collect();
+
+        let reads = publisher_reads_due(&targets, &cached, now, 10);
+        // Never read: fresh. Read: stale, and never-read-at-all.
+        assert!(!reads.due.contains(&"a/one".to_string()));
+        assert!(reads.due.contains(&"b/two".to_string()));
+        assert!(reads.due.contains(&"c/three".to_string()));
+        assert_eq!(reads.deferred, 0);
+    }
+
+    #[test]
+    fn a_rate_exactly_at_the_window_edge_is_read() {
+        let now = 1_000_000;
+        let targets = vec!["a/one".to_string()];
+        let cached = [cached_at("a/one", now - PUBLISHER_RATE_MAX_AGE)].into_iter().collect();
+        assert_eq!(publisher_reads_due(&targets, &cached, now, 10).due.len(), 1);
+    }
+
+    #[test]
+    fn publisher_reads_take_the_oldest_first_and_report_what_they_defer() {
+        let now = 1_000_000;
+        let stale = now - PUBLISHER_RATE_MAX_AGE - 1;
+        let targets: Vec<String> =
+            ["a/newest", "b/middle", "c/oldest", "d/never-read"].iter().map(|s| s.to_string()).collect();
+        let cached: HashMap<String, PublisherLookup> = [
+            cached_at("a/newest", stale),
+            cached_at("b/middle", stale - 100),
+            cached_at("c/oldest", stale - 200),
+        ]
+        .into_iter()
+        .collect();
+
+        // All four are due, but only two may be read this refresh.
+        let reads = publisher_reads_due(&targets, &cached, now, 2);
+        assert_eq!(reads.due.len(), 2);
+        // Never-read comes first — it has no rate at all — then the oldest cached.
+        assert_eq!(reads.due, vec!["d/never-read".to_string(), "c/oldest".to_string()]);
+        // What was left is reported, so partial coverage cannot read as complete.
+        assert_eq!(reads.deferred, 2);
+    }
+
+    #[test]
+    fn repeated_refreshes_converge_rather_than_re_reading_the_same_models() {
+        let now = 1_000_000;
+        let stale = now - PUBLISHER_RATE_MAX_AGE - 1;
+        let targets: Vec<String> = (0..5).map(|i| format!("lab/m{i}")).collect();
+        let mut cached: HashMap<String, PublisherLookup> =
+            targets.iter().enumerate().map(|(i, m)| cached_at(m, stale - i as i64)).collect();
+
+        // Two per refresh: three refreshes must cover all five, never repeating.
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..3 {
+            let reads = publisher_reads_due(&targets, &cached, now, 2);
+            for id in &reads.due {
+                cached.insert(id.clone(), cached_at(id, now).1); // reading refreshes it
+                seen.push(id.clone());
+            }
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 5, "every target read exactly once across refreshes");
+        assert_eq!(publisher_reads_due(&targets, &cached, now, 2).deferred, 0);
+    }
+
+    #[test]
+    fn a_model_with_no_publisher_does_not_starve_the_others() {
+        let now = 1_000_000;
+        let stale = now - PUBLISHER_RATE_MAX_AGE - 1;
+        let targets: Vec<String> =
+            ["a/hosted-stale", "b/not-hosted"].iter().map(|s| s.to_string()).collect();
+
+        // "b" was asked and the answer was a definitive no — its publisher does
+        // not host it. That answer is recorded, so it ages like any other and does
+        // NOT come back every refresh ahead of everything else. Without this, a
+        // Ledger with enough such Models spends its whole budget re-asking them
+        // and never re-reads a real rate again.
+        let mut cached: HashMap<String, PublisherLookup> = HashMap::new();
+        cached.insert("a/hosted-stale".into(), lookup_at("a/hosted-stale", stale, true));
+        cached.insert("b/not-hosted".into(), lookup_at("b/not-hosted", now, false));
+
+        let reads = publisher_reads_due(&targets, &cached, now, 1);
+        assert_eq!(reads.due, vec!["a/hosted-stale".to_string()]);
+        assert_eq!(reads.deferred, 0, "the un-hosted Model is fresh, not merely skipped");
+    }
+
+    #[test]
+    fn a_no_publisher_answer_is_recorded_so_it_is_not_re_asked() {
+        let mut cached = HashMap::new();
+        // The host listing WAS read; there was simply no publisher in it.
+        record_lookups(&mut cached, vec![("c/not-hosted".to_string(), None)], 500);
+        assert_eq!(cached["c/not-hosted"].fetched_at, 500);
+        assert!(cached["c/not-hosted"].rate.is_none());
+
+        // Being an answer, it is fresh — so the next refresh does not ask again,
+        // which is what keeps it from starving Models that do have a rate.
+        let targets = vec!["c/not-hosted".to_string()];
+        assert!(publisher_reads_due(&targets, &cached, 500, 10).due.is_empty());
+        // ...and it does come back round once the window has passed.
+        assert_eq!(
+            publisher_reads_due(&targets, &cached, 500 + PUBLISHER_RATE_MAX_AGE, 10).due.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn never_cached_models_keep_a_stable_order() {
+        // Several never-read Models share the same sort key, so ordering falls
+        // through to target order. Pin it: without a stable rule, two refreshes
+        // could pick different subsets and neither would converge.
+        let targets: Vec<String> = ["a/one", "b/two", "c/three"].iter().map(|s| s.to_string()).collect();
+        let empty = HashMap::new();
+        let first = publisher_reads_due(&targets, &empty, 0, 2);
+        let again = publisher_reads_due(&targets, &empty, 0, 2);
+        assert_eq!(first.due, vec!["a/one".to_string(), "b/two".to_string()]);
+        assert_eq!(first.due, again.due);
+    }
+
+    #[test]
+    fn publisher_reads_are_empty_without_targets() {
+        let reads = publisher_reads_due(&[], &HashMap::new(), 0, 10);
+        assert!(reads.due.is_empty());
+        assert_eq!(reads.deferred, 0);
+    }
+
+    #[test]
+    fn a_model_not_read_this_refresh_keeps_the_rate_it_already_had() {
+        let dir = tempfile::tempdir().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        // Both cached moments ago, so both are inside the staleness window and
+        // this refresh reads nothing — which also keeps the test off the network.
+        // It must still return both: bounding the work must never cost a Model
+        // its List Price and drop it to a catalog rate.
+        let cached: HashMap<String, PublisherLookup> = [
+            cached_at("a/one", now),
+            cached_at("b/two", now),
+            // A recorded "no publisher hosts this" must survive the round-trip
+            // through the cache file, or it would read as never-asked and be
+            // re-requested on every refresh.
+            ("c/not-hosted".to_string(), lookup_at("c/not-hosted", now, false)),
+        ]
+        .into_iter()
+        .collect();
+        std::fs::write(
+            dir.path().join("openrouter_publishers.json"),
+            serde_json::to_string(&cached).unwrap(),
+        )
+        .unwrap();
+
+        let ids =
+            vec!["a/one".to_string(), "b/two".to_string(), "c/not-hosted".to_string()];
+        let got = load_publisher_rates(dir.path(), &ids);
+        assert_eq!(got.len(), 2, "both cached rates survive a refresh that read neither");
+        assert!(got.iter().all(|r| r.rates.input == Some(1e-06)));
+        // The negative yields no rate, so that Model falls to the catalogs.
+        assert!(!got.iter().any(|r| r.model_id == "c/not-hosted"));
+
+        // And it is still recorded afterwards, not dropped on rewrite.
+        let after: HashMap<String, PublisherLookup> = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openrouter_publishers.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(after["c/not-hosted"].rate.is_none());
     }
 
     #[test]
@@ -1491,7 +1793,7 @@ mod tests {
     #[test]
     fn an_override_outranks_a_publisher_rate_too() {
         let (_d, mut conn) = test_conn();
-        let publisher = publisher_rate(HOSTS_GLM, 0).unwrap();
+        let publisher = publisher_rate(HOSTS_GLM).unwrap();
         rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
         set_override(
             &conn,
@@ -1538,7 +1840,7 @@ mod tests {
         // The publisher quotes cache READS but no cache write, and the primary
         // catalog has no cache rates to fill the gap -> Cache-Estimated survives
         // the merge rather than being masked by it.
-        let publisher = publisher_rate(HOSTS_GLM, 0).unwrap();
+        let publisher = publisher_rate(HOSTS_GLM).unwrap();
         rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         let r = rm.resolve("z-ai/glm-5.2").unwrap();
