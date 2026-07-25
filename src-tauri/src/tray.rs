@@ -55,8 +55,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     }
 
     // Design 2b's chart-line glyph as a macOS template image (black + alpha;
-    // rasterized from the mock's mark into icons/tray.png). Not the app icon:
-    // that is still the stock Tauri logo, which reads as mush when templated.
+    // rasterized from the mock's mark into icons/tray.png). Its own file, not
+    // the app icon: a template is flattened to one colour, so the app icon's
+    // tile and its fill under the line would both reduce to a solid block.
     if let Ok(icon) = Image::from_bytes(include_bytes!("../icons/tray.png")) {
         builder = builder.icon(icon).icon_as_template(true);
     }

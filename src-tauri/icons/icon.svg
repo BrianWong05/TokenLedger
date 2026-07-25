@@ -1,0 +1,22 @@
+<!-- The app icon: design 4b, a sparkline with fill. Master source; every PNG,
+     .icns and .ico beside it is generated from this by `npx tauri icon`, so
+     edit here and regenerate rather than touching the rasters.
+     Colours are the app's own tokens (src/index.css): the tile is ink-900, the
+     mark is violet-500 (the accent), and the area under it is that same accent
+     at low opacity, exactly as a filled sparkline is drawn in the app itself. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="115" ry="115" fill="#0D0D10"/>
+  <!-- The area under the line, down to its baseline. Its top edge is covered
+       by the stroke below, which is why the two share the same points. -->
+  <path d="M132 344 L178 290 L208 318 L346 184 L346 380 L132 380 Z"
+        fill="#7C6BF2" fill-opacity="0.24"/>
+  <path d="M132 344 L178 290 L208 318 L346 184"
+        fill="none" stroke="#7C6BF2" stroke-width="32"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- The latest point: a disc with the tile punched back out of it, rather
+       than a stroked ring. The line ends at this exact centre, and its round
+       cap would otherwise plug the hole from underneath. Painting over both
+       keeps the ring the same weight as the line (46 out, 14 in). -->
+  <circle cx="346" cy="184" r="46" fill="#7C6BF2"/>
+  <circle cx="346" cy="184" r="14" fill="#0D0D10"/>
+</svg>
