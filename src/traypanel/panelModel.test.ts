@@ -169,7 +169,7 @@ describe('panelModel Cost sparkline', () => {
     expect(m.spark?.points.length).toBe(11); // 00:00 through the current 10:00 bucket
     expect(m.spark?.points[5]).toBe(1); // peak normalised to 1: 4 + 0.5 summed
     expect(m.spark?.points[1]).toBe(0); // an idle hour keeps its slot on the axis
-    expect(m.spark?.bucketLabel).toBe('hourly');
+    expect(m.spark?.ticks).toEqual(['00:00', '05:00', '10:00']); // ends and middle
     expect(m.spark?.peak).toBe('peak 05:00 · $4.50');
   });
 
@@ -179,6 +179,7 @@ describe('panelModel Cost sparkline', () => {
       series: [spt('2026-06-14 03:00', 1), spt('2026-06-14 23:00', 3)],
     }));
     expect(m.spark?.points.length).toBe(24);
+    expect(m.spark?.ticks).toEqual(['00:00', '11:00', '23:00']);
     expect(m.spark?.peak).toBe('peak 23:00 · $3.00');
   });
 
@@ -189,7 +190,7 @@ describe('panelModel Cost sparkline', () => {
     }));
     expect(m.spark?.points.length).toBe(30); // May 17 through June 15
     expect(m.spark?.points[29]).toBe(1);
-    expect(m.spark?.bucketLabel).toBe('daily');
+    expect(m.spark?.ticks).toEqual(['05-17', '05-31', '06-15']); // dates say "daily"
     expect(m.spark?.peak).toBe('peak 06-15 · $9.00');
   });
 
@@ -207,11 +208,30 @@ describe('panelModel Cost sparkline', () => {
     expect(m.spark).toBeNull(); // all-Unattributed: a flat zero line would lie
   });
 
-  it('hides the sparkline when one bucket holds all the usage', () => {
+  it('draws a spike when a single hour of a long day carries the Cost', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
       series: [spt('2026-06-15 09:00', 8)],
     }));
-    expect(m.spark).toBeNull(); // nothing to draw a line between
+    expect(m.spark?.points.length).toBe(11); // the elapsed day, one spike in it
+    expect(m.spark?.points[9]).toBe(1);
+    expect(m.spark?.peak).toBe('peak 09:00 · $8.00');
+  });
+
+  it('draws the one hour a young day has, rather than hiding the chart', () => {
+    // 00:40 — the day's timeline is a single bucket. Suppressing here reads as
+    // a broken panel every night between midnight and 01:00.
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
+      now: new Date(2026, 5, 15, 0, 40, 0),
+      series: [spt('2026-06-15 00:00', 8)],
+    }));
+    expect(m.spark?.points).toEqual([1]); // the view draws a lone bucket as a point
+    expect(m.spark?.ticks).toEqual(['00:00']); // one bucket, one label — not three of it
+    expect(m.spark?.peak).toBe('peak 00:00 · $8.00');
+  });
+
+  it('still hides the sparkline when no bucket carries usage', () => {
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({ series: [] }));
+    expect(m.spark).toBeNull();
   });
 
   it('picks hour buckets for a single day and day buckets for the month', () => {

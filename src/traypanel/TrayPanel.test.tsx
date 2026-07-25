@@ -167,9 +167,11 @@ describe('TrayPanel', () => {
 
     const lastSeries = ledger.calls.series[ledger.calls.series.length - 1];
     expect(lastSeries?.[1]).toBe('day'); // 30 days buckets daily
-    const cap = Array.from(container.querySelectorAll('.tp-spark-cap span')).map((s) => s.textContent);
-    expect(cap).toEqual(['daily', `peak ${day(0).slice(5)} · $9.00`]);
-    expect(container.querySelector('.tp-spark path')?.getAttribute('d')).toMatch(/^M0\.0 /);
+    const ticks = Array.from(container.querySelectorAll('.tp-spark-cap span')).map((s) => s.textContent);
+    expect(ticks).toEqual([day(29).slice(5), day(15).slice(5), day(0).slice(5)]); // the axis
+    expect(container.querySelector('.tp-spark-peak')?.textContent).toBe(`peak ${day(0).slice(5)} · $9.00`);
+    expect(container.querySelector('.tp-spark-line')?.getAttribute('d')).toMatch(/^M3\.0 /);
+    expect(container.querySelector('.tp-spark-now')).not.toBeNull(); // latest bucket marked
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
