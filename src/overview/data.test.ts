@@ -365,6 +365,28 @@ describe('tables', () => {
       label: '/p/alpha', total: 10, input: 1, output: 2, cached: 3, reasoning: null, convs: 2,
     });
   });
+  it('projectTableRows folds subdir rows into the ancestor project', () => {
+    const base: BreakdownRow = {
+      key: '/p/easydrone', inputTokens: 1, outputTokens: 2, cacheReadTokens: 3,
+      cacheWriteTokens: 0, totalTokens: 6, requests: 1, cost: null,
+      source: null, reasoningTokens: null, convs: 1, cacheEstimated: false,
+      hasUnpriced: true, unattributedTokens: 0,
+    };
+    const rows = projectTableRows([
+      base,
+      { ...base, key: '/p/easydrone/client', reasoningTokens: 7 },
+      { ...base, key: '/p/easydrone/server' },
+      { ...base, key: '/p/easydrone-v2' }, // sibling with shared prefix — not a subdir
+      { ...base, key: '/p/easydrone/deep/nested' }, // grandchild — direct parent only, no fold
+    ]);
+    expect(rows.map((r) => r.label).sort()).toEqual([
+      '/p/easydrone', '/p/easydrone-v2', '/p/easydrone/deep/nested',
+    ]);
+    const drone = rows.find((r) => r.label === '/p/easydrone')!;
+    expect(drone.total).toBe(18);
+    expect(drone.convs).toBe(3);
+    expect(drone.reasoning).toBe(7);
+  });
 });
 
 describe('modelBars + catTotals + rangeToFilters', () => {

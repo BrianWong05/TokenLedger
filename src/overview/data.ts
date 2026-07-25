@@ -588,15 +588,34 @@ export function dailyTableRows(pts: SeriesPoint[]): TableRow[] {
 }
 
 export function projectTableRows(rows: BreakdownRow[]): TableRow[] {
-  return rows.map((r) => ({
-    label: r.key ?? 'unknown',
-    total: r.totalTokens,
-    input: r.inputTokens,
-    output: r.outputTokens,
-    cached: r.cacheReadTokens,
-    reasoning: r.reasoningTokens,
-    convs: r.convs,
-  }));
+  // Sessions run in a repo's subdirs (easydrone/client, easydrone/server) get
+  // their own cwd key — fold each into its direct parent row so a repo reads
+  // as one project. Direct parent only: any-depth folding collapses every
+  // project under a home-dir row when one session ran in ~.
+  // ponytail: no chaining and no git-root lookup; revisit if repos nest deeper.
+  const keyOf = (row: BreakdownRow) => row.key ?? 'unknown';
+  const keySet = new Set(rows.map(keyOf));
+  const rootOf = (key: string) => {
+    const parent = key.slice(0, key.lastIndexOf('/'));
+    return keySet.has(parent) ? parent : key;
+  };
+
+  const byRoot = new Map<string, TableRow>();
+  for (const p of rows) {
+    const label = rootOf(keyOf(p));
+    const r = byRoot.get(label) ?? {
+      label, total: 0, input: 0, output: 0, cached: 0, reasoning: null, convs: 0,
+    };
+    r.total += p.totalTokens;
+    r.input += p.inputTokens;
+    r.output += p.outputTokens;
+    r.cached += p.cacheReadTokens;
+    if (p.reasoningTokens != null) r.reasoning = (r.reasoning ?? 0) + p.reasoningTokens;
+    // Sessions never span projects, so summing convs across folded rows is safe.
+    r.convs += p.convs;
+    byRoot.set(label, r);
+  }
+  return [...byRoot.values()];
 }
 
 // ---- models panel ----
