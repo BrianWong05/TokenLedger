@@ -1,6 +1,21 @@
-# Release: push a v* tag to build, sign, and publish a macOS release whose
-# latest.json feeds the in-app updater (endpoint: releases/latest/download/
-# latest.json — see src-tauri/tauri.conf.json).
+# Release: push a v* tag to build, sign, and publish macOS, Windows, and Linux
+# artifacts whose latest.json feeds the in-app updater (endpoint:
+# releases/latest/download/latest.json — see src-tauri/tauri.conf.json).
+#
+# The release is created as a draft, filled by the three build jobs, and
+# published only once all three have succeeded. That order is load-bearing:
+# `releases/latest` resolves to the newest *published* release, so an app
+# checking for updates mid-run keeps being served the previous manifest rather
+# than this one with only some platforms in it. A leg that fails leaves the
+# draft unpublished instead of shipping a release nobody can update from.
+#
+# The bundle targets live in src-tauri/tauri.conf.json, which takes no comments,
+# so the one non-obvious entry is explained here: "app" sits beside "dmg" because
+# the macOS updater artifact (.app.tar.gz + .sig) is produced only when "app" is
+# among the *requested* targets. Building just the DMG is silently updater-less —
+# verified locally: the bundler warns "no updater-enabled targets were built" and
+# emits nothing for the updater to serve. Targets that do not apply to the host
+# are skipped without error, so one list serves all three legs.
 #
 # One-time setup: `gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/tokenledger.key`
 # (the key has no password, so TAURI_SIGNING_PRIVATE_KEY_PASSWORD stays empty).
@@ -16,12 +31,47 @@ on:
       - 'v*'
 
 jobs:
-  release:
-    # ponytail: arm64 macOS only — the only platform TokenLedger targets today.
-    # Add matrix targets when another platform is real.
-    runs-on: macos-latest
+  create-release:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.draft.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The install notes lead; GitHub appends the generated changelog under
+      # them, so the SmartScreen click-through and the WSL and tray caveats are
+      # on the page the download button is on.
+      - uses: actions/github-script@v7
+        id: draft
+        with:
+          result-encoding: string
+          script: |
+            const fs = require('fs');
+            const { data } = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: context.ref.replace('refs/tags/', ''),
+              name: `TokenLedger ${context.ref.replace('refs/tags/', '')}`,
+              body: fs.readFileSync('.github/RELEASE_NOTES.md', 'utf8'),
+              generate_release_notes: true,
+              draft: true,
+              prerelease: false,
+            });
+            return data.id;
+
+  build:
+    needs: create-release
+    permissions:
+      contents: write
+    strategy:
+      # One platform failing must not cancel the others: the draft is easier to
+      # finish by re-running one leg than by rebuilding all three.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,14 +86,77 @@ jobs:
         with:
           workspaces: src-tauri
 
+      # ci.yml's list plus patchelf, which linuxdeploy uses to rewrite rpaths on
+      # the libraries it copies into the AppImage. No libfuse2: the bundler runs
+      # linuxdeploy with --appimage-extract-and-run, so nothing is ever mounted.
+      - if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+
       - run: npm ci
 
-      - uses: tauri-apps/tauri-action@v0
+      # Uploads into the draft this run created, rather than making its own
+      # release per leg. releaseId is what selects it; tagName names the tag the
+      # release is for.
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           tagName: ${{ github.ref_name }}
-          releaseName: 'TokenLedger ${{ github.ref_name }}'
-          releaseBody: 'See the commit log for changes.'
+          # Covers a build or an upload that fails outright. It does NOT cover
+          # the latest.json merge race, which loses an entry without erroring —
+          # publish-release reads the manifest back for that.
+          retryAttempts: 3
+
+  publish-release:
+    needs: [create-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Read latest.json back before publishing anything. Each leg rewrites this
+      # one file, re-reading it first to keep the other platforms' entries, so
+      # two legs finishing together can drop one — and that loss is silent:
+      # nothing throws, the leg goes green, and the missing platform simply
+      # stops being offered updates. Checking here turns it into a failed job
+      # with the draft still unpublished, so the live endpoint keeps serving the
+      # previous release until a re-run fixes it.
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const release_id = ${{ needs.create-release.outputs.release_id }};
+            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner, repo, release_id, per_page: 100,
+            });
+            const asset = assets.find((a) => a.name === 'latest.json');
+            if (!asset) throw new Error('no latest.json on the release — no leg uploaded one');
+            const res = await github.request(
+              'GET /repos/{owner}/{repo}/releases/assets/{asset_id}',
+              { owner, repo, asset_id: asset.id, headers: { accept: 'application/octet-stream' } },
+            );
+            const platforms = Object.keys(JSON.parse(Buffer.from(res.data).toString()).platforms || {});
+            const missing = ['darwin', 'windows', 'linux'].filter(
+              (os) => !platforms.some((p) => p.startsWith(os)),
+            );
+            if (missing.length) {
+              throw new Error(
+                `latest.json is missing ${missing.join(', ')} (has: ${platforms.join(', ') || 'nothing'}). ` +
+                'Re-run that platform\'s build job, then re-run this one.',
+              );
+            }
+            core.info(`latest.json covers ${platforms.join(', ')}`);
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false,
+            });

@@ -42,8 +42,8 @@ jobs:
       # build-essential/curl/wget/file are already on the runner image.
       # Must precede every cargo step: these are build-time link dependencies.
       # https://v2.tauri.app/start/prerequisites/
-      # ponytail: no patchelf/xdg-utils — those are AppImage bundling only and
-      # CI never bundles. Add them when #62 gives release.yml a Linux target.
+      # ponytail: no patchelf — that is AppImage bundling only and CI never
+      # bundles. release.yml, which does, installs it there.
       - if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update
