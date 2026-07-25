@@ -539,6 +539,11 @@
   grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
+/* without this the column floors at the input's default size=20 intrinsic width
+   (min-width: auto on a grid item), and the right column overhangs its padding */
+.tl-pr-field {
+  min-width: 0;
+}
 .tl-pr-field label {
   display: block;
   font-size: 11.5px;
