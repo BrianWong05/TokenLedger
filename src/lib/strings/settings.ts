@@ -5,7 +5,7 @@ export const settings = {
   en: {
     'settings.appearance': 'Appearance',
     'settings.theme': 'Theme',
-    'settings.theme.caption': 'System follows macOS appearance',
+    'settings.theme.caption': 'System follows your OS appearance',
     'settings.theme.system': 'System',
     'settings.theme.light': 'Light',
     'settings.theme.dark': 'Dark',
@@ -56,7 +56,7 @@ export const settings = {
   'zh-Hant': {
     'settings.appearance': '外觀',
     'settings.theme': '主題',
-    'settings.theme.caption': '「系統」會跟隨 macOS 外觀',
+    'settings.theme.caption': '「系統」會跟隨作業系統外觀',
     'settings.theme.system': '系統',
     'settings.theme.light': '淺色',
     'settings.theme.dark': '深色',

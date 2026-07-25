@@ -4,10 +4,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import App from './App';
+import type { Platform } from './lib/platform';
 import { systemClock } from './overview/overviewStore';
 import { makeFakeLedger } from './overview/ledger.fake';
 import { makeFakeSettings } from './settings/settings.fake';
-import type { SeriesPoint, Summary } from './types';
+import type { Settings, SeriesPoint, Summary } from './types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -58,6 +59,63 @@ afterEach(() => {
 });
 
 describe('App shell', () => {
+  // The strip exists to clear the macOS traffic lights, which sit over the
+  // window because its title bar is hidden there. Windows and Linux wear their
+  // native title bar, so the same strip would be a gap holding nothing.
+  it('clears space for the traffic lights on macOS alone', async () => {
+    const strip = async (platform: Platform) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mountedRoots.push(root);
+      await act(async () => {
+        root.render(
+          <App
+            ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings: makeFakeSettings() }}
+            platform={platform}
+          />,
+        );
+      });
+      await settle();
+      return container.querySelector('.tl-traffic');
+    };
+
+    expect(await strip('macos')).not.toBeNull();
+    expect(await strip('windows')).toBeNull();
+    expect(await strip('linux')).toBeNull();
+  });
+
+  // The caption describes whatever appearance setting the machine has, so it
+  // names no operating system — in either language, and on every platform.
+  it('says the theme follows the system without naming a platform', async () => {
+    const caption = async (language: Settings['language'], platform: Platform) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mountedRoots.push(root);
+      await act(async () => {
+        root.render(
+          <App
+            ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings: makeFakeSettings({ language }) }}
+            platform={platform}
+          />,
+        );
+      });
+      await settle();
+      const nav = Array.from(container.querySelectorAll('.tl-nav button')) as HTMLButtonElement[];
+      await act(async () => nav[2].click());
+      return container.querySelector('.set-row-caption')?.textContent ?? '';
+    };
+
+    for (const [language, platform] of [
+      ['en', 'macos'],
+      ['en', 'windows'],
+      ['zh-Hant', 'linux'],
+    ] as const) {
+      expect(await caption(language, platform)).not.toMatch(/mac|windows|linux/i);
+    }
+  });
+
   it('switches tabs, renders the right page, and preserves Overview state', async () => {
     const ledger = makeFakeLedger({
       dayPoints: [

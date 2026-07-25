@@ -13,6 +13,7 @@ import SettingsPage from './settings/SettingsPage';
 import FirstRunDialog from './settings/FirstRunDialog';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
 import { I18nProvider, useT } from './lib/i18n';
+import { detectPlatform, type Platform } from './lib/platform';
 import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
 import { tauriSettings, type SettingsPort } from './settings/settings';
@@ -67,11 +68,14 @@ const TABS: { key: Tab; strKey: 'nav.overview' | 'nav.pricing' | 'nav.settings';
   },
 ];
 
-export default function App({ ports }: { ports?: AppPorts } = {}) {
+export default function App({
+  ports,
+  platform = detectPlatform(),
+}: { ports?: AppPorts; platform?: Platform } = {}) {
   const settingsPort = ports?.settings ?? tauriSettings;
   return (
     <SettingsProvider port={settingsPort}>
-      <AppInner ports={ports} />
+      <AppInner ports={ports} platform={platform} />
     </SettingsProvider>
   );
 }
@@ -80,17 +84,17 @@ export default function App({ ports }: { ports?: AppPorts } = {}) {
 // the moment the language changes — no reload. The theme is applied inside the
 // provider. First-run mounts over everything once the persisted value has loaded
 // (so a returning user never flashes the disclosure).
-function AppInner({ ports }: { ports?: AppPorts }) {
+function AppInner({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
   const { settings, loaded } = useSettings();
   return (
     <I18nProvider lang={settings.language}>
-      <Shell ports={ports} />
+      <Shell ports={ports} platform={platform} />
       {loaded && !settings.firstRunDone && <FirstRunDialog />}
     </I18nProvider>
   );
 }
 
-function Shell({ ports }: { ports?: AppPorts }) {
+function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
   const { t } = useT();
   const [tab, setTab] = useState<Tab>('overview');
   const ledger = ports?.ledger ?? tauriLedger;
@@ -107,8 +111,12 @@ function Shell({ ports }: { ports?: AppPorts }) {
           element, so each empty surface carries the attribute) */}
       <aside className="tl-sidebar" data-tauri-drag-region>
         {/* clearance for the native macOS traffic lights (titleBarStyle Overlay);
-            also the window's drag handle now that the title bar is hidden */}
-        <span className="tl-traffic" aria-hidden="true" data-tauri-drag-region />
+            also the window's drag handle now that the title bar is hidden.
+            Elsewhere the title bar is real and the lights are in it, so the
+            strip would hold nothing but a gap. */}
+        {platform === 'macos' && (
+          <span className="tl-traffic" aria-hidden="true" data-tauri-drag-region />
+        )}
         <span className="tl-wordmark">
           <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
             <rect x="2" y="11" width="4" height="7" rx="1" />
