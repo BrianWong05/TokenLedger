@@ -23,6 +23,7 @@ mod e2e_real_logs;
 #[cfg(test)]
 mod invariants;
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use rusqlite::Connection;
@@ -48,6 +49,11 @@ pub struct AppState {
     /// costs one fetch per launch instead of one per scan, and nothing about a
     /// failed lookup is worth persisting.
     pub price_lookups: Mutex<std::collections::HashSet<String>>,
+    /// When the most recent scan finished, epoch seconds; 0 until one runs. In
+    /// memory only, like `price_lookups`: the Menu Bar Extra asks how fresh its
+    /// figures are, and the resident capture scans at start-up, so freshness
+    /// from a previous launch would answer a question nobody asked.
+    pub last_scan: AtomicI64,
 }
 
 /// Fetch both price catalogs and rebuild the prices table, then tell the frontend
@@ -124,6 +130,9 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
         run_scan(&mut db, &state.roots)
     };
+    // Every scan lands here — the command, the tray's "Scan now", and the
+    // resident capture — so the panel's freshness read-out cannot miss one.
+    state.last_scan.store(status.scanned_at, Ordering::Relaxed);
     tray::refresh(app);
     // Release scan_lock BEFORE the lookup: it reads the whole prices table to
     // decide, and holding the scan gate across that would delay the next scan for
@@ -137,6 +146,13 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
 #[tauri::command]
 async fn scan(app: AppHandle) -> Result<ScanStatus, String> {
     scan_now(&app)
+}
+
+/// Epoch seconds of the last scan this launch, 0 if none has run yet — the
+/// Menu Bar Extra's freshness read-out. Cheap enough to answer on every open.
+#[tauri::command]
+fn last_scan(state: State<'_, AppState>) -> i64 {
+    state.last_scan.load(Ordering::Relaxed)
 }
 
 #[tauri::command]
@@ -387,6 +403,7 @@ pub fn run() {
                 roots: SourceRoots::default_roots(),
                 scan_lock: Mutex::new(()),
                 price_lookups: Mutex::new(Default::default()),
+                last_scan: AtomicI64::new(0),
             });
 
             tray::build(app.handle())?;
@@ -446,6 +463,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             scan,
+            last_scan,
             summary,
             trend,
             series,
@@ -479,6 +497,7 @@ mod tests {
     use crate::queries::Filters;
     use crate::scan::SourceRoots;
     use crate::{db, queries, scan};
+    use std::sync::atomic::AtomicI64;
     use std::sync::Mutex;
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
@@ -504,6 +523,7 @@ mod tests {
             roots,
             scan_lock: Mutex::new(()),
             price_lookups: Mutex::new(Default::default()),
+            last_scan: AtomicI64::new(0),
         };
 
         let mut db = state.db.lock().unwrap();

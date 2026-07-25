@@ -1,13 +1,15 @@
-// The Menu Bar Extra panel (design 2b, pixel-faithful — ADR-0007): a small
-// frameless webview the tray toggles, styled exactly like the mock. Data goes
-// through the same ports the app shell uses; the four actions are Tauri glue.
+// The Menu Bar Extra panel (design 2b grown, in 2b's idiom — ADR-0007): a small
+// frameless webview the tray toggles. Beneath the mock's header sit the Cost
+// sparkline, the Source and Model rows, and the stats strip; every figure is a
+// display string the view model already decided. Data goes through the same
+// ports the app shell uses; the four actions are Tauri glue.
 // UI strings are English-only like the native menu it replaced; number and
 // currency formatting still follow the app's locale. Dark-only like the mock.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
-import { panelModel, periodWindows, type PanelModel, type Period } from './panelModel';
+import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
 import type { Filters } from '../types';
@@ -19,6 +21,21 @@ export interface TrayPanelPorts {
 }
 
 const PANEL_WIDTH = 300;
+
+// Sparkline geometry: the model hands over one normalised value per bucket,
+// the view decides what that looks like in its 260×44 box.
+const SPARK_W = 260;
+const SPARK_H = 44;
+function sparkPath(points: number[]): string {
+  const last = Math.max(1, points.length - 1);
+  return points
+    .map((p, i) => {
+      const x = ((i / last) * SPARK_W).toFixed(1);
+      const y = (SPARK_H - 4 - p * (SPARK_H - 8)).toFixed(1);
+      return `${i ? 'L' : 'M'}${x} ${y}`;
+    })
+    .join(' ');
+}
 
 // Fire-and-forget IPC for the action rows; harmless outside Tauri (tests).
 function ipc(cmd: string) {
@@ -96,13 +113,26 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
           ledger.summary(prev),
           ledger.breakdown('tool', current),
           settings.get(),
+          ledger.breakdown('model', current),
+          ledger.breakdown('project', current),
+          ledger.series(current, seriesBucket(periodRef.current)),
+          ledger.lastScan(),
         ]),
       ]),
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
-      const [t, y, rows, s] = fetched[0].value;
-      setModel(panelModel(t, y, rows, s, s.language === 'zh-Hant' ? 'zh-Hant' : 'en'));
+      const [t, y, rows, s, models, projects, series, scannedAt] = fetched[0].value;
+      setModel(
+        panelModel(t, y, rows, s, s.language === 'zh-Hant' ? 'zh-Hant' : 'en', {
+          period: periodRef.current,
+          now: new Date(),
+          models,
+          projects,
+          series,
+          scannedAt,
+        }),
+      );
     }
     // Ledger unavailable (e.g. mid-restart): keep the last model.
     if (showLoading) setLoading(false);
@@ -224,20 +254,59 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
 
       {loading && (
         <>
+          <div className="tp-spark">
+            <span className="tp-skel tp-skel-spark" />
+          </div>
+          {[
+            ['src', 2],
+            ['model', 3],
+          ].map(([kind, n]) => (
+            <div key={kind}>
+              <div className="tp-sep" />
+              {Array.from({ length: n as number }, (_, i) => (
+                <div className="tp-row" key={i}>
+                  <span className="tp-skel tp-skel-dot" />
+                  <span className="tp-skel tp-skel-name" />
+                  <span className="tp-spacer" />
+                  <span className="tp-skel tp-skel-num" />
+                </div>
+              ))}
+            </div>
+          ))}
           <div className="tp-sep" />
-          {[0, 1].map((i) => (
-            <div className="tp-row" key={i}>
-              <span className="tp-skel tp-skel-dot" />
+          {[0, 1, 2].map((i) => (
+            <div className="tp-stat" key={i}>
               <span className="tp-skel tp-skel-name" />
-              <span className="tp-spacer" />
               <span className="tp-skel tp-skel-num" />
             </div>
           ))}
         </>
       )}
 
+      {!loading && !model?.empty && model?.spark && (
+        <div className="tp-spark">
+          <svg
+            viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
+            width={SPARK_W}
+            height={SPARK_H}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path
+              className="tp-spark-area"
+              d={`${sparkPath(model.spark.points)} L${SPARK_W} ${SPARK_H} L0 ${SPARK_H} Z`}
+            />
+            <path className="tp-spark-line" d={sparkPath(model.spark.points)} />
+          </svg>
+          <div className="tp-spark-cap">
+            <span>{model.spark.bucketLabel}</span>
+            <span>{model.spark.peak}</span>
+          </div>
+        </div>
+      )}
+
       {!loading && model && model.rows.length > 0 && (
-        <>
+        <div className="tp-sources">
           <div className="tp-sep" />
           {model.rows.map((r) => (
             <div className="tp-row" key={r.key}>
@@ -248,7 +317,49 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
               <span className="tp-row-cost">{r.cost}</span>
             </div>
           ))}
-        </>
+        </div>
+      )}
+
+      {!loading && model && !model.empty && model.models.length > 0 && (
+        <div className="tp-models">
+          <div className="tp-sep" />
+          <div className="tp-sec">Models</div>
+          {model.models.map((r) => (
+            <div className="tp-row" key={r.key}>
+              {/* No icon per Model — the dot carries its owning Source instead. */}
+              <span className="tp-dot" style={{ background: r.color ?? '#6e6e76' }} />
+              <span className="tp-row-label tp-model" title={r.label}>
+                {r.label}
+              </span>
+              <span className="tp-spacer" />
+              <span className="tp-row-tokens">{r.tokens}</span>
+              <span className="tp-row-cost">{r.cost}</span>
+            </div>
+          ))}
+          {model.modelsOverflow > 0 && (
+            <div className="tp-more">+{model.modelsOverflow} more in the app</div>
+          )}
+        </div>
+      )}
+
+      {!loading && !model?.empty && model?.stats && (
+        <div className="tp-stats">
+          <div className="tp-sep" />
+          <div className="tp-stat">
+            <span className="tp-stat-k">Cache hit rate</span>
+            <span className="tp-stat-v">{model.stats.cacheHit}</span>
+          </div>
+          {model.stats.topProject && (
+            <div className="tp-stat">
+              <span className="tp-stat-k">Top project</span>
+              <span className="tp-stat-v">{model.stats.topProject}</span>
+            </div>
+          )}
+          <div className="tp-stat">
+            <span className="tp-stat-k">Scanned</span>
+            <span className="tp-stat-v">{model.stats.scanned}</span>
+          </div>
+        </div>
       )}
 
       <div className="tp-sep" />

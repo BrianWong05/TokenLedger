@@ -72,6 +72,11 @@ export function fmtTok(n: number): string {
 export function fmtPct(x: number): string {
   return (x * 100).toFixed(x < 0.1 ? 1 : 0) + '%';
 }
+// Last path segment of an absolute path — how a Project is named in the UI.
+export function basename(p: string): string {
+  return p.split('/').filter(Boolean).pop() ?? p;
+}
+
 export function fmtDate(d: Date): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }

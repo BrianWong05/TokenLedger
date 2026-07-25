@@ -19,6 +19,11 @@ export function scan(): Promise<ScanStatus> {
   return invoke('scan');
 }
 
+// Epoch seconds of the last Scan this launch; 0 when none has run yet.
+export function fetchLastScan(): Promise<number> {
+  return invoke('last_scan');
+}
+
 export function fetchSummary(filters: Filters): Promise<Summary> {
   return invoke('summary', { filters });
 }

@@ -65,7 +65,7 @@ describe('TrayPanel', () => {
     expect(ledger.calls.summary.length).toBe(2);
 
     // Source rows from breakdown('tool'), cost desc, columns split.
-    const rows = Array.from(container.querySelectorAll('.tp-row')).map((r) => [
+    const rows = Array.from(container.querySelectorAll('.tp-sources .tp-row')).map((r) => [
       r.querySelector('.tp-row-label')?.textContent,
       r.querySelector('.tp-row-tokens')?.textContent,
       r.querySelector('.tp-row-cost')?.textContent,
@@ -81,6 +81,95 @@ describe('TrayPanel', () => {
       b.textContent?.replace(/[⇧⌘,QR]+$/, '').trim(),
     );
     expect(actions).toEqual(['Open TokenLedger', 'Rescan now', 'Settings…', 'Quit TokenLedger']);
+  });
+
+  it('renders the Models section and the stats strip from the extra reads', async () => {
+    const ledger = makeFakeLedger({
+      summary: { ...summary, cacheHitRate: 0.9124 },
+      toolRows,
+      modelRows: [
+        { ...toolRows[0], key: 'claude-sonnet-4-5', source: 'claude', cost: 6.12 },
+        { ...toolRows[1], key: 'gpt-5-codex', source: 'codex', cost: 1.11 },
+      ],
+      projectRows: [{ ...toolRows[0], key: '/Users/b/Project/usage', cost: 4.4 }],
+      lastScan: Math.floor(Date.now() / 1000) - 132,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    // Sources stay their own section; Models come from breakdown('model').
+    expect(
+      Array.from(container.querySelectorAll('.tp-sources .tp-row .tp-row-label')).map(
+        (e) => e.textContent,
+      ),
+    ).toEqual(['Claude', 'Codex']);
+    const models = Array.from(container.querySelectorAll('.tp-models .tp-row')).map((r) => [
+      r.querySelector('.tp-row-label')?.textContent,
+      r.querySelector('.tp-row-cost')?.textContent,
+      (r.querySelector('.tp-dot') as HTMLElement | null)?.style.background,
+    ]);
+    expect(models).toEqual([
+      ['claude-sonnet-4-5', '$6.12', 'rgb(217, 119, 87)'], // Claude's brand colour
+      ['gpt-5-codex', '$1.11', 'rgb(110, 80, 242)'],
+    ]);
+
+    const stats = Array.from(container.querySelectorAll('.tp-stat')).map((s) => [
+      s.querySelector('.tp-stat-k')?.textContent,
+      s.querySelector('.tp-stat-v')?.textContent,
+    ]);
+    expect(stats).toEqual([
+      ['Cache hit rate', '91.2%'],
+      ['Top project', 'usage · $4.40'],
+      ['Scanned', '2 min ago'],
+    ]);
+
+    // The extra reads: Models, Projects, the period's series, the Scan time.
+    expect(ledger.calls.breakdown.map((c) => c[0])).toEqual(['tool', 'model', 'project']);
+    expect(ledger.calls.series[0]?.[1]).toBe('hour'); // Today buckets hourly
+    expect(ledger.calls.lastScan.length).toBe(1);
+  });
+
+  it('draws the sparkline for the selected period and rebuckets on a switch', async () => {
+    const day = (back: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() - back);
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    };
+    const point = (bucket: string, cost: number) => ({
+      bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      totalTokens: 1_000, reasoningTokens: null, cost, requests: 0, convs: 0,
+      ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
+      ctxAgents: null, ctxMcp: null, ctxSkills: null,
+    });
+    const ledger = makeFakeLedger({
+      summary,
+      toolRows,
+      dayPoints: [point(day(1), 3), point(day(0), 9)],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    const days30 = Array.from(container.querySelectorAll('.tp-seg-btn')).find(
+      (b) => b.textContent === '30 days',
+    ) as HTMLButtonElement;
+    await act(async () => days30.click());
+    await settle();
+
+    const lastSeries = ledger.calls.series[ledger.calls.series.length - 1];
+    expect(lastSeries?.[1]).toBe('day'); // 30 days buckets daily
+    const cap = Array.from(container.querySelectorAll('.tp-spark-cap span')).map((s) => s.textContent);
+    expect(cap).toEqual(['daily', `peak ${day(0).slice(5)} · $9.00`]);
+    expect(container.querySelector('.tp-spark path')?.getAttribute('d')).toMatch(/^M0\.0 /);
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
@@ -121,6 +210,24 @@ describe('TrayPanel', () => {
 
     expect(container.querySelector('.tp-cost')?.textContent).toBe('unavailable');
     expect(container.querySelector('.tp-row-cost')?.textContent).toBe('unavailable');
+  });
+
+  it('shows the empty state alone — no sections, no fabricated 0.0% cache hit', async () => {
+    const ledger = makeFakeLedger({
+      summary: { ...summary, totalTokens: 0, requests: 0, cost: 0 },
+      lastScan: Math.floor(Date.now() / 1000) - 60,
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    expect(container.querySelector('.tp-empty')?.textContent).toBe('No usage yet');
+    expect(container.querySelector('.tp-stats')).toBeNull();
+    expect(container.querySelector('.tp-models')).toBeNull();
+    expect(container.querySelector('.tp-spark')).toBeNull();
   });
 
   it('Rescan runs the scan through the ledger port and refetches', async () => {

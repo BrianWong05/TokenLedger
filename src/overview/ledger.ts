@@ -4,6 +4,7 @@
 import { listen } from '@tauri-apps/api/event';
 import {
   scan,
+  fetchLastScan,
   fetchSeries,
   fetchSummary,
   fetchBreakdown,
@@ -26,6 +27,8 @@ import type {
 
 export interface LedgerPort {
   scan(): Promise<ScanStatus>;
+  lastScan(): Promise<number>; // epoch seconds, 0 before the first Scan
+
   series(filters: Filters, bucket: 'day' | 'hour'): Promise<SeriesPoint[]>;
   summary(filters: Filters): Promise<Summary>;
   breakdown(by: 'model' | 'project' | 'tool', filters: Filters): Promise<BreakdownRow[]>;
@@ -38,6 +41,7 @@ export interface LedgerPort {
 
 export const tauriLedger: LedgerPort = {
   scan,
+  lastScan: fetchLastScan,
   series: fetchSeries,
   summary: fetchSummary,
   breakdown: fetchBreakdown,

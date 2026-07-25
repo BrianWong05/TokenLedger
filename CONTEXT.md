@@ -74,14 +74,18 @@ _Avoid_: Rate card, price list, models tab
 
 **Menu Bar Extra**:
 The application's resident presence in the system menu bar: an icon with
-Today's token total and Cost beside it, and a menu presenting Today's view of
-the Ledger — headline Cost, tokens, Requests, pace against yesterday, and
-per-Source figures — plus the app actions. "Today" is the local calendar day;
-the surface presents no other date window. On a day with no usage the bar
-shows the icon alone. Every Cost figure follows the same rules as everywhere
-else: Partial Cost's "≥" marker, Unpriced never shown as $0, Display Currency
-honored.
-_Avoid_: Tray, status item
+Today's token total and Cost beside it, and the panel that icon toggles,
+presenting a selected window of the Ledger — headline Cost, tokens, Requests,
+pace against the window before it, Cost per bucket across the window,
+per-Source and per-Model figures, Cache Hit Rate, the costliest Project, and
+how long ago the last scan ran — plus the app actions. The two carry different
+windows on purpose: the bar title is always Today, the local calendar day,
+while the panel selects its own (Today, Yesterday, or the trailing 30 days) and
+everything it shows describes that selection. On a day with no usage the bar shows the icon alone. Every Cost
+figure follows the same rules as everywhere else: Partial Cost's "≥" marker,
+Unpriced never shown as $0, Display Currency honored.
+_Avoid_: Tray, status item, menu (ADR-0007 replaced the native menu with the
+panel)
 
 ### Sources and granularity
 
