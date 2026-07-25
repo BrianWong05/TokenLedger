@@ -1839,6 +1839,110 @@
   cursor: default;
 }
 
+/* ---- profile (fixed windows + lifetime; ignores range and selection) ---- */
+.tt-profile {
+  padding: 0;
+  overflow: hidden; /* the tile grid and row fills run to the card edge */
+}
+.tt-profile-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+.tt-profile-tile {
+  padding: 15px 8px 13px;
+  text-align: center;
+  min-width: 0;
+}
+.tt-profile-tile + .tt-profile-tile {
+  border-left: 1px solid var(--border-subtle);
+}
+.tt-profile-tile .num {
+  font-size: 19px;
+  font-weight: 650;
+  color: var(--text-primary);
+  font-family: var(--tt-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tt-profile-tile .lbl {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-tertiary);
+}
+.tt-profile-models {
+  border-top: 1px solid var(--border-subtle);
+  padding: 8px 10px 6px;
+}
+.tt-profile-empty {
+  padding: 14px 8px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+.tt-profile-model {
+  position: relative;
+  padding: 9px 10px;
+  margin-bottom: 2px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+/* width = the Model's absolute lifetime share, so the bar agrees with the
+   figure printed on it (and with how ModelsList and the hero bar read) */
+.tt-profile-model .fill {
+  position: absolute;
+  inset: 0;
+  background: var(--accent-subtle);
+  border-left: 2px solid var(--accent-border);
+}
+.tt-profile-model .row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tt-profile-model .rank {
+  width: 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--tt-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tt-profile-model .name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tt-profile-model .tok {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+  font-family: var(--tt-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tt-profile-model .pct {
+  width: 52px;
+  text-align: right;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+  font-family: var(--tt-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tt-profile-foot {
+  display: flex;
+  justify-content: space-between;
+  border-top: 1px solid var(--border-subtle);
+  padding: 11px 18px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.tt-profile-foot b {
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- narrow fallback (desktop Tauri window can be resized) ---- */
 @media (max-width: 860px) {
   .tt-b8-grid {

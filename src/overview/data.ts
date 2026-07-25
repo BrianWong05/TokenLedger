@@ -216,6 +216,18 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
 // seriesToDays fills), as epoch-second bounds: [midnight 364 days ago,
 // midnight after today). The enlarge fetches its Summary with these so the
 // Cost figure and its Partial-Cost marker describe exactly the days shown.
+// The Profile's Session tile: the same trailing-30-day window the range
+// picker's 'month' preset uses, but fixed — the Profile ignores the selection.
+export function profileSessionFilters(today: Date = new Date()): Filters {
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const start = new Date(end);
+  start.setDate(start.getDate() - 29);
+  return {
+    tools: [], models: [], project: null,
+    startTs: Math.floor(start.getTime() / 1000),
+  };
+}
+
 export function heatFilters(today: Date = new Date()): Filters {
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const start = new Date(end);
@@ -613,6 +625,89 @@ export function modelBars(rows: BreakdownRow[], tool: ToolKey, toolTokens: numbe
         cacheEstimated: r.cacheEstimated,
       };
     });
+}
+
+// ---- profile panel ----
+
+export interface ProfileModel {
+  name: string;
+  tokens: number;
+  share: number; // of ALL lifetime tokens, incl. Unattributed — never sums to 1
+}
+
+export interface ProfileView {
+  d7: number;
+  d30: number;
+  perActiveDay: number | null; // null = no active day to divide by
+  sessions30d: number | null;  // null = the 30-day Summary hasn't landed
+  models: ProfileModel[];
+  startedIso: string | null;   // null = nothing in the Ledger
+  activeDays: number;
+}
+
+export const PROFILE_TOP_N = 5;
+
+// The Profile: a portrait of the whole Ledger, deliberately blind to the
+// Overview's date window and Source selection (like Activity). Everything but
+// the Session count derives from the unbounded daily series the store already
+// holds; `sessions30d` comes from a fixed-window Summary because distinct
+// Sessions cannot be summed out of per-day counts (a Session spanning days is
+// counted once per day it touches — see queries.rs).
+//
+// Model shares are measured against ALL lifetime tokens including Unattributed
+// Usage, which is why they sum to less than 1: Unattributed has no Model to be
+// (ADR-0008), so it holds a share without ever being a row.
+export function profileView(
+  pts: SeriesPoint[],
+  sessions30d: number | null,
+  today: Date,
+): ProfileView {
+  const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const backIso = (n: number) => {
+    const d = new Date(end);
+    d.setDate(d.getDate() - n);
+    return isoOf(d);
+  };
+  // Trailing windows follow the range picker's own convention (data.ts
+  // rangeWindow): 7d = today + the 6 before it.
+  const from7 = backIso(6);
+  const from30 = backIso(29);
+
+  let d7 = 0;
+  let d30 = 0;
+  let lifetime = 0;
+  let startedIso: string | null = null;
+  const activeDays = new Set<string>();
+  const byModel = new Map<string, number>();
+
+  for (const p of pts) {
+    if (p.totalTokens <= 0) continue; // a zero-token day is not an active day
+    lifetime += p.totalTokens;
+    activeDays.add(p.bucket);
+    if (startedIso === null || p.bucket < startedIso) startedIso = p.bucket;
+    if (p.bucket >= from7) d7 += p.totalTokens;
+    if (p.bucket >= from30) d30 += p.totalTokens;
+    // byModel already merges a Model's tokens across Sources within a bucket;
+    // a Model is its raw logged name, not a (name, Source) pair.
+    for (const [m, tokens] of Object.entries(p.byModel)) {
+      byModel.set(m, (byModel.get(m) ?? 0) + tokens);
+    }
+  }
+
+  const models = [...byModel.entries()]
+    .map(([name, tokens]) => ({ name, tokens, share: tokens / Math.max(1, lifetime) }))
+    .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name))
+    .slice(0, PROFILE_TOP_N);
+
+  return {
+    d7,
+    d30,
+    perActiveDay: activeDays.size > 0 ? lifetime / activeDays.size : null,
+    sessions30d,
+    models,
+    startedIso,
+    activeDays: activeDays.size,
+  };
 }
 
 // ---- context breakdown panel ----

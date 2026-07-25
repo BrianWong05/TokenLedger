@@ -4,6 +4,8 @@ import Heatmap from './Heatmap';
 import HeatmapModal from './HeatmapModal';
 import ContextBreakdown from './ContextBreakdown';
 import ModelsList from './ModelsList';
+import Profile from './Profile';
+
 import BreakdownTable from './BreakdownTable';
 import CostBreakdownModal from './CostBreakdownModal';
 import TokenTotalHeadline from './TokenTotalHeadline';
@@ -251,9 +253,9 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 
       <div className="tt-b8-grid">
         <div className="tt-b8-col">
+          <Profile profile={panels.profile} />
           <Heatmap days={panels.heatmap.days} compact onEnlarge={openHeatModal} enlargeRef={setHeatEnlargeTarget} />
           <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} onEnlarge={openTrendModal} enlargeRef={setTrendEnlargeTarget} />
-          {panels.sparks.length > 0 && <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />}
         </div>
 
         <div className="tt-b8-col">
@@ -276,6 +278,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               onModelClick={onModelClick}
             />
           </div>
+          {panels.sparks.length > 0 && <SmallMultiples items={panels.sparks} rangeLabel={rangeLabel} />}
         </div>
       </div>
 

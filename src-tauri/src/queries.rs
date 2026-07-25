@@ -37,6 +37,11 @@ pub struct Summary {
     pub unpriced_models: Vec<String>,
     pub cache_estimated_models: Vec<String>,
     pub cache_hit_rate: f64,
+    /// Distinct Sessions in the window. Counted here rather than summed from
+    /// per-day counts: a Session that spans days would be counted once per day
+    /// it touches.
+    #[ts(type = "number")]
+    pub convs: i64,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -217,6 +222,18 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         }
     }
 
+    // Distinct Sessions over the whole window. `source || ':' || session_id`
+    // keeps two Sources that happen to reuse an id apart, and SQLite's
+    // NULL-propagating concat drops rows with no session identity — the same
+    // "NULL session ids count zero distinct" rule the per-bucket count follows.
+    let convs: i64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(DISTINCT source || ':' || session_id) FROM events {where_sql}"
+        ),
+        params_from_iter(params.iter()),
+        |r| r.get(0),
+    )?;
+
     let cache_write = cw5m + cw1h;
     let total = input + output + cache_read + cache_write;
     let denom = input + cache_read + cache_write;
@@ -239,6 +256,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         unpriced_models,
         cache_estimated_models,
         cache_hit_rate,
+        convs,
     })
 }
 
@@ -1168,6 +1186,34 @@ mod tests {
         assert_eq!(point.requests, 3);
         assert_eq!(point.convs, 2);
         assert_eq!(point.reasoning_tokens, Some(5));
+    }
+
+    // The reason Summary carries convs at all: the per-day counts in series()
+    // cannot be summed, because a Session that spans days is counted once per
+    // day it touches. Summary counts distinct over the whole window instead.
+    #[test]
+    fn summary_counts_a_session_spanning_days_once() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let events = vec![
+            ev_s("a", "codex", DAY1_TS, "gpt-5.4", Some("sa"), None),
+            ev_s("b", "codex", DAY2_TS, "gpt-5.4", Some("sa"), None), // same Session, next day
+            ev_s("c", "codex", DAY2_TS, "gpt-5.4", Some("sb"), None),
+            ev_s("d", "claude", DAY1_TS, "claude-opus-4-6", Some("sa"), None), // same id, other Source
+            ev_s("e", "codex", DAY2_TS, "gpt-5.4", None, None), // no Session identity
+        ];
+        db::insert_events(&mut conn, &events).unwrap();
+
+        let s = summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(s.convs, 3, "codex:sa + codex:sb + claude:sa");
+
+        let per_day: i64 = series(&conn, &Filters::default(), "day")
+            .unwrap()
+            .iter()
+            .map(|p| p.convs)
+            .sum();
+        assert_eq!(per_day, 4, "summing per-day counts double-counts the spanning Session");
     }
 
     #[test]

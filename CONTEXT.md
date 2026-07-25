@@ -28,9 +28,9 @@ _Avoid_: Cache, database, store
 **Overview**:
 The application's home tab: the presentation of the Ledger over a
 user-selected date window and Source selection — headline token total, Cost,
-usage trends, and per-Source breakdowns. Activity is the one part of the tab
-that ignores that selection. What it shows is always a view of the Ledger; it
-never holds usage data of its own. Usage data appears on no other tab.
+usage trends, and per-Source breakdowns. Activity and Profile are the two parts
+of the tab that ignore that selection. What it shows is always a view of the
+Ledger; it never holds usage data of its own. Usage data appears on no other tab.
 _Avoid_: Dashboard, home screen
 
 **Activity**:
@@ -41,6 +41,18 @@ card and, via its Enlarge control, as a full-screen rotatable 3D perspective;
 every figure it reports — including its Cost — describes that same fixed
 window, never the selected range.
 _Avoid_: Heatmap, contribution graph, calendar
+
+**Profile**:
+The Overview's portrait of the whole Ledger, deliberately unmoved by the
+Overview's date window and Source selection: token volume over fixed trailing
+windows, the Models holding the largest lifetime share, the Sessions of the last
+30 days, and how long the Ledger has been accumulating. Its Model shares are
+measured against every lifetime token, Unattributed Usage included, so they sum
+to less than the whole and Unattributed itself is never one of the Models named.
+It reports no Cost at all. Where it says usage began, it means the earliest
+Usage Record in the Ledger — not the machine's first ever use of a Source, which
+may predate anything TokenLedger ingested.
+_Avoid_: Stats, summary, model breakdown
 
 **Trend**:
 The Overview's presentation of the Ledger as consumption over time within the

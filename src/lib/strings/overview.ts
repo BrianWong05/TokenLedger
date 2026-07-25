@@ -146,6 +146,16 @@ export const overview = {
     // models list
     'overview.modelsHead': 'Models',
 
+    // profile (fixed windows + lifetime; never follows the range or selection)
+    'overview.profile.d7': '7d',
+    'overview.profile.d30': '30d',
+    'overview.profile.perActiveDay': 'per active day',
+    'overview.profile.sessions': 'sessions · 30d',
+    'overview.profile.started': 'First record',
+    'overview.profile.activeDays': 'Active days',
+    'overview.profile.empty': 'No usage yet',
+    'overview.profile.shareTitle': 'Share of all tokens ever, including Unattributed usage',
+
     // cost breakdown modal + cost markers
     'overview.estTotalCost': 'Estimated total Cost',
     'overview.notBilled': 'At API list prices — not billed',
@@ -294,6 +304,15 @@ export const overview = {
     'overview.scanSkipped': '略過',
 
     'overview.modelsHead': '模型',
+
+    'overview.profile.d7': '7 天',
+    'overview.profile.d30': '30 天',
+    'overview.profile.perActiveDay': '每活躍日',
+    'overview.profile.sessions': '工作階段 · 30 天',
+    'overview.profile.started': '首筆紀錄',
+    'overview.profile.activeDays': '活躍天數',
+    'overview.profile.empty': '尚無用量',
+    'overview.profile.shareTitle': '佔歷來所有 token 的比例（含無歸屬用量）',
 
     'overview.estTotalCost': '預估總成本',
     'overview.notBilled': '以 API 列表價計算 — 並非實際帳單',

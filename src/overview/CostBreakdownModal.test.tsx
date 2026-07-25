@@ -68,7 +68,7 @@ const SUMMARY: Summary = {
   unattributedTokens: 0,
   unpricedModels: [],
   cacheEstimatedModels: [],
-  cacheHitRate: 0,
+  cacheHitRate: 0, convs: 0,
 };
 
 async function mountModal(

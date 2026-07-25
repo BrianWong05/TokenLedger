@@ -45,7 +45,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 const summary: Summary = {
   inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
   totalTokens: 700, requests: 3, cost: 1.5, hasUnpriced: false, unattributedTokens: 0,
-  unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
 };
 
 // Buckets pinned to real local days: the heatmap window is the trailing 365

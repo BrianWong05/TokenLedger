@@ -329,3 +329,38 @@ describe('overviewStore getSnapshot stability', () => {
     expect(selectDays(s1, clock.now())).toBeInstanceOf(Array);
   });
 });
+
+describe('overviewStore profile', () => {
+  // 30 local days back including today; clock now = 2026-07-16.
+  const fixedStart = Math.floor(new Date(2026, 5, 17).getTime() / 1000);
+  const profileCalls = (ledger: ReturnType<typeof makeFakeLedger>) =>
+    ledger.calls.summary.filter((c) => (c[0] as { startTs?: number }).startTs === fixedStart);
+
+  it('counts Sessions over a fixed 30-day window that no range change can move', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      summary: { ...makeFakeLedger().data.summary, convs: 37 },
+    });
+    const store = await boot(ledger, clock);
+
+    expect(profileCalls(ledger)).toHaveLength(1);
+    expect(store.getSnapshot().profileSessions).toBe(37);
+
+    store.setRange('day'); // reload runs with day filters — the Profile stays put
+    clock.advance(0);
+    await flush();
+    expect(profileCalls(ledger)).toHaveLength(1);
+    expect(store.getSnapshot().profileSessions).toBe(37);
+  });
+
+  it('leaves the count unknown when its fetch fails, without failing the series', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
+    ledger.failNext('summary', 'no sessions for you');
+    const store = await boot(ledger, clock);
+
+    const snap = store.getSnapshot();
+    expect(snap.profileSessions).toBeNull();
+    expect(snap.allPoints).toHaveLength(1); // the series it travelled with still landed
+  });
+});

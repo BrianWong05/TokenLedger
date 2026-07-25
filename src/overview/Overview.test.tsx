@@ -47,7 +47,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
   totalTokens: 400, requests: 2, cost: 1.5, hasUnpriced: false,
-  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
 };
 
 const mountedRoots: Root[] = [];

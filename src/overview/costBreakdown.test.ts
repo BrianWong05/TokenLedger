@@ -40,6 +40,7 @@ function summary(overrides: Partial<Summary>): Summary {
     unpricedModels: [],
     cacheEstimatedModels: [],
     cacheHitRate: 0,
+    convs: 1,
     ...overrides,
   };
 }

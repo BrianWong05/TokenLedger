@@ -231,6 +231,7 @@ mod tests {
             unpriced_models: vec![],
             cache_estimated_models: vec![],
             cache_hit_rate: 0.0,
+            convs: 0,
         }
     }
 

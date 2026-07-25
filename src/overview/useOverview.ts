@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import {
   createOverviewStore,
   selectDays,
+  selectProfile,
   selectView,
   selectVisibleTools,
   type ClockPort,
@@ -40,6 +41,12 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   // allPoints's reference stable across range/selection, so this never
   // recomputes on those.
   const days = useMemo(() => selectDays(snap), [snap.allPoints]);
+  // Same shape as the heatmap: range/selection can't move it, so it recomputes
+  // only when the series or its own Session count changes.
+  const profile = useMemo(
+    () => selectProfile(snap),
+    [snap.allPoints, snap.profileSessions],
+  );
   // Deps name the data fields rather than the snapshot: an idle 30s tick
   // publishes a new snapshot for scanAt alone, and rebuilding the whole view
   // for a clock label was most of the dashboard's steady-state CPU.
@@ -104,6 +111,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     headline: view.headline,
     panels: {
       heatmap: { days },
+      profile,
       trend: { data: view.trend, per: view.per, modelTool: view.modelTool },
       sparks: view.sparks,
       context: {

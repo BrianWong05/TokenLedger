@@ -20,12 +20,15 @@ import {
   ctxMeta,
   bucketView,
   toolTree,
+  profileView,
+  profileSessionFilters,
   type Bucket,
   type Day,
   type Granularity,
   type CatTotals,
   type CtxTotals,
   type ModelBar,
+  type ProfileView,
   type TableRow,
   type BucketView,
   type ToolCategory,
@@ -68,6 +71,9 @@ export interface OverviewSnapshot {
   allPoints: SeriesPoint[] | null;
   hourPoints: SeriesPoint[];
   summary: Summary | null;
+  // Distinct Sessions over the fixed trailing 30 days, for the Profile. Its own
+  // fetch because the Profile ignores the range, and null until it lands.
+  profileSessions: number | null;
   modelRows: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResourceCount[];
@@ -107,7 +113,7 @@ type State = Omit<
 >;
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
-  'allPoints', 'hourPoints', 'summary', 'modelRows', 'projectRows',
+  'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading',
@@ -119,7 +125,8 @@ function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
 
 class Store implements OverviewStore {
   private state: State = {
-    allPoints: null, hourPoints: [], summary: null, modelRows: [], projectRows: [],
+    allPoints: null, hourPoints: [], summary: null, profileSessions: null,
+    modelRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: 'claude',
@@ -174,8 +181,20 @@ class Store implements OverviewStore {
     if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
 
     try {
-      const pts = await this.ledger.series(EMPTY_FILTERS, 'day');
+      // The Profile's Session count rides with the unbounded series, not with
+      // the per-range reload: both describe the Ledger itself, so both refresh
+      // exactly when a scan brings something new — and a range click reissues
+      // neither. A failure leaves the count unknown ('—') without failing the
+      // series it travelled with.
+      const [pts, sessions] = await Promise.all([
+        this.ledger.series(EMPTY_FILTERS, 'day'),
+        this.ledger.summary(profileSessionFilters(this.clock.now())).then(
+          (s) => s.convs,
+          () => null,
+        ),
+      ]);
       this.state.allPoints = pts;
+      this.state.profileSessions = sessions;
       this.correctSelection();
       this.publish();
       this.scheduleReload();
@@ -369,6 +388,13 @@ export interface OverviewView {
 // those, see the getSnapshot-identity test).
 export function selectDays(s: OverviewSnapshot, now: Date = new Date()): Day[] {
   return seriesToDays(s.allPoints ?? [], now);
+}
+
+// The Profile ignores the range and the Source selection, so like the heatmap
+// it depends only on the full series (plus its own Session count). Callers MUST
+// memoize on those two identities, not on the snapshot.
+export function selectProfile(s: OverviewSnapshot, now: Date = new Date()): ProfileView {
+  return profileView(s.allPoints ?? [], s.profileSessions, now);
 }
 
 export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()): ToolMeta[] {

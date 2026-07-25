@@ -13,7 +13,7 @@ function sum(
   return {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
     totalTokens, requests, cost, hasUnpriced, unattributedTokens,
-    unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+    unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
   };
 }
 

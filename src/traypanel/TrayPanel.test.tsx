@@ -14,7 +14,7 @@ import type { BreakdownRow, Summary } from '../types';
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
   totalTokens: 3_400_000, requests: 1912, cost: 12.84, hasUnpriced: false,
-  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
 };
 
 const toolRows: BreakdownRow[] = [

@@ -47,7 +47,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 const summary: Summary = {
   inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
   totalTokens: 700, requests: 3, cost: 1.5, hasUnpriced: false,
-  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0,
+  unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
 };
 
 function daysAgo(n: number): string {
