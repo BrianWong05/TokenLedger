@@ -1,0 +1,61 @@
+# CI: every push and PR runs both suites on the three platforms TokenLedger
+# has to work on. The scan, adapter, and fixture tests thereby cover real path
+# and filesystem behaviour on Windows and Linux with no new test code.
+
+name: ci
+
+on: [push, pull_request]
+
+# a newer push to the same ref makes the in-flight run pointless
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      # one platform failing should not hide the other two
+      fail-fast: false
+      matrix:
+        # Ubuntu is pinned, not -latest: 22.04 is the oldest release Tauri v2
+        # supports, so it is the glibc/webkitgtk floor a built binary inherits.
+        # Building on a newer one would silently raise what users need.
+        os: [macos-latest, windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # The webview and tray the `tauri` crate links against. Tauri v2 needs
+      # webkit2gtk **4.1** (v1 wanted 4.0) and the *ayatana* appindicator, which
+      # conflicts with the older libappindicator3-dev — do not install both.
+      # build-essential/curl/wget/file are already on the runner image.
+      # Must precede every cargo step: these are build-time link dependencies.
+      # https://v2.tauri.app/start/prerequisites/
+      # ponytail: no patchelf/xdg-utils — those are AppImage bundling only and
+      # CI never bundles. Add them when #62 gives release.yml a Linux target.
+      - if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
+      - run: npm ci
+
+      # tsc + vite build — this is the typecheck. It must precede cargo:
+      # `tauri::generate_context!` embeds ../dist at compile time, and dist/ is
+      # gitignored, so the Rust suite does not compile until it exists.
+      - run: npm run build
+
+      - run: npm test
+
+      - run: cargo test --manifest-path src-tauri/Cargo.toml
