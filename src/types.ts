@@ -29,7 +29,7 @@ export interface ModelPricing {
   model: string;
   tool: string;
   overrideRates: RatesPerTok | null;
-  catalog: { origin: 'litellm' | 'openrouter'; rates: RatesPerTok } | null;
+  catalog: { origin: string; rates: RatesPerTok } | null;
 }
 
 export interface Settings {

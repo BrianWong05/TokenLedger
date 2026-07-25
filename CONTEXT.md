@@ -180,7 +180,7 @@ _Avoid_: Local currency, FX conversion
 The per-token rate set by the organisation that publishes a Model — Anthropic's
 for Claude, Z.AI's for GLM. One Model may be served by dozens of hosts at rates
 differing several-fold; only the publisher's is its List Price. A catalog is
-where that rate is looked up, never what makes it authoritative. See ADR-0003
+where that rate is looked up, never what makes it authoritative. See ADR-0009
 for how a single rate is chosen.
 _Avoid_: Rate card, tariff
 

@@ -217,7 +217,7 @@ CREATE TABLE IF NOT EXISTS pi_tool_owner (
 PRAGMA user_version = 8;";
 
 // v9: record which catalog supplied each List Price, so the origin reported to
-// the Pricing tab is stored data rather than a hardcoded constant (ADR-0003).
+// the Pricing tab is stored data rather than a hardcoded constant (ADR-0009).
 // Existing rows leave it NULL and RateMap reads that as "litellm" — every
 // pre-v9 row came from the one catalog then read. Scan-state is not cleared:
 // prices are rebuilt from the catalog at every start, independent of the Ledger.

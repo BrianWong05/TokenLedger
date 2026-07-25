@@ -1,6 +1,15 @@
 ---
-status: accepted
+status: superseded by ADR-0009
 ---
+
+> **Superseded.** The reasoning below rests on a misreading, and is kept for that
+> reason rather than corrected: the figure it calls OpenRouter's rate for
+> `z-ai/glm-5.2` is not a rate anyone charges. It is a **Routed Rate** — blended
+> across all 33 hosts serving the Model and pulled down by resellers discounting
+> up to 47%. Z.AI, which publishes GLM, charges $1.40/$4.40, exactly what the
+> LiteLLM row below was dismissed as "Cloudflare's resale rate". Cloudflare was
+> matching the publisher, not marking it up. Acting on that reading moved the
+> Model *away* from its publisher's price. See ADR-0009.
 
 # Price resolution: Override → exact catalog match → normalised catalog match
 

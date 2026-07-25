@@ -8,7 +8,7 @@ import { TOOLS, type ToolMeta } from '../overview/meta';
 export type PriceState = 'ok' | 'override' | 'unpriced' | 'est';
 export type PriceFilter = 'all' | 'unpriced' | 'override' | 'est';
 
-// The active rate: Override wins, else the catalog rate (ADR-0003 chain).
+// The active rate: Override wins, else the catalog rate (ADR-0009 chain).
 export function resolvedRates(m: ModelPricing): RatesPerTok | null {
   return m.overrideRates ?? m.catalog?.rates ?? null;
 }
@@ -36,8 +36,13 @@ export function toolLabel(tool: string): string {
   return toolMeta(tool)?.source ?? tool;
 }
 
-export function originLabel(origin: 'litellm' | 'openrouter'): string {
-  return origin === 'litellm' ? 'LiteLLM' : 'OpenRouter';
+// An origin is either one of the two catalog ids or, when the rate came from the
+// Model's own publisher, that publisher's name as the catalog reports it ("Z.AI",
+// "Anthropic"). Those read fine as-is; #52 owns how they are actually presented.
+export function originLabel(origin: string): string {
+  if (origin === 'litellm') return 'LiteLLM';
+  if (origin === 'openrouter') return 'OpenRouter';
+  return origin;
 }
 
 // case-insensitive match on model name OR tool label, then the state filter.

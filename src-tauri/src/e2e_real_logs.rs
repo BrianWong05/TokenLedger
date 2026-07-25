@@ -11,10 +11,23 @@ fn e2e_real_logs() {
     let dir = tempfile::tempdir().unwrap();
     let mut conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
 
+    let status = scan::run_scan(&mut conn, &roots);
+
+    // Prices AFTER the scan, deliberately: publisher rates are fetched per Model
+    // in the Ledger, so refreshing first would find an empty Ledger, fetch
+    // nothing, and let this test pass with that whole tier dark (ADR-0009).
     let n = pricing::refresh_prices(&mut conn, dir.path()).expect("refresh_prices failed");
     println!("\n=== prices loaded: {n} rows ===");
+    let published: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM prices WHERE catalog NOT IN ('litellm', 'openrouter')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    println!("=== of which publisher rates: {published} ===");
+    assert!(published > 0, "no Model resolved to its publisher's rate");
 
-    let status = scan::run_scan(&mut conn, &roots);
     println!("\n=== per-source scan results ===");
     for s in &status.sources {
         println!(

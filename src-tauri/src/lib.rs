@@ -58,12 +58,31 @@ fn refresh_catalogs(app: &AppHandle) {
     let Ok(data_dir) = app.path().app_data_dir() else {
         return;
     };
+    let state = app.state::<AppState>();
+
     // No lock held: network here.
     let litellm = pricing::load_prices_json(&data_dir);
     let openrouter = pricing::load_openrouter_json(&data_dir);
-    let state = app.state::<AppState>();
+
+    // Publisher rates are per-Model, so this needs to know which Models the
+    // Ledger holds. Take the lock only to ask, and drop it before fetching —
+    // the reads that follow are one request per Model.
+    // Never return early from here: the emit at the bottom is what stops a fresh
+    // install rendering 'unpriced' until the next range change. A failure to read
+    // the Ledger costs the publisher tier this run, not the whole refresh.
+    let targets = match openrouter.as_deref() {
+        Some(json) => state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| pricing::ledger_publisher_targets(&db, json).ok())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let publishers = pricing::load_publisher_rates(&data_dir, &targets);
+
     if let Ok(mut db) = state.db.lock() {
-        let _ = pricing::rebuild_prices(&mut db, &litellm, openrouter.as_deref());
+        let _ = pricing::rebuild_prices(&mut db, &litellm, openrouter.as_deref(), &publishers);
     }
     // Without this a fresh install renders 'unpriced' until the next range change.
     let _ = app.emit("prices-rebuilt", ());
@@ -419,7 +438,7 @@ pub fn run() {
 
             // Refresh both price catalogs off the main thread; each loader falls
             // back to its cached snapshot on a fetch failure (LiteLLM then to its
-            // bundled copy, OpenRouter to None — ADR-0003). Scans re-run this same
+            // bundled copy, OpenRouter to None — ADR-0009). Scans re-run this same
             // routine whenever they surface a Model no catalog covers.
             let handle = app.handle().clone();
             std::thread::spawn(move || refresh_catalogs(&handle));

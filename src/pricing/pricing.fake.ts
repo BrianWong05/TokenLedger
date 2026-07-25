@@ -18,7 +18,7 @@ export function seedPricing(): ModelPricing[] {
   const rates = (i: number, o: number, cr: number, cw: number): RatesPerTok => ({
     input: per1m(i), output: per1m(o), cacheRead: per1m(cr), cacheWrite: per1m(cw),
   });
-  const cat = (origin: 'litellm' | 'openrouter', r: RatesPerTok) => ({ origin, rates: r });
+  const cat = (origin: string, r: RatesPerTok) => ({ origin, rates: r });
   return [
     { model: 'claude-opus-4-8', tool: 'claude', overrideRates: null, catalog: cat('litellm', rates(15, 75, 1.5, 18.75)) },
     { model: 'claude-sonnet-4-8', tool: 'claude', overrideRates: null, catalog: cat('litellm', rates(3, 15, 0.3, 3.75)) },

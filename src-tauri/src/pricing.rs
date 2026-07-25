@@ -52,6 +52,23 @@ const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/models";
 const CATALOG_LITELLM: &str = "litellm";
 const CATALOG_OPENROUTER: &str = "openrouter";
 
+/// How much a stored row is worth believing — **lower is better**, so this is a
+/// rank, not ADR-0009's tier numbering. A publisher's own rate is the Model's
+/// List Price; LiteLLM is a published rate but not necessarily the publisher's;
+/// a Routed Rate is set by nobody.
+///
+/// The `catalog` column carries a publisher's NAME when the rate came from one,
+/// so anything that is not a catalog id is a publisher. That default is
+/// deliberate: the only way to land here with an unrecognised value is a row this
+/// build wrote, and the rebuild wipes and rewrites every row on every refresh.
+fn source_rank(catalog: &str) -> u8 {
+    match catalog {
+        CATALOG_OPENROUTER => 2,
+        CATALOG_LITELLM => 1,
+        _ => 0,
+    }
+}
+
 /// lowercase -> strip through last '/' -> strip a trailing `-YYYYMMDD` suffix.
 pub fn normalize_model(raw: &str) -> String {
     let lower = raw.to_lowercase();
@@ -128,7 +145,7 @@ impl Rates {
 
 /// A candidate price row with Option fields so merges can honor
 /// "never overwrite a non-null value with a null one".
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Row {
     input: Option<f64>,
     output: Option<f64>,
@@ -161,7 +178,7 @@ fn openrouter_cost(pricing: &serde_json::Value, key: &str) -> Option<f64> {
 /// prefixed id. Mirrors the LiteLLM loop's rule: an entry with neither a prompt
 /// nor a completion price contributes nothing. A malformed payload yields no
 /// rows rather than an error — losing the tier is survivable, and the caller
-/// treats "unreadable" and "unreachable" identically (ADR-0003).
+/// treats "unreadable" and "unreachable" identically (ADR-0009).
 fn openrouter_rows(json: &str) -> Vec<(String, Row)> {
     let Ok(root) = serde_json::from_str::<serde_json::Value>(json) else {
         return Vec::new();
@@ -175,10 +192,12 @@ fn openrouter_rows(json: &str) -> Vec<(String, Row)> {
         let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
             continue;
         };
-        // Load-bearing invariant, enforced rather than assumed (ADR-0003): exact
-        // ids must stay OUT of the normalized keyspace, or write-time precedence
-        // would stop matching the documented tier order. Every id OpenRouter has
-        // ever served is vendor-prefixed; a bare one is dropped, not trusted.
+        // Still load-bearing under ADR-0009, for a different reason than it was
+        // under the ADR it superseded: precedence is now settled at read time, so
+        // a bare id would not out-RANK a catalog row — but it would land on the
+        // same key and, first pass winning, evict it entirely, leaving only a
+        // Routed Rate where a published one existed. Every id OpenRouter has ever
+        // served is vendor-prefixed; a bare one is dropped, not trusted.
         if !id.contains('/') {
             continue;
         }
@@ -202,6 +221,69 @@ fn openrouter_rows(json: &str) -> Vec<(String, Row)> {
         ));
     }
     out
+}
+
+/// A Model's List Price as its own publisher quotes it (CONTEXT.md), plus who
+/// that publisher is and when it was read. Cached to disk between runs, so it
+/// serialises; `fetched_at` is unix seconds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublisherRate {
+    pub model_id: String,
+    pub publisher: String,
+    pub fetched_at: i64,
+    #[serde(flatten)]
+    rates: Row,
+}
+
+/// The publisher's own entry in a per-Model host listing.
+///
+/// The publisher is found structurally rather than from a list of who publishes
+/// what: its host tag carries the same vendor as the Model identifier, so
+/// `z-ai/fp8` is the publisher of `z-ai/glm-5.2` while `cloudflare` is not. That
+/// is what makes this robust where the CANONICAL allowlist is not — it needs no
+/// maintenance as new labs appear.
+///
+/// None when the publisher does not host the Model at all (Google does not serve
+/// Gemini here), or the payload is unusable. Hosts are listed cheapest-first and
+/// a publisher may offer several tiers, so the first match is taken: the
+/// standard tier, not a premium `fast` variant.
+fn publisher_rate(json: &str, fetched_at: i64) -> Option<PublisherRate> {
+    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    let data = root.get("data")?;
+    let model_id = data.get("id")?.as_str()?;
+    let publisher = model_id.split('/').next()?;
+
+    for endpoint in data.get("endpoints")?.as_array()? {
+        let tag = endpoint.get("tag").and_then(|v| v.as_str()).unwrap_or_default();
+        if tag.split('/').next() != Some(publisher) {
+            continue;
+        }
+        let Some(pricing) = endpoint.get("pricing") else {
+            continue;
+        };
+        let input = openrouter_cost(pricing, "prompt");
+        let output = openrouter_cost(pricing, "completion");
+        if input.is_none() && output.is_none() {
+            continue;
+        }
+        return Some(PublisherRate {
+            model_id: model_id.to_string(),
+            publisher: endpoint
+                .get("provider_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(publisher)
+                .to_string(),
+            fetched_at,
+            rates: Row {
+                input,
+                output,
+                cache_read: openrouter_cost(pricing, "input_cache_read"),
+                cw5m: openrouter_cost(pricing, "input_cache_write"),
+                cw1h: openrouter_cost(pricing, "input_cache_write_1h"),
+            },
+        });
+    }
+    None
 }
 
 /// Write one price row for `catalog`, LEAVING an existing row alone. Precedence
@@ -237,13 +319,14 @@ fn write_price_row(
 
 /// Rebuild the `prices` table from the catalog snapshots. Writes an exact row
 /// (model = the raw catalog key) for every entry with a non-null input OR output
-/// cost, plus guarded normalized fallback rows, in ADR-0003 precedence order.
+/// cost, plus guarded normalized fallback rows, in ADR-0009 precedence order.
 /// `openrouter_json` is None when that catalog could not be read at all, which
 /// degrades to LiteLLM-only resolution. Returns the row count.
 pub fn rebuild_prices(
     conn: &mut Connection,
     litellm_json: &str,
     openrouter_json: Option<&str>,
+    publishers: &[PublisherRate],
 ) -> Result<u64, String> {
     let openrouter = openrouter_json.map(openrouter_rows).unwrap_or_default();
 
@@ -304,22 +387,57 @@ pub fn rebuild_prices(
         }
     }
 
+    // A publisher quotes its Model's List Price but not always every field of it.
+    // Fill the gaps from the primary catalog — same "never overwrite a non-null
+    // with a null" rule the normalized merge above uses — so adopting a publisher
+    // rate can never LOSE a rate the catalog already published (a Model whose 1h
+    // cache-write TTL only the catalog carries would otherwise fall back to its
+    // 5m rate and undercount those tokens).
+    let published: Vec<(&PublisherRate, Row)> = publishers
+        .iter()
+        .map(|p| {
+            let mut row = p.rates.clone();
+            let nkey = normalize_model(&p.model_id);
+            if let Some(fill) = exact.iter().find(|(k, _)| *k == p.model_id).map(|(_, r)| r)
+                .or_else(|| norm.get(&nkey).map(|(r, _)| r))
+            {
+                row.input = row.input.or(fill.input);
+                row.output = row.output.or(fill.output);
+                row.cache_read = row.cache_read.or(fill.cache_read);
+                row.cw5m = row.cw5m.or(fill.cw5m);
+                row.cw1h = row.cw1h.or(fill.cw1h);
+            }
+            (p, row)
+        })
+        .collect();
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM prices", []).map_err(|e| e.to_string())?;
-    // The five-tier resolution order of ADR-0003, minus the Override tier (which
-    // lives in RateMap, not here), run as ordered passes: write_price_row never
-    // overwrites a key an earlier pass claimed, so the first claimant wins.
-    // Exact raw-key matches outrank normalized ones, and an exact OpenRouter id
-    // outranks a normalized LiteLLM match — a vendor-qualified exact hit is
-    // stronger evidence than normalizing onto some reseller's row.
+    // The resolution order, minus the Override tier (which lives in RateMap, not
+    // here), run as ordered passes: write_price_row never overwrites a key an
+    // earlier pass claimed, so the first claimant wins.
+    //
+    //   publisher rate -> primary catalog -> routed rate
+    //
+    // A publisher's own rate IS the Model's List Price, so it leads. The routed
+    // rate trails everything: no publisher sets it, it is blended across every
+    // host and moves with their discounts, and it exists only so a Model with no
+    // published rate anywhere is priced rather than Unpriced.
+    for (p, row) in &published {
+        write_price_row(&tx, &p.model_id, row, &p.publisher).map_err(|e| e.to_string())?;
+    }
+    for (p, row) in &published {
+        write_price_row(&tx, &normalize_model(&p.model_id), row, &p.publisher)
+            .map_err(|e| e.to_string())?;
+    }
     for (model, row) in &exact {
+        write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
+    }
+    for (model, (row, _)) in &norm {
         write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
     for (model, row) in &openrouter {
         write_price_row(&tx, model, row, CATALOG_OPENROUTER).map_err(|e| e.to_string())?;
-    }
-    for (model, (row, _)) in &norm {
-        write_price_row(&tx, model, row, CATALOG_LITELLM).map_err(|e| e.to_string())?;
     }
     // ponytail: this pass takes first-in-payload when two OpenRouter ids share a
     // normalized tail, with none of the canonical-provider tiebreak the LiteLLM
@@ -365,9 +483,100 @@ pub fn load_prices_json(cache_dir: &Path) -> String {
 
 /// The OpenRouter catalog. Unlike LiteLLM there is no bundled snapshot, so a
 /// machine that has never reached OpenRouter gets None and resolves without the
-/// tier — exactly the pre-OpenRouter behaviour (ADR-0003).
+/// tier — exactly the pre-OpenRouter behaviour (ADR-0009).
 pub fn load_openrouter_json(cache_dir: &Path) -> Option<String> {
     fetch_or_cached(OPENROUTER_URL, cache_dir, "openrouter_models.json")
+}
+
+/// The OpenRouter ids serving Models the Ledger actually holds — the only Models
+/// a publisher rate is ever fetched for. A raw Model name matches an id exactly
+/// or after normalizing, the same two ways the catalogs match.
+pub fn ledger_publisher_targets(
+    conn: &Connection,
+    openrouter_json: &str,
+) -> rusqlite::Result<Vec<String>> {
+    let ids: Vec<String> = openrouter_rows(openrouter_json).into_iter().map(|(id, _)| id).collect();
+    let by_exact: HashSet<&str> = ids.iter().map(|s| s.as_str()).collect();
+    let by_norm: HashMap<String, &str> =
+        ids.iter().map(|s| (normalize_model(s), s.as_str())).collect();
+
+    let mut stmt = conn.prepare("SELECT DISTINCT model FROM events WHERE model IS NOT NULL")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut out: Vec<String> = Vec::new();
+    for row in rows {
+        let model = row?;
+        let hit = by_exact
+            .get(model.as_str())
+            .copied()
+            .or_else(|| by_norm.get(&normalize_model(&model)).copied());
+        if let Some(id) = hit {
+            if !out.iter().any(|m| m == id) {
+                out.push(id.to_string());
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Read each Model's publisher rate, one request per Model. Does NO DB work, for
+/// the same reason the catalog loaders don't.
+///
+/// Every rate is cached to one snapshot file. A Model whose read fails keeps its
+/// cached rate rather than losing its List Price to a flaky network, and a Model
+/// whose publisher does not host it caches nothing, so it is retried next time —
+/// cheap, because that answer only changes when a publisher starts self-hosting.
+///
+/// ponytail: unbounded — every Ledger Model is read on every refresh, which is
+/// fine at ~16 Models and is not at 200. Bounding it with a staleness window and
+/// a per-refresh ceiling is #51; `fetched_at` is already recorded for it.
+pub fn load_publisher_rates(cache_dir: &Path, ids: &[String]) -> Vec<PublisherRate> {
+    let cache_file = cache_dir.join("openrouter_publishers.json");
+    let mut cached: HashMap<String, PublisherRate> = std::fs::read_to_string(&cache_file)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // ponytail: fixed fan-out over scoped threads rather than an async runtime —
+    // ureq is blocking and this is the only concurrent fetch in the app.
+    const LANES: usize = 8;
+    let fetched: Vec<PublisherRate> = std::thread::scope(|scope| {
+        let handles: Vec<_> = ids
+            .chunks(ids.len().div_ceil(LANES).max(1))
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .filter_map(|id| {
+                            let url = format!("{OPENROUTER_URL}/{id}/endpoints");
+                            let body = ureq::get(&url)
+                                .timeout(std::time::Duration::from_secs(10))
+                                .call()
+                                .ok()?
+                                .into_string()
+                                .ok()?;
+                            publisher_rate(&body, now)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles.into_iter().filter_map(|h| h.join().ok()).flatten().collect()
+    });
+
+    for rate in fetched {
+        cached.insert(rate.model_id.clone(), rate);
+    }
+    let _ = std::fs::create_dir_all(cache_dir);
+    if let Ok(body) = serde_json::to_string(&cached) {
+        let _ = std::fs::write(&cache_file, body);
+    }
+    ids.iter().filter_map(|id| cached.get(id).cloned()).collect()
 }
 
 /// Fetch both catalogs and rebuild the prices table.
@@ -377,7 +586,12 @@ pub fn load_openrouter_json(cache_dir: &Path) -> Option<String> {
 pub fn refresh_prices(conn: &mut Connection, cache_dir: &Path) -> Result<u64, String> {
     let litellm = load_prices_json(cache_dir);
     let openrouter = load_openrouter_json(cache_dir);
-    rebuild_prices(conn, &litellm, openrouter.as_deref())
+    let targets = match openrouter.as_deref() {
+        Some(json) => ledger_publisher_targets(conn, json).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let publishers = load_publisher_rates(cache_dir, &targets);
+    rebuild_prices(conn, &litellm, openrouter.as_deref(), &publishers)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -413,7 +627,7 @@ impl From<RatesPerTok> for OverrideRates {
     }
 }
 
-/// A catalog List Price match: which catalog it came from (ADR-0003) and its
+/// A catalog List Price match: which catalog it came from (ADR-0009) and its
 /// rates. `origin` is "litellm" | "openrouter", read from the row that matched.
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -525,15 +739,24 @@ impl RateMap {
         self.resolve_catalog(raw_model).map(|(_, r)| r)
     }
 
-    /// The catalog tier of `resolve`, ignoring overrides: exact raw key ->
-    /// normalized key, reporting which catalog matched. Two probes suffice
-    /// because rebuild_prices' ordered passes already decided which pass owns
-    /// each key, so a key's stored row IS its highest-precedence match.
+    /// The catalog tier of `resolve`, ignoring overrides.
+    ///
+    /// Two keys can answer for one Model — the raw name and its normalized form —
+    /// and the better SOURCE wins, not the better-matching key. Probing exact
+    /// first would always hand a Routed Rate the win over a catalog rate, because
+    /// a routed id is a vendor-prefixed exact key while a catalog's fallback is
+    /// only ever reachable normalized. rebuild_prices' pass order settles who owns
+    /// each key; this settles which of the two keys to believe.
     pub fn resolve_catalog(&self, raw_model: &str) -> Option<(&str, Rates)> {
-        self.prices
-            .get(raw_model)
-            .or_else(|| self.prices.get(&normalize_model(raw_model)))
-            .map(|(catalog, r)| (catalog.as_str(), *r))
+        let exact = self.prices.get(raw_model);
+        let normalized = self.prices.get(&normalize_model(raw_model));
+        let best = match (exact, normalized) {
+            // Ties go to the exact key: same source, more specific match.
+            (Some(e), Some(n)) if source_rank(&n.0) < source_rank(&e.0) => n,
+            (Some(e), _) => e,
+            (None, n) => n?,
+        };
+        Some((best.0.as_str(), best.1))
     }
 }
 
@@ -713,14 +936,14 @@ mod tests {
     fn rebuild_counts_distinct_rows() {
         let (_d, mut conn) = test_conn();
         // 5 exact rows + 4 normalized keys, unioned = 6 distinct model rows.
-        let n = rebuild_prices(&mut conn, FIXTURE, None).unwrap();
+        let n = rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         assert_eq!(n, 6);
     }
 
     #[test]
     fn exact_wins_and_null_reseller_does_not_pollute() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         // gpt-5.4 exact hit.
         assert_eq!(rm.resolve("gpt-5.4").unwrap().input, 2.5e-06);
@@ -732,7 +955,7 @@ mod tests {
     #[test]
     fn canonical_wins_normalized_collision() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         // Not an exact key -> normalized to gemini-2.5-flash; canonical 3e-07
         // must win over the 2.5e-06 reseller.
@@ -742,7 +965,7 @@ mod tests {
     #[test]
     fn claude_cache_rates_and_1h_fallback() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         let r = rm.resolve("claude-sonnet-4-5").unwrap();
         assert_eq!(r.cache_read, 3e-07);
@@ -757,7 +980,7 @@ mod tests {
     #[test]
     fn unknown_model_is_none() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         assert_eq!(rm.resolve("totally-unknown-model"), None);
     }
@@ -765,7 +988,7 @@ mod tests {
     #[test]
     fn override_wins_fills_none_and_applies_cache_write_both_ttls() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         set_override(
             &conn,
             "gemini-2.5-flash",
@@ -819,7 +1042,7 @@ mod tests {
     #[test]
     fn model_pricing_omits_unattributed_usage() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         seed_event(&conn, "priced-full", "claude");
         conn.execute(
             "INSERT INTO events (dedup_key, source, timestamp, model, input_tokens, source_file) \
@@ -835,7 +1058,7 @@ mod tests {
     #[test]
     fn model_pricing_splits_override_and_catalog() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         seed_event(&conn, "priced-no-cache", "codex");
         seed_event(&conn, "priced-full", "claude");
         seed_event(&conn, "unpriced-x", "grok");
@@ -890,7 +1113,7 @@ mod tests {
         assert_eq!(get("multi").tool, "gemini");
     }
 
-    // The five-tier resolution fixtures (ADR-0003). LiteLLM covers `priced-full`
+    // The five-tier resolution fixtures (ADR-0009). LiteLLM covers `priced-full`
     // under its exact key, and `glm-5.2` ONLY via normalization of a reseller key
     // — the real-world shape that motivated putting openrouter-exact above
     // litellm-normalized (Cloudflare's rate is 1.8x the vendor's).
@@ -904,6 +1127,27 @@ mod tests {
         "input_cost_per_token": 3e-06,
         "output_cost_per_token": 6e-06,
         "litellm_provider": "openai"
+      },
+      "lab-fable": {
+        "input_cost_per_token": 1e-05,
+        "output_cost_per_token": 5e-05,
+        "cache_read_input_token_cost": 1e-06,
+        "cache_creation_input_token_cost": 1.25e-05,
+        "cache_creation_input_token_cost_above_1hr": 2e-05,
+        "litellm_provider": "anthropic"
+      }
+    }"#;
+
+    // The publisher quotes everything EXCEPT the 1h cache-write TTL, which only
+    // the primary catalog publishes — the real claude-fable-5 shape.
+    const HOSTS_LAB_FABLE: &str = r#"{
+      "data": {
+        "id": "anthropic/lab-fable",
+        "endpoints": [
+          { "provider_name": "Anthropic", "tag": "anthropic",
+            "pricing": { "prompt": "0.00001", "completion": "0.00005",
+                         "input_cache_read": "0.000001", "input_cache_write": "0.0000125" } }
+        ]
       }
     }"#;
 
@@ -931,7 +1175,7 @@ mod tests {
     }"#;
 
     fn tier_map(conn: &mut Connection) -> RateMap {
-        rebuild_prices(conn, TIER_LITELLM, Some(TIER_OPENROUTER)).unwrap();
+        rebuild_prices(conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[]).unwrap();
         RateMap::load(conn).unwrap()
     }
 
@@ -1043,6 +1287,71 @@ mod tests {
         }
     }
 
+    // A per-Model host listing, shaped like the real one: hosts ordered cheapest
+    // first, the publisher NOT first, and its tag vendor matching the Model id's
+    // vendor. Two z-ai endpoints so the standard/`fast` split is exercised.
+    const HOSTS_GLM: &str = r#"{
+      "data": {
+        "id": "z-ai/glm-5.2",
+        "endpoints": [
+          { "provider_name": "StreamLake", "tag": "streamlake/fp8",
+            "pricing": { "prompt": "0.0000007455", "completion": "0.000002343" } },
+          { "provider_name": "Cloudflare", "tag": "cloudflare",
+            "pricing": { "prompt": "0.0000014", "completion": "0.0000044" } },
+          { "provider_name": "Z.AI", "tag": "z-ai/fp8",
+            "pricing": { "prompt": "0.0000014", "completion": "0.0000044",
+                         "input_cache_read": "0.00000026" } },
+          { "provider_name": "Z.AI", "tag": "z-ai/fast",
+            "pricing": { "prompt": "0.0000021", "completion": "0.0000066" } }
+        ]
+      }
+    }"#;
+
+    // Google does not host Gemini on this catalog — no endpoint tag matches.
+    const HOSTS_NO_PUBLISHER: &str = r#"{
+      "data": {
+        "id": "google/gemini-2.5-flash",
+        "endpoints": [
+          { "provider_name": "DeepInfra", "tag": "deepinfra/fp8",
+            "pricing": { "prompt": "0.0000003", "completion": "0.0000025" } }
+        ]
+      }
+    }"#;
+
+    #[test]
+    fn publisher_rate_picks_the_publishers_own_endpoint() {
+        let p = publisher_rate(HOSTS_GLM, 1000).unwrap();
+        assert_eq!(p.model_id, "z-ai/glm-5.2");
+        assert_eq!(p.publisher, "Z.AI");
+        assert_eq!(p.fetched_at, 1000);
+        // Not StreamLake's cheaper 0.7455, and not Cloudflare's identical-looking
+        // 1.4 — the publisher's own entry, which also carries a cache read rate.
+        assert_eq!(p.rates.input, Some(1.4e-06));
+        assert_eq!(p.rates.output, Some(4.4e-06));
+        assert_eq!(p.rates.cache_read, Some(2.6e-07));
+        // Of two publisher endpoints, the standard (cheaper) one is the List Price.
+        assert_ne!(p.rates.input, Some(2.1e-06));
+    }
+
+    #[test]
+    fn publisher_rate_is_none_when_the_publisher_does_not_host_the_model() {
+        assert!(publisher_rate(HOSTS_NO_PUBLISHER, 0).is_none());
+    }
+
+    #[test]
+    fn publisher_rate_is_none_on_an_unusable_payload() {
+        for bad in [
+            "not json",
+            r#"{"data": {}}"#,
+            r#"{"data": {"id": "z-ai/glm-5.2"}}"#,
+            r#"{"data": {"id": "z-ai/glm-5.2", "endpoints": []}}"#,
+            // Publisher present but quotes nothing priceable.
+            r#"{"data":{"id":"z-ai/x","endpoints":[{"provider_name":"Z.AI","tag":"z-ai","pricing":{"prompt":"0","completion":"0"}}]}}"#,
+        ] {
+            assert!(publisher_rate(bad, 0).is_none(), "should reject: {bad}");
+        }
+    }
+
     #[test]
     fn a_publisher_row_beats_a_reseller_row_whichever_sorts_first() {
         // Neither fixture has a bare "lab-model" key, so the normalized key is
@@ -1053,7 +1362,7 @@ mod tests {
             (GUARD_PUBLISHER_FIRST, "publisher sorts first"),
         ] {
             let (_d, mut conn) = test_conn();
-            rebuild_prices(&mut conn, fixture, None).unwrap();
+            rebuild_prices(&mut conn, fixture, None, &[]).unwrap();
             let rm = RateMap::load(&conn).unwrap();
             let r = rm.resolve("some-host/lab-model").unwrap();
             assert_eq!(r.input, 1e-06, "publisher's rate must win ({label})");
@@ -1062,15 +1371,81 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_exact_outranks_litellm_normalized() {
+    fn a_routed_rate_no_longer_outranks_the_primary_catalog() {
         let (_d, mut conn) = test_conn();
         let rm = tier_map(&mut conn);
-        // The raw Model name matches an OpenRouter id exactly; LiteLLM reaches it
-        // only by normalizing a Cloudflare reseller key. Exact evidence wins.
+        // Reverses what the superseded ADR-0003 ordering did. OpenRouter's
+        // per-Model figure is a Routed Rate, not a List Price — it is blended
+        // across every host and moves with their promotions — so a published
+        // catalog rate outranks it even when OpenRouter matches the raw name
+        // exactly and the catalog only matches after normalizing.
         let (origin, r) = rm.resolve_catalog("z-ai/glm-5.2").unwrap();
+        assert_eq!(origin, "litellm");
+        assert_eq!(r.input, 1.4e-06, "the catalog's rate, not the routed 0.7742");
+    }
+
+    #[test]
+    fn a_publisher_rate_outranks_every_catalog() {
+        let (_d, mut conn) = test_conn();
+        let publisher = publisher_rate(HOSTS_GLM, 0).unwrap();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        // Beats the Cloudflare row reached by normalization AND the routed rate,
+        // and reports the publisher rather than the catalog that carried it.
+        let (origin, r) = rm.resolve_catalog("z-ai/glm-5.2").unwrap();
+        assert_eq!(origin, "Z.AI");
+        assert_eq!(r.input, 1.4e-06);
+        assert_eq!(r.cache_read, 2.6e-07);
+    }
+
+    #[test]
+    fn the_primary_catalog_fills_fields_the_publisher_omits() {
+        let (_d, mut conn) = test_conn();
+        let publisher = publisher_rate(HOSTS_LAB_FABLE, 0).unwrap();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        let (origin, r) = rm.resolve_catalog("lab-fable").unwrap();
+        // The publisher's own figures win where it quotes them...
+        assert_eq!(origin, "Anthropic");
+        assert_eq!(r.input, 1e-05);
+        assert_eq!(r.cache_write_5m, 1.25e-05);
+        // ...and the one field it does not quote comes from the catalog, rather
+        // than silently falling back to the 5m rate and undercounting 1h writes.
+        assert_eq!(r.cache_write_1h, 2e-05);
+    }
+
+    #[test]
+    fn a_model_whose_publisher_does_not_host_it_falls_to_the_catalog() {
+        let (_d, mut conn) = test_conn();
+        // Parsing the listing yields no publisher, so nothing reaches tier 2.
+        assert!(publisher_rate(HOSTS_NO_PUBLISHER, 0).is_none());
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[]).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        let (origin, r) = rm.resolve_catalog("priced-full").unwrap();
+        assert_eq!(origin, "litellm");
+        // Unchanged, rate and all — not OpenRouter's 9e-05 for the same Model.
+        assert_eq!(r.input, 3e-06);
+        assert_eq!(r.output, 6e-06);
+    }
+
+    #[test]
+    fn load_publisher_rates_does_nothing_without_targets() {
+        // Guards the chunking arithmetic: an empty target list must not divide by
+        // zero, spawn a lane, or touch the network.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_publisher_rates(dir.path(), &[]).is_empty());
+    }
+
+    #[test]
+    fn a_model_with_no_published_rate_still_gets_the_routed_rate() {
+        let (_d, mut conn) = test_conn();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[]).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        // No catalog coverage at all: the Routed Rate is weaker than a List Price
+        // but better than Unpriced, so it survives as the last tier.
+        let (origin, r) = rm.resolve_catalog("claude-opus-5").unwrap();
         assert_eq!(origin, "openrouter");
-        assert_eq!(r.input, 7.742e-07);
-        assert_eq!(r.output, 2.4332e-06);
+        assert_eq!(r.input, 5e-06);
     }
 
     #[test]
@@ -1100,7 +1475,7 @@ mod tests {
     #[test]
     fn override_outranks_both_catalogs() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER)).unwrap();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[]).unwrap();
         set_override(
             &conn,
             "z-ai/glm-5.2",
@@ -1110,7 +1485,23 @@ mod tests {
         let rm = RateMap::load(&conn).unwrap();
         assert_eq!(rm.resolve("z-ai/glm-5.2").unwrap().input, 9e-06);
         // resolve_catalog still reports the catalog match, ignoring the Override.
-        assert_eq!(rm.resolve_catalog("z-ai/glm-5.2").unwrap().0, "openrouter");
+        assert_eq!(rm.resolve_catalog("z-ai/glm-5.2").unwrap().0, "litellm");
+    }
+
+    #[test]
+    fn an_override_outranks_a_publisher_rate_too() {
+        let (_d, mut conn) = test_conn();
+        let publisher = publisher_rate(HOSTS_GLM, 0).unwrap();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
+        set_override(
+            &conn,
+            "z-ai/glm-5.2",
+            OverrideRates { input: Some(9e-06), output: None, cache_read: None, cache_write: None },
+        )
+        .unwrap();
+        let rm = RateMap::load(&conn).unwrap();
+        assert_eq!(rm.resolve("z-ai/glm-5.2").unwrap().input, 9e-06);
+        assert_eq!(rm.resolve_catalog("z-ai/glm-5.2").unwrap().0, "Z.AI");
     }
 
     #[test]
@@ -1132,7 +1523,7 @@ mod tests {
     #[test]
     fn an_absent_openrouter_catalog_degrades_to_litellm_only() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, TIER_LITELLM, None).unwrap();
+        rebuild_prices(&mut conn, TIER_LITELLM, None, &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         // Exactly today's behaviour: the normalized Cloudflare row is the only match.
         let (origin, r) = rm.resolve_catalog("z-ai/glm-5.2").unwrap();
@@ -1142,10 +1533,14 @@ mod tests {
     }
 
     #[test]
-    fn an_openrouter_model_without_cache_rates_is_cache_estimated() {
+    fn a_publisher_rate_without_cache_writes_is_still_cache_estimated() {
         let (_d, mut conn) = test_conn();
-        let rm = tier_map(&mut conn);
-        // glm-5.2 prices cache READS but not cache writes -> Cache-Estimated.
+        // The publisher quotes cache READS but no cache write, and the primary
+        // catalog has no cache rates to fill the gap -> Cache-Estimated survives
+        // the merge rather than being masked by it.
+        let publisher = publisher_rate(HOSTS_GLM, 0).unwrap();
+        rebuild_prices(&mut conn, TIER_LITELLM, Some(TIER_OPENROUTER), &[publisher]).unwrap();
+        let rm = RateMap::load(&conn).unwrap();
         let r = rm.resolve("z-ai/glm-5.2").unwrap();
         assert!(!r.cache_gap(100, 0, 0), "cache reads are priced");
         assert!(r.cache_gap(0, 100, 0), "cache writes are not");
@@ -1180,7 +1575,7 @@ mod tests {
     #[test]
     fn catalog_origin_is_read_from_storage_not_hardcoded() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         // The rebuild must RECORD its catalog, not leave it for the read side to
         // assume: RateMap reads a NULL catalog as "litellm", so without this every
         // assertion below would still pass if write_price_row bound NULL.
@@ -1211,7 +1606,7 @@ mod tests {
     #[test]
     fn a_price_row_predating_the_catalog_column_reads_as_litellm() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         // What the v9 migration leaves behind: a row with no catalog recorded.
         // Every pre-v9 row came from the one catalog then read, so it reports that.
         conn.execute(
@@ -1227,7 +1622,7 @@ mod tests {
     #[test]
     fn models_needing_lookup_returns_an_unpriced_model_once_and_skips_the_rest() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         seed_event(&conn, "priced-full", "claude"); // has a catalog List Price
         seed_event(&conn, "brand-new-model", "claude"); // no rate anywhere
         seed_event(&conn, "hand-priced", "hermes"); // no catalog rate, but Overridden
@@ -1256,6 +1651,33 @@ mod tests {
     }
 
     #[test]
+    fn publisher_targets_are_only_ledger_models_the_catalog_serves() {
+        let (_d, conn) = test_conn();
+        seed_event(&conn, "z-ai/glm-5.2", "hermes"); // matches an id exactly
+        seed_event(&conn, "claude-opus-5", "claude"); // matches after normalizing
+        seed_event(&conn, "qwen3.6-35b-mtp", "hermes"); // served by nobody
+        conn.execute(
+            "INSERT INTO events (dedup_key, source, timestamp, model, source_file) \
+             VALUES ('pi:tool:1', 'pi', 0, NULL, 'pi.jsonl')",
+            [],
+        )
+        .unwrap();
+
+        let targets = ledger_publisher_targets(&conn, TIER_OPENROUTER).unwrap();
+        // One request per Model, and only for Models we actually have.
+        assert_eq!(targets, vec!["anthropic/claude-opus-5", "z-ai/glm-5.2"]);
+        // openai/priced-full is served but absent from the Ledger, so it is never
+        // fetched; Unattributed Usage has no Model and contributes nothing.
+        assert!(!targets.iter().any(|t| t.contains("priced-full")));
+    }
+
+    #[test]
+    fn publisher_targets_are_empty_for_an_empty_ledger() {
+        let (_d, conn) = test_conn();
+        assert!(ledger_publisher_targets(&conn, TIER_OPENROUTER).unwrap().is_empty());
+    }
+
+    #[test]
     fn models_needing_lookup_is_empty_before_any_catalog_has_loaded() {
         let (_d, conn) = test_conn();
         // Cold start: the frontend's first scan can land before the start-up
@@ -1270,14 +1692,14 @@ mod tests {
     #[test]
     fn models_needing_lookup_is_empty_for_an_empty_ledger() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         assert!(models_needing_lookup(&conn, &HashSet::new()).unwrap().is_empty());
     }
 
     #[test]
     fn override_set_delete_roundtrip_via_model_pricing() {
         let (_d, mut conn) = test_conn();
-        rebuild_prices(&mut conn, MP_FIXTURE, None).unwrap();
+        rebuild_prices(&mut conn, MP_FIXTURE, None, &[]).unwrap();
         seed_event(&conn, "priced-full", "claude");
 
         let find = |list: &[ModelPricing]| {
