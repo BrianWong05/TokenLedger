@@ -150,6 +150,18 @@ describe('holdSpin', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(((await p) as Error).message).toBe('boom');
   });
+
+  it('an abort mid-hold resolves at once and leaves no timer behind', async () => {
+    // Unmount aborts: a hold timer that outlived its caller would fire into a
+    // torn-down tree (in jsdom, after the environment itself is gone).
+    const ac = new AbortController();
+    const p = holdSpin(async () => 'ok', ac.signal);
+    await vi.advanceTimersByTimeAsync(0); // work settles, the hold is scheduled
+    expect(vi.getTimerCount()).toBe(1);
+    ac.abort();
+    expect(await p).toBe('ok');
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe('createRefreshGate', () => {

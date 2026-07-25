@@ -4,6 +4,7 @@
 // `claude_ctx::content_bytes`, and `claude_ctx::Composition` call sites stay
 // unchanged. DB persistence lives in db.rs.
 pub use super::ctx::{content_bytes, est, Composition};
+use super::find_segment;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -82,7 +83,7 @@ pub fn apply_assistant_content(
                     resources.push(("agent", agent.to_string()));
                 } else if name == "Read" {
                     if let Some(p) = b["input"]["file_path"].as_str() {
-                        if p.contains("/memory/") && p.ends_with("MEMORY.md") {
+                        if find_segment(p, "/memory/").is_some() && p.ends_with("MEMORY.md") {
                             resources.push(("memory_file", p.to_string()));
                         }
                     }
@@ -148,6 +149,31 @@ mod tests {
         assert!(res.contains(&("mcp_server", "pencil".to_string())));
         assert!(res.contains(&("agent", "Explore".to_string())));
         assert!(res.iter().any(|(k, n)| *k == "memory_file" && n.ends_with("MEMORY.md")));
+    }
+
+    // The file_path comes from the log, so it is spelt the way the machine that
+    // wrote it spells paths — a Windows transcript says `\memory\`.
+    #[test]
+    fn a_memory_file_is_recognised_in_either_flavour_of_path() {
+        let read = |p: &str| {
+            let mut res: Vec<(&'static str, String)> = Vec::new();
+            let line = json!({"type":"assistant","message":{"content":[
+                {"type":"tool_use","id":"a","name":"Read","input":{"file_path": p}}
+            ]}});
+            apply_assistant_content(
+                &mut Composition::default(),
+                &line,
+                &mut HashMap::new(),
+                &mut res,
+                &mut Vec::new(),
+            );
+            res.iter().any(|(k, _)| *k == "memory_file")
+        };
+        assert!(read("/Users/x/.claude/projects/-p/memory/MEMORY.md"));
+        assert!(read(r"C:\Users\x\.claude\projects\-p\memory\MEMORY.md"));
+        // A MEMORY.md that is not in a memory directory is still not one.
+        assert!(!read("/Users/x/notes/MEMORY.md"));
+        assert!(!read(r"C:\Users\x\notes\MEMORY.md"));
     }
 
     // helper mirroring the engine's estimator for JSON values

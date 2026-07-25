@@ -87,7 +87,9 @@ row plus the app actions — with the panel's read-out left to the Overview.
 The bar (or hover) figures and the panel carry different windows on purpose:
 the icon's figures are always Today, the local calendar day, while the panel
 selects its own (Today, Yesterday, or the trailing 30 days) and everything it
-shows describes that selection. On a day with no usage the icon stands alone.
+shows describes that selection. On a day with no usage the icon stands alone —
+except where the figures live in a menu row, which cannot be absent the way a
+title can and so says in words that there was none.
 Every Cost figure follows the same rules as everywhere else: Partial Cost's
 "≥" marker, Unpriced never shown as $0, Display Currency honored.
 _Avoid_: Tray, status item, menu (ADR-0007 replaced the native menu with the

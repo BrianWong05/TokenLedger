@@ -57,7 +57,12 @@ fn parse_file(
     // but split per LINE: proxied models (chatcmpl ids) log partial usage on
     // early duplicate lines, and the dedup upsert keeps the max-output line —
     // its ctx must be computed from its own billed or the partition breaks.
-    let is_agent_file = path_str.contains("/subagents/");
+    // By component, not by "/subagents/": this is a path on the machine doing
+    // the scanning, and on Windows its separator is a backslash — a literal
+    // match there finds nothing and every subagent file reads as a main one.
+    let is_agent_file = Path::new(path_str)
+        .components()
+        .any(|c| c.as_os_str() == "subagents");
     let mut events = Vec::new();
     let mut comps: HashMap<String, Composition> = HashMap::new();
     let mut tool_names: HashMap<String, String> = HashMap::new();

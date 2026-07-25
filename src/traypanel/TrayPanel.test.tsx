@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import TrayPanel from './TrayPanel';
+import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import type { BreakdownRow, Summary } from '../types';
@@ -76,10 +77,14 @@ describe('TrayPanel', () => {
     ]);
     expect(ledger.calls.breakdown[0]?.[0]).toBe('tool');
 
-    // The four actions, in 2b's order.
-    const actions = Array.from(container.querySelectorAll('.tp-action')).map((b) =>
-      b.textContent?.replace(/[⇧⌘,QR]+$/, '').trim(),
-    );
+    // The four actions, in 2b's order. The key hint is lifted out rather than
+    // trimmed off: it is spelt per platform, and "Ctrl+Shift+R" ends in letters
+    // a glyph-stripping regex would eat along with it.
+    const actions = Array.from(container.querySelectorAll('.tp-action')).map((b) => {
+      const label = b.cloneNode(true) as HTMLElement;
+      label.querySelector('.tp-key')?.remove();
+      return label.textContent?.trim();
+    });
     expect(actions).toEqual(['Open TokenLedger', 'Rescan now', 'Settings…', 'Quit TokenLedger']);
   });
 
@@ -348,5 +353,29 @@ describe('TrayPanel', () => {
     await settle();
     expect(container.querySelector('.tp-skel')).toBeNull();
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
+  });
+
+  // The panel opens on macOS and Windows (ADR-0010), and ⌘ is not a key a
+  // Windows keyboard has.
+  it('spells the action shortcuts the way the platform does', async () => {
+    const keys = async (platform: Platform) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mountedRoots.push(root);
+      await act(async () => {
+        root.render(
+          <TrayPanel
+            ports={{ ledger: makeFakeLedger({ summary, modelRows: toolRows }), settings: makeFakeSettings() }}
+            platform={platform}
+          />,
+        );
+      });
+      await settle();
+      return Array.from(container.querySelectorAll('.tp-key')).map((e) => e.textContent);
+    };
+
+    expect(await keys('macos')).toEqual(['⇧⌘R', '⌘,', '⌘Q']);
+    expect(await keys('windows')).toEqual(['Ctrl+Shift+R', 'Ctrl+,', 'Ctrl+Q']);
   });
 });

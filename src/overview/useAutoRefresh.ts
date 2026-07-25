@@ -70,13 +70,24 @@ export function useRefreshSec(): [RefreshSec, (sec: RefreshSec) => void] {
 // the 1s spin so the button visibly responds.
 export const MIN_SPIN_MS = 1_000;
 
-export async function holdSpin<T>(work: () => Promise<T>): Promise<T> {
+// The hold is cosmetic, so `signal` (aborted on unmount) drops it and clears
+// the timer — otherwise an unmounted caller leaves a timer running for up to a
+// second that wakes to set state on a tree that is gone.
+export async function holdSpin<T>(work: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   const t0 = Date.now();
   try {
     return await work();
   } finally {
     const remain = MIN_SPIN_MS - (Date.now() - t0);
-    if (remain > 0) await new Promise((r) => setTimeout(r, remain));
+    if (remain > 0 && !signal?.aborted) {
+      await new Promise<void>((r) => {
+        const id = setTimeout(r, remain);
+        signal?.addEventListener('abort', () => {
+          clearTimeout(id);
+          r();
+        }, { once: true });
+      });
+    }
   }
 }
 
@@ -108,16 +119,23 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
   const busyRef = useRef(false);
+  // Unmounting mid-refresh aborts the in-flight spin hold: its timer goes away
+  // and the tail below is skipped, so nothing wakes up to touch a torn-down tree.
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const refresh = useCallback(async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     setRefreshing(true);
+    const ac = (abortRef.current = new AbortController());
     try {
-      await holdSpin(() => onRefreshRef.current());
+      await holdSpin(() => onRefreshRef.current(), ac.signal);
     } finally {
-      busyRef.current = false;
-      setRefreshing(false);
+      if (!ac.signal.aborted) {
+        busyRef.current = false;
+        setRefreshing(false);
+      }
     }
   }, []);
 

@@ -5,7 +5,7 @@ export const settings = {
   en: {
     'settings.appearance': 'Appearance',
     'settings.theme': 'Theme',
-    'settings.theme.caption': 'System follows macOS appearance',
+    'settings.theme.caption': 'System follows your OS appearance',
     'settings.theme.system': 'System',
     'settings.theme.light': 'Light',
     'settings.theme.dark': 'Dark',
@@ -44,11 +44,11 @@ export const settings = {
     'settings.updates.downloadedNote': 'downloaded · restart to install',
     'settings.updates.availableNote': 'available',
 
-    'settings.footer': 'TokenLedger only reads local log files. Nothing leaves this Mac.',
+    'settings.footer': 'TokenLedger only reads local log files. Nothing leaves this computer.',
 
     'settings.firstRun.title': 'TokenLedger keeps recording in the background',
     'settings.firstRun.body':
-      'Coding tools delete their local logs after about 30 days. TokenLedger starts at login and scans quietly, so your usage is saved before it disappears. Everything stays on this Mac.',
+      'Coding tools delete their local logs after about 30 days. TokenLedger starts at login and scans quietly, so your usage is saved before it disappears. Everything stays on this computer.',
     'settings.firstRun.launchCaption': 'Change anytime in Settings → Startup',
     'settings.firstRun.footnote': 'Scans are local file reads — nothing is uploaded.',
     'settings.firstRun.ok': 'OK',
@@ -56,7 +56,7 @@ export const settings = {
   'zh-Hant': {
     'settings.appearance': '外觀',
     'settings.theme': '主題',
-    'settings.theme.caption': '「系統」會跟隨 macOS 外觀',
+    'settings.theme.caption': '「系統」會跟隨作業系統外觀',
     'settings.theme.system': '系統',
     'settings.theme.light': '淺色',
     'settings.theme.dark': '深色',
@@ -95,11 +95,11 @@ export const settings = {
     'settings.updates.downloadedNote': '已下載 · 重新啟動以安裝',
     'settings.updates.availableNote': '可更新',
 
-    'settings.footer': 'TokenLedger 只會讀取本機的記錄檔。沒有任何資料離開這台 Mac。',
+    'settings.footer': 'TokenLedger 只會讀取本機的記錄檔。沒有任何資料離開這台電腦。',
 
     'settings.firstRun.title': 'TokenLedger 會在背景持續記錄',
     'settings.firstRun.body':
-      '編碼工具約 30 天後就會刪除本機記錄檔。TokenLedger 會在登入時啟動並在背景靜默掃描，讓你的用量在消失前先被保存。所有資料都留在這台 Mac。',
+      '編碼工具約 30 天後就會刪除本機記錄檔。TokenLedger 會在登入時啟動並在背景靜默掃描，讓你的用量在消失前先被保存。所有資料都留在這台電腦。',
     'settings.firstRun.launchCaption': '隨時可在「設定 → 啟動」變更',
     'settings.firstRun.footnote': '掃描只是本機檔案讀取 — 不會上傳任何東西。',
     'settings.firstRun.ok': '確定',

@@ -1,6 +1,6 @@
 # TokenLedger
 
-A macOS desktop app (Tauri v2) that tracks token usage and estimated cost
+A desktop app (Tauri v2) for macOS, Windows, and Linux that tracks token usage and estimated cost
 across the AI coding tools on your machine — **Claude Code**, **Codex CLI**,
 **Gemini CLI**, **Hermes**, **Grok**, **Google Antigravity**, and **pi** — by
 parsing each tool's local logs into a normalized SQLite ledger and showing a
@@ -44,9 +44,11 @@ an invoice.
 | Google Antigravity | `~/.gemini/antigravity{,-cli}/conversations/*.db` | Protobuf usage blobs; IDE + CLI count as one Source |
 | pi | `~/.pi/agent/sessions/**/*.jsonl` | Session tree: all branches counted, forks/clones deduplicated (see below) |
 
-The database lives at `<app data dir>/tokenledger.db`
-(`~/Library/Application Support/com.brianwong.tokenledger/tokenledger.db` on
-macOS), in WAL mode.
+Every path above is under your home directory and is read the same way on all
+three platforms. The database lives at `<app data dir>/tokenledger.db` in WAL
+mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
+`%APPDATA%\com.brianwong.tokenledger\` on Windows,
+`~/.local/share/com.brianwong.tokenledger/` on Linux.
 
 ### pi
 
@@ -85,12 +87,37 @@ Session corpus (see the parity check below), while **Cost may intentionally
 differ**: TokenLedger ignores pi's logged cost and reprices everything through
 its own Override and List Price rules.
 
+## Install
+
+Grab the build for your platform from
+[Releases](https://github.com/BrianWong05/TokenLedger/releases/latest). Whichever
+one you take, it updates itself from then on.
+
+| Platform | Download | Before it runs |
+|---|---|---|
+| macOS (Apple Silicon) | `.dmg` | — |
+| Windows | `-setup.exe` | Not code-signed yet: SmartScreen says "Windows protected your PC" → **More info → Run anyway** |
+| Linux | `.AppImage` | `chmod +x`, and the tray needs `libayatana-appindicator3-1` (plus the AppIndicator extension on stock GNOME) |
+
+Two things worth knowing before you install:
+
+- **WSL is not scanned.** The Windows build reads the logs under your Windows
+  home. Coding tools run inside WSL write to the Linux home instead, so a
+  WSL-only setup shows an empty Ledger.
+- **The tray is how you get back to the app.** Closing the window leaves
+  TokenLedger running so it keeps capturing; on a Linux desktop with no tray at
+  all, that resident presence has nowhere to live.
+
 ## Requirements
 
-- macOS (Apple Silicon)
+To build from source:
+
+- macOS (Apple Silicon), Windows, or Linux
 - [Rust](https://rustup.rs/) (stable, 2021 edition)
 - Node.js 18+ and npm
-- Tauri v2 prerequisites (Xcode Command Line Tools)
+- Tauri v2 prerequisites — Xcode Command Line Tools on macOS, the MSVC build
+  tools on Windows, and on Debian/Ubuntu:
+  `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf`
 
 ## Build & run
 

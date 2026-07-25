@@ -123,7 +123,7 @@ describe('SettingsPage', () => {
     expect(c.querySelector('[aria-label="Launch at login"]')).not.toBeNull();
     expect(text).toContain('Version 1.4.2');
     expect(text).toContain('Check for updates');
-    expect(text).toContain('Nothing leaves this Mac.');
+    expect(text).toContain('Nothing leaves this computer.');
   });
 
   it('renders the Scanning group and persists the auto-refresh interval', async () => {

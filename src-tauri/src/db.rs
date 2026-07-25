@@ -442,14 +442,38 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 
 pub fn open_db(path: &std::path::Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
-    // busy_timeout FIRST: converting to WAL needs an exclusive lock, so with
-    // the default timeout of 0 a concurrent opener would fail the pragma
-    // instantly ("database is locked") instead of waiting out the race.
+    // busy_timeout FIRST: every lock wait below rides on it — the migration's
+    // BEGIN IMMEDIATE waits out a concurrent opener instead of failing the
+    // instant it finds the database held.
     conn.busy_timeout(std::time::Duration::from_millis(5000))?;
-    // journal_mode returns the applied mode as a row, so read it via query_row.
-    let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+    set_wal(&conn)?;
     migrate(&conn)?;
     Ok(conn)
+}
+
+/// Switches the journal to WAL, retrying while another opener is converting.
+/// The busy timeout above cannot cover this one: converting needs an exclusive
+/// lock while the connection already holds a shared one, and when a second
+/// opener wants that same upgrade SQLite calls it a deadlock — answering BUSY
+/// at once and never running the busy handler, so waiting is left to the
+/// caller. The retry costs nothing once the winner lands: the loser then finds
+/// the journal already WAL and the pragma is a no-op.
+fn set_wal(conn: &Connection) -> rusqlite::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(5000);
+    loop {
+        // journal_mode returns the applied mode as a row, so read it via query_row.
+        match conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0)) {
+            Ok(_) => return Ok(()),
+            Err(e)
+                if std::time::Instant::now() < deadline
+                    && matches!(&e, rusqlite::Error::SqliteFailure(f, _)
+                        if f.code == rusqlite::ErrorCode::DatabaseBusy) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<u64> {

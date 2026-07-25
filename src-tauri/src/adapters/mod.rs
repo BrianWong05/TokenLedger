@@ -60,8 +60,21 @@ pub(crate) fn unchanged(
     }
 }
 
+/// Finds `segment`, spelt POSIX-style, in a path that came out of a log —
+/// whichever separator the machine that wrote that log happens to use. A
+/// Windows-written log spells `/.claude/worktrees/` as `\.claude\worktrees\`,
+/// and looking only for the forward-slash spelling silently never fires there.
+/// The index returned is into `path` itself: trading one ASCII byte for another
+/// of the same width moves nothing.
+/// ponytail: normalizes a copy per call, which is noise next to the JSON parse
+/// that produced the path. Compare separators in place if a scan ever says
+/// otherwise.
+pub(crate) fn find_segment(path: &str, segment: &str) -> Option<usize> {
+    path.replace('\\', "/").find(segment)
+}
+
 pub(crate) fn rollup_worktree(cwd: &str) -> String {
-    match cwd.find("/.claude/worktrees/") {
+    match find_segment(cwd, "/.claude/worktrees/") {
         Some(i) => cwd[..i].to_string(),
         None => cwd.to_string(),
     }
@@ -91,5 +104,32 @@ fn hex_val(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A cwd is copied out of a log, so it is spelt the way the machine that
+    // wrote it spells paths — which need not be the one now reading it.
+    #[test]
+    fn a_worktree_rolls_up_in_either_flavour_of_path() {
+        assert_eq!(
+            rollup_worktree("/Users/dev/repo/.claude/worktrees/feat-x"),
+            "/Users/dev/repo"
+        );
+        assert_eq!(
+            rollup_worktree(r"C:\Users\dev\repo\.claude\worktrees\feat-x"),
+            r"C:\Users\dev\repo"
+        );
+    }
+
+    #[test]
+    fn a_cwd_outside_a_worktree_is_left_alone() {
+        assert_eq!(rollup_worktree("/Users/dev/repo"), "/Users/dev/repo");
+        assert_eq!(rollup_worktree(r"C:\Users\dev\repo"), r"C:\Users\dev\repo");
+        // ".claude/worktrees" as a plain directory name, not the marker path
+        assert_eq!(rollup_worktree("/Users/dev/worktrees"), "/Users/dev/worktrees");
     }
 }

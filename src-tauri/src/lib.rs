@@ -28,7 +28,6 @@ use std::sync::Mutex;
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_autostart::MacosLauncher;
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
@@ -364,13 +363,15 @@ fn save_csv(app: AppHandle, filename: String, contents: String) -> Result<bool, 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        // Launch at login as a LaunchAgent that passes HIDDEN_FLAG, so an
-        // at-login start comes up hidden (tray only) while a manual launch does
-        // not. Enrollment itself is driven from the frontend (first-run dialog +
-        // Settings toggle → startup.ts).
+        // Launch at login passing HIDDEN_FLAG, so an at-login start comes up
+        // hidden (tray only) while a manual launch does not. Enrollment itself
+        // is driven from the frontend (first-run dialog + Settings toggle →
+        // startup.ts). The mechanism is the plugin's per-platform default — a
+        // LaunchAgent on macOS, a registry Run entry on Windows, a desktop
+        // entry on Linux. Do not set macos_launcher to say so: the setter is
+        // itself macOS-only and breaks the Windows and Linux builds.
         .plugin(
             tauri_plugin_autostart::Builder::new()
-                .macos_launcher(MacosLauncher::LaunchAgent)
                 .args([HIDDEN_FLAG])
                 .build(),
         )
@@ -407,6 +408,17 @@ pub fn run() {
             });
 
             tray::build(app.handle())?;
+
+            // No panel on Linux (ADR-0010): its tray delivers no click to
+            // toggle one, so the window would be a webview nobody can open.
+            // ponytail: destroyed rather than never built — tauri.conf.json has
+            // no per-platform window list, and the cost is one hidden webview
+            // for the moments before setup runs. Declare the panel window in
+            // Rust under cfg(not(linux)) if that start-up cost ever shows.
+            #[cfg(target_os = "linux")]
+            if let Some(w) = app.get_webview_window("traypanel") {
+                let _ = w.destroy();
+            }
 
             // Hidden at-login start vs. normal launch: the window is created
             // hidden (tauri.conf.json visible:false) so there is no flash; show
