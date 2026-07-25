@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { detectPlatform, type Platform } from '../lib/platform';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
@@ -84,7 +85,18 @@ function useCountUp(target: number, duration = 600): number {
   return value;
 }
 
-export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
+// The panel opens wherever the tray delivers a click — macOS and Windows
+// (ADR-0010) — and the two spell a modifier differently.
+const KEY_HINTS = {
+  macos: { rescan: '⇧⌘R', settings: '⌘,', quit: '⌘Q' },
+  other: { rescan: 'Ctrl+Shift+R', settings: 'Ctrl+,', quit: 'Ctrl+Q' },
+};
+
+export default function TrayPanel({
+  ports,
+  platform = detectPlatform(),
+}: { ports?: TrayPanelPorts; platform?: Platform } = {}) {
+  const keys = platform === 'macos' ? KEY_HINTS.macos : KEY_HINTS.other;
   const ledger = ports?.ledger ?? tauriLedger;
   const settings = ports?.settings ?? tauriSettings;
   const [model, setModel] = useState<PanelModel | null>(null);
@@ -413,15 +425,15 @@ export default function TrayPanel({ ports }: { ports?: TrayPanelPorts } = {}) {
             <path d="M8 16H3v5" />
           </svg>
         ) : (
-          <span className="tp-key">⇧⌘R</span>
+          <span className="tp-key">{keys.rescan}</span>
         )}
       </button>
       <div className="tp-sep" />
       <button className="tp-action" onClick={() => ipc('open_settings')}>
-        Settings…<span className="tp-key">⌘,</span>
+        Settings…<span className="tp-key">{keys.settings}</span>
       </button>
       <button className="tp-action" onClick={() => ipc('quit_app')}>
-        Quit TokenLedger<span className="tp-key">⌘Q</span>
+        Quit TokenLedger<span className="tp-key">{keys.quit}</span>
       </button>
     </div>
   );
