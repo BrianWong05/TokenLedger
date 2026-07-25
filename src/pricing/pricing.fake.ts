@@ -5,8 +5,8 @@ import type { ModelPricing, RatesPerTok } from '../types';
 
 export interface FakePricing extends PricingPort {
   models: ModelPricing[];
-  calls: { list: number; setOverride: [string, RatesPerTok][]; deleteOverride: string[] };
-  failNext(method: 'list' | 'setOverride' | 'deleteOverride', err: unknown): void;
+  calls: { list: number; setOverride: [string, RatesPerTok][]; deleteOverride: string[]; refresh: number };
+  failNext(method: 'list' | 'setOverride' | 'deleteOverride' | 'refresh', err: unknown): void;
   emitPricesRebuilt(): void;
 }
 
@@ -40,7 +40,7 @@ export function seedPricing(): ModelPricing[] {
 
 export function makeFakePricing(seed: ModelPricing[] = seedPricing()): FakePricing {
   const models = seed.map((m) => ({ ...m }));
-  const calls: FakePricing['calls'] = { list: 0, setOverride: [], deleteOverride: [] };
+  const calls: FakePricing['calls'] = { list: 0, setOverride: [], deleteOverride: [], refresh: 0 };
   const fails = new Map<string, unknown>();
   const cbs = new Set<() => void>();
 
@@ -69,6 +69,7 @@ export function makeFakePricing(seed: ModelPricing[] = seedPricing()): FakePrici
         const m = models.find((x) => x.model === model);
         if (m) m.overrideRates = null;
       }),
+    refresh: () => guard('refresh', () => { calls.refresh++; }),
     onPricesRebuilt: (cb) => {
       cbs.add(cb);
       return () => cbs.delete(cb);

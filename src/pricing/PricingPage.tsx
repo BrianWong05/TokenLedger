@@ -40,6 +40,7 @@ export default function PricingPage({
   const [filter, setFilter] = useState<PriceFilter>('all');
   const [editor, setEditor] = useState<ModelPricing | null>(null);
   const [scanning, setScanning] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const reload = useCallback(() => {
     // Promise.resolve guards a port whose IPC throws synchronously when no Tauri
@@ -65,6 +66,16 @@ export default function PricingPage({
     if (scanning) return;
     setScanning(true);
     ledger.scan().then(reload).catch(() => {}).finally(() => setScanning(false));
+  };
+
+  // The catalogs are otherwise read at launch and when a scan turns up a Model
+  // with no rate. This forces a re-read for the case neither covers: a rate
+  // published for a Model we already gave up on this run. reload() rather than
+  // leaning on prices-rebuilt, so the table updates even if that event is missed.
+  const refreshCatalogs = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    pricing.refresh().then(reload).catch(() => {}).finally(() => setRefreshing(false));
   };
 
   return (
@@ -111,6 +122,15 @@ export default function PricingPage({
             </div>
             <span className="tl-pr-spacer" />
             <span className="tl-pr-catnote">{t('pricing.catalogNote')}</span>
+            <button
+              type="button"
+              className="tl-pr-refresh"
+              onClick={refreshCatalogs}
+              disabled={refreshing}
+              title={t('pricing.refreshTitle')}
+            >
+              {t(refreshing ? 'pricing.refreshing' : 'pricing.refresh')}
+            </button>
           </div>
 
           {counts.unpriced > 0 && (

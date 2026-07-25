@@ -105,6 +105,27 @@
   font-size: 12px;
   color: var(--muted);
 }
+/* Sits right after the catalog names it re-reads: quiet by default, since the
+   catalogs refresh themselves and this is the manual escape hatch. */
+.tl-pr-refresh {
+  margin-left: 10px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.tl-pr-refresh:hover:not(:disabled) {
+  color: var(--text);
+}
+.tl-pr-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 
 /* ---- unpriced banner ---- */
 .tl-pr-banner {

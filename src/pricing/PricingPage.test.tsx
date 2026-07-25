@@ -129,11 +129,37 @@ describe('PricingPage', () => {
     expect(rows(c)).toHaveLength(12);
   });
 
+  it('re-reads the catalogs on demand and reloads the rates', async () => {
+    const pricing = makeFakePricing();
+    const c = await mount(<PricingPage ports={{ pricing }} />);
+    const before = pricing.calls.list;
+    const btn = c.querySelector('.tl-pr-refresh') as HTMLButtonElement;
+
+    await act(async () => btn.click());
+    await settle();
+    expect(pricing.calls.refresh).toBe(1);
+    expect(pricing.calls.list).toBeGreaterThan(before); // rates re-read after
+    expect(btn.disabled).toBe(false); // pending state cleared
+  });
+
+  it('keeps the refresh button usable after a failed catalog read', async () => {
+    const pricing = makeFakePricing();
+    const c = await mount(<PricingPage ports={{ pricing }} />);
+    const btn = c.querySelector('.tl-pr-refresh') as HTMLButtonElement;
+    pricing.failNext('refresh', new Error('offline'));
+
+    await act(async () => btn.click());
+    await settle();
+    expect(pricing.calls.refresh).toBe(0); // never reached the port body
+    expect(btn.disabled).toBe(false); // and the button is not stuck pending
+  });
+
   it('shows a pulse skeleton while the list is pending', async () => {
     const pending: PricingPort = {
       list: () => new Promise(() => {}),
       setOverride: () => Promise.resolve(),
       deleteOverride: () => Promise.resolve(),
+      refresh: () => Promise.resolve(),
       onPricesRebuilt: () => () => {},
     };
     const c = await mount(<PricingPage ports={{ pricing: pending }} />);

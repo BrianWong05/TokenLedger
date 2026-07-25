@@ -67,6 +67,10 @@ export function deleteModelOverride(model: string): Promise<void> {
   return invoke('delete_model_override', { model });
 }
 
+export function refreshPrices(): Promise<void> {
+  return invoke('refresh_prices');
+}
+
 // ---- Settings ----
 
 export function getSettings(): Promise<Settings> {

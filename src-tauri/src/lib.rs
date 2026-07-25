@@ -192,6 +192,16 @@ fn ctx_exec(
     queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
 }
 
+// Re-read both catalogs on demand from the Pricing tab. Deliberately ignores the
+// price_lookups guard that rate-limits the automatic trigger: asking explicitly is
+// the one case where retrying a Model we already tried this run is the point. The
+// set is left as-is, so this never causes the next scan to re-fetch as well.
+#[tauri::command]
+async fn refresh_prices(app: AppHandle) -> Result<(), String> {
+    refresh_catalogs(&app);
+    Ok(())
+}
+
 #[tauri::command]
 fn model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricing>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -426,6 +436,7 @@ pub fn run() {
             ctx_tools,
             ctx_exec,
             model_pricing,
+            refresh_prices,
             set_model_override,
             delete_model_override,
             show_main,
