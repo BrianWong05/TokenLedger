@@ -132,10 +132,14 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
     try {
       await holdSpin(() => onRefreshRef.current(), ac.signal);
     } finally {
-      if (!ac.signal.aborted) {
-        busyRef.current = false;
-        setRefreshing(false);
-      }
+      // Always release, even when aborted. The abort's job is done inside
+      // holdSpin (it drops the pending timer); gating the release on it
+      // stranded the gate whenever the abort came from StrictMode's
+      // mount → cleanup → remount rather than a real unmount, leaving the
+      // header on "Scanning…" and skipping every later tick. Setting state
+      // after a real unmount is a no-op in React 18.
+      busyRef.current = false;
+      setRefreshing(false);
     }
   }, []);
 
