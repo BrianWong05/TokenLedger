@@ -1,6 +1,8 @@
 <!-- The app icon: design 4b, a sparkline with fill. Master source; every PNG,
-     .icns and .ico beside it is generated from this by `npx tauri icon`, so
-     edit here and regenerate rather than touching the rasters.
+     .icns and .ico beside it is generated from this by ./generate.sh, so edit
+     here and run that rather than touching the rasters. Note the tile bleeds to
+     the edge of this file: the macOS inset is applied during generation, since
+     only macOS wants it.
      Colours are the app's own tokens (src/index.css): the tile is ink-900, the
      mark is violet-500 (the accent), and the area under it is that same accent
      at low opacity, exactly as a filled sparkline is drawn in the app itself. -->
