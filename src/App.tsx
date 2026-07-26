@@ -13,6 +13,7 @@ import SettingsPage from './settings/SettingsPage';
 import FirstRunDialog from './settings/FirstRunDialog';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
 import { I18nProvider, useT } from './lib/i18n';
+import { Mark } from './lib/Mark';
 import { detectPlatform, type Platform } from './lib/platform';
 import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
@@ -118,11 +119,7 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
           <span className="tl-traffic" aria-hidden="true" data-tauri-drag-region />
         )}
         <span className="tl-wordmark">
-          <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-            <rect x="2" y="11" width="4" height="7" rx="1" />
-            <rect x="8" y="6" width="4" height="12" rx="1" />
-            <rect x="14" y="2" width="4" height="16" rx="1" />
-          </svg>
+          <Mark />
           TokenLedger
         </span>
         <nav className="tl-nav">

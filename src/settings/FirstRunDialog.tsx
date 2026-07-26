@@ -4,6 +4,7 @@
 // and enrolls/unenrolls accordingly.
 import { useState } from 'react';
 import { useT } from '../lib/i18n';
+import { Mark } from '../lib/Mark';
 import { useSettings } from './SettingsContext';
 import { setLaunchAtLogin } from './startup';
 
@@ -22,11 +23,7 @@ export default function FirstRunDialog() {
     <div className="set-firstrun-backdrop">
       <div className="set-firstrun" role="dialog" aria-modal="true" aria-labelledby="set-firstrun-title">
         <span className="set-firstrun-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-            <rect x="2" y="11" width="4" height="7" rx="1" fill="#fff" />
-            <rect x="8" y="6" width="4" height="12" rx="1" fill="#fff" />
-            <rect x="14" y="2" width="4" height="16" rx="1" fill="#fff" />
-          </svg>
+          <Mark size={20} />
         </span>
         <div id="set-firstrun-title" className="set-firstrun-title">
           {t('settings.firstRun.title')}
