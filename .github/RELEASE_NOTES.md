@@ -1,6 +1,9 @@
 ## Install
 
 **macOS** (Apple Silicon) — download the `.dmg`, open it, drag TokenLedger to Applications.
+It is not notarized yet, so the first launch shows "TokenLedger is damaged and can't be
+opened": **right-click the app → Open → Open**. That path is Gatekeeper's deliberate
+escape hatch, and it is only needed once. Notarization is planned.
 
 **Windows** — download the `-setup.exe`. It is not code-signed yet, so SmartScreen
 will show "Windows protected your PC": click **More info → Run anyway**. Signing is

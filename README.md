@@ -57,7 +57,7 @@ one you take, it updates itself from then on.
 
 | Platform | Download | Before it runs |
 |---|---|---|
-| macOS (Apple Silicon) | `.dmg` | — |
+| macOS (Apple Silicon) | `.dmg` | Not notarized yet: Gatekeeper says the app "is damaged and can't be opened" → **right-click the app → Open → Open** |
 | Windows | `-setup.exe` | Not code-signed yet: SmartScreen says "Windows protected your PC" → **More info → Run anyway** |
 | Linux | `.AppImage` | `chmod +x`, and the system tray needs `libayatana-appindicator3-1` (plus the AppIndicator extension on stock GNOME) |
 
