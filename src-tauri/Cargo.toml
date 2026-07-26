@@ -3,6 +3,7 @@ name = "tokenledger"
 version = "0.1.0"
 description = "TokenLedger — AI usage tracker"
 authors = ["Brian Wong"]
+license = "MIT"
 edition = "2021"
 
 [lib]

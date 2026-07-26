@@ -92,6 +92,10 @@ except where the figures live in a menu row, which cannot be absent the way a
 title can and so says in words that there was none.
 Every Cost figure follows the same rules as everywhere else: Partial Cost's
 "≥" marker, Unpriced never shown as $0, Display Currency honored.
+The platform's own facility that hosts it — a Linux system tray and the
+AppIndicator library behind it, the Windows notification area — keeps its
+native name, because that is a place, not this application's presence in it.
+What is never called a tray is the Menu Bar Extra itself.
 _Avoid_: Tray, status item, menu (ADR-0007 replaced the native menu with the
 panel; the menu survives only where the platform delivers no icon clicks)
 
@@ -183,6 +187,20 @@ The fraction of prompt tokens served from cache:
 Cache Read ÷ (Input + Cache Read + Cache Write). Well-defined only because
 Input excludes cache reads (ADR-0001).
 _Avoid_: Cache ratio, hit ratio
+
+**Context**:
+Where a Request's billed input came from — the same tokens the categories above
+count by billing type (Input + Cache Read + Cache Write), attributed instead by
+origin. Two tiers, and the difference between them is load-bearing: **messages,
+system, and reasoning** partition the billed total exactly, while **tool calls,
+subagents, MCP, and skills** are overlapping subsets of messages, estimated from
+content size and never summing to a whole. Reasoning covers the current turn
+alone, because the API strips it from later ones; system is estimated once, at a
+Session's first Request. Only Claude, Codex, and pi report it — a Source that
+cannot attribute a category yields no figure for it, displayed as "—" and never
+as zero, and a Session resumed with its running state lost is *tainted*: it
+attributes nothing thereafter rather than attributing a guess.
+_Avoid_: Context window, breakdown, composition
 
 ### Money
 
