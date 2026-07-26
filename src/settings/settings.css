@@ -325,6 +325,8 @@
   height: 48px;
   border-radius: 12px;
   background: var(--accent);
+  /* the mark draws in currentColor; on the accent tile that is the on-accent ink */
+  color: var(--text-on-accent);
   display: inline-flex;
   align-items: center;
   justify-content: center;

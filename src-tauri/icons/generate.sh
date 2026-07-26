@@ -26,4 +26,8 @@ magick -size 1024x1024 xc:none "$tmp/tile.png" -gravity center -composite "$tmp/
 (cd "$root" && npx tauri icon "$tmp/macos.png" -o "$tmp/out" >/dev/null)
 cp "$tmp/out/icon.icns" "$here/icon.icns"
 
+# The dev server's favicon, so `npm run dev` is not branded Vite. Copied because
+# public/ is served verbatim and cannot reach into src-tauri.
+cp "$here/icon.svg" "$root/public/icon.svg"
+
 echo "icons regenerated from icon.svg (.icns padded for the macOS grid, the rest full-bleed)"
