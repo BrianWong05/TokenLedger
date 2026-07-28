@@ -228,8 +228,12 @@ pub fn refresh(app: &AppHandle) {
 /// nothing on Linux, which is the whole reason the Menu Bar Extra wears three
 /// faces (ADR-0010).
 fn show_today(tray: &Tray, title: Option<&str>) {
+    // macOS needs Some(""), never None: tray-icon's set_title only calls
+    // setTitle for Some, so None leaves the previous title standing — which is
+    // how a no-usage day (the first hours after midnight) kept yesterday's
+    // figures beside the icon. The empty string is what actually clears it.
     #[cfg(target_os = "macos")]
-    let _ = tray.tray.set_title(title);
+    let _ = tray.tray.set_title(Some(title.unwrap_or("")));
     #[cfg(target_os = "windows")]
     let _ = tray.tray.set_tooltip(title);
     #[cfg(target_os = "linux")]
