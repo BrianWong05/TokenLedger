@@ -318,13 +318,42 @@ describe('Usage-trend Enlarge', () => {
     expect(cardButtons).not.toContain('Daily');
   });
 
-  it('reveals a Custom from/to date row when Custom is picked', async () => {
+  it('picks a window in its own picker without moving the page or the remembered range', async () => {
+    localStorage.clear();
+    const { container: c } = await mount();
+    const pageEyebrow = () => c.querySelector('.tt-eyebrow')!.textContent!;
+    const before = pageEyebrow();
+    await open(c);
+
+    await act(async () => modalRangeButton('Custom').click());
+    await act(async () => {
+      Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('.tt-dp-preset'))
+        .find((b) => b.textContent === 'This month')!.click();
+    });
+
+    // The dialog followed its own pick…
+    expect(dialog()!.querySelector('.tt-trend-modal-sub')!.textContent).toContain('–');
+    // …while the page kept its range, and nothing was written to the window
+    // the Overview remembers: only the Overview's own picker saves.
+    expect(pageActiveRange(c)).toBe('Total');
+    expect(pageEyebrow()).toBe(before);
+    expect(localStorage.getItem('tokenledger.customRange')).toBeNull();
+  });
+
+  it('opens the date picker from its Custom segment, and Escape closes it without closing the dialog', async () => {
     const { container: c } = await mount();
     await open(c);
-    expect(dialog()!.querySelector('.tt-trend-modal-custom')).toBeNull();
+    expect(dialog()!.querySelector('.tt-dp-pop')).toBeNull();
     await act(async () => modalRangeButton('Custom').click());
-    const dates = dialog()!.querySelectorAll<HTMLInputElement>('.tt-trend-modal-custom input[type="date"]');
-    expect(dates).toHaveLength(2);
+    const pop = dialog()!.querySelector('.tt-dp-pop');
+    expect(pop).not.toBeNull();
+    expect(pop!.querySelectorAll('.tt-dp-month')).toHaveLength(2);
+    // Escape dismisses the picker and stops there — the dialog under it stays.
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(dialog()).not.toBeNull();
+    expect(dialog()!.querySelector('.tt-dp-pop')).toBeNull();
   });
 
   it('changes its window without moving the Overview, and reopens on the page range', async () => {

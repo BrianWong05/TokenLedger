@@ -2,7 +2,7 @@
 // useSyncExternalStore, drives the store lifecycle (prices listener, initial
 // load, auto-refresh), and memoizes the selectors into a render-ready model so
 // the shell derives nothing.
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   createOverviewStore,
   selectDays,
@@ -13,6 +13,7 @@ import {
 } from './overviewStore';
 import type { LedgerPort } from './ledger';
 import { useAutoRefresh } from './useAutoRefresh';
+import { loadCustomRange, saveCustomRange } from './rangeMemory';
 import type { Range8b, ToolKey } from './meta';
 import { useT } from '../lib/i18n';
 
@@ -36,6 +37,27 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fill the last custom window once, after real series data has landed. The
+  // wait is load-bearing: before it, firstIso is today, so the bounds below
+  // would reject a perfectly good window. An empty allPoints is not enough of a
+  // signal — the store also settles it to [] when the first load FAILS, before
+  // retrying, and spending the one restore there would forget the window for
+  // the rest of the session.
+  // The range itself stays where the store put it: restoring dates changes
+  // nothing on screen until Custom is picked.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || !snap.allPoints?.length) return;
+    restored.current = true;
+    const saved = loadCustomRange();
+    if (!saved) return;
+    // A window saved against a longer history can start before the Ledger's
+    // current first record; clamp rather than point the picker at a day it
+    // will not let you select.
+    const [from, to] = saved;
+    if (to >= snap.firstIso) store.setCustomRange(from < snap.firstIso ? snap.firstIso : from, to);
+  }, [snap.allPoints, snap.firstIso, store]);
 
   // The 365-day heatmap grid depends only on the full series — the store keeps
   // allPoints's reference stable across range/selection, so this never
@@ -74,7 +96,10 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   const setRange = useCallback((r: Range8b) => store.setRange(r), [store]);
   const setSel = useCallback((k: ToolKey) => store.setSelected(k), [store]);
   const setCustomRange = useCallback(
-    (from: string, to: string) => store.setCustomRange(from, to),
+    (from: string, to: string) => {
+      saveCustomRange(from, to);
+      store.setCustomRange(from, to);
+    },
     [store],
   );
 

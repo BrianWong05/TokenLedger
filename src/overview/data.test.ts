@@ -12,6 +12,9 @@ import {
   rankModels,
   modelTools,
   calendarSpan,
+  presetsOf,
+  monthCells,
+  dailyTotals,
   dailyTableRows,
   projectTableRows,
   modelBars,
@@ -665,5 +668,55 @@ describe('profileSessionFilters', () => {
     expect(f.startTs).toBe(Math.floor(new Date(2026, 5, 11).getTime() / 1000));
     expect(f.endTs).toBeUndefined();
     expect(f.tools).toEqual([]);
+  });
+});
+
+describe('presetsOf', () => {
+  // Fixed "today" so the month/year boundaries are the ones being asserted.
+  const LAST = '2026-07-29';
+
+  it('offers only windows the range segments do not already cover', () => {
+    expect(presetsOf('2020-01-01', LAST).map((p) => p.key))
+      .toEqual(['yesterday', 'thisMonth', 'last90', 'thisYear']);
+  });
+
+  it('reads This month as the calendar month, not a trailing 30 days', () => {
+    const p = presetsOf('2020-01-01', LAST).find((x) => x.key === 'thisMonth')!;
+    expect(p).toEqual({ key: 'thisMonth', from: '2026-07-01', to: LAST });
+  });
+
+  it('clamps a window that starts before the first record', () => {
+    const p = presetsOf('2026-07-10', LAST).find((x) => x.key === 'thisYear')!;
+    expect(p.from).toBe('2026-07-10');
+  });
+
+  it('drops a window that ends before the first record entirely', () => {
+    // First record today: yesterday selects nothing, so it is not offered.
+    expect(presetsOf(LAST, LAST).map((p) => p.key)).toEqual(['thisMonth', 'last90', 'thisYear']);
+  });
+});
+
+describe('monthCells', () => {
+  it('pads to whole Monday-first weeks', () => {
+    const cells = monthCells(2026, 6); // July 2026 starts on a Wednesday
+    expect(cells.length % 7).toBe(0);
+    // Mon + Tue blank, so the 1st sits in the Wednesday column.
+    expect(cells.slice(0, 3)).toEqual([null, null, '2026-07-01']);
+    expect(cells.filter(Boolean)).toHaveLength(31);
+    expect(cells[2 + 30]).toBe('2026-07-31');
+  });
+});
+
+describe('dailyTotals', () => {
+  it('sums every Source into one figure per day', () => {
+    const totals = dailyTotals([
+      pt({ bucket: '2026-07-01', source: 'claude', totalTokens: 100 }),
+      pt({ bucket: '2026-07-01', source: 'codex', totalTokens: 25 }),
+      pt({ bucket: '2026-07-03', source: 'claude', totalTokens: 7 }),
+    ]);
+    expect(totals).toEqual({ '2026-07-01': 125, '2026-07-03': 7 });
+    // Days with no Usage Record are absent, not zero — the picker reads a
+    // missing key as no usage.
+    expect(totals['2026-07-02']).toBeUndefined();
   });
 });
