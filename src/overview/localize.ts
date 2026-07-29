@@ -15,6 +15,7 @@ import {
   type CostCompleteness,
 } from '../lib/costCompleteness';
 import type { Range8b } from './meta';
+import type { PresetKey } from './data';
 import type { Settings } from '../types';
 
 export type OverviewKey = keyof typeof overview.en;
@@ -47,6 +48,11 @@ export function fmtIsoDateL(iso: string, lang: Lang): string {
 export function monthShortL(monthIndex: number, lang: Lang): string {
   return new Date(2020, monthIndex, 1).toLocaleDateString(localeOf(lang), { month: 'short' });
 }
+// Full month name — the picker's calendar heading, where the short form reads
+// clipped next to the year beside it.
+export function monthLongL(monthIndex: number, lang: Lang): string {
+  return new Date(2020, monthIndex, 1).toLocaleDateString(localeOf(lang), { month: 'long' });
+}
 // "Wed, Jul 16" style — the heatmap day tooltip header.
 export function fmtWeekdayDateL(d: Date, lang: Lang): string {
   return d.toLocaleDateString(localeOf(lang), { weekday: 'short', month: 'short', day: 'numeric' });
@@ -56,12 +62,25 @@ export function weekdayShortL(dow: number, lang: Lang): string {
   // 2023-01-01 was a Sunday
   return new Date(2023, 0, 1 + dow).toLocaleDateString(localeOf(lang), { weekday: 'short' });
 }
+// Single-letter weekday for a 0-based day index (0 = Sun) — the picker's column
+// headers, where a 26px column has room for one glyph.
+export function weekdayNarrowL(dow: number, lang: Lang): string {
+  return new Date(2023, 0, 1 + dow).toLocaleDateString(localeOf(lang), { weekday: 'narrow' });
+}
 
 // "N word": English pluralises via the one/many key; Chinese has no plural, so
 // both keys carry the same measure phrase and the count leads unchanged.
 export function countLabel(n: number, oneKey: OverviewKey, manyKey: OverviewKey, lang: Lang): string {
   return `${n} ${translate(lang, n === 1 ? oneKey : manyKey)}`;
 }
+
+// Picker shortcut -> string key, same no-computed-key discipline as RANGE_LABEL_KEY.
+export const PRESET_LABEL_KEY: Record<PresetKey, OverviewKey> = {
+  yesterday: 'overview.preset.yesterday',
+  thisMonth: 'overview.preset.thisMonth',
+  last90: 'overview.preset.last90',
+  thisYear: 'overview.preset.thisYear',
+};
 
 // Range8b -> string keys, so both the segment (short) and the eyebrow (long)
 // translate the same presets without a computed-key type hole.

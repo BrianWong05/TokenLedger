@@ -8,7 +8,6 @@ export const overview = {
     // header + headline
     'overview.title': 'Overview',
     'overview.customRange': 'Custom range',
-    'overview.to': 'to',
     'overview.totalTokens': 'Total tokens',
     // short visible note; the full "not billed" caveat rides as a title tooltip
     // (overview.notBilled) so the ADR-0002 honesty survives the shortening
@@ -30,6 +29,21 @@ export const overview = {
     'overview.range.month.long': 'Last 30 days',
     'overview.range.total.long': 'All time',
     'overview.range.custom.long': 'Custom range',
+
+    // custom-range picker — shortcuts, calendar chrome, and the picking hints.
+    // No shortcut repeats a segment (Week = trailing 7 days, Month = trailing
+    // 30, Total = everything), so "This month" means the calendar month.
+    'overview.preset.yesterday': 'Yesterday',
+    'overview.preset.thisMonth': 'This month',
+    'overview.preset.last90': 'Last 90 days',
+    'overview.preset.thisYear': 'This year',
+    'overview.pickStart': 'Pick the start date',
+    'overview.pickEnd': 'Pick the end date',
+    'overview.prevMonth': 'Previous month',
+    'overview.nextMonth': 'Next month',
+    'overview.month': 'Month',
+    'overview.year': 'Year',
+    'overview.dayOne': 'day',
 
     // heatmap
     'overview.activity': 'Activity',
@@ -178,7 +192,6 @@ export const overview = {
   'zh-Hant': {
     'overview.title': '總覽',
     'overview.customRange': '自訂範圍',
-    'overview.to': '至',
     'overview.totalTokens': '總 token 數',
     'overview.costNote': '估算',
     'overview.unpricedMarker': '未定價',
@@ -197,6 +210,18 @@ export const overview = {
     'overview.range.month.long': '過去 30 天',
     'overview.range.total.long': '全部時間',
     'overview.range.custom.long': '自訂範圍',
+
+    'overview.preset.yesterday': '昨天',
+    'overview.preset.thisMonth': '本月',
+    'overview.preset.last90': '過去 90 天',
+    'overview.preset.thisYear': '今年',
+    'overview.pickStart': '選擇開始日期',
+    'overview.pickEnd': '選擇結束日期',
+    'overview.prevMonth': '上個月',
+    'overview.nextMonth': '下個月',
+    'overview.month': '月份',
+    'overview.year': '年份',
+    'overview.dayOne': '天',
 
     'overview.activity': '活動',
     'overview.hoverDay': '將游標移到日期上',

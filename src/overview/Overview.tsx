@@ -12,10 +12,11 @@ import TokenTotalHeadline from './TokenTotalHeadline';
 import AggTrend from './AggTrend';
 import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
-import { TOOLS, RANGES_8B, type ToolMeta } from './meta';
+import { RangeSegments } from './RangePicker';
+import { TOOLS, type ToolMeta } from './meta';
 import { TOOL_ICONS } from './icons';
 import { fmtPct } from '../lib/format';
-import { formatSummaryCost, RANGE_LABEL_KEY, useOverviewT } from './localize';
+import { formatSummaryCost, useOverviewT } from './localize';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
@@ -140,13 +141,16 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       {/* the toolbar's empty stretch is a window-drag handle (frameless window);
           mousedown on the child controls does not start a drag */}
       <div className="tt-toolbar" data-tauri-drag-region>
-        <div className="tt-seg">
-          {RANGES_8B.map((r) => (
-            <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
-              {t(RANGE_LABEL_KEY[r.key])}
-            </button>
-          ))}
-        </div>
+        <RangeSegments
+          range={range}
+          onRange={setRange}
+          from={from}
+          to={to}
+          firstIso={firstIso}
+          lastIso={lastIso}
+          points={allPoints}
+          onPick={setCustomRange}
+        />
         <span className="tt-lastscan">{scanLabel}</span>
         <button
           type="button"
@@ -164,27 +168,6 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           {tShell('header.rescan')}
         </button>
       </div>
-
-      {range === 'custom' && (
-        <div className="tt-custom-row">
-          <span className="lbl">{t('overview.customRange')}</span>
-          <input
-            type="date"
-            value={from}
-            min={firstIso}
-            max={to}
-            onChange={(e) => e.target.value && setCustomRange(e.target.value, customTo)}
-          />
-          <span className="to">{t('overview.to')}</span>
-          <input
-            type="date"
-            value={to}
-            min={from}
-            max={lastIso}
-            onChange={(e) => e.target.value && setCustomRange(customFrom, e.target.value)}
-          />
-        </div>
-      )}
 
       <div className="tt-body">
       {(scanError || fetchError) && (

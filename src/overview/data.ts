@@ -304,6 +304,51 @@ function rangeWindow(
   }
 }
 
+// ---- custom-range picker inputs ----
+
+// The shortcuts the picker offers. Deliberately none that a segment already
+// covers: Week is the trailing 7 days, Month the trailing 30, Total everything.
+// "This month" earns its place by being the calendar month, not a trailing 30.
+export type PresetKey = 'yesterday' | 'thisMonth' | 'last90' | 'thisYear';
+
+export interface RangePreset { key: PresetKey; from: string; to: string }
+
+export function presetsOf(firstIso: string, lastIso: string): RangePreset[] {
+  const shift = (iso: string, n: number) => {
+    const d = parseLocalDate(iso);
+    d.setDate(d.getDate() + n);
+    return isoOf(d);
+  };
+  const yesterday = shift(lastIso, -1);
+  return ([
+    { key: 'yesterday', from: yesterday, to: yesterday },
+    { key: 'thisMonth', from: `${lastIso.slice(0, 8)}01`, to: lastIso },
+    { key: 'last90', from: shift(lastIso, -89), to: lastIso },
+    { key: 'thisYear', from: `${lastIso.slice(0, 4)}-01-01`, to: lastIso },
+  ] as RangePreset[])
+    // a window falling entirely before the first record would select nothing
+    .filter((p) => p.to >= firstIso)
+    .map((p) => ({ ...p, from: p.from < firstIso ? firstIso : p.from }));
+}
+
+// One month as Monday-first calendar cells; nulls pad the leading and trailing
+// week so the grid stays seven wide.
+export function monthCells(year: number, month: number): (string | null)[] {
+  const lead = (new Date(year, month, 1).getDay() + 6) % 7;
+  const days = new Date(year, month + 1, 0).getDate();
+  const cells: (string | null)[] = Array(lead).fill(null);
+  for (let d = 1; d <= days; d++) cells.push(isoOf(new Date(year, month, d)));
+  while (cells.length % 7) cells.push(null);
+  return cells;
+}
+
+// Tokens per day across every Source — the picker's per-day usage marks.
+export function dailyTotals(points: SeriesPoint[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const p of points) out[p.bucket] = (out[p.bucket] ?? 0) + p.totalTokens;
+  return out;
+}
+
 export function windowOf(range: Range8b, customFrom: string, customTo: string, today: Date = new Date()): Window {
   const { fromIso, toIso } = rangeWindow(range, customFrom, customTo, today);
   return { fromIso, toIso };

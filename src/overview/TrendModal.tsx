@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
 import { bucketCsv, bucketFilters, csvFilename, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
-import { TOOLS, RANGES_8B, type Range8b } from './meta';
+import { TOOLS, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
 import { fmtPct, fmtTok } from '../lib/format';
@@ -11,7 +11,6 @@ import {
   INTERVAL_LABEL_KEY,
   monthShortL,
   PER_UNIT_KEY,
-  RANGE_LABEL_KEY,
   RANGE_LONG_KEY,
   SEL_HEADING_KEY,
   useOverviewT,
@@ -19,6 +18,7 @@ import {
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import { useDialogChrome } from './useDialogChrome';
+import { RangeSegments } from './RangePicker';
 
 // Design 1b — the Usage-trend card's full-screen enlarge. A centered dialog
 // over the dimmed dashboard with a window of its own: the Day/Week/Month/Total/
@@ -279,13 +279,19 @@ export default function TrendModal({
               </button>
             ))}
           </div>
-          <div className="tt-seg">
-            {RANGES_8B.map((r) => (
-              <button key={r.key} className={range === r.key ? 'active' : ''} onClick={() => setRange(r.key)}>
-                {t(RANGE_LABEL_KEY[r.key])}
-              </button>
-            ))}
-          </div>
+          {/* The dialog's window is its own, so its picker writes to the local
+              custom dates — never to the page's, and never to the remembered
+              range (only useOverview saves). */}
+          <RangeSegments
+            range={range}
+            onRange={setRange}
+            from={from}
+            to={to}
+            firstIso={firstIso}
+            lastIso={lastIso}
+            points={allPoints}
+            onPick={(fromIso, toIso) => { setCustomFrom(fromIso); setCustomTo(toIso); }}
+          />
           <button
             ref={closeButtonRef}
             type="button"
@@ -300,26 +306,6 @@ export default function TrendModal({
           </button>
         </header>
 
-        {range === 'custom' && (
-          <div className="tt-custom-row tt-trend-modal-custom">
-            <span className="lbl">{t('overview.customRange')}</span>
-            <input
-              type="date"
-              value={from}
-              min={firstIso}
-              max={to}
-              onChange={(e) => e.target.value && setCustomFrom(e.target.value)}
-            />
-            <span className="to">{t('overview.to')}</span>
-            <input
-              type="date"
-              value={to}
-              min={from}
-              max={lastIso}
-              onChange={(e) => e.target.value && setCustomTo(e.target.value)}
-            />
-          </div>
-        )}
 
         <div className="tt-trend-modal-body">
           <div className="tt-trend-modal-main">
