@@ -7,7 +7,7 @@
 // only, no component internals.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Overview from './Overview';
 import { systemClock } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
@@ -20,7 +20,14 @@ import type { Filters, SeriesPoint, Summary } from '../types';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
+// Fixtures are daysAgo() off the clock, and the monthly-bucket assertions read
+// them as calendar months — so on the 1st, daysAgo(1) lands in last month and
+// the current month's bar is empty. Pinned to a mid-month noon, where
+// "yesterday" is this month.
+const NOW = new Date(2026, 5, 15, 12);
+
 beforeEach(() => {
+  vi.setSystemTime(NOW);
   window.matchMedia = ((query: string) => ({
     matches: false,
     media: query,
@@ -164,6 +171,7 @@ afterEach(() => {
   document.body.replaceChildren();
   document.documentElement.style.overflow = '';
   document.body.style.overflow = '';
+  vi.useRealTimers();
 });
 
 // Both the Activity and Trend cards use the shared .tt-heat-enlarge control;

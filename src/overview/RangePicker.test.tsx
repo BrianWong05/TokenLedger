@@ -6,7 +6,7 @@
 // data does not cover), the month/year menus, and the remembered window.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Overview from './Overview';
 import { systemClock } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
@@ -19,7 +19,14 @@ import type { SeriesPoint, Summary } from '../types';
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
 
+// Fixtures are daysAgo() off the clock, and the month menu counts the calendar
+// months they touch — which depends on where in the month today falls: 99 days
+// spans four months from mid-June, five from the 1st. Pinned to a mid-month
+// noon so the count is the fixture's, not the day the suite ran on.
+const NOW = new Date(2026, 5, 15, 12);
+
 beforeEach(() => {
+  vi.setSystemTime(NOW);
   localStorage.clear();
   window.matchMedia = ((query: string) => ({
     matches: false,
@@ -95,6 +102,7 @@ async function mount(first = 99): Promise<HTMLElement> {
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  vi.useRealTimers();
 });
 
 const segment = (c: HTMLElement, label: string) =>
