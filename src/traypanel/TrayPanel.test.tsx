@@ -219,7 +219,7 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-row-cost')?.textContent).toBe('unavailable');
   });
 
-  it('shows the empty state alone — no sections, no fabricated 0.0% cache hit', async () => {
+  it('reads out its zero — no sections, no fabricated 0.0% cache hit', async () => {
     const ledger = makeFakeLedger({
       summary: { ...summary, totalTokens: 0, requests: 0, cost: 0 },
       lastScan: Math.floor(Date.now() / 1000) - 60,
@@ -231,7 +231,9 @@ describe('TrayPanel', () => {
     await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
     await settle();
 
-    expect(container.querySelector('.tp-empty')?.textContent).toBe('No usage yet');
+    expect(container.querySelector('.tp-cost')?.textContent).toBe('$0.00');
+    expect(container.querySelector('.tp-sub')?.textContent).toBe('0 tok · 0 req');
+    expect(container.querySelector('.tp-delta')).toBeNull();
     expect(container.querySelector('.tp-stats')).toBeNull();
     expect(container.querySelector('.tp-models')).toBeNull();
     expect(container.querySelector('.tp-spark')).toBeNull();

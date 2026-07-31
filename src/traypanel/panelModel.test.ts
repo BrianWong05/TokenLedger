@@ -101,7 +101,7 @@ describe('panelModel', () => {
   it('empty day is flagged and shows no delta even when yesterday had usage', () => {
     const m = panelModel(sum(0, 0), sum(9, 10.0), [], S, 'en');
     expect(m.empty).toBe(true);
-    expect(m.delta).toBeNull(); // never "No usage yet" beside "-100.0%"
+    expect(m.delta).toBeNull(); // never "-100.0%" beside a $0.00
   });
 
   it('source rows: zero-usage absent, cost desc, all-unpriced last by tokens, per-row ≥', () => {

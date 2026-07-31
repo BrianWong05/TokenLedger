@@ -253,8 +253,6 @@ export default function TrayPanel({
             </div>
             <span className="tp-skel tp-skel-sub" />
           </div>
-        ) : model?.empty ? (
-          <div className="tp-empty">{period === 'today' ? 'No usage yet' : 'No usage'}</div>
         ) : (
           <div className={scanning ? 'tp-figures tp-pulse' : 'tp-figures'}>
             <div className="tp-cost-row">

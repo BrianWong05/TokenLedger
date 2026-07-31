@@ -87,11 +87,11 @@ row plus the app actions — with the panel's read-out left to the Overview.
 The bar (or hover) figures and the panel carry different windows on purpose:
 the icon's figures are always Today, the local calendar day, while the panel
 selects its own (Today, Yesterday, or the trailing 30 days) and everything it
-shows describes that selection. On a day with no usage the icon stands alone —
-except where the figures live in a menu row, which cannot be absent the way a
-title can and so says in words that there was none.
+shows describes that selection. A day with no usage reads "0 · $0.00" rather
+than leaving the icon to stand alone.
 Every Cost figure follows the same rules as everywhere else: Partial Cost's
-"≥" marker, Unpriced never shown as $0, Display Currency honored.
+"≥" marker, Unpriced never shown as $0, a window with no usage at $0.00,
+Display Currency honored.
 The platform's own facility that hosts it — a Linux system tray and the
 AppIndicator library behind it, the Windows notification area — keeps its
 native name, because that is a place, not this application's presence in it.
@@ -208,7 +208,9 @@ _Avoid_: Context window, breakdown, composition
 The public list-price value of a set of tokens — an estimate of what the usage
 would have cost at pay-as-you-go API rates. It is not money that was billed:
 every Source here is subscription, free-tier, or self-hosted, so TokenLedger
-never sees a real invoice. Surfaced in the UI as "Est. cost".
+never sees a real invoice. Surfaced in the UI as "Est. cost". A window holding
+no tokens at all has a Cost of zero — $0.00 on every surface, the one zero that
+is a figure rather than a gap, and the opposite of Unpriced.
 _Avoid_: Spend, actual cost, bill
 
 **Display Currency**:

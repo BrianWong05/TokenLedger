@@ -78,7 +78,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 /// if GTK's is too, enabled-but-inert is the fix that ADR already landed.
 #[cfg(target_os = "linux")]
 fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
-    let today = MenuItem::with_id(app, "today", today_row(None), false, None::<&str>)?;
+    // The row has to hold some text before the first refresh writes figures
+    // into it. Normally that is the same instant — build calls refresh — but a
+    // refresh that bails (a poisoned lock, a query that errors) leaves the
+    // ellipsis standing, which claims nothing, rather than a figure that would.
+    let today = MenuItem::with_id(app, "today", today_row("…"), false, None::<&str>)?;
     let menu = Menu::new(app)?;
     menu.append(&today)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -220,22 +224,18 @@ pub fn refresh(app: &AppHandle) {
         };
         tray_title(&today, &settings)
     };
-    show_today(&tray, title.as_deref());
+    show_today(&tray, &title);
 }
 
 /// Puts Today's figures wherever this platform can show them. The three calls
 /// are not interchangeable: set_title does nothing on Windows and set_tooltip
 /// nothing on Linux, which is the whole reason the Menu Bar Extra wears three
 /// faces (ADR-0010).
-fn show_today(tray: &Tray, title: Option<&str>) {
-    // macOS needs Some(""), never None: tray-icon's set_title only calls
-    // setTitle for Some, so None leaves the previous title standing — which is
-    // how a no-usage day (the first hours after midnight) kept yesterday's
-    // figures beside the icon. The empty string is what actually clears it.
+fn show_today(tray: &Tray, title: &str) {
     #[cfg(target_os = "macos")]
-    let _ = tray.tray.set_title(Some(title.unwrap_or("")));
+    let _ = tray.tray.set_title(Some(title));
     #[cfg(target_os = "windows")]
-    let _ = tray.tray.set_tooltip(title);
+    let _ = tray.tray.set_tooltip(Some(title));
     #[cfg(target_os = "linux")]
     let _ = tray.today.set_text(today_row(title));
 }
@@ -330,37 +330,30 @@ fn clamp_or_leave(v: f64, lo: f64, hi: f64) -> f64 {
 // --- Menu Bar Extra title (design 2b) ---
 // Pure: constructed inputs in, strings out. The Tauri glue above stays thin.
 
-/// The bar title for Today's Summary: "3.4M · $12.84". `None` on a no-usage
-/// day — the icon stands alone rather than advertising `0 · $0.00`. Cost
+/// The bar title for Today's Summary: "3.4M · $12.84", and "0 · $0.00" on a
+/// day with no usage — a day that recorded nothing has a Cost of zero, not a
+/// missing one (queries::summary), so it needs no case of its own here. Cost
 /// follows the glossary: "≥ " marker when Partial (priced total over a set
-/// with Unpriced Models or Unattributed Usage), and a day with no available
-/// Cost shows tokens alone — never $0. ponytail: the bar drops the missing-Cost
-/// wording for space; the menu's
-/// per-Source rows (#24) spell it out.
-fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Settings) -> Option<String> {
-    if today.total_tokens == 0 {
-        return None;
-    }
+/// with Unpriced Models or Unattributed Usage), and a day with usage but no
+/// available Cost shows tokens alone — never $0. ponytail: the bar drops the
+/// missing-Cost wording for space; the menu's per-Source rows (#24) spell it
+/// out.
+fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Settings) -> String {
     let toks = fmt_tokens(today.total_tokens);
-    Some(match today.cost {
+    match today.cost {
         None => toks,
         Some(c) => {
             let marker = if today.has_unpriced || today.unattributed_tokens > 0 { "≥ " } else { "" };
             format!("{toks} · {marker}{cost}", cost = fmt_cost(c, settings))
         }
-    })
+    }
 }
 
-/// The Linux menu's Today row. The bar title is simply absent on a no-usage
-/// day — the icon stands alone — but a menu row has to say something, so the
-/// same silence is spelt out. Prefixed because a menu row, unlike a title
-/// welded to the icon, has to name what it is counting.
+/// The Linux menu's Today row: the bar title, prefixed — a menu row, unlike a
+/// title welded to the icon, has to name what it is counting.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn today_row(title: Option<&str>) -> String {
-    match title {
-        Some(t) => format!("Today: {t}"),
-        None => "No usage today".to_string(),
-    }
+fn today_row(title: &str) -> String {
+    format!("Today: {title}")
 }
 
 /// Token total in the frontend's compact form (format.ts
@@ -459,16 +452,27 @@ mod tests {
         }
     }
 
+    // Zero is a figure the day has, so the bar reads it out — the icon never
+    // stands alone wondering whether the app is still counting. The Some(0.0)
+    // is what queries::summary reports for a window holding no usage; the
+    // no-usage-costs-zero rule lives there, not here.
     #[test]
-    fn no_usage_day_has_no_title() {
-        assert_eq!(tray_title(&sum(0, None, false), &Settings::default()), None);
+    fn no_usage_day_reads_zero_in_the_display_currency() {
+        assert_eq!(
+            tray_title(&sum(0, Some(0.0), false), &Settings::default()),
+            "0 · $0.00"
+        );
+        assert_eq!(
+            tray_title(&sum(0, Some(0.0), false), &currency("JPY", 155.0)),
+            "0 · ¥0"
+        );
     }
 
     #[test]
     fn plain_day_shows_tokens_and_cost() {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(12.84), false), &Settings::default()),
-            Some("3.4M · $12.84".to_string())
+            "3.4M · $12.84"
         );
     }
 
@@ -476,7 +480,7 @@ mod tests {
     fn partial_cost_carries_the_marker() {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default()),
-            Some("3.4M · ≥ $12.80".to_string())
+            "3.4M · ≥ $12.80"
         );
     }
 
@@ -486,7 +490,7 @@ mod tests {
         today.unattributed_tokens = 400;
         assert_eq!(
             tray_title(&today, &Settings::default()),
-            Some("3.4M · ≥ $12.80".to_string())
+            "3.4M · ≥ $12.80"
         );
     }
 
@@ -496,7 +500,7 @@ mod tests {
         today.unattributed_tokens = 964_200;
         assert_eq!(
             tray_title(&today, &Settings::default()),
-            Some("964.2K".to_string())
+            "964.2K"
         );
     }
 
@@ -512,7 +516,7 @@ mod tests {
     fn display_currency_multiplies_and_uses_its_symbol() {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(10.0), false), &currency("HKD", 7.8)),
-            Some("3.4M · HK$78.00".to_string())
+            "3.4M · HK$78.00"
         );
     }
 
@@ -520,7 +524,7 @@ mod tests {
     fn zero_decimal_currency_drops_the_cents() {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(1.0), false), &currency("JPY", 155.0)),
-            Some("3.4M · ¥155".to_string())
+            "3.4M · ¥155"
         );
     }
 
@@ -528,11 +532,11 @@ mod tests {
     fn large_amounts_group_thousands_like_the_frontend() {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(200.0), false), &currency("HKD", 7.8)),
-            Some("3.4M · HK$1,560.00".to_string())
+            "3.4M · HK$1,560.00"
         );
         assert_eq!(
             tray_title(&sum(3_400_000, Some(12345.6), false), &Settings::default()),
-            Some("3.4M · $12,345.60".to_string())
+            "3.4M · $12,345.60"
         );
     }
 
@@ -540,7 +544,7 @@ mod tests {
     fn unmapped_currency_falls_back_to_amount_code() {
         assert_eq!(
             tray_title(&sum(3_400_000, Some(2.0), false), &currency("SEK", 10.5)),
-            Some("3.4M · 21.00 SEK".to_string())
+            "3.4M · 21.00 SEK"
         );
     }
 
@@ -548,7 +552,7 @@ mod tests {
     fn all_unpriced_day_shows_tokens_alone_never_zero_dollars() {
         assert_eq!(
             tray_title(&sum(964_200, None, true), &Settings::default()),
-            Some("964.2K".to_string())
+            "964.2K"
         );
     }
 
@@ -556,7 +560,7 @@ mod tests {
     // decimals trimmed, plain digits under 1K.
     #[test]
     fn token_totals_use_the_frontend_compact_form() {
-        let t = |n| tray_title(&sum(n, None, false), &Settings::default()).unwrap();
+        let t = |n| tray_title(&sum(n, None, false), &Settings::default());
         assert_eq!(t(999_999), "1M");
         assert_eq!(t(847), "847");
         assert_eq!(t(1_912_345_678), "1.91B");
@@ -564,13 +568,13 @@ mod tests {
 
     // --- Menu row (Linux) ---
 
-    // The bar title can simply be absent on a no-usage day; a menu row cannot,
-    // so the icon-alone rule becomes words there.
+    // The same title the bar carries, named — a row in a menu cannot rely on
+    // sitting next to the icon to say what it is counting.
     #[test]
-    fn the_menu_row_carries_todays_figures_and_says_so_when_there_are_none() {
-        assert_eq!(today_row(Some("3.4M · $12.84")), "Today: 3.4M · $12.84");
-        assert_eq!(today_row(Some("964.2K")), "Today: 964.2K");
-        assert_eq!(today_row(None), "No usage today");
+    fn the_menu_row_names_the_figures_the_bar_shows_bare() {
+        assert_eq!(today_row("3.4M · $12.84"), "Today: 3.4M · $12.84");
+        assert_eq!(today_row("964.2K"), "Today: 964.2K");
+        assert_eq!(today_row("0 · $0.00"), "Today: 0 · $0.00");
     }
 
     // --- Panel placement ---

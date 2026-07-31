@@ -52,7 +52,8 @@ export interface PanelModel {
   deltaUp: boolean;
   sub: string; // "3.4M tok · 1,912 req"
   rows: PanelRow[];
-  empty: boolean; // no usage today → panel shows its empty state
+  empty: boolean; // no usage in the window → the figures read $0.00 · 0 tok, but
+  // the sections below them stay away rather than fabricating a 0.0% cache hit
   // Raw values + per-frame formatters for the header count-up animation:
   // the view tweens the numbers and formats each frame with the same rules
   // the static strings above use (≥ marker and Display Currency included).
@@ -206,7 +207,7 @@ export function panelModel(
   extras?: PanelExtras,
 ): PanelModel {
   // Pace vs the same time yesterday; hidden when either side has no Cost,
-  // and on an empty today — "No usage yet" beside "-100.0%" helps nobody.
+  // and on an empty today — "-100.0%" beside a $0.00 helps nobody.
   let delta: string | null = null;
   let deltaUp = true;
   const y = yesterdaySoFar.cost;

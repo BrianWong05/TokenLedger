@@ -250,7 +250,10 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
         cache_write_tokens: cache_write,
         total_tokens: total,
         requests,
-        cost: if priced_tokens > 0 { Some(cost) } else { None },
+        // None is Unpriced: usage whose Cost this window cannot compute. A
+        // window holding no usage at all has no such gap — it cost zero, and
+        // every surface reads that out as $0.00 rather than "unpriced".
+        cost: if priced_tokens > 0 || total == 0 { Some(cost) } else { None },
         has_unpriced: !unpriced_models.is_empty(),
         unattributed_tokens,
         unpriced_models,
@@ -844,6 +847,30 @@ mod tests {
         assert_eq!(s.unpriced_models, vec!["hermes-local".to_string()]);
         assert_eq!(s.unattributed_tokens, 0, "current Sources attribute every Usage Record to a Model");
         approx(s.cache_hit_rate, 200.0 / 3650.0); // cr / (input + cr + cache_write)
+    }
+
+    // The two zeroes a window can hold, kept apart: nothing recorded costs
+    // zero (every surface shows $0.00), while usage nothing can price has no
+    // Cost at all (every surface shows "unpriced", never $0).
+    #[test]
+    fn empty_window_costs_zero_while_unpriceable_usage_has_no_cost() {
+        let (_dir, conn) = seed();
+        let empty = Filters {
+            project: Some("/p/never-used".to_string()),
+            ..Filters::default()
+        };
+        let s = summary(&conn, &empty).unwrap();
+        assert_eq!(s.total_tokens, 0);
+        assert_eq!(s.cost, Some(0.0));
+
+        // seed's hermes-local has no rate: tokens present, Cost unavailable.
+        let unpriceable = Filters {
+            models: vec!["hermes-local".to_string()],
+            ..Filters::default()
+        };
+        let s = summary(&conn, &unpriceable).unwrap();
+        assert!(s.total_tokens > 0);
+        assert_eq!(s.cost, None);
     }
 
     #[test]
