@@ -210,20 +210,6 @@ npm test
 npm run build
 ```
 
-### Verifying Claude totals
-
-TokenLedger and [`ccusage`](https://github.com/ryoppippi/ccusage) both read
-Claude Code's transcripts and bucket in local time, so their token totals
-should match closely:
-
-```bash
-npx ccusage@latest --json
-```
-
-Token categories line up; **cost will differ** — ccusage uses flat cache
-pricing while TokenLedger prices 5-minute and 1-hour cache writes
-separately.
-
 ### Verifying pi totals
 
 An opt-in test independently sums the canonical token categories over your real

@@ -98,13 +98,13 @@ fn e2e_real_logs() {
         println!("  {s:<8} {k:<12} {n}");
     }
 
-    // Claude-only category totals, for a direct ccusage cross-check (Task 16 step 3).
+    // Claude-only category totals.
     let claude_only = queries::Filters {
         tools: vec!["claude".to_string()],
         ..Default::default()
     };
     let claude_summary = queries::summary(&conn, &claude_only).unwrap();
-    println!("\n=== claude-only summary (for ccusage cross-check) ===");
+    println!("\n=== claude-only summary ===");
     println!("  input_tokens        {}", claude_summary.input_tokens);
     println!("  output_tokens       {}", claude_summary.output_tokens);
     println!("  cache_read_tokens   {}", claude_summary.cache_read_tokens);
