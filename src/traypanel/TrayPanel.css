@@ -10,11 +10,13 @@
    windowEffects popover, radius 8 to match the card's own corners). Two
    things that look like polish are load-bearing:
 
-   - The 0.72 is a scrim, not a taste call. The material follows the system
-     appearance, and this file is dark-only — in Light mode a fully
-     transparent card would leave #f2f2f5 text and #6e6e76 captions on a
-     near-white blur. The dark scrim is what guarantees contrast in both
-     appearances, so don't "clean it up" to transparent.
+   - Every stop in that gradient is a scrim, not a taste call. The material
+     follows the system appearance, and this file is dark-only — in Light
+     mode a fully transparent card would leave #f2f2f5 text and #6e6e76
+     captions on a near-white blur. Those alphas are what guarantee contrast
+     in both appearances, so don't "clean it up" to transparent, and keep the
+     lightest stop (the top, where the headline Cost sits) dark enough to
+     carry #a3a3ab.
    - Both halves of that are scoped to macOS, and they have to move together.
      Windows would take acrylic/mica, but radius is macOS-only there, so a
      square blurred rect would show at the 8px corners; Win10 acrylic also
@@ -48,9 +50,39 @@ body.tp-window #root {
   overflow: hidden;
 }
 
-/* Only where a material is painted behind it — see the header comment. */
+/* Only where a material is painted behind it — see the header comment. The
+   gradient and the rim are what read as glass rather than frosting: light
+   falls from above, so the card is lightest at its top edge and settles
+   darker toward the bottom, and the specular hairline catches that light
+   where the card turns over. These inset shadows are not the box-shadow the
+   header warns off — that one is the window's drop shadow, which macOS still
+   draws from the card's alpha; insets stay inside the border-radius. */
 body.tp-macos .tp {
-  background: rgba(30, 30, 36, 0.72);
+  background: linear-gradient(
+    180deg,
+    rgba(54, 54, 66, 0.66) 0%,
+    rgba(32, 32, 39, 0.73) 45%,
+    rgba(22, 22, 28, 0.78) 100%
+  );
+  border-color: rgba(255, 255, 255, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.24),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* The chrome drawn on the card tints with what is behind it too, or it reads
+   as grey slabs sitting on the glass. Scoped for the same reason the card is:
+   off macOS there is no material to tint with, and the mock's flat greys are
+   the right answer against a solid card. */
+body.tp-macos .tp-seg {
+  background: rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+body.tp-macos .tp-seg-btn.active {
+  background: rgba(255, 255, 255, 0.16);
+}
+body.tp-macos .tp-sep {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .tp-header { padding: 7px 10px 8px; }

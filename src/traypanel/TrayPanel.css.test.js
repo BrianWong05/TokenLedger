@@ -20,9 +20,14 @@ describe('TrayPanel translucency', () => {
   // Each fails silently alone — a material behind an opaque card looks
   // untouched, and a translucent card with no material is bare desktop.
   it('lets the card go translucent only where a material is painted behind it', () => {
-    const alpha = backgroundOf('body\\.tp-macos \\.tp').match(/rgba\([^)]*,\s*([\d.]+)\s*\)/);
-    expect(alpha, 'the macOS card must be rgba() so the material shows through').not.toBeNull();
-    expect(Number(alpha[1])).toBeLessThan(1);
+    // Every stop, not just the first: an opaque one anywhere down the gradient
+    // occludes the material across that band of the card.
+    const stops = backgroundOf('body\\.tp-macos \\.tp').match(/rgba\([^)]*\)/g);
+    expect(stops, 'the macOS card must be built from rgba() so the material shows through')
+      .not.toBeNull();
+    for (const stop of stops) {
+      expect(Number(stop.match(/,\s*([\d.]+)\s*\)$/)[1]), stop).toBeLessThan(1);
+    }
 
     const panel = conf.app.windows.find((w) => w.label === 'traypanel');
     expect(panel?.windowEffects?.effects).toContain('popover');
