@@ -10,13 +10,15 @@
    windowEffects popover, radius 8 to match the card's own corners). Two
    things that look like polish are load-bearing:
 
-   - Every stop in that gradient is a scrim, not a taste call. The material
-     follows the system appearance, and this file is dark-only — in Light
-     mode a fully transparent card would leave #f2f2f5 text and #6e6e76
-     captions on a near-white blur. Those alphas are what guarantee contrast
-     in both appearances, so don't "clean it up" to transparent, and keep the
-     lightest stop (the top, where the headline Cost sits) dark enough to
-     carry #a3a3ab.
+   - The gradient is a veil over the material, and how heavy it needs to be
+     depends on which way the material went. The material follows the system
+     appearance and this file is dark-only, so in Dark mode the material is
+     already doing the darkening and the veil stays thin — a heavy one just
+     buries it and the card goes back to looking like flat paint, which is
+     the bug this replaced. In Light mode the material turns near-white and
+     the veil is the only thing keeping #f2f2f5 text and #6e6e76 captions
+     readable, so it goes heavy. Hence the prefers-color-scheme branch: two
+     calibrations of one veil, not a light theme.
    - Both halves of that are scoped to macOS, and they have to move together.
      Windows would take acrylic/mica, but radius is macOS-only there, so a
      square blurred rect would show at the 8px corners; Win10 acrylic also
@@ -60,14 +62,29 @@ body.tp-window #root {
 body.tp-macos .tp {
   background: linear-gradient(
     180deg,
-    rgba(54, 54, 66, 0.66) 0%,
-    rgba(32, 32, 39, 0.73) 45%,
-    rgba(22, 22, 28, 0.78) 100%
+    rgba(72, 72, 88, 0.2) 0%,
+    rgba(32, 32, 39, 0.28) 45%,
+    rgba(16, 16, 22, 0.36) 100%
   );
   border-color: rgba(255, 255, 255, 0.14);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.24),
     inset 0 -1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* In Light mode the material turns light, and this file's #f2f2f5 text has
+   nothing to sit on — so the veil, and only the veil, goes heavy there. This
+   is not a light theme for the panel: the card stays dark either way, it just
+   stops relying on a material that is no longer doing the darkening. */
+@media (prefers-color-scheme: light) {
+  body.tp-macos .tp {
+    background: linear-gradient(
+      180deg,
+      rgba(54, 54, 66, 0.66) 0%,
+      rgba(32, 32, 39, 0.73) 45%,
+      rgba(22, 22, 28, 0.78) 100%
+    );
+  }
 }
 
 /* The chrome drawn on the card tints with what is behind it too, or it reads

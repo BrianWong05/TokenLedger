@@ -13,6 +13,20 @@ function backgroundOf(rule) {
   return match[1].match(/background\s*:\s*([^;]+)/)[1].trim();
 }
 
+// The macOS card is declared twice: the Dark-mode veil, then the heavier one
+// inside the prefers-color-scheme branch. In source order, first is dark.
+function veilAlphas() {
+  const rules = css.match(/body\.tp-macos \.tp\s*\{[^}]*\}/g) ?? [];
+  expect(rules, 'expected a Dark-mode veil and a Light-mode one').toHaveLength(2);
+  // The background only — the border and the inset rim carry alphas of their
+  // own, and they are not the veil.
+  return rules.map((r) =>
+    (r.match(/background\s*:\s*[^;]+/)[0].match(/rgba\([^)]*\)/g) ?? []).map((s) =>
+      Number(s.match(/,\s*([\d.]+)\s*\)$/)[1]),
+    ),
+  );
+}
+
 describe('TrayPanel translucency', () => {
   // Three things have to agree and they live in three files: the material
   // (tauri.conf.json), the card that lets it through (here), and the body
@@ -38,5 +52,15 @@ describe('TrayPanel translucency', () => {
   // its panel see-through with nothing blurring behind it.
   it('keeps the base card opaque, so platforms with no material keep a solid panel', () => {
     expect(backgroundOf('(?:^|\\n)\\.tp')).toBe('#1e1e24');
+  });
+
+  // Which way the material went decides how much veil the text needs. Dark mode
+  // gets its darkness from the material, so a heavy veil there buries it and the
+  // card reads as flat paint again; Light mode has a near-white material behind
+  // dark-only text, so the veil is the only thing holding contrast up.
+  it('veils Light mode more heavily than Dark, where the material already darkens', () => {
+    const [dark, light] = veilAlphas();
+    expect(dark).toHaveLength(light.length);
+    dark.forEach((a, i) => expect(a, `stop ${i}`).toBeLessThan(light[i]));
   });
 });
