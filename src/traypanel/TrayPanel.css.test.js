@@ -7,25 +7,31 @@ const conf = JSON.parse(
   readFileSync(resolve(process.cwd(), 'src-tauri/tauri.conf.json'), 'utf8'),
 );
 
-function declarationsFor(selector) {
-  const match = css.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
-  expect(match, `missing .${selector} rule`).not.toBeNull();
-  return match[1];
+function backgroundOf(rule) {
+  const match = css.match(new RegExp(`${rule}\\s*\\{([^}]*)\\}`));
+  expect(match, `missing ${rule} rule`).not.toBeNull();
+  return match[1].match(/background\s*:\s*([^;]+)/)[1].trim();
 }
 
 describe('TrayPanel translucency', () => {
-  // The two halves live in different files and different languages, and either
-  // one alone fails silently: the material behind an opaque card looks
-  // untouched, and a translucent card with no material is raw see-through
-  // desktop. Assert both so a half-revert can't pass.
-  it('pairs a translucent card with the macOS material that blurs what shows through', () => {
-    const alpha = declarationsFor('tp').match(
-      /background\s*:\s*rgba\([^)]*,\s*([\d.]+)\s*\)/,
-    );
-    expect(alpha, '.tp background must be rgba() so the material shows through').not.toBeNull();
+  // Three things have to agree and they live in three files: the material
+  // (tauri.conf.json), the card that lets it through (here), and the body
+  // class that scopes the card (TrayPanel.tsx, asserted in TrayPanel.test.tsx).
+  // Each fails silently alone — a material behind an opaque card looks
+  // untouched, and a translucent card with no material is bare desktop.
+  it('lets the card go translucent only where a material is painted behind it', () => {
+    const alpha = backgroundOf('body\\.tp-macos \\.tp').match(/rgba\([^)]*,\s*([\d.]+)\s*\)/);
+    expect(alpha, 'the macOS card must be rgba() so the material shows through').not.toBeNull();
     expect(Number(alpha[1])).toBeLessThan(1);
 
     const panel = conf.app.windows.find((w) => w.label === 'traypanel');
     expect(panel?.windowEffects?.effects).toContain('popover');
+  });
+
+  // The window is transparent on every platform (ADR-0010: one window list),
+  // and Windows gets no material, so an unscoped translucent card would leave
+  // its panel see-through with nothing blurring behind it.
+  it('keeps the base card opaque, so platforms with no material keep a solid panel', () => {
+    expect(backgroundOf('(?:^|\\n)\\.tp')).toBe('#1e1e24');
   });
 });

@@ -6,19 +6,24 @@
    TrayPanel on mount) outranks index.css's body background, which is
    imported later and would otherwise paint the window black.
 
-   The card is translucent over a native macOS material (conf: windowEffects
-   popover, radius 8 to match the card's own corners). Two things that look
-   like polish are load-bearing:
+   On macOS the card is translucent over a native material (conf:
+   windowEffects popover, radius 8 to match the card's own corners). Two
+   things that look like polish are load-bearing:
 
    - The 0.72 is a scrim, not a taste call. The material follows the system
      appearance, and this file is dark-only — in Light mode a fully
      transparent card would leave #f2f2f5 text and #6e6e76 captions on a
      near-white blur. The dark scrim is what guarantees contrast in both
      appearances, so don't "clean it up" to transparent.
-   - The effect is listed for macOS alone. Windows would take acrylic/mica
-     happily, but radius is macOS-only there, so a square blurred rect would
-     show at the 8px corners; Win10 acrylic also drags laggily. Windows finds
-     no effect it supports, returns early, and keeps a solid card. */
+   - Both halves of that are scoped to macOS, and they have to move together.
+     Windows would take acrylic/mica, but radius is macOS-only there, so a
+     square blurred rect would show at the 8px corners; Win10 acrylic also
+     drags laggily. So the conf lists no effect Windows supports — but the
+     window is transparent on every platform (ADR-0010: one window list, no
+     per-platform entries), so an unscoped translucent card would composite
+     straight onto the desktop there: see-through with nothing blurring it,
+     which is worse than the flat colour it replaced. Hence the base .tp
+     stays opaque and only body.tp-macos lightens it. */
 body.tp-window,
 body.tp-window #root {
   background: transparent !important;
@@ -31,7 +36,7 @@ body.tp-window #root {
 .tp {
   width: 300px;
   box-sizing: border-box;
-  background: rgba(30, 30, 36, 0.72);
+  background: #1e1e24;
   border: 1px solid #3f3f47;
   border-radius: 8px;
   padding: 5px;
@@ -41,6 +46,11 @@ body.tp-window #root {
   -webkit-user-select: none;
   user-select: none;
   overflow: hidden;
+}
+
+/* Only where a material is painted behind it — see the header comment. */
+body.tp-macos .tp {
+  background: rgba(30, 30, 36, 0.72);
 }
 
 .tp-header { padding: 7px 10px 8px; }

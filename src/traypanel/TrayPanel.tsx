@@ -159,11 +159,13 @@ export default function TrayPanel({
   }, [ledger, settings]);
 
   // Mark the document so TrayPanel.css can force the window transparent
-  // over index.css's app background (see the css header comment).
+  // over index.css's app background, and so the translucent card is scoped
+  // to the one platform that paints a material behind it (see the css
+  // header comment).
   useEffect(() => {
-    document.body.classList.add('tp-window');
-    return () => document.body.classList.remove('tp-window');
-  }, []);
+    document.body.classList.add('tp-window', `tp-${platform}`);
+    return () => document.body.classList.remove('tp-window', `tp-${platform}`);
+  }, [platform]);
 
   // Initial load + refetch every time the tray shows the panel — both with
   // the loading beat; background refetches (rescan) skip it.

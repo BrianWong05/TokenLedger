@@ -380,4 +380,32 @@ describe('TrayPanel', () => {
     expect(await keys('macos')).toEqual(['⇧⌘R', '⌘,', '⌘Q']);
     expect(await keys('windows')).toEqual(['Ctrl+Shift+R', 'Ctrl+,', 'Ctrl+Q']);
   });
+
+  // The translucent card is scoped to body.tp-macos, because only macOS gets a
+  // material painted behind it (see TrayPanel.css's header). Without this class
+  // the panel is either solid everywhere or see-through everywhere.
+  it('names the platform on the body, so the card lightens only where a material backs it', async () => {
+    const mount = async (platform: Platform) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      await act(async () => {
+        root.render(
+          <TrayPanel
+            ports={{ ledger: makeFakeLedger({ summary, modelRows: toolRows }), settings: makeFakeSettings() }}
+            platform={platform}
+          />,
+        );
+      });
+      await settle();
+      const classes = Array.from(document.body.classList);
+      act(() => root.unmount());
+      return classes;
+    };
+
+    expect(await mount('macos')).toContain('tp-macos');
+    expect(await mount('windows')).not.toContain('tp-macos');
+    // and the class comes back off with the panel
+    expect(Array.from(document.body.classList)).not.toContain('tp-macos');
+  });
 });
