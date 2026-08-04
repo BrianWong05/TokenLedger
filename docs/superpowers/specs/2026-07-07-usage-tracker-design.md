@@ -159,7 +159,7 @@ range filtering happen in the Mac's local timezone at query time
 buckets); a custom range is inclusive of both endpoint dates (end bound =
 start of the following local day, exclusive). Verified: ~34% of this machine's
 events fall in local 00:00–08:00, so UTC bucketing would misplace a third of
-usage — and break the ccusage comparison, which buckets in local time.
+usage.
 
 ## Source adapters
 
@@ -308,8 +308,8 @@ Single screen, dark theme, English. Layout mirrors the reference screenshot:
    raw model names); date range (Today / 7d / 30d / All / custom); refresh
    interval. `tools[]`/`models[]` arrays are just the IPC transport shape.
 2. **Hero card:** total tokens (big number) = **input + output + cache write
-   + cache read summed** (ccusage-style; consistent with the est. cost beside
-   it), request count, estimated cost with sub-label.
+   + cache read summed** (consistent with the est. cost beside it), request
+   count, estimated cost with sub-label.
 3. **Stat cards:** input, output, cache write, cache read, cache hit rate
    (progress bar).
 4. **Trend chart:** Recharts area/bar of tokens per bucket with cost line on a
@@ -355,8 +355,6 @@ Principle: degrade per source, never crash the dashboard.
   resolves to $2.5/M input despite null-cost `chatgpt/gpt-5.4` existing;
   `gemini-2.5-flash` resolves to $0.30/M despite an 8× reseller entry;
   unknown model → "unpriced", not $0; an override wins over LiteLLM.
-- **Manual sanity check:** compare Claude totals against `ccusage` on this
-  machine before calling v1 done (both bucket in local time).
 
 ## Tech stack
 

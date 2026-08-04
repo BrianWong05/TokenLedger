@@ -14,7 +14,7 @@
 
 - Reasoning tokens are a **display subset of output tokens**: never priced, never added to totals. `NULL` means "source doesn't report it" and renders as `—`, never as `0`.
 - Convs = `COUNT(DISTINCT session_id)` (SQL ignores NULLs). Never summed across days in the UI.
-- Migration + backfill re-scan must not change any token count (e2e: Claude totals still match ccusage < 0.5%).
+- Migration + backfill re-scan must not change any token count (e2e: Claude totals still match the prior run < 0.5%).
 - All time bucketing is local time: `strftime(fmt, timestamp, 'unixepoch', 'localtime')` — same as the existing `trend`.
 - Rust structs use `#[serde(rename_all = "camelCase")]`; TS types in `src/types.ts` mirror them field-for-field.
 - Cost display: `null` → `"unpriced"`, partial → `≥ $X` — use the existing `formatCost` in `src/lib/format.ts`.
@@ -2527,7 +2527,7 @@ Expected: all PASS.
 - [ ] **Step 2: Real-log e2e harness**
 
 Run: `cargo test --release e2e_real_logs -- --ignored --nocapture`
-Expected: per-source scans succeed; Claude totals match the values recorded in README/prior runs (parity with ccusage < 0.5%). This run uses a fresh temp DB, so it also proves a from-scratch v2 scan works.
+Expected: per-source scans succeed; Claude totals match the values recorded in README/prior runs (within 0.5%). This run uses a fresh temp DB, so it also proves a from-scratch v2 scan works.
 
 - [ ] **Step 3: Real app-DB migration check**
 

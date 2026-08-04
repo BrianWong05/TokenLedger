@@ -6230,8 +6230,8 @@ git commit -m "feat: dark theme polish — CSS variables, card grid, chart palet
 
 This task has no new automated tests. The deliverable is (a) a manual
 end-to-end verification of the whole app against the real logs on this
-machine, (b) a ccusage cross-check of Claude totals, and (c) a `README.md`.
-It depends on every prior task being merged and green.
+machine and (b) a `README.md`. It depends on every prior task being merged
+and green.
 
 **Files:**
 - Create: `README.md`
@@ -6267,40 +6267,7 @@ It depends on every prior task being merged and green.
   `scan::`); `vitest` → all `dateRange` and `format` tests pass; `npm run
   build` → `vite build` completes with no TypeScript errors.
 
-- [ ] **Step 2: Capture the ground-truth Claude totals with ccusage (local-time buckets)**
-
-  ccusage reads the same `~/.claude/projects/**/*.jsonl` transcripts and, like
-  TokenLedger, buckets in local time — so its all-time totals are the
-  reference for the Claude source. Capture them before launching the app so
-  you have exact numbers to compare against.
-
-  ```bash
-  npx ccusage@latest --json > /tmp/ccusage.json
-  # Sum every day's token fields across the whole history:
-  python3 - <<'PY'
-  import json
-  d = json.load(open("/tmp/ccusage.json"))
-  days = d.get("daily", d) if isinstance(d, dict) else d
-  if isinstance(days, dict): days = days.get("daily", [])
-  tot = {"input":0,"output":0,"cache_create":0,"cache_read":0}
-  for day in days:
-      tot["input"]        += day.get("inputTokens", 0)
-      tot["output"]       += day.get("outputTokens", 0)
-      tot["cache_create"] += day.get("cacheCreationTokens", 0)
-      tot["cache_read"]   += day.get("cacheReadTokens", 0)
-  print("ccusage Claude totals (all time):")
-  for k, v in tot.items():
-      print(f"  {k:13} {v:,}")
-  print(f"  {'TOTAL':13} {sum(tot.values()):,}")
-  PY
-  ```
-
-  Expected: four token subtotals plus a grand total print out. Record these
-  five numbers — you compare them in Step 4. (If the `ccusage` JSON shape
-  differs, adjust the field names; the point is the four token categories
-  summed over all days.)
-
-- [ ] **Step 3: Launch the real app and run the ingestion + display checklist**
+- [ ] **Step 2: Launch the real app and run the ingestion + display checklist**
 
   ```bash
   cd /Users/brianwong/Project/usage
@@ -6336,32 +6303,7 @@ It depends on every prior task being merged and green.
     path and displays the basename; the same repo used from two tools appears
     as one row (title attribute shows the full path on hover).
 
-- [ ] **Step 4: ccusage cross-check — Claude tokens must match closely**
-
-  In the running app, set tool filter = **Claude**, range = **All**. Read the
-  four stat-card token values (input, output, cache write, cache read) and the
-  hero total. Compare against the ccusage numbers from Step 2.
-
-  Expected and acceptable:
-  - **Token categories match closely.** TokenLedger's cache-write stat = ccusage
-    `cacheCreationTokens` (TokenLedger splits it into 5m + 1h internally, but
-    the displayed "cache write" stat is the combined 5m + 1h, so the totals
-    line up). input / output / cache read should match to within rounding of
-    dedup differences.
-  - **Small deltas are expected and OK.** Minor divergence can come from
-    TokenLedger's durable ledger holding history that Claude Code has since
-    pruned (>~30 days old), or from ccusage's own dedup heuristics. A few
-    percent is fine; an order-of-magnitude gap is a bug — investigate the
-    Claude adapter (Task 3) if you see one.
-  - **Cost is expected to differ and is NOT compared.** ccusage applies flat
-    cache pricing; TokenLedger prices 5m vs 1h cache writes separately
-    (measured ~11.6% higher Claude cost on this machine). Cost divergence is
-    by design, not a defect.
-
-  Tick only when the four Claude token categories match ccusage within a few
-  percent.
-
-- [ ] **Step 5: Price-override end-to-end, including persistence across restart**
+- [ ] **Step 3: Price-override end-to-end, including persistence across restart**
 
   Still in the running app:
 
@@ -6385,7 +6327,7 @@ It depends on every prior task being merged and green.
 
   Tick only after the override survives a full app restart and delete works.
 
-- [ ] **Step 6: Write `README.md`**
+- [ ] **Step 4: Write `README.md`**
 
   Create `/Users/brianwong/Project/usage/README.md` with exactly this content:
 
@@ -6470,26 +6412,12 @@ It depends on every prior task being merged and green.
   npm run build
   ```
 
-  ## Verifying Claude totals
-
-  TokenLedger and [`ccusage`](https://github.com/ryoppippi/ccusage) both read
-  Claude Code's transcripts and bucket in local time, so their token totals
-  should match closely:
-
-  ```bash
-  npx ccusage@latest --json
-  ```
-
-  Token categories line up; **cost will differ** — ccusage uses flat cache
-  pricing while TokenLedger prices 5-minute and 1-hour cache writes
-  separately.
-
   ## License
 
   MIT
   ````
 
-- [ ] **Step 7: Rebuild once more, then final commit**
+- [ ] **Step 5: Rebuild once more, then final commit**
 
   Re-run the build to confirm the tree is still green after adding the README
   (README-only change, but confirm nothing else drifted), then commit.

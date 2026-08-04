@@ -143,7 +143,7 @@ variant's dependency. Shared formatters (`fmtTok`, `fmtUSD`, `fmtPct`,
   adapter fixtures asserting session_id/reasoning and reasoning ≤ output.
 - Invariant: `series(day)` summed over a range equals `summary` for the same
   filters.
-- Re-run the e2e real-log harness: Claude totals still match ccusage <0.5%.
+- Re-run the e2e real-log harness: Claude totals still match the prior run <0.5%.
 - Frontend: vitest for range→filter mapping and data reshaping; final visual
   sign-off in `npm run tauri dev` against the real Ledger.
 

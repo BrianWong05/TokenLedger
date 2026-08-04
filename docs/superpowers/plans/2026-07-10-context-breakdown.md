@@ -1970,7 +1970,7 @@ git commit -m "feat(overview): mount real Context Breakdown above Token Breakdow
 
 - [ ] **Step 1: Add invariant checks**
 
-Append to the `e2e_real_logs` test (before the final ccusage cross-check
+Append to the `e2e_real_logs` test (before the final claude-only summary
 section), after the existing summary prints:
 
 ```rust
