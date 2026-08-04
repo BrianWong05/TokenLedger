@@ -4,7 +4,21 @@
    shadow from the card's alpha (conf: shadow true) — a CSS box-shadow
    would clip at the window edge. The body.tp-window class (set by
    TrayPanel on mount) outranks index.css's body background, which is
-   imported later and would otherwise paint the window black. */
+   imported later and would otherwise paint the window black.
+
+   The card is translucent over a native macOS material (conf: windowEffects
+   popover, radius 8 to match the card's own corners). Two things that look
+   like polish are load-bearing:
+
+   - The 0.72 is a scrim, not a taste call. The material follows the system
+     appearance, and this file is dark-only — in Light mode a fully
+     transparent card would leave #f2f2f5 text and #6e6e76 captions on a
+     near-white blur. The dark scrim is what guarantees contrast in both
+     appearances, so don't "clean it up" to transparent.
+   - The effect is listed for macOS alone. Windows would take acrylic/mica
+     happily, but radius is macOS-only there, so a square blurred rect would
+     show at the 8px corners; Win10 acrylic also drags laggily. Windows finds
+     no effect it supports, returns early, and keeps a solid card. */
 body.tp-window,
 body.tp-window #root {
   background: transparent !important;
@@ -17,7 +31,7 @@ body.tp-window #root {
 .tp {
   width: 300px;
   box-sizing: border-box;
-  background: #1e1e24;
+  background: rgba(30, 30, 36, 0.72);
   border: 1px solid #3f3f47;
   border-radius: 8px;
   padding: 5px;

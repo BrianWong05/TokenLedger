@@ -34,7 +34,12 @@
         "skipTaskbar": true,
         "resizable": true,
         "width": 300,
-        "height": 480
+        "height": 480,
+        "windowEffects": {
+          "effects": ["popover"],
+          "state": "active",
+          "radius": 8
+        }
       }
     ],
     "security": {
