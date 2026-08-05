@@ -5,7 +5,7 @@
 // ports the app shell uses; the four actions are Tauri glue.
 // UI strings are English-only like the native menu it replaced; number and
 // currency formatting still follow the app's locale. Dark-only like the mock.
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -103,6 +103,9 @@ export default function TrayPanel({
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('today');
+  // The sparkline's hover inspector: which bucket the pointer is nearest, null
+  // when the mouse is away.
+  const [sparkHover, setSparkHover] = useState<number | null>(null);
   // refresh() reads the ref so its identity doesn't churn on period change
   // (the mount effect re-registering listeners on every switch would be
   // wasteful); pickPeriod keeps ref and state in step.
@@ -153,6 +156,9 @@ export default function TrayPanel({
           scannedAt,
         }),
       );
+      // A fresh model can hold fewer buckets than the inspected index (period
+      // switch, midnight rollover mid-hover); never let the index outlive them.
+      setSparkHover(null);
     }
     // Ledger unavailable (e.g. mid-restart): keep the last model.
     if (showLoading) setLoading(false);
@@ -202,6 +208,21 @@ export default function TrayPanel({
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // Hit-testing: inverting the svg's x is enough — the svg stretches
+  // (preserveAspectRatio none), so viewBox x is proportional to box x.
+  const onSparkMove = (e: ReactMouseEvent<SVGSVGElement>) => {
+    const spark = model?.spark;
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (!spark || !rect.width) return;
+    const vx = ((e.clientX - rect.left) / rect.width) * SPARK_W;
+    const last = Math.max(1, spark.points.length - 1);
+    const i = Math.round(((vx - SPARK_PAD) / (SPARK_W - SPARK_PAD * 2)) * last);
+    setSparkHover(Math.max(0, Math.min(spark.points.length - 1, i)));
+  };
+  // The inspected bucket's chart position; null while the mouse is away.
+  const hoverXY =
+    model?.spark && sparkHover != null ? sparkXY(model.spark.points, sparkHover) : null;
 
   const pickPeriod = (p: Period) => {
     if (p === periodRef.current) return;
@@ -305,12 +326,20 @@ export default function TrayPanel({
 
       {!loading && !model?.empty && model?.spark && (
         <div className="tp-spark">
+          {/* The hover inspector's read-out. The line is always reserved so
+              inspecting never shifts the layout (the window is sized to the
+              content); idle it hints, hovered it reads the bucket. */}
+          <div className={sparkHover != null ? 'tp-spark-read' : 'tp-spark-read idle'}>
+            {sparkHover != null ? model.spark.details[sparkHover] : 'hover the chart'}
+          </div>
           <svg
             viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
             width={SPARK_W}
             height={SPARK_H}
             preserveAspectRatio="none"
             aria-hidden="true"
+            onMouseMove={onSparkMove}
+            onMouseLeave={() => setSparkHover(null)}
           >
             {/* One bucket is a point, not a line: the area would close into a
                 triangle spanning the whole box, drawing a fall that never
@@ -330,6 +359,18 @@ export default function TrayPanel({
               cy={sparkXY(model.spark.points, model.spark.points.length - 1)[1]}
               r="2.5"
             />
+            {hoverXY && (
+              <>
+                <line
+                  className="tp-spark-hover-line"
+                  x1={hoverXY[0]}
+                  x2={hoverXY[0]}
+                  y1={2}
+                  y2={SPARK_H - 2}
+                />
+                <circle className="tp-spark-hover-dot" cx={hoverXY[0]} cy={hoverXY[1]} r="2.5" />
+              </>
+            )}
           </svg>
           {/* The axis: first tick sits at the left edge, last at the right,
               middle between them — space-between puts each where its bucket is. */}

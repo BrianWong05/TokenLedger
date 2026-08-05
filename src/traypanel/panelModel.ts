@@ -26,6 +26,7 @@ export interface PanelSpark {
   points: number[]; // 0..1 of the period's peak, one per bucket, gaps zero-filled
   ticks: string[]; // sparse x labels — first, middle, last — spread across the points
   peak: string; // "peak 14:00 · $101.15"
+  details: string[]; // hover read-out per bucket — "14:00 · $3.12 · 1.2M tok"
 }
 
 export interface PanelStats {
@@ -180,6 +181,16 @@ function sparkline(
     points: row.map((c) => c.cost / peak.cost),
     ticks: at.map((i) => tickLabel(keys[i])),
     peak: `peak ${tickLabel(keys[row.indexOf(peak)])} · ${cost(peak, settings, lang)}`,
+    // One read-out per bucket for the hover inspector, preformatted like the
+    // peak line so the view stays display-only. An idle bucket honestly reads
+    // $0.00 · 0 tok — the period as a whole is priced or spark would be null.
+    details: row.map((c, i) => {
+      // Series Cost is a sum of priced usage, so a bucket holding only
+      // Unpriced or Unattributed usage sums to 0 — which cost() must read as
+      // the absence it is ("unpriced"/"unavailable"), never as $0.
+      const cell = c.cost === 0 && (c.hasUnpriced || c.unattributedTokens > 0) ? { ...c, cost: null } : c;
+      return `${tickLabel(keys[i])} · ${cost(cell, settings, lang)} · ${formatCompactTokenTotal(c.totalTokens)} tok`;
+    }),
   };
 }
 

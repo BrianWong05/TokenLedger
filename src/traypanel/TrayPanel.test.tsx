@@ -29,6 +29,22 @@ const toolRows: BreakdownRow[] = [
     unattributedTokens: 0 },
 ];
 
+// Series helpers for the sparkline tests: a local calendar day `back` days
+// ago, and one (bucket, Source) series point.
+const day = (back: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - back);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+const point = (bucket: string, cost: number) => ({
+  bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
+  inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+  totalTokens: 1_000, reasoningTokens: null, cost, requests: 0, convs: 0,
+  ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
+  ctxAgents: null, ctxMcp: null, ctxSkills: null,
+});
+
 const mountedRoots: Root[] = [];
 
 async function settle(times = 4) {
@@ -139,19 +155,6 @@ describe('TrayPanel', () => {
   });
 
   it('draws the sparkline for the selected period and rebuckets on a switch', async () => {
-    const day = (back: number) => {
-      const d = new Date();
-      d.setDate(d.getDate() - back);
-      const p = (n: number) => String(n).padStart(2, '0');
-      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-    };
-    const point = (bucket: string, cost: number) => ({
-      bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-      totalTokens: 1_000, reasoningTokens: null, cost, requests: 0, convs: 0,
-      ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-      ctxAgents: null, ctxMcp: null, ctxSkills: null,
-    });
     const ledger = makeFakeLedger({
       summary,
       toolRows,
@@ -177,6 +180,60 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-spark-peak')?.textContent).toBe(`peak ${day(0).slice(5)} · $9.00`);
     expect(container.querySelector('.tp-spark-line')?.getAttribute('d')).toMatch(/^M3\.0 /);
     expect(container.querySelector('.tp-spark-now')).not.toBeNull(); // latest bucket marked
+  });
+
+  it('hovering the sparkline reads out that bucket; leaving restores the hint', async () => {
+    const ledger = makeFakeLedger({
+      summary,
+      toolRows,
+      dayPoints: [point(day(1), 3), point(day(0), 9)],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+    const days30 = Array.from(container.querySelectorAll('.tp-seg-btn')).find(
+      (b) => b.textContent === '30 days',
+    ) as HTMLButtonElement;
+    await act(async () => days30.click());
+    await settle();
+
+    // Idle: the reserved line hints instead of reading a bucket.
+    expect(container.querySelector('.tp-spark-read')?.textContent).toBe('hover the chart');
+    expect(container.querySelector('.tp-spark-hover-dot')).toBeNull();
+
+    // jsdom boxes have no size; give the svg the viewBox's width so the
+    // pointer maths has geometry to invert.
+    const svg = container.querySelector('.tp-spark svg') as SVGSVGElement;
+    svg.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 260, height: 44, right: 260, bottom: 44, x: 0, y: 0 }) as DOMRect;
+
+    // The right edge is the latest bucket (today, $9); the left edge day 29.
+    await act(async () => {
+      svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 259 }));
+    });
+    expect(container.querySelector('.tp-spark-read')?.textContent).toBe(
+      `${day(0).slice(5)} · $9.00 · 1K tok`,
+    );
+    expect(container.querySelector('.tp-spark-hover-dot')).not.toBeNull();
+    await act(async () => {
+      svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 3 }));
+    });
+    expect(container.querySelector('.tp-spark-read')?.textContent).toBe(
+      `${day(29).slice(5)} · $0.00 · 0 tok`, // an idle day reads its zero
+    );
+
+    // React synthesizes onMouseLeave from bubbling mouseout whose
+    // relatedTarget lies outside the element.
+    await act(async () => {
+      svg.dispatchEvent(
+        new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }),
+      );
+    });
+    expect(container.querySelector('.tp-spark-read')?.textContent).toBe('hover the chart');
+    expect(container.querySelector('.tp-spark-hover-dot')).toBeNull();
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {

@@ -201,6 +201,32 @@ describe('panelModel Cost sparkline', () => {
     expect(m.spark?.peak).toBe('peak 09:00 · ≥ $3.00');
   });
 
+  it('spells out every bucket for the hover read-out, idle hours included', () => {
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
+      series: [
+        spt('2026-06-15 00:00', 1, 500_000),
+        spt('2026-06-15 05:00', 4, 1_200_000, true),
+        spt('2026-06-15 10:00', 2, 300_000),
+      ],
+    }));
+    expect(m.spark?.details.length).toBe(11); // one per bucket, same axis as points
+    expect(m.spark?.details[0]).toBe('00:00 · $1.00 · 500K tok');
+    expect(m.spark?.details[1]).toBe('01:00 · $0.00 · 0 tok'); // an idle hour reads zero
+    expect(m.spark?.details[5]).toBe('05:00 · ≥ $4.00 · 1.2M tok'); // Partial keeps its marker
+  });
+
+  it('a bucket of only Unpriced or Unattributed usage never reads $0', () => {
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
+      series: [
+        spt('2026-06-15 00:00', 2),
+        spt('2026-06-15 04:00', 0, 700, true), // all-Unpriced hour
+        { ...spt('2026-06-15 05:00', 0, 500), unattributedTokens: 500 }, // all-Unattributed hour
+      ],
+    }));
+    expect(m.spark?.details[4]).toBe('04:00 · unpriced · 700 tok');
+    expect(m.spark?.details[5]).toBe('05:00 · unavailable · 500 tok');
+  });
+
   it('hides the sparkline when the period has no Cost to draw', () => {
     const m = panelModel(sum(50, null, false, 0, 50), sum(0, null), [], S, 'en', extras({
       series: [spt('2026-06-15 01:00', 0), spt('2026-06-15 02:00', 0)],

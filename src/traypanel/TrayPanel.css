@@ -276,3 +276,19 @@ body.tp-macos .tp-sep {
 @keyframes tp-rotate {
   to { transform: rotate(360deg); }
 }
+
+/* The sparkline's hover inspector: a reserved read-out line above the chart
+   (reserved so inspecting never resizes the window), and the guide marking
+   the inspected bucket on the chart itself. */
+.tp-spark-read {
+  display: flex;
+  justify-content: flex-end;
+  height: 13px;
+  margin-bottom: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #d9d4ff;
+}
+.tp-spark-read.idle { color: #4a4a52; }
+.tp-spark-hover-line { stroke: rgba(169, 157, 255, 0.35); stroke-width: 1; }
+.tp-spark-hover-dot { fill: #e6e1ff; }
