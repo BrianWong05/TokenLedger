@@ -33,7 +33,7 @@ import {
   type BucketView,
   type ToolCategory,
 } from './data';
-import { TOOLS, type Range8b, type ToolKey, type ToolMeta } from './meta';
+import { TOOLS, orderedSourceKeys, sourceMeta, type Range8b, type ToolKey, type ToolMeta } from './meta';
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
 import type {
@@ -129,7 +129,7 @@ class Store implements OverviewStore {
     modelRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
-    range: 'total', customFrom: '', customTo: '', selected: 'claude',
+    range: 'total', customFrom: '', customTo: '', selected: TOOLS[0].key,
   };
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
@@ -361,7 +361,7 @@ export function createOverviewStore(ports?: {
 export interface OverviewView {
   rpts: SeriesPoint[];
   total: number;
-  toolTotals: Record<ToolKey, number>;
+  toolTotals: Record<string, number>;
   per: Granularity;
   trend: Bucket[];
   modelTool: Record<string, string>;
@@ -399,7 +399,7 @@ export function selectProfile(s: OverviewSnapshot, now: Date = new Date()): Prof
 
 export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()): ToolMeta[] {
   const totals = toolTotalsOfPoints(pointsIn(s.allPoints ?? [], windowOf(s.range, s.from, s.to, now)));
-  return TOOLS.filter((t) => totals[t.key] > 0);
+  return orderedSourceKeys(Object.keys(totals).filter((key) => totals[key] > 0)).map(sourceMeta);
 }
 
 export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: Lang = 'en'): OverviewView {
@@ -438,7 +438,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
     selMeta: ctxMeta(s.ctxResources, s.selected, lang),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
-    tool: TOOLS.find((t) => t.key === s.selected)!,
+    tool: sourceMeta(s.selected),
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
   };

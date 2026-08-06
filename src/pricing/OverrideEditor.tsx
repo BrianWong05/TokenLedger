@@ -87,7 +87,7 @@ export default function OverrideEditor({
   };
 
   const meta = toolMeta(model.tool);
-  const icon = meta && TOOL_ICONS[meta.key];
+  const icon = TOOL_ICONS[meta.icon] ?? TOOL_ICONS.generic;
   const tool = toolLabel(model.tool);
   const subtitle = hasOverride
     ? fill(t('pricing.editor.subtitleOverride'), { tool })

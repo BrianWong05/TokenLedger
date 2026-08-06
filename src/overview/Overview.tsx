@@ -13,7 +13,7 @@ import AggTrend from './AggTrend';
 import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
 import { RangeSegments } from './RangePicker';
-import { TOOLS, type ToolMeta } from './meta';
+import type { ToolMeta } from './meta';
 import { TOOL_ICONS } from './icons';
 import { fmtPct } from '../lib/format';
 import { formatSummaryCost, useOverviewT } from './localize';
@@ -203,7 +203,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           {/* Only Sources with tokens render: a zero-width segment still carries
               the flex gap on both sides, wedging dead space between the segments
               that do have tokens (e.g. Claude first + pi last, five empties between). */}
-          {TOOLS.filter((tl) => toolTotals[tl.key] > 0).map((tl) => (
+          {visibleTools.map((tl) => (
             <div key={tl.key} style={{ width: fmtPct(toolTotals[tl.key] / grand), background: tl.color }} />
           ))}
         </div>
@@ -326,7 +326,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 // Brand-icon chip for a source; falls back to a colored monogram when the tool
 // has no brand mark.
 function ToolIcon({ tool }: { tool: ToolMeta }) {
-  const src = TOOL_ICONS[tool.key];
+  const src = TOOL_ICONS[tool.icon] ?? TOOL_ICONS.generic;
   return (
     <span className="tt-toolicon">
       {src ? (

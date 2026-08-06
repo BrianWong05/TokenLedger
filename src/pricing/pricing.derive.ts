@@ -3,7 +3,7 @@
 // the design mock's state logic (screen 1a <script>). No React, no fetching —
 // so every branch is unit-testable against a ModelPricing[].
 import type { ModelPricing, RatesPerTok } from '../types';
-import { TOOLS, type ToolMeta } from '../overview/meta';
+import { sourceMeta, type ToolMeta } from '../overview/meta';
 
 export type PriceState = 'ok' | 'override' | 'unpriced' | 'est';
 export type PriceFilter = 'all' | 'unpriced' | 'override' | 'est';
@@ -26,14 +26,14 @@ export function modelState(m: ModelPricing): PriceState {
   return 'ok';
 }
 
-export function toolMeta(tool: string): ToolMeta | undefined {
-  return TOOLS.find((t) => t.key === tool);
+export function toolMeta(tool: string): ToolMeta {
+  return sourceMeta(tool);
 }
 
 // Displayed tool label (full source name, e.g. "Claude Code") — also the
 // search target alongside the raw model name.
 export function toolLabel(tool: string): string {
-  return toolMeta(tool)?.source ?? tool;
+  return toolMeta(tool).source;
 }
 
 // The two catalog ids an origin can carry. Anything else is a publisher's name

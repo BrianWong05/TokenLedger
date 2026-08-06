@@ -4,7 +4,7 @@
 // CATEGORIES, themes, ranges, types) lives in ./meta.
 import type { BreakdownRow, Filters, SeriesPoint, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { parseLocalDate } from '../lib/dateRange';
-import { TOOLS, CATEGORIES, emptyByTool, type ToolKey, type ToolMeta, type Range8b } from './meta';
+import { TOOLS, CATEGORIES, emptyByTool, orderedSourceKeys, sourceMeta, type ToolKey, type ToolMeta, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
 
 export const UNATTRIBUTED_COLOR = '#7a8499';
@@ -30,9 +30,9 @@ export function rankModels(bks: Bucket[]): string[] {
   return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
 }
 
-// The tool meta owning a model (undefined if its source is unknown).
+// The tool meta owning a model, including a neutral historical-key fallback.
 function toolMeta(modelTool: Record<string, string>, m: string): ToolMeta | undefined {
-  return TOOLS.find((t) => t.key === modelTool[m]);
+  return modelTool[m] ? sourceMeta(modelTool[m]) : undefined;
 }
 
 // A model's stack color: the brand accent of its owning tool (grey fallback for
@@ -79,7 +79,7 @@ export function modelOwner(
 ): ModelOwner {
   const here = modelSources?.[m];
   const keys = here?.length ? here : modelTool[m] ? [modelTool[m]] : [];
-  const metas = keys.map((k) => TOOLS.find((t) => t.key === k));
+  const metas = keys.map(sourceMeta);
   return {
     keys,
     label: keys.length ? keys.map((k, i) => metas[i]?.label ?? k).join(' + ') : undefined,
@@ -98,7 +98,7 @@ export interface Day {
   row: number;
   tokens: number;
   level: 0 | 1 | 2 | 3 | 4;
-  byTool: Record<ToolKey, number>;
+  byTool: Record<string, number>;
   byModel: Record<string, number>;
   // Source(s) that produced each Model on this day — see modelOwner().
   modelSources?: Record<string, string[]>;
@@ -108,7 +108,7 @@ export interface Day {
 export interface Bucket {
   key: string;  // bucket key: iso day, 'YYYY-MM-DD HH:00', week-start iso, or 'YYYY-MM'
   label: string;
-  byTool: Record<ToolKey, number>;
+  byTool: Record<string, number>;
   byModel: Record<string, number>;
   // Source(s) that produced each Model IN THIS BUCKET. byModel merges a Model's
   // tokens across Sources, and two Sources can run the same Model name (pi and
@@ -171,7 +171,7 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     let unattributedTokens = 0;
     let tokens = 0;
     for (const p of byDate.get(iso) ?? []) {
-      if (p.source in byTool) byTool[p.source as ToolKey] += p.totalTokens;
+      byTool[p.source] = (byTool[p.source] ?? 0) + p.totalTokens;
       for (const [m, v] of Object.entries(p.byModel)) {
         byModel[m] = (byModel[m] ?? 0) + v;
         const owners = (modelSources[m] ??= []);
@@ -468,7 +468,7 @@ export function bucketsFromPoints(
     : per === 'week' ? weekKey(p.bucket.slice(0, 10))
     : p.bucket.slice(0, 7); // YYYY-MM
   const map = new Map<string, {
-    byTool: Record<ToolKey, number>;
+    byTool: Record<string, number>;
     byModel: Record<string, number>;
     modelSources: Record<string, string[]>;
     unattributedTokens: number;
@@ -480,7 +480,7 @@ export function bucketsFromPoints(
       byTool: emptyByTool(), byModel: {}, modelSources: {},
       unattributedTokens: 0, hasUnpriced: false,
     };
-    if (p.source in g.byTool) g.byTool[p.source as ToolKey] += p.totalTokens;
+    g.byTool[p.source] = (g.byTool[p.source] ?? 0) + p.totalTokens;
     for (const [m, v] of Object.entries(p.byModel)) {
       g.byModel[m] = (g.byModel[m] ?? 0) + v;
       // Remember who produced it here, so a Model name shared by two Sources is
@@ -567,9 +567,9 @@ export function sumPoints(pts: SeriesPoint[]): number {
   return pts.reduce((a, p) => a + p.totalTokens, 0);
 }
 
-export function toolTotalsOfPoints(pts: SeriesPoint[]): Record<ToolKey, number> {
+export function toolTotalsOfPoints(pts: SeriesPoint[]): Record<string, number> {
   const out = emptyByTool();
-  for (const p of pts) if (p.source in out) out[p.source as ToolKey] += p.totalTokens;
+  for (const p of pts) out[p.source] = (out[p.source] ?? 0) + p.totalTokens;
   return out;
 }
 
@@ -582,13 +582,14 @@ export interface SmallMultipleItem extends ToolMeta {
 // Per-tool sparkline series over the buckets (small multiples).
 export function smallMultiples(bks: Bucket[]): SmallMultipleItem[] {
   const totals = emptyByTool();
-  for (const b of bks) for (const t of TOOLS) totals[t.key] += b.byTool[t.key];
-  const grand = (Object.values(totals) as number[]).reduce((a, b) => a + b, 0) || 1;
-  return TOOLS.filter((t) => totals[t.key] > 0).map((t) => ({
-    ...t,
-    total: totals[t.key],
-    share: totals[t.key] / grand,
-    series: bks.map((b) => b.byTool[t.key]),
+  for (const b of bks) for (const [key, value] of Object.entries(b.byTool)) totals[key] = (totals[key] ?? 0) + value;
+  const keys = orderedSourceKeys(Object.keys(totals));
+  const grand = keys.reduce((total, key) => total + totals[key], 0) || 1;
+  return keys.filter((key) => totals[key] > 0).map((key) => ({
+    ...sourceMeta(key),
+    total: totals[key],
+    share: totals[key] / grand,
+    series: bks.map((b) => b.byTool[key] ?? 0),
   }));
 }
 

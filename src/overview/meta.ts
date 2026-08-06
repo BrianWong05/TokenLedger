@@ -3,26 +3,57 @@
 // Range8b types. Pure constants and types, no fetching or reshaping (that lives
 // in data.ts), so components can pull in the meta without the reshapers.
 
-export type ToolKey = 'claude' | 'codex' | 'gemini' | 'hermes' | 'grok' | 'antigravity' | 'pi';
+import catalog from '../source-catalog.json';
+
+export type ToolKey = string;
 
 export interface ToolMeta {
   key: ToolKey;
   label: string;
   source: string; // full source name, e.g. "Claude Code"
   color: string;
+  icon: string;
+  aliases: string[];
+  capabilities: Record<string, boolean>;
 }
 
-// color = each source's brand accent, matching its icon (src/overview/icons/).
-// Hermes has no brand mark, so it keeps a distinct pink.
-export const TOOLS: ToolMeta[] = [
-  { key: 'claude', label: 'Claude', source: 'Claude Code', color: '#d97757' },
-  { key: 'codex', label: 'Codex', source: 'Codex', color: '#6e50f2' },
-  { key: 'gemini', label: 'Gemini', source: 'Gemini CLI', color: '#3186ff' },
-  { key: 'hermes', label: 'Hermes', source: 'Hermes', color: '#f472b6' },
-  { key: 'grok', label: 'Grok', source: 'Grok Build', color: '#c3c8d2' },
-  { key: 'antigravity', label: 'Antigravity', source: 'Google Antigravity', color: '#22d3ee' },
-  { key: 'pi', label: 'pi', source: 'pi', color: '#a3a3a3' },
-];
+// The frontend reads the same declarative facts as Rust. This is the one
+// ordered display list for catalogued Sources; Ledger history may contain keys
+// introduced by a newer catalog, which sourceMeta keeps visible below.
+export const TOOLS: ToolMeta[] = catalog.sources.map((source) => ({
+  key: source.key,
+  label: source.label,
+  source: source.source,
+  color: source.color,
+  icon: source.icon,
+  aliases: source.aliases,
+  capabilities: source.capabilities,
+}));
+
+const KNOWN_TOOLS = new Map(TOOLS.map((tool) => [tool.key, tool]));
+const FALLBACK_COLOR = '#5f6880';
+
+export function sourceMeta(key: string): ToolMeta {
+  return KNOWN_TOOLS.get(key) ?? {
+    key,
+    label: key,
+    source: key,
+    color: FALLBACK_COLOR,
+    icon: 'generic',
+    aliases: [],
+    capabilities: {},
+  };
+}
+
+// Known Sources always use catalog order. Historical or newer keys retain
+// their first-seen order after the known entries instead of being discarded.
+export function orderedSourceKeys(keys: Iterable<string>): ToolKey[] {
+  const seen = new Set(keys);
+  return [
+    ...TOOLS.filter((tool) => seen.delete(tool.key)).map((tool) => tool.key),
+    ...seen,
+  ];
+}
 
 // The four canonical token categories (CONTEXT.md).
 export const CATEGORIES = [
@@ -41,6 +72,6 @@ export const RANGES_8B: { key: Range8b; label: string; long: string }[] = [
   { key: 'custom', label: 'Custom', long: 'Custom range' },
 ];
 
-export function emptyByTool(): Record<ToolKey, number> {
-  return { claude: 0, codex: 0, gemini: 0, hermes: 0, grok: 0, antigravity: 0, pi: 0 };
+export function emptyByTool(): Record<string, number> {
+  return Object.fromEntries(TOOLS.map((tool) => [tool.key, 0]));
 }

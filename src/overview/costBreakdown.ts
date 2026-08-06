@@ -1,7 +1,7 @@
 import type { BreakdownRow, Settings, Summary } from '../types';
 import type { Lang } from '../lib/i18n';
 import { formatDisplayCost, overviewT, countLabel, USD_IDENTITY } from './localize';
-import { TOOLS } from './meta';
+import { sourceMeta } from './meta';
 import { isAllUnattributedCost, isPartialCost } from '../lib/costCompleteness';
 
 type CostSettings = Pick<Settings, 'currency' | 'usdRate'>;
@@ -40,7 +40,7 @@ export interface CostBreakdownView {
 }
 
 function getSourceName(sourceKey: string): string {
-  return TOOLS.find((tool) => tool.key === sourceKey)?.source ?? sourceKey;
+  return sourceMeta(sourceKey).source;
 }
 
 function buildCostBreakdownGroups(rows: BreakdownRow[], lang: Lang): CostBreakdownGroupData[] {

@@ -98,6 +98,11 @@ describe('seriesToDays', () => {
     expect(active).toHaveLength(3);
     expect(active.every((d) => d.level === 4)).toBe(true);
   });
+  it('retains a source that was not yet catalogued', () => {
+    const day = seriesToDays([pt({ source: 'future-source', totalTokens: 12 })], TODAY)
+      .find((item) => item.iso === '2026-07-09')!;
+    expect(day.byTool['future-source']).toBe(12);
+  });
 });
 
 describe('heatStats', () => {
@@ -236,6 +241,15 @@ describe('windowOf + pointsIn', () => {
 });
 
 describe('bucketsFromPoints', () => {
+  it('keeps an unknown Ledger source in the bucket total and small multiples', () => {
+    const bucket = bucketsFromPoints([pt({ source: 'future-source', totalTokens: 12 })], 'day')[0];
+    expect(bucket.byTool['future-source']).toBe(12);
+    expect(bucket.total).toBe(12);
+    expect(smallMultiples([bucket])).toEqual([
+      expect.objectContaining({ key: 'future-source', label: 'future-source', total: 12 }),
+    ]);
+  });
+
   it('daily buckets keep per-tool splits', () => {
     const bks = bucketsFromPoints(
       [pt({ bucket: '2026-07-09', source: 'claude', totalTokens: 10 }),
@@ -472,6 +486,11 @@ describe('ctxTotals', () => {
     const t = ctxTotals([pt({ source: 'hermes' })], 'hermes');
     expect(t.messages).toBeNull();
     expect(t.billed).toBe(330); // header still real: 100+200+30
+  });
+
+  it('keeps unavailable context distinct from an observed zero', () => {
+    expect(ctxTotals([pt({ source: 'hermes', ctxMessages: null })], 'hermes').messages).toBeNull();
+    expect(ctxTotals([pt({ source: 'claude', ctxMessages: 0 })], 'claude').messages).toBe(0);
   });
 });
 

@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
 import type { Summary } from '../types';
 import { heatStats, type Day } from './data';
-import { TOOLS } from './meta';
+import { orderedSourceKeys, sourceMeta } from './meta';
 import { fmtPct, fmtTok } from '../lib/format';
 import { fmtDateL, fmtWeekdayDateL, formatSummaryCost, useOverviewT } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
@@ -46,9 +46,9 @@ export default function HeatmapModal({
   const stats = useMemo(() => heatStats(days), [days]);
   const activeRate = fmtPct(stats.activeDays / Math.max(1, days.length));
   const activeTools = useMemo(() => {
-    const totals = new Map<string, number>();
-    for (const d of days) for (const tl of TOOLS) totals.set(tl.key, (totals.get(tl.key) ?? 0) + d.byTool[tl.key]);
-    return TOOLS.filter((tl) => (totals.get(tl.key) ?? 0) > 0);
+    const totals: Record<string, number> = {};
+    for (const day of days) for (const [key, value] of Object.entries(day.byTool)) totals[key] = (totals[key] ?? 0) + value;
+    return orderedSourceKeys(Object.keys(totals).filter((key) => totals[key] > 0)).map(sourceMeta);
   }, [days]);
   const costLabel = summary === null ? '…' : formatSummaryCost(summary, settings, lang);
 

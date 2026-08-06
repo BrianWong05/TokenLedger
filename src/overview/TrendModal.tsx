@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
 import { bucketCsv, bucketFilters, csvFilename, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
-import { TOOLS, type Range8b } from './meta';
+import { orderedSourceKeys, sourceMeta, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
 import { fmtPct, fmtTok } from '../lib/format';
@@ -127,6 +127,10 @@ export default function TrendModal({
   const { trend: data, per, modelTool, total } = useMemo(
     () => trendSlice(allPoints, hourPoints, range, from, to, firstIso, lastIso, new Date(), lang, override),
     [allPoints, hourPoints, range, from, to, firstIso, lastIso, lang, override],
+  );
+  const activeTools = useMemo(
+    () => orderedSourceKeys(data.flatMap((bucket) => Object.keys(bucket.byTool).filter((key) => bucket.byTool[key] > 0))).map(sourceMeta),
+    [data],
   );
 
   const rangeLabel =
@@ -386,7 +390,7 @@ export default function TrendModal({
                 </div>
               </div>
               <div className="tt-legend">
-                {TOOLS.filter((tl) => data.some((b) => b.byTool[tl.key] > 0)).map((tl) => (
+                {activeTools.map((tl) => (
                   <span className="item" key={tl.key}>
                     <span className="sw" style={{ background: tl.color }} />
                     {tl.label}

@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from 'react';
-import { TOOLS, emptyByTool } from './meta';
+import { emptyByTool, orderedSourceKeys, sourceMeta } from './meta';
 import { modelOwner, rankedModels, stackModels, UNATTRIBUTED_COLOR, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
@@ -81,6 +81,10 @@ function AggTrend({
       ]
     : [];
   const tipMore = Math.max(0, tipRows.length - 6);
+  const activeTools = useMemo(
+    () => orderedSourceKeys(data.flatMap((bucket) => Object.keys(bucket.byTool).filter((key) => bucket.byTool[key] > 0))).map(sourceMeta),
+    [data],
+  );
 
   function onMove(e: React.MouseEvent<HTMLDivElement>) {
     const w = e.currentTarget.clientWidth;
@@ -194,7 +198,7 @@ function AggTrend({
           </div>
         </div>
         <div className="tt-legend">
-          {TOOLS.filter((t) => data.some((b) => b.byTool[t.key] > 0)).map((t) => (
+          {activeTools.map((t) => (
             <span className="item" key={t.key}>
               <span className="sw" style={{ background: t.color }} />
               {t.label}

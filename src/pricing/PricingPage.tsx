@@ -201,7 +201,7 @@ function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: Re
   const state = modelState(m);
   const resolved = resolvedRates(m);
   const meta = toolMeta(m.tool);
-  const icon = meta && TOOL_ICONS[meta.key];
+  const icon = TOOL_ICONS[meta.icon] ?? TOOL_ICONS.generic;
 
   const source =
     state === 'unpriced'
@@ -221,12 +221,12 @@ function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: Re
     <div className={'tl-pr-grid tl-pr-row' + (state === 'unpriced' ? ' unpriced' : '')}>
       <div className="tl-pr-model">
         <span className={'tl-pr-icon ' + m.tool}>
-          {icon ? <img src={icon} alt="" width={14} height={14} /> : <b style={{ color: meta?.color }}>{toolLabel(m.tool)[0]}</b>}
+          {icon ? <img src={icon} alt="" width={14} height={14} /> : <b style={{ color: meta.color }}>{toolLabel(m.tool)[0]}</b>}
         </span>
         <div style={{ minWidth: 0 }}>
           <div className="name">{m.model}</div>
           <div className="tool">
-            <span className="dot" style={{ background: meta?.color ?? 'var(--muted)' }} />
+            <span className="dot" style={{ background: meta.color }} />
             {toolLabel(m.tool)}
           </div>
         </div>

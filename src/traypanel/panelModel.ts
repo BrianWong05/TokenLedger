@@ -6,7 +6,7 @@ import { basename, formatCompactTokenTotal } from '../lib/format';
 import { formatCost } from '../lib/currency';
 import type { Lang } from '../lib/i18n';
 import { isoOf } from '../overview/data';
-import { TOOLS } from '../overview/meta';
+import { TOOLS, sourceMeta } from '../overview/meta';
 import { TOOL_ICONS } from '../overview/icons';
 import type { BreakdownRow, SeriesPoint, Settings, Summary } from '../types';
 import { isAllUnattributedCost, isPartialCost, type CostCompleteness } from '../lib/costCompleteness';
@@ -237,7 +237,7 @@ export function panelModel(
   const models = usedModels.slice(0, MODEL_CAP).map((r) => ({
     key: `${r.source ?? 'unknown'}/${r.key ?? 'unknown'}`,
     label: r.key ?? 'unknown',
-    color: TOOLS.find((t) => t.key === r.source)?.color,
+    color: TOOLS.find((tool) => tool.key === r.source)?.color,
     tokens: formatCompactTokenTotal(r.totalTokens),
     cost: cost(r, settings, lang),
   }));
@@ -259,11 +259,11 @@ export function panelModel(
     fmtTokens: formatCompactTokenTotal,
     rows: used.map((r) => {
       const key = r.key ?? 'unknown';
-      const meta = TOOLS.find((t) => t.key === key);
+      const meta = sourceMeta(key);
       return {
         key,
-        label: meta?.label ?? key,
-        icon: meta ? TOOL_ICONS[meta.key] : undefined,
+        label: meta.label,
+        icon: TOOL_ICONS[meta.icon] ?? TOOL_ICONS.generic,
         tokens: formatCompactTokenTotal(r.totalTokens),
         cost: cost(r, settings, lang),
       };
