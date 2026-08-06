@@ -73,7 +73,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic nine-Source fixture + the default-run test that proves the four
+// Hermetic ten-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -348,6 +348,21 @@ fn build_opencode(base: &Path) {
     .unwrap();
 }
 
+fn build_cline(base: &Path) {
+    write(
+        &base.join("cline/editor/tasks/shared-session/ui_messages.json"),
+        r#"[{"type":"say","say":"api_req_started","ts":1780308000000,"text":"{\"request\":\"CLINE_PRIVATE_PROMPT_MARKER\",\"tokensIn\":11,\"tokensOut\":5,\"cacheReads\":3,\"cacheWrites\":2}"}]"#,
+    );
+    write(
+        &base.join("cline/editor/tasks/shared-session/api_conversation_history.json"),
+        r#"[{"content":"<model>cline-model</model><cwd>/Users/dev/projects/cline</cwd>"}]"#,
+    );
+    write(
+        &base.join("cline/cli/sessions/shared-session.json"),
+        r#"{"id":"shared-session","cwd":"/Users/dev/projects/cline","model":"cline-model","messages":[{"type":"say","say":"api_req_started","ts":1780308000000,"text":"{\"tokensIn\":11,\"tokensOut\":5,\"cacheReads\":3,\"cacheWrites\":2}"},{"type":"say","say":"api_req_started","ts":1780308001000,"text":"{\"tokensIn\":7,\"tokensOut\":3,\"cacheReads\":1,\"cacheWrites\":0}"}]}"#,
+    );
+}
+
 fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
     let db = Connection::open(path).unwrap();
     db.execute_batch(
@@ -365,7 +380,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_nine_source_partition_invariants() {
+fn hermetic_ten_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -377,6 +392,7 @@ fn hermetic_nine_source_partition_invariants() {
     build_antigravity(base);
     build_goose(base);
     build_opencode(base);
+    build_cline(base);
     build_pi(base);
 
     let roots = SourceRoots {
@@ -394,6 +410,7 @@ fn hermetic_nine_source_partition_invariants() {
         opencode_data: base.join("opencode"),
         opencode_legacy: base.join("opencode/storage"),
         opencode_db: None,
+        cline: vec![base.join("cline")],
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -401,8 +418,8 @@ fn hermetic_nine_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the nine Sources ingested events and reported no error.
-    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "opencode", "pi"] {
+    // Every one of the ten Sources ingested events and reported no error.
+    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "opencode", "cline", "pi"] {
         let s = status
             .sources
             .iter()
@@ -447,12 +464,12 @@ fn hermetic_nine_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all nine here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all ten here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 9,
-        "expected >=9 sources in ctx_buckets, got {}",
+        buckets.len() >= 10,
+        "expected >=10 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -487,7 +504,7 @@ fn hermetic_nine_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all nine.
+    // Source's totals identical: ingestion is idempotent across all ten.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {

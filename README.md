@@ -3,7 +3,7 @@
 A desktop app (Tauri v2) for macOS, Windows, and Linux that tracks token usage
 and estimated cost across the AI coding agents and assistants on your machine —
 **Claude Code**, **Codex CLI**, **Gemini CLI**, **Hermes**, **Grok Build**,
-**Google Antigravity**, **Goose**, and **pi** — by parsing each tool's local logs into a
+**Google Antigravity**, **Goose**, **Cline**, and **pi** — by parsing each tool's local logs into a
 normalized SQLite ledger.
 
 **Status: 0.1.0.** Driven daily on macOS. Windows and Linux build and pass the
@@ -107,6 +107,7 @@ updates.
 | [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`) |
 | [Google Antigravity](https://antigravity.google) | Google's agentic development platform | `~/.gemini/antigravity{,-cli}/conversations/*.db` |
 | [Goose](https://github.com/block/goose) | Block's local coding agent | `~/Library/Application Support/Block/goose/data/sessions/sessions.db` on macOS; `~/.local/share/goose/sessions/sessions.db` on Linux; `%APPDATA%\\Block\\goose\\data\\sessions\\sessions.db` on Windows; `$GOOSE_PATH_ROOT/data/sessions` when overridden (legacy `.jsonl` in the platform data directory) |
+| [Cline](https://cline.bot) | IDE and CLI coding agent | VS Code and editor-server task folders; `~/.cline/data/sessions/*.json` or `$CLINE_DATA_DIR/sessions/*.json` |
 | [pi](https://github.com/earendil-works/pi) | Agent toolkit — unified LLM API, agent loop, TUI, coding agent CLI | `~/.pi/agent/sessions/**/*.jsonl` |
 
 Most paths above are under your home directory and are read passively. `GROK_HOME`
@@ -154,6 +155,22 @@ database exposes `usage_ledger` rows with timestamps and per-row Model values;
 legacy headers are read only from their first line and never retain conversation
 content. Missing Model, relative Project paths, and unsupported Context
 categories remain unavailable rather than being inferred.
+
+## Cline
+
+Cline is one Source across its VS Code task folders, remote editor-server task
+folders, and CLI session snapshots. The scanner reads request usage from
+`ui_messages.json`, legacy `claude_messages.json`, and the CLI's JSON session
+records; the CLI `sessions.db` index is not treated as usage data. Equivalent
+task/session IDs and request IDs deduplicate across surfaces, so an editor task
+that is also present in CLI storage is one Usage Record rather than two.
+
+CLI roots follow the documented override order `CLINE_DATA_DIR`, then
+`CLINE_SANDBOX_DATA_DIR`, then `~/.cline/data`.
+Blank and whitespace-only values are ignored. Cline's cache-write counter has
+no TTL, so it is normalized to the 5-minute Cache write category. Missing
+Model or relative Project values remain unavailable; no conversation content is
+stored, and TokenLedger never starts, controls, or authenticates Cline.
 
 ## pi
 
@@ -265,7 +282,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 ```
 
 Supported Source keys are `claude`, `codex`, `gemini`, `hermes`, `grok`,
-`antigravity`, `goose`, and `pi`. Real-Artifact validation is ignored by default and
+`antigravity`, `goose`, `cline`, and `pi`. Real-Artifact validation is ignored by default and
 is not required by CI; committed synthetic fixtures remain the deterministic
 evidence for normal test runs. A production support claim still requires the
 genuine Artifact to be corroborated by an upstream schema or writer, or by

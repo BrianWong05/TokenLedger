@@ -122,6 +122,30 @@
       "prerequisite": null
     },
     {
+      "key": "cline",
+      "label": "Cline",
+      "source": "Cline",
+      "aliases": ["Cline CLI", "Cline VS Code"],
+      "color": "#7c3aed",
+      "icon": "cline",
+      "artifacts": [
+        { "id": "editor-code-macos", "kind": "directory", "path": "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
+        { "id": "editor-code-insiders-macos", "kind": "directory", "path": "Library/Application Support/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
+        { "id": "editor-code-linux", "kind": "directory", "path": ".config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["linux"], "prerequisite": null },
+        { "id": "editor-code-insiders-linux", "kind": "directory", "path": ".config/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["linux"], "prerequisite": null },
+        { "id": "editor-code-windows", "kind": "directory", "path": "AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["windows"], "prerequisite": null },
+        { "id": "editor-code-insiders-windows", "kind": "directory", "path": "AppData/Roaming/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["windows"], "prerequisite": null },
+        { "id": "editor-server", "kind": "directory", "path": ".vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["linux", "macos"], "prerequisite": null },
+        { "id": "editor-server-insiders", "kind": "directory", "path": ".vscode-server-insiders/data/User/globalStorage/saoudrizwan.claude-dev/tasks", "environment": null, "suffix": null, "platforms": ["linux", "macos"], "prerequisite": null },
+        { "id": "cli-default-data", "kind": "directory", "path": ".cline/data", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "cli-data", "kind": "directory", "path": null, "environment": "CLINE_DATA_DIR", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "cli-sandbox", "kind": "directory", "path": null, "environment": "CLINE_SANDBOX_DATA_DIR", "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
       "key": "pi",
       "label": "pi",
       "source": "pi",

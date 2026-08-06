@@ -7,6 +7,7 @@ use rusqlite::Connection;
 
 use crate::adapters::antigravity::scan_antigravity;
 use crate::adapters::claude::scan_claude;
+use crate::adapters::cline::scan_cline;
 use crate::adapters::codex::scan_codex;
 use crate::adapters::gemini::scan_gemini;
 use crate::adapters::goose::scan_goose;
@@ -33,6 +34,7 @@ pub struct SourceRoots {
     pub opencode_data: PathBuf,
     pub opencode_legacy: PathBuf,
     pub opencode_db: Option<PathBuf>,
+    pub cline: Vec<PathBuf>,
 }
 
 impl SourceRoots {
@@ -48,16 +50,19 @@ impl SourceRoots {
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
-        Self::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+        Self::from_home_and_pi_env_with_cline(
             home,
             session_dir,
             agent_dir,
             std::env::var_os("HERMES_HOME").as_deref(),
             gemini_environment_value().as_deref(),
             grok_environment_value().as_deref(),
+            environment_value("cline", "cli-data").as_deref(),
+            environment_value("cline", "cli-sandbox").as_deref(),
         )
     }
 
+    #[cfg(test)]
     fn from_home_and_pi_env_with_hermes_and_gemini_and_grok(
         home: &Path,
         session_dir: Option<&OsStr>,
@@ -65,6 +70,28 @@ impl SourceRoots {
         hermes_home: Option<&OsStr>,
         gemini_home: Option<&OsStr>,
         grok_home: Option<&OsStr>,
+    ) -> Self {
+        Self::from_home_and_pi_env_with_cline(
+            home,
+            session_dir,
+            agent_dir,
+            hermes_home,
+            gemini_home,
+            grok_home,
+            None,
+            None,
+        )
+    }
+
+    fn from_home_and_pi_env_with_cline(
+        home: &Path,
+        session_dir: Option<&OsStr>,
+        agent_dir: Option<&OsStr>,
+        hermes_home: Option<&OsStr>,
+        gemini_home: Option<&OsStr>,
+        grok_home: Option<&OsStr>,
+        cline_data: Option<&OsStr>,
+        cline_sandbox_data: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
@@ -98,6 +125,7 @@ impl SourceRoots {
             opencode_data,
             opencode_legacy,
             opencode_db,
+            cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
         }
     }
 }
@@ -107,6 +135,76 @@ fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
         .and_then(|artifact| artifact.path.as_deref())
         .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
     home.join(path)
+}
+
+fn catalog_root_for_platform(
+    home: &Path,
+    source: &str,
+    artifact: &str,
+    platform: &str,
+) -> Option<PathBuf> {
+    let definition = source_catalog::artifact(source, artifact)?;
+    if !definition
+        .platforms
+        .iter()
+        .any(|supported| supported == "all" || supported == platform)
+    {
+        return None;
+    }
+    definition.path.as_deref().map(|path| home.join(path))
+}
+
+fn cline_roots(
+    home: &Path,
+    platform: &str,
+    cli_data: Option<&OsStr>,
+    cli_sandbox_data: Option<&OsStr>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for artifact in [
+        "editor-code-macos",
+        "editor-code-insiders-macos",
+        "editor-code-linux",
+        "editor-code-insiders-linux",
+        "editor-code-windows",
+        "editor-code-insiders-windows",
+        "editor-server",
+        "editor-server-insiders",
+    ] {
+        if let Some(path) = catalog_root_for_platform(home, "cline", artifact, platform) {
+            push_unique_root(&mut roots, path);
+        }
+    }
+
+    let cli_root = cli_data
+        .and_then(|value| visible_path(home, value))
+        .or_else(|| cli_sandbox_data.and_then(|value| visible_path(home, value)))
+        .or_else(|| catalog_root_for_platform(home, "cline", "cli-default-data", platform));
+    if let Some(path) = cli_root {
+        push_unique_root(&mut roots, path);
+    }
+    roots
+}
+
+fn push_unique_root(roots: &mut Vec<PathBuf>, path: PathBuf) {
+    let normalized = normalized_path(&path);
+    if !roots.iter().any(|root| normalized_path(root) == normalized) {
+        roots.push(path);
+    }
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn environment_value(source: &str, artifact: &str) -> Option<OsString> {
@@ -210,7 +308,9 @@ fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
     Path::new(path)
         .parent()
         .map(PathBuf::from)
-        .unwrap_or_else(|| panic!("source catalog artifact {source}.{artifact} path must have a parent"))
+        .unwrap_or_else(|| {
+            panic!("source catalog artifact {source}.{artifact} path must have a parent")
+        })
 }
 
 fn append_pi_override(
@@ -312,6 +412,7 @@ fn run_scan_sources(
                         roots.opencode_db.as_deref(),
                     )
                 }),
+                "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
                 _ => SourceStatus {
                     source: source.key.clone(),
                     events_inserted: 0,
@@ -373,8 +474,23 @@ mod tests {
     fn catalog_describes_the_existing_sources_and_artifact_roots() {
         let catalog = crate::source_catalog::catalog();
         assert_eq!(
-            catalog.sources.iter().map(|source| source.key.as_str()).collect::<Vec<_>>(),
-            ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "opencode", "pi"],
+            catalog
+                .sources
+                .iter()
+                .map(|source| source.key.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "claude",
+                "codex",
+                "gemini",
+                "hermes",
+                "grok",
+                "antigravity",
+                "goose",
+                "opencode",
+                "cline",
+                "pi"
+            ],
         );
         assert!(catalog.sources.iter().all(|source| {
             !source.label.is_empty()
@@ -389,8 +505,12 @@ mod tests {
                 && source.capabilities.token_categories
         }));
         assert_eq!(
-            catalog.sources.iter().filter(|source| source.capabilities.context)
-                .map(|source| source.key.as_str()).collect::<Vec<_>>(),
+            catalog
+                .sources
+                .iter()
+                .filter(|source| source.capabilities.context)
+                .map(|source| source.key.as_str())
+                .collect::<Vec<_>>(),
             ["claude", "codex", "pi"],
         );
         assert_eq!(
@@ -415,21 +535,40 @@ mod tests {
                 ("opencode", "channel-db", ".local/share/opencode/opencode-<channel>.db"),
                 ("opencode", "legacy-storage", ".local/share/opencode/storage"),
                 ("opencode", "xdg-data", "opencode"),
+                ("cline", "editor-code-macos", "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-code-insiders-macos", "Library/Application Support/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-code-linux", ".config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-code-insiders-linux", ".config/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-code-windows", "AppData/Roaming/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-code-insiders-windows", "AppData/Roaming/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-server", ".vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "editor-server-insiders", ".vscode-server-insiders/data/User/globalStorage/saoudrizwan.claude-dev/tasks"),
+                ("cline", "cli-default-data", ".cline/data"),
                 ("pi", "sessions", ".pi/agent/sessions"),
             ],
         );
-        assert!(catalog.sources.iter().flat_map(|source| &source.artifacts).all(|artifact| {
-            matches!(artifact.kind.as_str(), "directory" | "file")
-                && !artifact.platforms.is_empty()
-                && artifact.prerequisite.is_none()
-        }));
+        assert!(catalog
+            .sources
+            .iter()
+            .flat_map(|source| &source.artifacts)
+            .all(|artifact| {
+                matches!(artifact.kind.as_str(), "directory" | "file")
+                    && !artifact.platforms.is_empty()
+                    && artifact.prerequisite.is_none()
+            }));
 
         let claude = crate::source_catalog::source("claude").unwrap();
         assert_eq!(claude.source, "Claude Code");
-        assert!(claude.artifacts.iter().any(|artifact| artifact.path.as_deref() == Some(".claude/projects")));
+        assert!(claude
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.path.as_deref() == Some(".claude/projects")));
 
         let hermes = crate::source_catalog::source("hermes").unwrap();
-        assert_eq!(hermes.artifacts[0].path.as_deref(), Some(".hermes/state.db"));
+        assert_eq!(
+            hermes.artifacts[0].path.as_deref(),
+            Some(".hermes/state.db")
+        );
 
         let gemini = crate::source_catalog::source("gemini").unwrap();
         assert_eq!(
@@ -443,8 +582,7 @@ mod tests {
 
         let grok = crate::source_catalog::source("grok").unwrap();
         assert_eq!(
-            grok
-                .artifacts
+            grok.artifacts
                 .iter()
                 .find(|artifact| artifact.id == "sessions")
                 .and_then(|artifact| artifact.environment.as_deref()),
@@ -452,34 +590,89 @@ mod tests {
         );
 
         let pi = crate::source_catalog::source("pi").unwrap();
-        assert_eq!(pi.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(), ["sessions", "session-dir", "agent-dir"]);
+        assert_eq!(
+            pi.artifacts
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sessions", "session-dir", "agent-dir"]
+        );
         assert_eq!(pi.artifacts[0].path.as_deref(), Some(".pi/agent/sessions"));
-        assert_eq!(pi.artifacts[1].environment.as_deref(), Some("PI_CODING_AGENT_SESSION_DIR"));
-        assert_eq!(pi.artifacts[2].environment.as_deref(), Some("PI_CODING_AGENT_DIR"));
+        assert_eq!(
+            pi.artifacts[1].environment.as_deref(),
+            Some("PI_CODING_AGENT_SESSION_DIR")
+        );
+        assert_eq!(
+            pi.artifacts[2].environment.as_deref(),
+            Some("PI_CODING_AGENT_DIR")
+        );
         assert_eq!(pi.artifacts[2].suffix.as_deref(), Some("sessions"));
 
         let goose = crate::source_catalog::source("goose").unwrap();
         assert_eq!(goose.source, "Goose");
         assert_eq!(goose.aliases, ["Block Goose"]);
         assert_eq!(
-            goose.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(),
+            goose
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
             ["sessions", "sessions-macos", "sessions-windows", "root"]
         );
-        assert_eq!(goose.artifacts[0].path.as_deref(), Some(".local/share/goose/sessions"));
-        assert_eq!(goose.artifacts[3].environment.as_deref(), Some("GOOSE_PATH_ROOT"));
+        assert_eq!(
+            goose.artifacts[0].path.as_deref(),
+            Some(".local/share/goose/sessions")
+        );
+        assert_eq!(
+            goose.artifacts[3].environment.as_deref(),
+            Some("GOOSE_PATH_ROOT")
+        );
         assert_eq!(goose.artifacts[3].suffix.as_deref(), Some("data/sessions"));
 
         let opencode = crate::source_catalog::source("opencode").unwrap();
         assert_eq!(opencode.source, "OpenCode");
         assert_eq!(opencode.aliases, ["OpenCode CLI"]);
         assert_eq!(
-            opencode.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(),
+            opencode
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
             ["data", "db", "channel-db", "legacy-storage", "xdg-data"]
         );
-        assert_eq!(opencode.artifacts[0].environment.as_deref(), Some("OPENCODE_DATA_DIR"));
-        assert_eq!(opencode.artifacts[1].environment.as_deref(), Some("OPENCODE_DB"));
+        assert_eq!(
+            opencode.artifacts[0].environment.as_deref(),
+            Some("OPENCODE_DATA_DIR")
+        );
+        assert_eq!(
+            opencode.artifacts[1].environment.as_deref(),
+            Some("OPENCODE_DB")
+        );
         assert_eq!(opencode.artifacts[3].suffix.as_deref(), Some("storage"));
-        assert_eq!(opencode.artifacts[4].environment.as_deref(), Some("XDG_DATA_HOME"));
+        assert_eq!(
+            opencode.artifacts[4].environment.as_deref(),
+            Some("XDG_DATA_HOME")
+        );
+
+        let cline = crate::source_catalog::source("cline").unwrap();
+        assert_eq!(cline.source, "Cline");
+        assert_eq!(cline.aliases, ["Cline CLI", "Cline VS Code"]);
+        assert_eq!(
+            cline
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == "cli-data")
+                .and_then(|artifact| artifact.environment.as_deref()),
+            Some("CLINE_DATA_DIR")
+        );
+        assert_eq!(
+            cline
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == "cli-sandbox")
+                .and_then(|artifact| artifact.environment.as_deref()),
+            Some("CLINE_SANDBOX_DATA_DIR")
+        );
     }
 
     #[test]
@@ -515,7 +708,10 @@ mod tests {
             None,
         );
         assert_eq!(configured.0, home.path().join("configured-opencode"));
-        assert_eq!(configured.1, home.path().join("configured-opencode/storage"));
+        assert_eq!(
+            configured.1,
+            home.path().join("configured-opencode/storage")
+        );
         assert_eq!(configured.2, Some(configured_db));
 
         let xdg = opencode_roots(
@@ -565,7 +761,12 @@ mod tests {
         assert_eq!(blank.hermes_db, home.path().join(".hermes/state.db"));
 
         let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
-            home.path(), None, None, None, None, None,
+            home.path(),
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert_eq!(absent.hermes_db, home.path().join(".hermes/state.db"));
     }
@@ -607,7 +808,12 @@ mod tests {
         );
 
         let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
-            home.path(), None, None, None, None, None,
+            home.path(),
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert_eq!(absent.gemini_tmp, home.path().join(".gemini/tmp"));
         assert_eq!(
@@ -645,7 +851,12 @@ mod tests {
         assert_eq!(blank.grok_sessions, home.path().join(".grok/sessions"));
 
         let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
-            home.path(), None, None, None, None, None,
+            home.path(),
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert_eq!(absent.grok_sessions, home.path().join(".grok/sessions"));
     }
@@ -662,7 +873,8 @@ mod tests {
         assert_eq!(
             goose_session_roots(home.path(), None, "macos"),
             vec![
-                home.path().join("Library/Application Support/Block/goose/data/sessions"),
+                home.path()
+                    .join("Library/Application Support/Block/goose/data/sessions"),
                 home.path().join(".local/share/goose/sessions"),
             ]
         );
@@ -673,6 +885,49 @@ mod tests {
         assert_eq!(
             goose_session_roots(home.path(), Some(OsStr::new("relative-goose")), "linux"),
             vec![home.path().join(".local/share/goose/sessions")]
+        );
+    }
+
+    #[test]
+    fn cline_cli_root_precedence_ignores_blank_values_and_deduplicates_equivalents() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        let explicit = home.path().join("configured-cline");
+        let sandbox = home.path().join("sandbox-cline");
+        let overridden = cline_roots(
+            home.path(),
+            "linux",
+            Some(explicit.as_os_str()),
+            Some(sandbox.as_os_str()),
+        );
+        assert!(overridden.contains(&explicit));
+        assert!(!overridden.contains(&sandbox));
+
+        let blank_data = cline_roots(
+            home.path(),
+            "linux",
+            Some(OsStr::new(" \t")),
+            Some(OsStr::new("~/sandbox-cline")),
+        );
+        assert!(blank_data.contains(&sandbox));
+
+        let defaults = cline_roots(home.path(), "linux", None, None);
+        assert!(defaults.contains(&home.path().join(".cline/data")));
+
+        let equivalent = cline_roots(
+            home.path(),
+            "linux",
+            Some(OsStr::new("~/.cline/../.cline/data")),
+            None,
+        );
+        assert_eq!(
+            equivalent
+                .iter()
+                .filter(|path| normalized_path(path)
+                    == normalized_path(&home.path().join(".cline/data")))
+                .count(),
+            1
         );
     }
 
@@ -697,6 +952,9 @@ mod tests {
             .ends_with(".gemini/antigravity-cli/conversations"));
         assert!(r.pi_sessions[0].ends_with(".pi/agent/sessions"));
         assert!(!r.goose_sessions.is_empty());
+        assert!(r.cline.iter().any(|path| path.ends_with(".cline/data")));
+        assert!(r.cline.iter().any(|path| path
+            .ends_with(".vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks")));
     }
 
     #[test]
@@ -713,9 +971,7 @@ mod tests {
             Some(gemini_home.as_os_str()),
             None,
         );
-        let session_path = roots
-            .gemini_tmp
-            .join("alpha/chats/session-override.json");
+        let session_path = roots.gemini_tmp.join("alpha/chats/session-override.json");
         fs::create_dir_all(session_path.parent().unwrap()).unwrap();
         fs::write(
             &roots.gemini_projects_json,
@@ -777,7 +1033,8 @@ mod tests {
         let second = run_scan(&mut conn, &roots);
         assert_eq!(find(&second, "gemini").events_inserted, 0);
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
@@ -786,7 +1043,8 @@ mod tests {
         let after_disappearance = run_scan(&mut conn, &roots);
         assert_eq!(find(&after_disappearance, "gemini").events_inserted, 0);
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1,
             "disappearing Source Artifacts do not delete Ledger history"
@@ -876,7 +1134,8 @@ mod tests {
         let second = run_scan(&mut conn, &roots);
         assert_eq!(find(&second, "grok").events_inserted, 0);
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
@@ -885,7 +1144,8 @@ mod tests {
         let after_disappearance = run_scan(&mut conn, &roots);
         assert_eq!(find(&after_disappearance, "grok").events_inserted, 0);
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1,
             "disappearing Source Artifacts do not delete Ledger history"
@@ -898,10 +1158,7 @@ mod tests {
             base.join("ledger.db-shm"),
         ] {
             if let Ok(durable) = fs::read(db_path) {
-                for marker in [
-                    "GROK_PRIVATE_PROMPT_MARKER",
-                    "GROK_PRIVATE_RESPONSE_MARKER",
-                ] {
+                for marker in ["GROK_PRIVATE_PROMPT_MARKER", "GROK_PRIVATE_RESPONSE_MARKER"] {
                     assert!(!durable
                         .windows(marker.len())
                         .any(|window| window == marker.as_bytes()));
@@ -934,6 +1191,7 @@ mod tests {
             opencode_data: tmp.path().join("opencode"),
             opencode_legacy: tmp.path().join("opencode/storage"),
             opencode_db: None,
+            cline: vec![tmp.path().join("cline")],
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -987,6 +1245,7 @@ mod tests {
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
+            cline: vec![base.join("no-cline")],
         };
 
         let db_path = base.join("ledger.db");
@@ -996,15 +1255,20 @@ mod tests {
              VALUES ('pi-response-model', 0.000002, 0.000010, 0.0000005, 0.0000025, 0.000004)",
             [],
         ).unwrap();
-        pricing::set_override(&conn, "pi-fallback-model", OverrideRates {
-            input: Some(0.000001),
-            output: Some(0.000002),
-            cache_read: None,
-            cache_write: None,
-        }).unwrap();
+        pricing::set_override(
+            &conn,
+            "pi-fallback-model",
+            OverrideRates {
+                input: Some(0.000001),
+                output: Some(0.000002),
+                cache_read: None,
+                cache_write: None,
+            },
+        )
+        .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 9);
+        assert_eq!(status.sources.len(), 10);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1021,13 +1285,19 @@ mod tests {
         assert_eq!(summary.cache_write_tokens, 919);
         assert_eq!(summary.total_tokens, 3839);
         assert_eq!(summary.requests, 4);
-        assert!((summary.cost.unwrap() - 0.000805).abs() < 1e-12, "Unattributed usage adds no Cost");
+        assert!(
+            (summary.cost.unwrap() - 0.000805).abs() < 1e-12,
+            "Unattributed usage adds no Cost"
+        );
         assert_eq!(summary.unattributed_tokens, 3600);
         assert!(summary.has_unpriced);
         assert_eq!(summary.unpriced_models, vec!["pi-error-model".to_string()]);
 
         let source_rows = queries::breakdown(&conn, "tool", &Filters::default()).unwrap();
-        let pi_source = source_rows.iter().find(|r| r.key.as_deref() == Some("pi")).unwrap();
+        let pi_source = source_rows
+            .iter()
+            .find(|r| r.key.as_deref() == Some("pi"))
+            .unwrap();
         assert_eq!(pi_source.total_tokens, 3839);
         assert_eq!(pi_source.requests, 4);
         assert!((pi_source.cost.unwrap() - 0.000805).abs() < 1e-12);
@@ -1038,7 +1308,9 @@ mod tests {
         let model_rows = queries::breakdown(&conn, "model", &Filters::default()).unwrap();
         assert_eq!(model_rows.len(), 4);
         assert!(model_rows.iter().all(|r| r.source.as_deref() == Some("pi")));
-        assert!(model_rows.iter().all(|r| r.key.as_deref() != Some("pi-selected-model")));
+        assert!(model_rows
+            .iter()
+            .all(|r| r.key.as_deref() != Some("pi-selected-model")));
         assert_eq!(model_rows.iter().filter(|r| r.key.is_none()).count(), 1);
         let response = model_rows
             .iter()
@@ -1048,7 +1320,10 @@ mod tests {
 
         let projects = queries::breakdown(&conn, "project", &Filters::default()).unwrap();
         assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].key.as_deref(), Some("/Users/dev/projects/pi-demo"));
+        assert_eq!(
+            projects[0].key.as_deref(),
+            Some("/Users/dev/projects/pi-demo")
+        );
         assert_eq!(projects[0].total_tokens, 3839);
 
         let series = queries::series(&conn, &Filters::default(), "day").unwrap();
@@ -1058,7 +1333,11 @@ mod tests {
         assert_eq!(series[0].requests, 4);
         assert_eq!(series[0].cache_write_tokens, 919);
         assert!((series[0].cost - 0.000805).abs() < 1e-12);
-        assert_eq!(series[0].by_model.len(), 3, "per-model series omits the null Model");
+        assert_eq!(
+            series[0].by_model.len(),
+            3,
+            "per-model series omits the null Model"
+        );
 
         let pricing_rows = pricing::model_pricing(&conn).unwrap();
         for model in ["pi-response-model", "pi-fallback-model", "pi-error-model"] {
@@ -1068,9 +1347,15 @@ mod tests {
         assert!(pricing_rows.iter().all(|r| r.model != "pi-selected-model"));
 
         let second = run_scan(&mut conn, &roots);
-        assert_eq!(find(&second, "pi").events_inserted, 0, "repeat scan is idempotent");
+        assert_eq!(
+            find(&second, "pi").events_inserted,
+            0,
+            "repeat scan is idempotent"
+        );
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 4);
 
@@ -1080,7 +1365,9 @@ mod tests {
         assert!(find(&after_disappearance, "pi").error.is_none());
         assert!(get_file_state(&conn, &source_file).unwrap().is_none());
         let retained: i64 = conn
-            .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM events WHERE source = 'pi'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(retained, 4, "missing source file never prunes Ledger usage");
         drop(conn);
@@ -1101,13 +1388,18 @@ mod tests {
             "PRIVATE_ERROR_SHOULD_NOT_PERSIST",
         ] {
             assert!(
-                !durable_bytes.windows(private.len()).any(|w| w == private.as_bytes()),
+                !durable_bytes
+                    .windows(private.len())
+                    .any(|w| w == private.as_bytes()),
                 "private fixture content reached the Ledger: {private}",
             );
         }
     }
 
-    fn build_hermes_fixture(path: &Path, rows: &[(&str, Option<&str>, i64, i64, i64, i64, i64, i64, i64, &str)]) {
+    fn build_hermes_fixture(
+        path: &Path,
+        rows: &[(&str, Option<&str>, i64, i64, i64, i64, i64, i64, i64, &str)],
+    ) {
         let parent = path.parent().unwrap();
         fs::create_dir_all(parent).unwrap();
         let src = Connection::open(path).unwrap();
@@ -1126,13 +1418,36 @@ mod tests {
             );",
         )
         .unwrap();
-        for (id, model, started_at, input, output, cache_read, cache_write, reasoning, calls, cwd) in rows {
+        for (
+            id,
+            model,
+            started_at,
+            input,
+            output,
+            cache_read,
+            cache_write,
+            reasoning,
+            calls,
+            cwd,
+        ) in rows
+        {
             src.execute(
                 "INSERT INTO sessions
                  (id, model, started_at, input_tokens, output_tokens, cache_read_tokens,
                   cache_write_tokens, reasoning_tokens, api_call_count, cwd)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                rusqlite::params![id, model, *started_at as f64, input, output, cache_read, cache_write, reasoning, calls, cwd],
+                rusqlite::params![
+                    id,
+                    model,
+                    *started_at as f64,
+                    input,
+                    output,
+                    cache_read,
+                    cache_write,
+                    reasoning,
+                    calls,
+                    cwd
+                ],
             )
             .unwrap();
         }
@@ -1149,7 +1464,18 @@ mod tests {
         let malformed = hermes_root.join("profiles/broken/state.db");
         build_hermes_fixture(
             &primary,
-            &[("default", Some("hermes-priced"), 1780287300, 10, 5, 0, 0, 0, 2, "")],
+            &[(
+                "default",
+                Some("hermes-priced"),
+                1780287300,
+                10,
+                5,
+                0,
+                0,
+                0,
+                2,
+                "",
+            )],
         );
         build_hermes_fixture(
             &profile,
@@ -1205,15 +1531,23 @@ mod tests {
 
         let second = run_scan(&mut conn, &roots);
         assert_eq!(find(&second, "hermes").events_inserted, 0);
-        assert_eq!(conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
 
         fs::remove_file(&primary).unwrap();
         fs::remove_file(&profile).unwrap();
         let after_disappearance = run_scan(&mut conn, &roots);
         assert_eq!(find(&after_disappearance, "hermes").events_inserted, 0);
-        assert!(conn
-            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
-            .unwrap() == 2);
+        assert!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap()
+                == 2
+        );
 
         fs::remove_file(&malformed).unwrap();
         let missing = run_scan(&mut conn, &roots);
@@ -1270,12 +1604,13 @@ mod tests {
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
+            cline: vec![base.join("no-cline")],
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 9);
+        assert_eq!(status.sources.len(), 10);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 
@@ -1308,7 +1643,10 @@ mod tests {
         assert_eq!(antigravity.events_inserted, 0);
         assert!(antigravity.error.is_none());
         let pi = find(&status, "pi");
-        assert_eq!(pi.events_inserted, 4, "valid pi file survives broken sibling");
+        assert_eq!(
+            pi.events_inserted, 4,
+            "valid pi file survives broken sibling"
+        );
         assert!(pi
             .error
             .as_deref()
@@ -1402,12 +1740,17 @@ mod tests {
             opencode_data: opencode_root.clone(),
             opencode_legacy: legacy,
             opencode_db: None,
+            cline: vec![base.join("no-cline")],
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
         let opencode = find(&first, "opencode");
         assert_eq!(opencode.events_inserted, 2);
-        assert!(opencode.error.is_none(), "unexpected error: {:?}", opencode.error);
+        assert!(
+            opencode.error.is_none(),
+            "unexpected error: {:?}",
+            opencode.error
+        );
         assert_eq!(
             conn.query_row(
                 "SELECT COUNT(*) FROM events WHERE source = 'opencode' AND api_calls = 1",
@@ -1431,9 +1774,12 @@ mod tests {
         let second = run_scan(&mut conn, &roots);
         assert_eq!(find(&second, "opencode").events_inserted, 0);
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM events WHERE source = 'opencode'", [], |row| row
-                .get::<_, i64>(0))
-                .unwrap(),
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE source = 'opencode'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
             2
         );
     }

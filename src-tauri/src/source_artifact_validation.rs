@@ -107,6 +107,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         opencode_data: missing.clone(),
         opencode_legacy: missing.clone(),
         opencode_db: None,
+        cline: vec![missing.clone()],
     };
 
     match source {
@@ -133,6 +134,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
                 roots.opencode_legacy = artifact.join("storage");
             }
         }
+        "cline" => roots.cline = vec![artifact.to_path_buf()],
         _ => {}
     }
 
@@ -296,7 +298,8 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
         if (source == "hermes"
             || source == "goose"
             || source == "antigravity"
-            || source == "opencode")
+            || source == "opencode"
+            || source == "cline")
             && extension.as_deref() == Some("db")
         {
             considered = true;
@@ -334,6 +337,9 @@ const PRIVACY_MARKERS: &[&str] = &[
     "PRIVATE_ERROR_SHOULD_NOT_PERSIST",
     "GOOSE_PRIVATE_PROMPT_MARKER",
     "GOOSE_PRIVATE_RESPONSE_MARKER",
+    "CLINE_PRIVATE_PROMPT_MARKER",
+    "CLINE_PRIVATE_RESPONSE_MARKER",
+    "CLINE_PRIVATE_TOOL_MARKER",
 ];
 
 fn ledger_has_no_privacy_markers(db_path: &Path) -> bool {
@@ -477,6 +483,17 @@ mod tests {
     }
 
     #[test]
+    fn selected_cline_artifact_is_used_as_the_single_source_root() {
+        let artifact = PathBuf::from("/private/cline-data");
+        let missing = Path::new("/private/missing");
+
+        let roots = roots_for("cline", &artifact, missing);
+
+        assert_eq!(roots.cline, vec![artifact]);
+        assert_eq!(roots.pi_sessions, vec![missing]);
+    }
+
+    #[test]
     fn selection_normalizes_the_source_key_without_exposing_the_artifact() {
         let selection = Selection::from_values(" PI ", Path::new("/private/secret"))
             .expect("known Source should be accepted");
@@ -534,5 +551,28 @@ mod tests {
         let report = validate(&selection);
 
         assert_eq!(report.result, "pass");
+    }
+
+    #[test]
+    fn validation_accepts_a_synthetic_cline_task_root_without_persisting_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("cline/tasks/task-validation");
+        fs::create_dir_all(&artifact).unwrap();
+        fs::write(
+            artifact.join("ui_messages.json"),
+            r#"[{"type":"say","say":"api_req_started","ts":1780308000000,"text":"{\"request\":\"CLINE_PRIVATE_PROMPT_MARKER\",\"tokensIn\":4,\"tokensOut\":2}"}]"#,
+        )
+        .unwrap();
+        fs::write(
+            artifact.join("api_conversation_history.json"),
+            r#"[{"content":"<model>cline-validation-model</model><cwd>/Users/dev/cline-validation</cwd>"}]"#,
+        )
+        .unwrap();
+
+        let selection = Selection::from_values("cline", directory.path().join("cline").as_path()).unwrap();
+        let report = validate(&selection);
+
+        assert_eq!(report.result, "pass");
+        assert_eq!(report.counts.total_tokens, 6);
     }
 }
