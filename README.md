@@ -3,7 +3,7 @@
 A desktop app (Tauri v2) for macOS, Windows, and Linux that tracks token usage
 and estimated cost across the AI coding agents and assistants on your machine —
 **Claude Code**, **Codex CLI**, **Gemini CLI**, **Hermes**, **Grok Build**,
-**Google Antigravity**, and **pi** — by parsing each tool's local logs into a
+**Google Antigravity**, **Goose**, and **pi** — by parsing each tool's local logs into a
 normalized SQLite ledger.
 
 **Status: 0.1.0.** Driven daily on macOS. Windows and Linux build and pass the
@@ -106,10 +106,11 @@ updates.
 | [Hermes](https://github.com/NousResearch/hermes-agent) | Nous Research's self-improving agent | `~/.hermes/state.db` (opened read-only) |
 | [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`) |
 | [Google Antigravity](https://antigravity.google) | Google's agentic development platform | `~/.gemini/antigravity{,-cli}/conversations/*.db` |
+| [Goose](https://github.com/block/goose) | Block's local coding agent | `~/Library/Application Support/Block/goose/data/sessions/sessions.db` on macOS; `~/.local/share/goose/sessions/sessions.db` on Linux; `%APPDATA%\\Block\\goose\\data\\sessions\\sessions.db` on Windows; `$GOOSE_PATH_ROOT/data/sessions` when overridden (legacy `.jsonl` in the platform data directory) |
 | [pi](https://github.com/earendil-works/pi) | Agent toolkit — unified LLM API, agent loop, TUI, coding agent CLI | `~/.pi/agent/sessions/**/*.jsonl` |
 
-Most paths above are under your home directory and are read the same way on all
-three platforms. `GROK_HOME` may point Grok discovery at a different root. The
+Most paths above are under your home directory and are read passively. `GROK_HOME`
+and `GOOSE_PATH_ROOT` may point discovery at different roots. The
 database lives at `<app data dir>/tokenledger.db` in WAL
 mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 `%APPDATA%\com.brianwong.tokenledger\` on Windows,
@@ -117,7 +118,7 @@ mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 
 ## Where the numbers bend
 
-Every source logs what it wants to, not what a ledger would like. Four of them
+Every source logs what it wants to, not what a ledger would like. Five of them
 distort something in a way worth knowing before you trust a figure.
 
 - **Grok Build's cost is not trustworthy.** Its logs carry a single running
@@ -134,9 +135,25 @@ distort something in a way worth knowing before you trust a figure.
   source rather than split.
 - **Claude Code rolls worktrees up.** A git worktree is attributed to its parent
   repository rather than appearing as a project of its own.
+- **Goose has two supported storage shapes.** Modern `usage_ledger` rows are
+  one Usage Record each. Legacy `.jsonl` files expose only a session aggregate,
+  so they become one Usage Record at the session timestamp with a null Model.
+  Goose's cache-write bucket has no TTL, so TokenLedger books it as 5-minute
+  Cache write; Goose's logged Cost is ignored and repriced from TokenLedger's
+  rates.
 
 Everything else is exact, or says so when it isn't: a source that cannot
 attribute a figure shows "—", never a zero standing in for an unknown.
+
+## Goose
+
+TokenLedger reads Goose's local `sessions.db` and legacy session `.jsonl` files
+in the supported platform roots. It never starts Goose, opens a remote
+service, authenticates, or reads Goose's raw request/response logs. The modern
+database exposes `usage_ledger` rows with timestamps and per-row Model values;
+legacy headers are read only from their first line and never retain conversation
+content. Missing Model, relative Project paths, and unsupported Context
+categories remain unavailable rather than being inferred.
 
 ## pi
 
@@ -248,7 +265,7 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 ```
 
 Supported Source keys are `claude`, `codex`, `gemini`, `hermes`, `grok`,
-`antigravity`, and `pi`. Real-Artifact validation is ignored by default and
+`antigravity`, `goose`, and `pi`. Real-Artifact validation is ignored by default and
 is not required by CI; committed synthetic fixtures remain the deterministic
 evidence for normal test runs. A production support claim still requires the
 genuine Artifact to be corroborated by an upstream schema or writer, or by

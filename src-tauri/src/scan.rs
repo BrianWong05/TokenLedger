@@ -9,6 +9,7 @@ use crate::adapters::antigravity::scan_antigravity;
 use crate::adapters::claude::scan_claude;
 use crate::adapters::codex::scan_codex;
 use crate::adapters::gemini::scan_gemini;
+use crate::adapters::goose::scan_goose;
 use crate::adapters::grok::scan_grok;
 use crate::adapters::hermes::scan_hermes;
 use crate::adapters::pi::scan_pi;
@@ -26,6 +27,7 @@ pub struct SourceRoots {
     // IDE and CLI conversation dirs share one SQLite schema; both scanned.
     pub antigravity_conversations: PathBuf,
     pub antigravity_cli_conversations: PathBuf,
+    pub goose_sessions: Vec<PathBuf>,
     pub pi_sessions: Vec<PathBuf>,
 }
 
@@ -64,6 +66,11 @@ impl SourceRoots {
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
         append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
         append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
+        let goose_sessions = goose_session_roots(
+            home,
+            environment_value("goose", "root").as_deref(),
+            std::env::consts::OS,
+        );
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
             codex: catalog_root(home, "codex", "sessions"),
@@ -76,6 +83,7 @@ impl SourceRoots {
                 .join(source_catalog::artifact_filename("grok", "sessions")),
             antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
+            goose_sessions,
             pi_sessions,
         }
     }
@@ -105,6 +113,33 @@ fn gemini_environment_value() -> Option<OsString> {
 
 fn grok_environment_value() -> Option<OsString> {
     environment_value("grok", "sessions")
+}
+
+fn goose_session_roots(home: &Path, value: Option<&OsStr>, platform: &str) -> Vec<PathBuf> {
+    if let Some(root) = value
+        .and_then(|value| visible_path(home, value))
+        .filter(|path| path.is_absolute())
+    {
+        return vec![root.join("data/sessions")];
+    }
+
+    let current = match platform {
+        "macos" => home.join("Library/Application Support/Block/goose/data/sessions"),
+        "windows" => home.join("AppData/Roaming/Block/goose/data/sessions"),
+        _ => home.join(".local/share/goose/sessions"),
+    };
+    let mut roots = vec![current];
+
+    // Goose's pre-1.10 JSONL sessions lived in the Unix-like data directory.
+    // On macOS this is distinct from the current application-support root;
+    // Linux already uses the same path, and Windows has no separate documented
+    // legacy location.
+    if platform == "macos" {
+        roots.push(home.join(".local/share/goose/sessions"));
+    }
+
+    roots.dedup();
+    roots
 }
 
 fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
@@ -231,6 +266,7 @@ fn run_scan_sources(
                         ],
                     )
                 }),
+                "goose" => run_one(&source.key, || scan_goose(conn, &roots.goose_sessions)),
                 "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_sessions)),
                 _ => SourceStatus {
                     source: source.key.clone(),
@@ -294,7 +330,7 @@ mod tests {
         let catalog = crate::source_catalog::catalog();
         assert_eq!(
             catalog.sources.iter().map(|source| source.key.as_str()).collect::<Vec<_>>(),
-            ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "pi"],
+            ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "pi"],
         );
         assert!(catalog.sources.iter().all(|source| {
             !source.label.is_empty()
@@ -327,12 +363,15 @@ mod tests {
                 ("grok", "sessions", ".grok/sessions"),
                 ("antigravity", "conversations", ".gemini/antigravity/conversations"),
                 ("antigravity", "cli-conversations", ".gemini/antigravity-cli/conversations"),
+                ("goose", "sessions", ".local/share/goose/sessions"),
+                ("goose", "sessions-macos", "Library/Application Support/Block/goose/data/sessions"),
+                ("goose", "sessions-windows", "AppData/Roaming/Block/goose/data/sessions"),
                 ("pi", "sessions", ".pi/agent/sessions"),
             ],
         );
         assert!(catalog.sources.iter().flat_map(|source| &source.artifacts).all(|artifact| {
             matches!(artifact.kind.as_str(), "directory" | "file")
-                && artifact.platforms == ["all"]
+                && !artifact.platforms.is_empty()
                 && artifact.prerequisite.is_none()
         }));
 
@@ -369,6 +408,17 @@ mod tests {
         assert_eq!(pi.artifacts[1].environment.as_deref(), Some("PI_CODING_AGENT_SESSION_DIR"));
         assert_eq!(pi.artifacts[2].environment.as_deref(), Some("PI_CODING_AGENT_DIR"));
         assert_eq!(pi.artifacts[2].suffix.as_deref(), Some("sessions"));
+
+        let goose = crate::source_catalog::source("goose").unwrap();
+        assert_eq!(goose.source, "Goose");
+        assert_eq!(goose.aliases, ["Block Goose"]);
+        assert_eq!(
+            goose.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(),
+            ["sessions", "sessions-macos", "sessions-windows", "root"]
+        );
+        assert_eq!(goose.artifacts[0].path.as_deref(), Some(".local/share/goose/sessions"));
+        assert_eq!(goose.artifacts[3].environment.as_deref(), Some("GOOSE_PATH_ROOT"));
+        assert_eq!(goose.artifacts[3].suffix.as_deref(), Some("data/sessions"));
     }
 
     #[test]
@@ -504,6 +554,32 @@ mod tests {
     }
 
     #[test]
+    fn goose_roots_cover_platform_defaults_legacy_storage_and_absolute_override() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            goose_session_roots(home.path(), None, "linux"),
+            vec![home.path().join(".local/share/goose/sessions")]
+        );
+        assert_eq!(
+            goose_session_roots(home.path(), None, "macos"),
+            vec![
+                home.path().join("Library/Application Support/Block/goose/data/sessions"),
+                home.path().join(".local/share/goose/sessions"),
+            ]
+        );
+        assert_eq!(
+            goose_session_roots(home.path(), Some(OsStr::new("~/configured-goose")), "macos"),
+            vec![home.path().join("configured-goose/data/sessions")]
+        );
+        assert_eq!(
+            goose_session_roots(home.path(), Some(OsStr::new("relative-goose")), "linux"),
+            vec![home.path().join(".local/share/goose/sessions")]
+        );
+    }
+
+    #[test]
     fn default_roots_live_under_home() {
         let r = SourceRoots::default_roots();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
@@ -523,6 +599,7 @@ mod tests {
             .antigravity_cli_conversations
             .ends_with(".gemini/antigravity-cli/conversations"));
         assert!(r.pi_sessions[0].ends_with(".pi/agent/sessions"));
+        assert!(!r.goose_sessions.is_empty());
     }
 
     #[test]
@@ -755,6 +832,7 @@ mod tests {
             grok_sessions: tmp.path().join("grok"),
             antigravity_conversations: tmp.path().join("antigravity"),
             antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
+            goose_sessions: vec![tmp.path().join("goose")],
             pi_sessions: vec![tmp.path().join("pi")],
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
@@ -804,6 +882,7 @@ mod tests {
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
+            goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
         };
 
@@ -822,7 +901,7 @@ mod tests {
         }).unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 7);
+        assert_eq!(status.sources.len(), 8);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1055,7 +1134,7 @@ mod tests {
         .unwrap();
 
         // A broken pi file sorts before a valid one. The valid file must still
-        // reach the Ledger, and the six existing Sources must still report.
+        // reach the Ledger, and the other Sources must still report.
         let pi_root = base.join("pi");
         fs::create_dir_all(&pi_root).unwrap();
         fs::write(pi_root.join("a-broken.jsonl"), [0xff, b'\n']).unwrap();
@@ -1083,13 +1162,14 @@ mod tests {
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
+            goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 7);
+        assert_eq!(status.sources.len(), 8);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 

@@ -27,7 +27,7 @@ const piPoint: SeriesPoint = {
 };
 
 describe('pi Source derivation', () => {
-  it('carries pi through Overview totals, Trend, and Activity as the seventh Source', () => {
+  it('carries pi through Overview totals, Trend, and Activity as the eighth Source', () => {
     expect(toolTotalsOfPoints([piPoint]).pi).toBe(239);
 
     const buckets = bucketsFromPoints([piPoint], 'day');

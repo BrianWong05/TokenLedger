@@ -102,6 +102,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         grok_sessions: missing.clone(),
         antigravity_conversations: missing.clone(),
         antigravity_cli_conversations: missing.clone(),
+        goose_sessions: vec![missing.clone()],
         pi_sessions: vec![missing.clone()],
     };
 
@@ -115,6 +116,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "hermes" => roots.hermes_db = artifact.to_path_buf(),
         "grok" => roots.grok_sessions = artifact.to_path_buf(),
         "antigravity" => roots.antigravity_conversations = artifact.to_path_buf(),
+        "goose" => roots.goose_sessions = vec![artifact.to_path_buf()],
         "pi" => roots.pi_sessions = vec![artifact.to_path_buf()],
         _ => {}
     }
@@ -276,7 +278,9 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
             .extension()
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase());
-        if source == "hermes" || (source == "antigravity" && extension.as_deref() == Some("db")) {
+        if (source == "hermes" || source == "goose" || source == "antigravity")
+            && extension.as_deref() == Some("db")
+        {
             considered = true;
             collect_sqlite_schema(&path, &mut shapes)?;
         } else if extension.as_deref() == Some("jsonl") {
@@ -310,6 +314,8 @@ const PRIVACY_MARKERS: &[&str] = &[
     "PRIVATE_TOOL_ARG_SHOULD_NOT_PERSIST",
     "PRIVATE_TOOL_RESULT_SHOULD_NOT_PERSIST",
     "PRIVATE_ERROR_SHOULD_NOT_PERSIST",
+    "GOOSE_PRIVATE_PROMPT_MARKER",
+    "GOOSE_PRIVATE_RESPONSE_MARKER",
 ];
 
 fn ledger_has_no_privacy_markers(db_path: &Path) -> bool {
@@ -422,6 +428,17 @@ mod tests {
         assert_eq!(roots.pi_sessions, vec![artifact]);
         assert_eq!(roots.claude, missing);
         assert_eq!(roots.codex, missing);
+    }
+
+    #[test]
+    fn selected_goose_artifact_is_used_as_a_session_root() {
+        let artifact = PathBuf::from("/private/goose-sessions");
+        let missing = Path::new("/private/missing");
+
+        let roots = roots_for("goose", &artifact, missing);
+
+        assert_eq!(roots.goose_sessions, vec![artifact]);
+        assert_eq!(roots.pi_sessions, vec![missing]);
     }
 
     #[test]

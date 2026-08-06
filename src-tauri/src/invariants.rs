@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic seven-Source fixture — not only
+// on every plain `cargo test` against a hermetic eight-Source fixture — not only
 // under the #[ignore] real-log e2e. The four assert_* helpers hold the exact
 // SQL + messages the e2e used to inline; both callers share them.
 //
@@ -73,7 +73,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic seven-Source fixture + the default-run test that proves the four
+// Hermetic eight-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -268,6 +268,53 @@ fn build_pi(base: &Path) {
     ).unwrap();
 }
 
+fn build_goose(base: &Path) {
+    let dir = base.join("goose");
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = Connection::open(dir.join("sessions.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL);
+         INSERT INTO schema_version VALUES (15);
+         CREATE TABLE sessions (
+             id TEXT PRIMARY KEY,
+             working_dir TEXT,
+             created_at TEXT,
+             updated_at TEXT,
+             input_tokens INTEGER,
+             output_tokens INTEGER,
+             cache_read_tokens INTEGER,
+             cache_write_tokens INTEGER,
+             accumulated_input_tokens INTEGER,
+             accumulated_output_tokens INTEGER,
+             accumulated_cache_read_tokens INTEGER,
+             accumulated_cache_write_tokens INTEGER
+         );
+         CREATE TABLE usage_ledger (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             session_id TEXT NOT NULL,
+             created_timestamp INTEGER NOT NULL,
+             model TEXT,
+             input_tokens INTEGER,
+             output_tokens INTEGER,
+             total_tokens INTEGER,
+             cache_read_tokens INTEGER,
+             cache_write_tokens INTEGER,
+             cost REAL,
+             cost_source TEXT,
+             is_compaction INTEGER DEFAULT 0
+         );
+         INSERT INTO sessions
+           (id, working_dir, created_at, updated_at)
+           VALUES ('goose-s1', '/Users/dev/projects/goose',
+                   '2026-07-01T10:00:00Z', '2026-07-01T10:00:00Z');
+         INSERT INTO usage_ledger
+           (session_id, created_timestamp, model, input_tokens, output_tokens,
+            total_tokens, cache_read_tokens, cache_write_tokens)
+           VALUES ('goose-s1', 1780308000, 'goose-model', 100, 20, 130, 10, 5);",
+    )
+    .unwrap();
+}
+
 fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
     let db = Connection::open(path).unwrap();
     db.execute_batch(
@@ -285,7 +332,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_seven_source_partition_invariants() {
+fn hermetic_eight_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -295,6 +342,7 @@ fn hermetic_seven_source_partition_invariants() {
     build_hermes(base);
     build_grok(base);
     build_antigravity(base);
+    build_goose(base);
     build_pi(base);
 
     let roots = SourceRoots {
@@ -307,6 +355,7 @@ fn hermetic_seven_source_partition_invariants() {
         antigravity_conversations: base.join("antigravity"),
         // No CLI fixture: a missing root is scanned quietly (zero events, no error).
         antigravity_cli_conversations: base.join("antigravity-cli"),
+        goose_sessions: vec![base.join("goose")],
         pi_sessions: vec![base.join("pi")],
     };
 
@@ -315,8 +364,8 @@ fn hermetic_seven_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the seven Sources ingested events and reported no error.
-    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "pi"] {
+    // Every one of the eight Sources ingested events and reported no error.
+    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "pi"] {
         let s = status
             .sources
             .iter()
@@ -361,12 +410,12 @@ fn hermetic_seven_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all seven here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all eight here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 7,
-        "expected >=7 sources in ctx_buckets, got {}",
+        buckets.len() >= 8,
+        "expected >=8 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -401,7 +450,7 @@ fn hermetic_seven_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all seven.
+    // Source's totals identical: ingestion is idempotent across all eight.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {

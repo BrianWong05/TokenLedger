@@ -24,7 +24,7 @@ mod e2e_real_logs;
 #[cfg(test)]
 mod source_artifact_validation;
 
-// Shared cross-Source partition invariants + a hermetic seven-Source test that
+// Shared cross-Source partition invariants + a hermetic eight-Source test that
 // runs them on synthetic logs every `cargo test`. Test-only, like e2e above.
 #[cfg(test)]
 mod invariants;
@@ -534,6 +534,7 @@ mod tests {
             grok_sessions: dir.path().join("grok"),
             antigravity_conversations: dir.path().join("antigravity"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
+            goose_sessions: vec![dir.path().join("goose")],
             pi_sessions: vec![dir.path().join("pi")],
         };
         let state = AppState {
@@ -546,7 +547,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 7);
+        assert_eq!(status.sources.len(), 8);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

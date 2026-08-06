@@ -5,6 +5,7 @@ pub mod codex;
 pub mod ctx;
 pub mod exec_class;
 pub mod gemini;
+pub mod goose;
 pub mod grok;
 pub mod hermes;
 pub mod pi;

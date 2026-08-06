@@ -3,12 +3,17 @@ import { SOURCE_ICONS } from './icons';
 import { SOURCES, emptyBySource, sourceMeta } from './meta';
 
 describe('Source catalog', () => {
-  it('keeps lowercase pi seventh and gives it the official vendored mark', () => {
+  it('keeps Goose and lowercase pi in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'pi',
+      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'pi',
     ]);
     expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'pi', label: 'pi', source: 'pi' });
     expect(emptyBySource().pi).toBe(0);
+    expect(sourceMeta('goose')).toMatchObject({
+      key: 'goose', label: 'Goose', source: 'Goose', icon: 'goose', aliases: ['Block Goose'],
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
+    });
+    expect(SOURCE_ICONS.goose).toMatch(/^data:image\/svg\+xml/);
     expect(SOURCE_ICONS.pi).toMatch(/^data:image\/svg\+xml/);
   });
 

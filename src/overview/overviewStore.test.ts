@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { createOverviewStore, selectDays, type ClockPort } from './overviewStore';
+import { createOverviewStore, selectDays, selectVisibleTools, type ClockPort } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
 import type { SeriesPoint, ScanStatus } from '../types';
 
@@ -303,6 +303,29 @@ describe('overviewStore selection auto-correct', () => {
     // Day window: only codex has usage → selection snaps.
     store.setRange('day');
     expect(store.getSnapshot().selected).toBe('codex');
+  });
+
+  it('shows Goose in Overview only after its Ledger points have positive tokens', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'goose', totalTokens: 0 })],
+    });
+    const store = await boot(ledger, clock);
+
+    expect(selectVisibleTools(store.getSnapshot(), clock.now()).map((source) => source.key)).toEqual([]);
+
+    ledger.data.dayPoints = [pt({ source: 'goose', totalTokens: 42 })];
+    ledger.data.scan = {
+      scannedAt: 0,
+      sources: [{ source: 'goose', eventsInserted: 1, linesSkipped: 0, error: null }],
+    };
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+
+    expect(selectVisibleTools(store.getSnapshot(), clock.now()).map((source) => source.key)).toEqual([
+      'goose',
+    ]);
   });
 });
 
