@@ -65,7 +65,7 @@
       "color": "#c3c8d2",
       "icon": "grok",
       "artifacts": [
-        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
       "platforms": ["all"],

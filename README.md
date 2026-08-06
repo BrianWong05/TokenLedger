@@ -104,12 +104,13 @@ updates.
 | [Codex CLI](https://github.com/openai/codex) | OpenAI's CLI coding agent | `~/.codex/sessions/**/rollout-*.jsonl` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google's CLI coding agent | `~/.gemini/tmp/*/chats/session-*.json` |
 | [Hermes](https://github.com/NousResearch/hermes-agent) | Nous Research's self-improving agent | `~/.hermes/state.db` (opened read-only) |
-| [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `~/.grok/sessions/**/updates.jsonl` |
+| [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`) |
 | [Google Antigravity](https://antigravity.google) | Google's agentic development platform | `~/.gemini/antigravity{,-cli}/conversations/*.db` |
 | [pi](https://github.com/earendil-works/pi) | Agent toolkit — unified LLM API, agent loop, TUI, coding agent CLI | `~/.pi/agent/sessions/**/*.jsonl` |
 
-Every path above is under your home directory and is read the same way on all
-three platforms. The database lives at `<app data dir>/tokenledger.db` in WAL
+Most paths above are under your home directory and are read the same way on all
+three platforms. `GROK_HOME` may point Grok discovery at a different root. The
+database lives at `<app data dir>/tokenledger.db` in WAL
 mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 `%APPDATA%\com.brianwong.tokenledger\` on Windows,
 `~/.local/share/com.brianwong.tokenledger/` on Linux.

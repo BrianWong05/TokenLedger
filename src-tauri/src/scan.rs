@@ -42,21 +42,23 @@ impl SourceRoots {
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
-        Self::from_home_and_pi_env_with_hermes_and_gemini(
+        Self::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home,
             session_dir,
             agent_dir,
             std::env::var_os("HERMES_HOME").as_deref(),
             gemini_environment_value().as_deref(),
+            grok_environment_value().as_deref(),
         )
     }
 
-    fn from_home_and_pi_env_with_hermes_and_gemini(
+    fn from_home_and_pi_env_with_hermes_and_gemini_and_grok(
         home: &Path,
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
         hermes_home: Option<&OsStr>,
         gemini_home: Option<&OsStr>,
+        grok_home: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
@@ -70,7 +72,8 @@ impl SourceRoots {
                 .join(source_catalog::artifact_filename("gemini", "projects")),
             hermes_db: hermes_home_for(home, hermes_home)
                 .join(source_catalog::artifact_filename("hermes", "state")),
-            grok_sessions: catalog_root(home, "grok", "sessions"),
+            grok_sessions: grok_home_for(home, grok_home)
+                .join(source_catalog::artifact_filename("grok", "sessions")),
             antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
             pi_sessions,
@@ -100,6 +103,10 @@ fn gemini_environment_value() -> Option<OsString> {
     environment_value("gemini", "tmp")
 }
 
+fn grok_environment_value() -> Option<OsString> {
+    environment_value("grok", "sessions")
+}
+
 fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
     if let Some(path) = value.and_then(|value| visible_path(home, value)) {
         return path;
@@ -116,6 +123,13 @@ fn gemini_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
         return path.join(gemini_dir);
     }
     home.join(gemini_dir)
+}
+
+fn grok_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
+    if let Some(path) = value.and_then(|value| visible_path(home, value)) {
+        return path;
+    }
+    home.join(catalog_artifact_parent("grok", "sessions"))
 }
 
 fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
@@ -339,6 +353,16 @@ mod tests {
             Some("GEMINI_CLI_HOME")
         );
 
+        let grok = crate::source_catalog::source("grok").unwrap();
+        assert_eq!(
+            grok
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == "sessions")
+                .and_then(|artifact| artifact.environment.as_deref()),
+            Some("GROK_HOME")
+        );
+
         let pi = crate::source_catalog::source("pi").unwrap();
         assert_eq!(pi.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(), ["sessions", "session-dir", "agent-dir"]);
         assert_eq!(pi.artifacts[0].path.as_deref(), Some(".pi/agent/sessions"));
@@ -373,26 +397,28 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         let override_home = home.path().join("configured-hermes");
-        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home.path(),
             None,
             None,
             Some(OsStr::new(override_home.to_str().unwrap())),
             None,
+            None,
         );
         assert_eq!(overridden.hermes_db, override_home.join("state.db"));
 
-        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home.path(),
             None,
             None,
             Some(OsStr::new("  ")),
             None,
+            None,
         );
         assert_eq!(blank.hermes_db, home.path().join(".hermes/state.db"));
 
-        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
-            home.path(), None, None, None, None,
+        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+            home.path(), None, None, None, None, None,
         );
         assert_eq!(absent.hermes_db, home.path().join(".hermes/state.db"));
     }
@@ -402,12 +428,13 @@ mod tests {
         use std::ffi::OsStr;
 
         let home = tempfile::tempdir().unwrap();
-        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home.path(),
             None,
             None,
             None,
             Some(OsStr::new("~/configured-gemini")),
+            None,
         );
         assert_eq!(
             overridden.gemini_tmp,
@@ -418,12 +445,13 @@ mod tests {
             home.path().join("configured-gemini/.gemini/projects.json")
         );
 
-        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home.path(),
             None,
             None,
             None,
             Some(OsStr::new("  ")),
+            None,
         );
         assert_eq!(blank.gemini_tmp, home.path().join(".gemini/tmp"));
         assert_eq!(
@@ -431,8 +459,8 @@ mod tests {
             home.path().join(".gemini/projects.json")
         );
 
-        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
-            home.path(), None, None, None, None,
+        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+            home.path(), None, None, None, None, None,
         );
         assert_eq!(absent.gemini_tmp, home.path().join(".gemini/tmp"));
         assert_eq!(
@@ -442,14 +470,52 @@ mod tests {
     }
 
     #[test]
+    fn grok_home_override_is_used_and_blank_value_falls_back() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+            home.path(),
+            None,
+            None,
+            None,
+            None,
+            Some(OsStr::new("~/configured-grok")),
+        );
+        assert_eq!(
+            overridden.grok_sessions,
+            home.path().join("configured-grok/sessions")
+        );
+
+        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+            home.path(),
+            None,
+            None,
+            None,
+            None,
+            Some(OsStr::new("  ")),
+        );
+        assert_eq!(blank.grok_sessions, home.path().join(".grok/sessions"));
+
+        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+            home.path(), None, None, None, None, None,
+        );
+        assert_eq!(absent.grok_sessions, home.path().join(".grok/sessions"));
+    }
+
+    #[test]
     fn default_roots_live_under_home() {
         let r = SourceRoots::default_roots();
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         assert!(r.claude.ends_with(".claude/projects"));
         assert!(r.codex.ends_with(".codex/sessions"));
         assert!(r.gemini_tmp.ends_with(".gemini/tmp"));
         assert!(r.gemini_projects_json.ends_with(".gemini/projects.json"));
         assert!(r.hermes_db.ends_with(".hermes/state.db"));
-        assert!(r.grok_sessions.ends_with(".grok/sessions"));
+        let grok_home = std::env::var_os("GROK_HOME")
+            .and_then(|value| visible_path(&home, &value))
+            .unwrap_or_else(|| home.join(".grok"));
+        assert_eq!(r.grok_sessions, grok_home.join("sessions"));
         assert!(r
             .antigravity_conversations
             .ends_with(".gemini/antigravity/conversations"));
@@ -465,12 +531,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
         let gemini_home = base.join("configured-gemini");
-        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             base,
             None,
             None,
             None,
             Some(gemini_home.as_os_str()),
+            None,
         );
         let session_path = roots
             .gemini_tmp
@@ -555,6 +622,118 @@ mod tests {
         assert!(!durable
             .windows("GEMINI_PRIVATE_PROMPT_MARKER".len())
             .any(|window| window == b"GEMINI_PRIVATE_PROMPT_MARKER"));
+    }
+
+    #[test]
+    fn run_scan_backfills_grok_override_queries_cost_and_retains_disappeared_usage() {
+        std::env::set_var("TZ", "UTC");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let grok_home = base.join("configured-grok");
+        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
+            base,
+            None,
+            None,
+            None,
+            None,
+            Some(grok_home.as_os_str()),
+        );
+        let updates_path = roots
+            .grok_sessions
+            .join("%2FUsers%2Fdev%2Fprojects%2Fgrok-demo/sess-override/updates.jsonl");
+        fs::create_dir_all(updates_path.parent().unwrap()).unwrap();
+        fs::write(
+            &updates_path,
+            concat!(
+                r#"{"timestamp":1780287300,"method":"session/update","params":{"sessionId":"sess-override","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"GROK_PRIVATE_PROMPT_MARKER"}}}}"#,
+                "\n",
+                r#"{"timestamp":1780287301,"method":"session/update","params":{"sessionId":"sess-override","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"GROK_PRIVATE_RESPONSE_MARKER"}},"_meta":{"totalTokens":100}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            updates_path.parent().unwrap().join("summary.json"),
+            r#"{"info":{"id":"sess-override","cwd":"/Users/dev/projects/grok-demo"},"current_model_id":"grok-priced","updated_at":"2026-07-01T10:00:00Z"}"#,
+        )
+        .unwrap();
+
+        let mut conn = open_db(&base.join("ledger.db")).unwrap();
+        pricing::set_override(
+            &conn,
+            "grok-priced",
+            OverrideRates {
+                input: Some(1.0),
+                output: Some(2.0),
+                cache_read: Some(3.0),
+                cache_write: Some(4.0),
+            },
+        )
+        .unwrap();
+
+        let first = run_scan(&mut conn, &roots);
+        let grok = find(&first, "grok");
+        assert_eq!(grok.events_inserted, 1);
+        assert!(grok.error.is_none());
+
+        let summary = queries::summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(summary.input_tokens, 100);
+        assert_eq!(summary.output_tokens, 0);
+        assert_eq!(summary.total_tokens, 100);
+        assert_eq!(summary.requests, 1);
+        assert_eq!(summary.cost, Some(100.0));
+
+        let source_rows = queries::breakdown(&conn, "tool", &Filters::default()).unwrap();
+        let grok_row = source_rows
+            .iter()
+            .find(|row| row.key.as_deref() == Some("grok"))
+            .unwrap();
+        assert_eq!(grok_row.total_tokens, 100);
+        assert_eq!(grok_row.requests, 1);
+        assert_eq!(grok_row.cost, Some(100.0));
+
+        let series = queries::series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].source, "grok");
+        assert_eq!(series[0].total_tokens, 100);
+        assert_eq!(series[0].requests, 1);
+        assert_eq!(series[0].cost, 100.0);
+
+        let second = run_scan(&mut conn, &roots);
+        assert_eq!(find(&second, "grok").events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        fs::remove_dir_all(&grok_home).unwrap();
+        let after_disappearance = run_scan(&mut conn, &roots);
+        assert_eq!(find(&after_disappearance, "grok").events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "disappearing Source Artifacts do not delete Ledger history"
+        );
+
+        drop(conn);
+        for db_path in [
+            base.join("ledger.db"),
+            base.join("ledger.db-wal"),
+            base.join("ledger.db-shm"),
+        ] {
+            if let Ok(durable) = fs::read(db_path) {
+                for marker in [
+                    "GROK_PRIVATE_PROMPT_MARKER",
+                    "GROK_PRIVATE_RESPONSE_MARKER",
+                ] {
+                    assert!(!durable
+                        .windows(marker.len())
+                        .any(|window| window == marker.as_bytes()));
+                }
+            }
+        }
     }
 
     #[test]
@@ -797,11 +976,12 @@ mod tests {
         fs::create_dir_all(malformed.parent().unwrap()).unwrap();
         fs::write(&malformed, b"not a Hermes sqlite database").unwrap();
 
-        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             base,
             None,
             None,
             Some(hermes_root.as_os_str()),
+            None,
             None,
         );
         let mut conn = open_db(&base.join("ledger.db")).unwrap();

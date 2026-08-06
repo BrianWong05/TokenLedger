@@ -21,6 +21,35 @@ use crate::db::{replace_file_events, set_file_state};
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
 
+const MALFORMED_ARTIFACT_WARNING: &str = "grok: malformed or unsupported Source Artifact";
+const SUPPORTED_UPDATE_KINDS: &[&str] = &[
+    "agent_message_chunk",
+    "agent_thought_chunk",
+    "current_mode_update",
+    "hook_execution",
+    "image_compressed",
+    "plan",
+    "retry_state",
+    "session_recap",
+    "subagent_finished",
+    "subagent_spawned",
+    "tool_call",
+    "tool_call_update",
+    "turn_completed",
+    "user_message_chunk",
+];
+
+fn record_grok_warning(result: &mut SourceScanResult) {
+    match &mut result.error {
+        Some(existing) if !existing.contains(MALFORMED_ARTIFACT_WARNING) => {
+            existing.push_str("; ");
+            existing.push_str(MALFORMED_ARTIFACT_WARNING);
+        }
+        Some(_) => {}
+        None => result.error = Some(MALFORMED_ARTIFACT_WARNING.to_string()),
+    }
+}
+
 pub fn scan_grok(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     if sessions_root.is_file() {
@@ -56,19 +85,32 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
         None => return,
     };
     let signals_path = session_dir.join("signals.json");
+    let summary_path = session_dir.join("summary.json");
 
     // Tokens come from updates.jsonl + signals.json; if neither changed the
     // session's events are already correct.
     let updates_state = file_state_of(updates_path);
     let signals_state = file_state_of(&signals_path);
-    if unchanged(conn, updates_path, &updates_state) && unchanged(conn, &signals_path, &signals_state)
+    let summary_state = file_state_of(&summary_path);
+    if unchanged(conn, updates_path, &updates_state)
+        && unchanged(conn, &signals_path, &signals_state)
+        && unchanged(conn, &summary_path, &summary_state)
     {
         return;
     }
 
-    let meta = read_session_meta(session_dir, updates_path);
-    let mut events = parse_updates(updates_path, &meta, result);
-    append_signals_reconciliation(&signals_path, &meta, &mut events);
+    let meta = match read_session_meta(session_dir, result) {
+        Some(meta) => meta,
+        None => return,
+    };
+    let mut events = match parse_updates(updates_path, &meta, result) {
+        Some(events) => events,
+        None => return,
+    };
+    if !append_signals_reconciliation(&signals_path, &meta, &mut events) {
+        record_grok_warning(result);
+        return;
+    }
 
     let path_str = updates_path.to_string_lossy().to_string();
     let n = events.len() as u64;
@@ -81,6 +123,9 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
     if signals_state.size > 0 || signals_state.mtime > 0 {
         let _ = set_file_state(conn, &signals_path.to_string_lossy(), signals_state);
     }
+    if summary_state.size > 0 || summary_state.mtime > 0 {
+        let _ = set_file_state(conn, &summary_path.to_string_lossy(), summary_state);
+    }
 }
 
 struct SessionMeta {
@@ -90,7 +135,10 @@ struct SessionMeta {
     fallback_ts: i64,
 }
 
-fn read_session_meta(session_dir: &Path, updates_path: &Path) -> SessionMeta {
+fn read_session_meta(
+    session_dir: &Path,
+    result: &mut SourceScanResult,
+) -> Option<SessionMeta> {
     let session_id = session_dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -110,32 +158,48 @@ fn read_session_meta(session_dir: &Path, updates_path: &Path) -> SessionMeta {
         .filter(|p| p.starts_with('/'));
 
     let mut model = "unknown".to_string();
-    let mut fallback_ts = file_state_of(updates_path).mtime;
-
-    if let Ok(content) = fs::read_to_string(session_dir.join("summary.json")) {
-        if let Ok(v) = serde_json::from_str::<Value>(&content) {
-            if let Some(m) = v.get("current_model_id").and_then(Value::as_str) {
-                if !m.is_empty() {
-                    model = m.to_string();
-                }
+    let mut fallback_ts = 0;
+    let summary_path = session_dir.join("summary.json");
+    if summary_path.exists() {
+        let content = match fs::read_to_string(&summary_path) {
+            Ok(content) => content,
+            Err(_) => {
+                record_grok_warning(result);
+                return None;
             }
-            if let Some(cwd) = v.pointer("/info/cwd").and_then(Value::as_str) {
-                if !cwd.is_empty() {
-                    project = Some(cwd.to_string());
-                }
+        };
+        let v = match serde_json::from_str::<Value>(&content) {
+            Ok(v) if v.is_object() && v.as_object().is_some_and(|object| {
+                object.contains_key("info")
+                    || object.contains_key("current_model_id")
+                    || object.contains_key("updated_at")
+                    || object.contains_key("created_at")
+            }) => v,
+            _ => {
+                record_grok_warning(result);
+                return None;
             }
-            if let Some(ts) = v
-                .get("updated_at")
-                .or_else(|| v.get("created_at"))
+        };
+        if let Some(m) = v.get("current_model_id").and_then(Value::as_str) {
+            if !m.is_empty() {
+                model = m.to_string();
+            }
+        }
+        if let Some(cwd) = v.pointer("/info/cwd").and_then(Value::as_str) {
+            if !cwd.is_empty() {
+                project = Some(cwd.to_string());
+            }
+        }
+        if let Some(ts) = ["updated_at", "created_at"].iter().find_map(|key| {
+            v.get(*key)
                 .and_then(Value::as_str)
                 .and_then(iso_to_epoch)
-            {
-                fallback_ts = ts;
-            }
+        }) {
+            fallback_ts = ts;
         }
     }
 
-    SessionMeta { session_id, model, project, fallback_ts }
+    Some(SessionMeta { session_id, model, project, fallback_ts })
 }
 
 // One in-flight user turn: the cumulative counter's value when the turn
@@ -147,16 +211,32 @@ struct Turn {
     index: usize,
 }
 
+fn supported_update(v: &Value) -> bool {
+    matches!(
+        v.get("method").and_then(Value::as_str),
+        Some("session/update") | Some("_x.ai/session/update")
+    )
+        && v.pointer("/params/sessionId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && v.pointer("/params/update/sessionUpdate")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| SUPPORTED_UPDATE_KINDS.contains(&kind))
+}
+
 fn parse_updates(
     updates_path: &Path,
     meta: &SessionMeta,
     result: &mut SourceScanResult,
-) -> Vec<UsageEvent> {
+) -> Option<Vec<UsageEvent>> {
     use std::io::{BufRead, BufReader};
 
     let file = match fs::File::open(updates_path) {
         Ok(f) => f,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            record_grok_warning(result);
+            return None;
+        }
     };
 
     let mut events = Vec::new();
@@ -164,15 +244,27 @@ fn parse_updates(
     let mut last_ts = meta.fallback_ts;
     let mut turn: Option<Turn> = None;
     let mut turn_index = 0usize;
+    let mut missing_timestamp = false;
 
-    let flush = |turn: Turn, events: &mut Vec<UsageEvent>| {
+    let flush = |turn: Turn, events: &mut Vec<UsageEvent>, missing_timestamp: &mut bool| {
         let delta = turn.max_total.saturating_sub(turn.baseline);
         if delta > 0 {
-            events.push(make_event(meta, updates_path, turn.index, delta, turn.ts));
+            if turn.ts > 0 {
+                events.push(make_event(meta, updates_path, turn.index, delta, turn.ts));
+            } else {
+                *missing_timestamp = true;
+            }
         }
     };
 
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in BufReader::new(file).lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(_) => {
+                record_grok_warning(result);
+                return None;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -180,21 +272,43 @@ fn parse_updates(
             Ok(v) => v,
             Err(_) => {
                 result.lines_skipped += 1;
-                continue;
+                record_grok_warning(result);
+                return None;
             }
         };
 
-        let ts = v
+        if !supported_update(&v) {
+            result.lines_skipped += 1;
+            record_grok_warning(result);
+            return None;
+        }
+
+        let ts = match v
             .get("timestamp")
             .and_then(Value::as_i64)
             .filter(|&t| t > 0)
-            .unwrap_or(last_ts);
+        {
+            Some(ts) => ts,
+            None => {
+                result.lines_skipped += 1;
+                record_grok_warning(result);
+                return None;
+            }
+        };
+
+        if let Some(total) = v.pointer("/params/_meta/totalTokens") {
+            if total.as_i64().is_none_or(|total| total < 0) {
+                result.lines_skipped += 1;
+                record_grok_warning(result);
+                return None;
+            }
+        }
 
         if v.pointer("/params/update/sessionUpdate").and_then(Value::as_str)
             == Some("user_message_chunk")
         {
             if let Some(t) = turn.take() {
-                flush(t, &mut events);
+                flush(t, &mut events, &mut missing_timestamp);
             }
             turn = Some(Turn {
                 baseline: last_total.unwrap_or(0),
@@ -236,18 +350,27 @@ fn parse_updates(
     }
 
     if let Some(t) = turn.take() {
-        flush(t, &mut events);
+        flush(t, &mut events, &mut missing_timestamp);
     }
 
     // No turns detected but a counter exists (very old/truncated logs):
     // record the whole session as one event.
     if events.is_empty() {
         if let Some(total) = last_total.filter(|&t| t > 0) {
-            events.push(make_event(meta, updates_path, 0, total, last_ts));
+            if last_ts > 0 {
+                events.push(make_event(meta, updates_path, 0, total, last_ts));
+            } else {
+                missing_timestamp = true;
+            }
         }
     }
 
-    events
+    if missing_timestamp {
+        record_grok_warning(result);
+        None
+    } else {
+        Some(events)
+    }
 }
 
 // Session rollup totals survive compaction; when they exceed what the update
@@ -257,15 +380,40 @@ fn append_signals_reconciliation(
     signals_path: &Path,
     meta: &SessionMeta,
     events: &mut Vec<UsageEvent>,
-) {
+) -> bool {
     let content = match fs::read_to_string(signals_path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) if !signals_path.exists() => return true,
+        Err(_) => {
+            return false;
+        }
     };
     let v: Value = match serde_json::from_str(&content) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => return false,
     };
+
+    let has_known_field = [
+        "totalTokensBeforeCompaction",
+        "totalTokens",
+        "contextTokensUsed",
+    ]
+    .iter()
+    .any(|key| v.get(*key).is_some());
+    if !v.is_object() || !has_known_field {
+        return false;
+    }
+    for key in [
+        "totalTokensBeforeCompaction",
+        "totalTokens",
+        "contextTokensUsed",
+    ] {
+        if v.get(key)
+            .is_some_and(|value| value.as_i64().is_none_or(|value| value < 0))
+        {
+            return false;
+        }
+    }
 
     let get = |key: &str| v.get(key).and_then(Value::as_i64).unwrap_or(0).max(0);
     let before = get("totalTokensBeforeCompaction");
@@ -275,22 +423,26 @@ fn append_signals_reconciliation(
         Some(ctx) => total.max(before.saturating_add(ctx.as_i64().unwrap_or(0).max(0))),
     };
     if effective <= 0 {
-        return;
+        return true;
     }
 
     let counted: i64 = events.iter().map(|e| e.input_tokens).sum();
     let extra = effective.saturating_sub(counted);
     if extra <= 0 {
-        return;
+        return true;
     }
 
     // Anchor to the last update activity, not signals.json's mtime, so the
     // delta stays on the same day across rescans of a live session.
     let ts = events.iter().map(|e| e.timestamp).max().unwrap_or(meta.fallback_ts);
+    if ts <= 0 {
+        return false;
+    }
     let updates_path = signals_path.with_file_name("updates.jsonl");
     let mut event = make_event(meta, &updates_path, 0, extra, ts);
     event.dedup_key = format!("grok:{}:signals", meta.session_id);
     events.push(event);
+    true
 }
 
 fn make_event(
@@ -522,5 +674,146 @@ mod tests {
         let res = scan_grok(&mut conn, Path::new("/nonexistent/grok/sessions"));
         assert_eq!(res.events_inserted, 0);
         assert!(res.error.is_none());
+    }
+
+    #[test]
+    fn malformed_updates_report_a_grok_specific_warning() {
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fmalformed",
+            "sess-malformed",
+            &["not json".to_string()],
+            None,
+            None,
+        );
+
+        let (_app, _conn, res) = scan(tmp.path());
+        assert_eq!(res.events_inserted, 0);
+        assert!(res
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("grok") && error.contains("malformed")));
+    }
+
+    #[test]
+    fn malformed_rescan_warns_without_deleting_existing_history() {
+        let tmp = tempdir().unwrap();
+        let updates = write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fhistory",
+            "sess-history",
+            &[
+                update_line(100, "user_message_chunk", None),
+                update_line(101, "agent_message_chunk", Some(500)),
+            ],
+            None,
+            None,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let first = scan_grok(&mut conn, tmp.path());
+        assert_eq!(first.events_inserted, 1);
+
+        std::fs::write(&updates, "not json\n").unwrap();
+        let second = scan_grok(&mut conn, tmp.path());
+        assert_eq!(second.events_inserted, 0);
+        assert!(second.error.is_some());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn unsupported_update_shape_reports_a_grok_specific_warning() {
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Funsupported",
+            "sess-unsupported",
+            &[r#"{"timestamp":100,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"future_update"}}}"#.to_string()],
+            None,
+            None,
+        );
+
+        let (_app, _conn, res) = scan(tmp.path());
+        assert_eq!(res.events_inserted, 0);
+        assert!(res
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("grok") && error.contains("unsupported")));
+    }
+
+    #[test]
+    fn missing_update_timestamp_is_not_booked() {
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Funtimestamped",
+            "sess-untimestamped",
+            &[
+                update_line(0, "user_message_chunk", None),
+                update_line(0, "agent_message_chunk", Some(500)),
+            ],
+            None,
+            None,
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.events_inserted, 0);
+        assert!(res.error.is_some());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn malformed_summary_and_signals_warn_without_deleting_history() {
+        let tmp = tempdir().unwrap();
+        let updates = write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fsiblings",
+            "sess-siblings",
+            &[
+                update_line(100, "user_message_chunk", None),
+                update_line(101, "agent_message_chunk", Some(500)),
+            ],
+            Some(
+                r#"{"info":{"id":"sess-siblings"},"current_model_id":"grok","updated_at":"2026-07-10T20:49:57Z"}"#,
+            ),
+            None,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        assert_eq!(scan_grok(&mut conn, tmp.path()).events_inserted, 1);
+
+        std::fs::write(updates.parent().unwrap().join("summary.json"), "not json").unwrap();
+        let summary_result = scan_grok(&mut conn, tmp.path());
+        assert!(summary_result.error.is_some());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        std::fs::write(
+            updates.parent().unwrap().join("summary.json"),
+            r#"{"info":{"id":"sess-siblings"},"current_model_id":"grok","updated_at":"2026-07-10T20:49:57Z"}"#,
+        )
+        .unwrap();
+        std::fs::write(updates.parent().unwrap().join("signals.json"), "not json").unwrap();
+        let signals_result = scan_grok(&mut conn, tmp.path());
+        assert!(signals_result.error.is_some());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 }
