@@ -65,6 +65,10 @@ fn resolve_model(raw: &str, ts: i64) -> String {
 pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     for root in roots {
+        if root.is_file() {
+            process_db(conn, root, &mut result);
+            continue;
+        }
         let entries = match fs::read_dir(root) {
             Ok(rd) => rd,
             Err(_) => continue, // missing dir → zero events, no error

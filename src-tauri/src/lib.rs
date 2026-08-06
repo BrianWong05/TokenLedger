@@ -19,6 +19,11 @@ mod updater;
 #[cfg(test)]
 mod e2e_real_logs;
 
+// Opt-in validation against one contributor-selected private Source Artifact.
+// The test is ignored by default and emits only privacy-safe aggregate evidence.
+#[cfg(test)]
+mod source_artifact_validation;
+
 // Shared cross-Source partition invariants + a hermetic seven-Source test that
 // runs them on synthetic logs every `cargo test`. Test-only, like e2e above.
 #[cfg(test)]

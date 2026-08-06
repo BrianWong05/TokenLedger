@@ -15,6 +15,12 @@ use crate::db::get_file_state;
 use crate::types::FileState;
 
 pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
+    if dir.is_file() {
+        if dir.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            out.push(dir.to_path_buf());
+        }
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(_) => return,

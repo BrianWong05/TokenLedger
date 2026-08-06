@@ -23,6 +23,10 @@ use crate::types::{SourceScanResult, UsageEvent};
 
 pub fn scan_grok(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
+    if sessions_root.is_file() {
+        process_session(conn, sessions_root, &mut result);
+        return result;
+    }
     let workspaces = match fs::read_dir(sessions_root) {
         Ok(rd) => rd,
         Err(_) => return result, // missing dir → zero events, no error

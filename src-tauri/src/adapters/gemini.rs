@@ -37,6 +37,18 @@ pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path)
     let mut result = SourceScanResult::default();
     let reverse = load_reverse_map(projects_json);
 
+    if tmp_root.is_file() {
+        let project_dir = tmp_root
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        let project = resolve_project(project_dir, &reverse);
+        process_file(conn, tmp_root, &project, &mut result);
+        return result;
+    }
+
     let subdirs = match fs::read_dir(tmp_root) {
         Ok(rd) => rd,
         Err(_) => return result, // missing dir → zero events, no error

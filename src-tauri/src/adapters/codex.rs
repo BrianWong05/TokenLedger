@@ -28,6 +28,12 @@ pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResu
 }
 
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
+    if dir.is_file() {
+        if dir.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            out.push(dir.to_path_buf());
+        }
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return, // missing dir is not an error

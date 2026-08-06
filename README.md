@@ -226,6 +226,34 @@ Token totals should match; cost may differ, because TokenLedger reprices
 everything through its own override and list-price rules rather than trusting
 pi's logged cost.
 
+### Validating a private Source Artifact
+
+A trusted contributor can validate one genuine local Source Artifact without
+copying it into the repository or installing the corresponding coding tool.
+The ignored workflow reads the selected path in place, runs the production
+scan and Ledger queries against a temporary Ledger, and prints one JSON line
+containing only normalized aggregate counts, a non-content schema fingerprint,
+the selected Source key, and pass/fail status. It never prints the Artifact
+path, private identifiers, raw rows, or content.
+
+Set the Source Catalog key and the Artifact or Artifact root, then run:
+
+```bash
+TOKENLEDGER_VALIDATION_SOURCE=pi \
+TOKENLEDGER_VALIDATION_ARTIFACT=/path/to/private/artifact-root \
+cargo test --manifest-path src-tauri/Cargo.toml \
+  source_artifact_validation::private_source_artifact_validation -- \
+  --ignored --nocapture
+```
+
+Supported Source keys are `claude`, `codex`, `gemini`, `hermes`, `grok`,
+`antigravity`, and `pi`. Real-Artifact validation is ignored by default and
+is not required by CI; committed synthetic fixtures remain the deterministic
+evidence for normal test runs. A production support claim still requires the
+genuine Artifact to be corroborated by an upstream schema or writer, or by
+several independent genuine samples; this local report does not replace that
+gate.
+
 ## Contributing
 
 The domain vocabulary lives in [CONTEXT.md](CONTEXT.md) and the decisions
