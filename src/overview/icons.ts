@@ -8,6 +8,7 @@ import hermes from './icons/hermes.svg';
 import grok from './icons/grok.svg';
 import antigravity from './icons/antigravity.svg';
 import goose from './icons/goose.svg';
+import opencode from './icons/opencode.svg';
 import pi from './icons/pi.svg';
 
 const generic = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="%235f6880" stroke-width="2"%3E%3Cpath d="M5 3h14v18H5z"/%3E%3Cpath d="M9 8h6M9 12h6M9 16h4"/%3E%3C/svg%3E';
@@ -23,6 +24,7 @@ export const SOURCE_ICONS: Record<string, string> = {
   grok,
   antigravity,
   goose,
+  opencode,
   pi,
   generic,
 };

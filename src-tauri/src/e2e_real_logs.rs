@@ -59,7 +59,7 @@ fn e2e_real_logs() {
     println!("  unpriced_models     {:?}", summary.unpriced_models);
     println!("  cache_hit_rate      {:.4}", summary.cache_hit_rate);
 
-    assert_eq!(status.sources.len(), 8, "expected all 8 sources to report");
+    assert_eq!(status.sources.len(), 9, "expected all 9 sources to report");
     assert!(
         summary.total_tokens > 0,
         "expected non-zero tokens scanning real logs"

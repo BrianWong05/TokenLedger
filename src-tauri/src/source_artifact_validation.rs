@@ -104,6 +104,9 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         antigravity_cli_conversations: missing.clone(),
         goose_sessions: vec![missing.clone()],
         pi_sessions: vec![missing.clone()],
+        opencode_data: missing.clone(),
+        opencode_legacy: missing.clone(),
+        opencode_db: None,
     };
 
     match source {
@@ -118,6 +121,18 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "antigravity" => roots.antigravity_conversations = artifact.to_path_buf(),
         "goose" => roots.goose_sessions = vec![artifact.to_path_buf()],
         "pi" => roots.pi_sessions = vec![artifact.to_path_buf()],
+        "opencode" => {
+            if artifact.is_file()
+                || artifact.extension().and_then(|ext| ext.to_str()) == Some("db")
+            {
+                roots.opencode_db = Some(artifact.to_path_buf());
+            } else if artifact.file_name().and_then(|name| name.to_str()) == Some("storage") {
+                roots.opencode_legacy = artifact.to_path_buf();
+            } else {
+                roots.opencode_data = artifact.to_path_buf();
+                roots.opencode_legacy = artifact.join("storage");
+            }
+        }
         _ => {}
     }
 
@@ -278,7 +293,10 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
             .extension()
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase());
-        if (source == "hermes" || source == "goose" || source == "antigravity")
+        if (source == "hermes"
+            || source == "goose"
+            || source == "antigravity"
+            || source == "opencode")
             && extension.as_deref() == Some("db")
         {
             considered = true;
@@ -439,6 +457,23 @@ mod tests {
 
         assert_eq!(roots.goose_sessions, vec![artifact]);
         assert_eq!(roots.pi_sessions, vec![missing]);
+    }
+
+    #[test]
+    fn selected_opencode_artifacts_keep_modern_and_legacy_roots_separate() {
+        let database = PathBuf::from("/private/opencode/opencode.db");
+        let storage = PathBuf::from("/private/opencode/storage");
+        let missing = Path::new("/private/missing");
+
+        let modern = roots_for("opencode", &database, missing);
+        assert_eq!(modern.opencode_db, Some(database));
+        assert_eq!(modern.opencode_data, missing);
+        assert_eq!(modern.opencode_legacy, missing);
+
+        let legacy = roots_for("opencode", &storage, missing);
+        assert_eq!(legacy.opencode_db, None);
+        assert_eq!(legacy.opencode_data, missing);
+        assert_eq!(legacy.opencode_legacy, storage);
     }
 
     #[test]

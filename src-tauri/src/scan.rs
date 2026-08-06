@@ -12,6 +12,7 @@ use crate::adapters::gemini::scan_gemini;
 use crate::adapters::goose::scan_goose;
 use crate::adapters::grok::scan_grok;
 use crate::adapters::hermes::scan_hermes;
+use crate::adapters::opencode::scan_opencode;
 use crate::adapters::pi::scan_pi;
 use crate::db::prune_missing_files;
 use crate::source_catalog;
@@ -29,6 +30,9 @@ pub struct SourceRoots {
     pub antigravity_cli_conversations: PathBuf,
     pub goose_sessions: Vec<PathBuf>,
     pub pi_sessions: Vec<PathBuf>,
+    pub opencode_data: PathBuf,
+    pub opencode_legacy: PathBuf,
+    pub opencode_db: Option<PathBuf>,
 }
 
 impl SourceRoots {
@@ -71,6 +75,12 @@ impl SourceRoots {
             environment_value("goose", "root").as_deref(),
             std::env::consts::OS,
         );
+        let (opencode_data, opencode_legacy, opencode_db) = opencode_roots(
+            home,
+            environment_value("opencode", "data").as_deref(),
+            environment_value("opencode", "db").as_deref(),
+            environment_value("opencode", "xdg-data").as_deref(),
+        );
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
             codex: catalog_root(home, "codex", "sessions"),
@@ -85,6 +95,9 @@ impl SourceRoots {
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
             goose_sessions,
             pi_sessions,
+            opencode_data,
+            opencode_legacy,
+            opencode_db,
         }
     }
 }
@@ -140,6 +153,29 @@ fn goose_session_roots(home: &Path, value: Option<&OsStr>, platform: &str) -> Ve
 
     roots.dedup();
     roots
+}
+
+fn opencode_roots(
+    home: &Path,
+    data_override: Option<&OsStr>,
+    database_override: Option<&OsStr>,
+    xdg_data_home: Option<&OsStr>,
+) -> (PathBuf, PathBuf, Option<PathBuf>) {
+    let data = data_override
+        .and_then(|value| visible_path(home, value))
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            xdg_data_home
+                .and_then(|value| visible_path(home, value))
+                .filter(|path| path.is_absolute())
+                .map(|path| path.join("opencode"))
+        })
+        .unwrap_or_else(|| home.join(".local/share/opencode"));
+    let database = database_override
+        .and_then(|value| visible_path(home, value))
+        .filter(|path| path.is_absolute());
+    let legacy = data.join("storage");
+    (data, legacy, database)
 }
 
 fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
@@ -268,6 +304,14 @@ fn run_scan_sources(
                 }),
                 "goose" => run_one(&source.key, || scan_goose(conn, &roots.goose_sessions)),
                 "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_sessions)),
+                "opencode" => run_one(&source.key, || {
+                    scan_opencode(
+                        conn,
+                        &roots.opencode_data,
+                        &roots.opencode_legacy,
+                        roots.opencode_db.as_deref(),
+                    )
+                }),
                 _ => SourceStatus {
                     source: source.key.clone(),
                     events_inserted: 0,
@@ -330,7 +374,7 @@ mod tests {
         let catalog = crate::source_catalog::catalog();
         assert_eq!(
             catalog.sources.iter().map(|source| source.key.as_str()).collect::<Vec<_>>(),
-            ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "pi"],
+            ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "opencode", "pi"],
         );
         assert!(catalog.sources.iter().all(|source| {
             !source.label.is_empty()
@@ -366,6 +410,11 @@ mod tests {
                 ("goose", "sessions", ".local/share/goose/sessions"),
                 ("goose", "sessions-macos", "Library/Application Support/Block/goose/data/sessions"),
                 ("goose", "sessions-windows", "AppData/Roaming/Block/goose/data/sessions"),
+                ("opencode", "data", ".local/share/opencode"),
+                ("opencode", "db", ".local/share/opencode/opencode.db"),
+                ("opencode", "channel-db", ".local/share/opencode/opencode-<channel>.db"),
+                ("opencode", "legacy-storage", ".local/share/opencode/storage"),
+                ("opencode", "xdg-data", "opencode"),
                 ("pi", "sessions", ".pi/agent/sessions"),
             ],
         );
@@ -419,6 +468,18 @@ mod tests {
         assert_eq!(goose.artifacts[0].path.as_deref(), Some(".local/share/goose/sessions"));
         assert_eq!(goose.artifacts[3].environment.as_deref(), Some("GOOSE_PATH_ROOT"));
         assert_eq!(goose.artifacts[3].suffix.as_deref(), Some("data/sessions"));
+
+        let opencode = crate::source_catalog::source("opencode").unwrap();
+        assert_eq!(opencode.source, "OpenCode");
+        assert_eq!(opencode.aliases, ["OpenCode CLI"]);
+        assert_eq!(
+            opencode.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(),
+            ["data", "db", "channel-db", "legacy-storage", "xdg-data"]
+        );
+        assert_eq!(opencode.artifacts[0].environment.as_deref(), Some("OPENCODE_DATA_DIR"));
+        assert_eq!(opencode.artifacts[1].environment.as_deref(), Some("OPENCODE_DB"));
+        assert_eq!(opencode.artifacts[3].suffix.as_deref(), Some("storage"));
+        assert_eq!(opencode.artifacts[4].environment.as_deref(), Some("XDG_DATA_HOME"));
     }
 
     #[test]
@@ -439,6 +500,42 @@ mod tests {
                 home.path().join("custom-agent/sessions"),
             ],
         );
+    }
+
+    #[test]
+    fn opencode_roots_use_visible_data_database_and_xdg_overrides() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        let configured_db = home.path().join("configured/opencode.db");
+        let configured = opencode_roots(
+            home.path(),
+            Some(OsStr::new("~/configured-opencode")),
+            Some(OsStr::new(configured_db.to_str().unwrap())),
+            None,
+        );
+        assert_eq!(configured.0, home.path().join("configured-opencode"));
+        assert_eq!(configured.1, home.path().join("configured-opencode/storage"));
+        assert_eq!(configured.2, Some(configured_db));
+
+        let xdg = opencode_roots(
+            home.path(),
+            None,
+            None,
+            Some(OsStr::new("~/configured-data")),
+        );
+        assert_eq!(xdg.0, home.path().join("configured-data/opencode"));
+        assert_eq!(xdg.1, home.path().join("configured-data/opencode/storage"));
+        assert_eq!(xdg.2, None);
+
+        let blank = opencode_roots(
+            home.path(),
+            Some(OsStr::new("  ")),
+            Some(OsStr::new("  ")),
+            Some(OsStr::new("  ")),
+        );
+        assert_eq!(blank.0, home.path().join(".local/share/opencode"));
+        assert_eq!(blank.2, None);
     }
 
     #[test]
@@ -834,6 +931,9 @@ mod tests {
             antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
             goose_sessions: vec![tmp.path().join("goose")],
             pi_sessions: vec![tmp.path().join("pi")],
+            opencode_data: tmp.path().join("opencode"),
+            opencode_legacy: tmp.path().join("opencode/storage"),
+            opencode_db: None,
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -884,6 +984,9 @@ mod tests {
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
+            opencode_data: base.join("no-opencode"),
+            opencode_legacy: base.join("no-opencode/storage"),
+            opencode_db: None,
         };
 
         let db_path = base.join("ledger.db");
@@ -901,7 +1004,7 @@ mod tests {
         }).unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 8);
+        assert_eq!(status.sources.len(), 9);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1164,12 +1267,15 @@ mod tests {
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
+            opencode_data: base.join("no-opencode"),
+            opencode_legacy: base.join("no-opencode/storage"),
+            opencode_db: None,
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 8);
+        assert_eq!(status.sources.len(), 9);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 
@@ -1216,5 +1322,119 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pi_requests, 4);
+    }
+
+    #[test]
+    fn run_scan_ingests_opencode_current_and_legacy_sessions_at_session_granularity() {
+        std::env::set_var("TZ", "UTC");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let opencode_root = base.join("opencode");
+        let database = opencode_root.join("opencode.db");
+        fs::create_dir_all(&opencode_root).unwrap();
+        let source = rusqlite::Connection::open(&database).unwrap();
+        source
+            .execute_batch(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    directory TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    time_updated INTEGER NOT NULL
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                INSERT INTO session VALUES ('opencode-s1', '/Users/dev/project', 1780000000000, 1780000100000);",
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "m1",
+                    "opencode-s1",
+                    1780000000000i64,
+                    r#"{"role":"assistant","modelID":"opencode-model","tokens":{"input":30,"output":8,"cache":{"read":10,"write":2}}}"#,
+                ],
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "m2",
+                    "opencode-s1",
+                    1780000001000i64,
+                    r#"{"role":"assistant","modelID":"opencode-model","tokens":{"input":5,"output":2,"cache":{"read":1,"write":0}}}"#,
+                ],
+            )
+            .unwrap();
+        drop(source);
+
+        let legacy = opencode_root.join("storage");
+        fs::create_dir_all(legacy.join("session/project")).unwrap();
+        fs::create_dir_all(legacy.join("message/legacy-s1")).unwrap();
+        fs::write(
+            legacy.join("session/project/legacy-s1.json"),
+            r#"{"id":"legacy-s1","directory":"/Users/dev/legacy","time":{"updated":1780000200000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            legacy.join("message/legacy-s1/msg.json"),
+            r#"{"role":"assistant","modelID":"legacy-model","tokens":{"input":7,"output":3,"cache":{"read":2,"write":1}}}"#,
+        )
+        .unwrap();
+
+        let roots = SourceRoots {
+            claude: base.join("no-claude"),
+            codex: base.join("no-codex"),
+            gemini_tmp: base.join("no-gemini"),
+            gemini_projects_json: base.join("no-projects.json"),
+            hermes_db: base.join("no-hermes.db"),
+            grok_sessions: base.join("no-grok"),
+            antigravity_conversations: base.join("no-antigravity"),
+            antigravity_cli_conversations: base.join("no-antigravity-cli"),
+            goose_sessions: vec![base.join("no-goose")],
+            pi_sessions: vec![base.join("no-pi")],
+            opencode_data: opencode_root.clone(),
+            opencode_legacy: legacy,
+            opencode_db: None,
+        };
+        let mut conn = open_db(&base.join("ledger.db")).unwrap();
+        let first = run_scan(&mut conn, &roots);
+        let opencode = find(&first, "opencode");
+        assert_eq!(opencode.events_inserted, 2);
+        assert!(opencode.error.is_none(), "unexpected error: {:?}", opencode.error);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE source = 'opencode' AND api_calls = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2,
+            "one Usage Record per OpenCode Session"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT timestamp FROM events WHERE session_id = 'opencode-s1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1_780_000_100
+        );
+
+        let second = run_scan(&mut conn, &roots);
+        assert_eq!(find(&second, "opencode").events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events WHERE source = 'opencode'", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 }

@@ -73,7 +73,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic eight-Source fixture + the default-run test that proves the four
+// Hermetic nine-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -315,6 +315,39 @@ fn build_goose(base: &Path) {
     .unwrap();
 }
 
+fn build_opencode(base: &Path) {
+    let path = base.join("opencode/opencode.db");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            directory TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );
+        INSERT INTO session VALUES
+          ('opencode-s1', '/Users/dev/projects/opencode', 1780308000000, 1780308001000);",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO message VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            "opencode-m1",
+            "opencode-s1",
+            1780308000000i64,
+            r#"{"role":"assistant","modelID":"opencode-model","tokens":{"input":40,"output":8,"reasoning":3,"cache":{"read":20,"write":2}}}"#,
+        ],
+    )
+    .unwrap();
+}
+
 fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
     let db = Connection::open(path).unwrap();
     db.execute_batch(
@@ -332,7 +365,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_eight_source_partition_invariants() {
+fn hermetic_nine_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -343,6 +376,7 @@ fn hermetic_eight_source_partition_invariants() {
     build_grok(base);
     build_antigravity(base);
     build_goose(base);
+    build_opencode(base);
     build_pi(base);
 
     let roots = SourceRoots {
@@ -357,6 +391,9 @@ fn hermetic_eight_source_partition_invariants() {
         antigravity_cli_conversations: base.join("antigravity-cli"),
         goose_sessions: vec![base.join("goose")],
         pi_sessions: vec![base.join("pi")],
+        opencode_data: base.join("opencode"),
+        opencode_legacy: base.join("opencode/storage"),
+        opencode_db: None,
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -364,8 +401,8 @@ fn hermetic_eight_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the eight Sources ingested events and reported no error.
-    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "pi"] {
+    // Every one of the nine Sources ingested events and reported no error.
+    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "opencode", "pi"] {
         let s = status
             .sources
             .iter()
@@ -410,12 +447,12 @@ fn hermetic_eight_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all eight here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all nine here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 8,
-        "expected >=8 sources in ctx_buckets, got {}",
+        buckets.len() >= 9,
+        "expected >=9 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -450,7 +487,7 @@ fn hermetic_eight_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all eight.
+    // Source's totals identical: ingestion is idempotent across all nine.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {

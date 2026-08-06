@@ -8,6 +8,7 @@ pub mod gemini;
 pub mod goose;
 pub mod grok;
 pub mod hermes;
+pub mod opencode;
 pub mod pi;
 
 use std::path::{Path, PathBuf};

@@ -104,6 +104,24 @@
       "prerequisite": null
     },
     {
+      "key": "opencode",
+      "label": "OpenCode",
+      "source": "OpenCode",
+      "aliases": ["OpenCode CLI"],
+      "color": "#8b5cf6",
+      "icon": "opencode",
+      "artifacts": [
+        { "id": "data", "kind": "directory", "path": ".local/share/opencode", "environment": "OPENCODE_DATA_DIR", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "db", "kind": "file", "path": ".local/share/opencode/opencode.db", "environment": "OPENCODE_DB", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "channel-db", "kind": "file", "path": ".local/share/opencode/opencode-<channel>.db", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "legacy-storage", "kind": "directory", "path": ".local/share/opencode/storage", "environment": "OPENCODE_DATA_DIR", "suffix": "storage", "platforms": ["all"], "prerequisite": null },
+        { "id": "xdg-data", "kind": "directory", "path": "opencode", "environment": "XDG_DATA_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
       "key": "pi",
       "label": "pi",
       "source": "pi",
