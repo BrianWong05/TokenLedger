@@ -1,10 +1,10 @@
 // Real-data layer for the Overview: pure reshaping of backend responses
 // (SeriesPoint/BreakdownRow) into the shapes the components consume. No fetching
-// here — overviewStore orchestrates the Ledger reads. Design meta (TOOLS,
+// here — overviewStore orchestrates the Ledger reads. Design meta (SOURCES,
 // CATEGORIES, themes, ranges, types) lives in ./meta.
 import type { BreakdownRow, Filters, SeriesPoint, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { parseLocalDate } from '../lib/dateRange';
-import { TOOLS, CATEGORIES, emptyByTool, orderedSourceKeys, sourceMeta, type ToolKey, type ToolMeta, type Range8b } from './meta';
+import { SOURCES, CATEGORIES, emptyBySource, orderedSourceKeys, sourceMeta, type SourceKey, type SourceMeta, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
 
 export const UNATTRIBUTED_COLOR = '#7a8499';
@@ -30,25 +30,25 @@ export function rankModels(bks: Bucket[]): string[] {
   return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([m]) => m);
 }
 
-// The tool meta owning a model, including a neutral historical-key fallback.
-function toolMeta(modelTool: Record<string, string>, m: string): ToolMeta | undefined {
+// The Source metadata owning a model, including a neutral historical-key fallback.
+function modelSourceMeta(modelTool: Record<string, string>, m: string): SourceMeta | undefined {
   return modelTool[m] ? sourceMeta(modelTool[m]) : undefined;
 }
 
 // A model's stack color: the brand accent of its owning tool (grey fallback for
 // an unknown source). Shared by the trend card and its enlarge.
 export function modelColor(modelTool: Record<string, string>, m: string): string {
-  return toolMeta(modelTool, m)?.color ?? '#5f6880';
+  return modelSourceMeta(modelTool, m)?.color ?? '#5f6880';
 }
 
-// Models ordered for a stacked bar: grouped by owning tool (in TOOLS order),
-// largest-first within each tool. The stable sort over rankModels keeps the
-// largest-first order inside each tool block, so bars read as contiguous tool
+// Models ordered for a stacked bar: grouped by owning Source (in SOURCES order),
+// largest-first within each Source. The stable sort over rankModels keeps the
+// largest-first order inside each Source block, so bars read as contiguous Source
 // blocks. Shared by the trend card and its enlarge.
 export function stackModels(bks: Bucket[], modelTool: Record<string, string>): string[] {
   const toolIdx = (m: string) => {
-    const i = TOOLS.findIndex((t) => t.key === modelTool[m]);
-    return i < 0 ? TOOLS.length : i;
+    const i = SOURCES.findIndex((source) => source.key === modelTool[m]);
+    return i < 0 ? SOURCES.length : i;
   };
   return rankModels(bks).sort((a, b) => toolIdx(a) - toolIdx(b));
 }
@@ -165,7 +165,7 @@ export function seriesToDays(points: SeriesPoint[], today: Date = new Date()): D
     const date = new Date(start);
     date.setDate(start.getDate() + i);
     const iso = isoOf(date);
-    const byTool = emptyByTool();
+    const byTool = emptyBySource();
     const byModel: Record<string, number> = {};
     const modelSources: Record<string, string[]> = {};
     let unattributedTokens = 0;
@@ -407,7 +407,7 @@ export function csvFilename(key: string): string {
 // Pure — the file write itself happens in the Rust save_csv command.
 export function bucketCsv(bucket: Bucket, modelTool: Record<string, string>): string {
   const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-  const toolOf = (m: string) => toolMeta(modelTool, m)?.label ?? modelTool[m] ?? '';
+  const toolOf = (m: string) => modelSourceMeta(modelTool, m)?.label ?? modelTool[m] ?? '';
   const total = bucket.total || 1;
   const lines = ['model,tool,tokens,share'];
   for (const [m, v] of rankedModels(bucket.byModel)) {
@@ -477,7 +477,7 @@ export function bucketsFromPoints(
   for (const p of pts) {
     const k = keyOf(p);
     const g = map.get(k) ?? {
-      byTool: emptyByTool(), byModel: {}, modelSources: {},
+      byTool: emptyBySource(), byModel: {}, modelSources: {},
       unattributedTokens: 0, hasUnpriced: false,
     };
     g.byTool[p.source] = (g.byTool[p.source] ?? 0) + p.totalTokens;
@@ -502,7 +502,7 @@ export function bucketsFromPoints(
   const keys = fromIso && toIso ? allKeys(per, fromIso, toIso) : [...map.keys()].sort();
   const out = keys.map((k) => {
     const g = map.get(k) ?? {
-      byTool: emptyByTool(), byModel: {}, modelSources: {},
+      byTool: emptyBySource(), byModel: {}, modelSources: {},
       unattributedTokens: 0, hasUnpriced: false,
     };
     return {
@@ -568,12 +568,12 @@ export function sumPoints(pts: SeriesPoint[]): number {
 }
 
 export function toolTotalsOfPoints(pts: SeriesPoint[]): Record<string, number> {
-  const out = emptyByTool();
+  const out = emptyBySource();
   for (const p of pts) out[p.source] = (out[p.source] ?? 0) + p.totalTokens;
   return out;
 }
 
-export interface SmallMultipleItem extends ToolMeta {
+export interface SmallMultipleItem extends SourceMeta {
   total: number;
   share: number;
   series: number[];
@@ -581,7 +581,7 @@ export interface SmallMultipleItem extends ToolMeta {
 
 // Per-tool sparkline series over the buckets (small multiples).
 export function smallMultiples(bks: Bucket[]): SmallMultipleItem[] {
-  const totals = emptyByTool();
+  const totals = emptyBySource();
   for (const b of bks) for (const [key, value] of Object.entries(b.byTool)) totals[key] = (totals[key] ?? 0) + value;
   const keys = orderedSourceKeys(Object.keys(totals));
   const grand = keys.reduce((total, key) => total + totals[key], 0) || 1;
@@ -600,7 +600,7 @@ export interface CatTotals {
   cacheWrite: number;
 }
 
-export function catTotals(pts: SeriesPoint[], tool: ToolKey): CatTotals {
+export function catTotals(pts: SeriesPoint[], tool: SourceKey): CatTotals {
   const t: CatTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   for (const p of pts) {
     if (p.source !== tool) continue;
@@ -675,7 +675,7 @@ export interface ModelBar {
   cacheEstimated: boolean;
 }
 
-export function modelBars(rows: BreakdownRow[], tool: ToolKey, toolTokens: number): ModelBar[] {
+export function modelBars(rows: BreakdownRow[], tool: SourceKey, toolTokens: number): ModelBar[] {
   return rows
     .filter((r) => r.source === tool)
     .map((r) => {
@@ -795,7 +795,7 @@ function addOpt(a: number | null, b: number | null): number | null {
   return b == null ? a : (a ?? 0) + b;
 }
 
-export function ctxTotals(pts: SeriesPoint[], tool: ToolKey): CtxTotals {
+export function ctxTotals(pts: SeriesPoint[], tool: SourceKey): CtxTotals {
   const t: CtxTotals = {
     billed: 0, reused: 0,
     messages: null, system: null, reasoning: null,
@@ -823,7 +823,7 @@ const CTX_KINDS: { kind: string; key: OverviewKey }[] = [
   { kind: 'memory_file', key: 'overview.kind.memoryFile' },
 ];
 
-export function ctxMeta(res: CtxResourceCount[], tool: ToolKey, lang: Lang = 'en'): string {
+export function ctxMeta(res: CtxResourceCount[], tool: SourceKey, lang: Lang = 'en'): string {
   const bits: string[] = [];
   for (const { kind, key } of CTX_KINDS) {
     const n = res.find((r) => r.source === tool && r.kind === kind)?.count ?? 0;

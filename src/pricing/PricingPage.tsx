@@ -10,11 +10,11 @@ import type { ModelPricing, RatesPerTok } from '../types';
 import { tauriPricing, type PricingPort } from './pricing';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import type { SettingsPort } from '../settings/settings';
-import { TOOL_ICONS } from '../overview/icons';
+import { sourceIcon } from '../overview/icons';
 import OverrideEditor from './OverrideEditor';
 import {
   modelState, resolvedRates, filterModels, chipCounts, fmtRate,
-  toolMeta, toolLabel, originLabel, isRoutedRate, fill, type PriceFilter,
+  pricingSourceMeta, sourceLabel, originLabel, isRoutedRate, fill, type PriceFilter,
 } from './pricing.derive';
 
 const CHIPS: { key: PriceFilter; labelKey: 'pricing.chip.all' | 'pricing.chip.unpriced' | 'pricing.chip.override' | 'pricing.chip.est'; count: (c: ReturnType<typeof chipCounts>) => number }[] = [
@@ -200,8 +200,8 @@ export default function PricingPage({
 function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: ReturnType<typeof useT>['t'] }) {
   const state = modelState(m);
   const resolved = resolvedRates(m);
-  const meta = toolMeta(m.tool);
-  const icon = TOOL_ICONS[meta.icon] ?? TOOL_ICONS.generic;
+  const meta = pricingSourceMeta(m.tool);
+  const icon = sourceIcon(meta.icon);
 
   const source =
     state === 'unpriced'
@@ -221,13 +221,13 @@ function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: Re
     <div className={'tl-pr-grid tl-pr-row' + (state === 'unpriced' ? ' unpriced' : '')}>
       <div className="tl-pr-model">
         <span className={'tl-pr-icon ' + m.tool}>
-          {icon ? <img src={icon} alt="" width={14} height={14} /> : <b style={{ color: meta.color }}>{toolLabel(m.tool)[0]}</b>}
+          {icon ? <img src={icon} alt="" width={14} height={14} /> : <b style={{ color: meta.color }}>{sourceLabel(m.tool)[0]}</b>}
         </span>
         <div style={{ minWidth: 0 }}>
           <div className="name">{m.model}</div>
           <div className="tool">
             <span className="dot" style={{ background: meta.color }} />
-            {toolLabel(m.tool)}
+            {sourceLabel(m.tool)}
           </div>
         </div>
       </div>

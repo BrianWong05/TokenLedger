@@ -13,8 +13,8 @@ import AggTrend from './AggTrend';
 import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
 import { RangeSegments } from './RangePicker';
-import type { ToolMeta } from './meta';
-import { TOOL_ICONS } from './icons';
+import type { SourceMeta } from './meta';
+import { sourceIcon } from './icons';
 import { fmtPct } from '../lib/format';
 import { formatSummaryCost, useOverviewT } from './localize';
 import { useT } from '../lib/i18n';
@@ -219,7 +219,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 style={active ? { borderColor: tl.color, background: tl.color + '14' } : undefined}
               >
                 <div className="lbl">
-                  <ToolIcon tool={tl} />
+                  <SourceIcon tool={tl} />
                   {tl.label}
                 </div>
                 <div className="num">{fmtPct(toolTotals[tl.key] / grand)}</div>
@@ -323,10 +323,10 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
   );
 }
 
-// Brand-icon chip for a source; falls back to a colored monogram when the tool
+// Brand-icon chip for a Source; falls back to a colored monogram when the Source
 // has no brand mark.
-function ToolIcon({ tool }: { tool: ToolMeta }) {
-  const src = TOOL_ICONS[tool.icon] ?? TOOL_ICONS.generic;
+function SourceIcon({ tool }: { tool: SourceMeta }) {
+  const src = sourceIcon(tool.icon);
   return (
     <span className="tt-toolicon">
       {src ? (

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
-import { emptyByTool } from './meta';
+import { emptyBySource } from './meta';
 import {
   seriesToDays,
   heatStats,
@@ -185,7 +185,7 @@ describe('bucketCsv', () => {
   const bucket = {
     key: '2026-07-15',
     label: '15',
-    byTool: emptyByTool(),
+    byTool: emptyBySource(),
     byModel: { 'claude-opus-4-8': 300, 'gpt-5.5-codex': 100 },
     unattributedTokens: 0, hasUnpriced: false, total: 400,
   };
@@ -201,7 +201,7 @@ describe('bucketCsv', () => {
 
   it('skips zero-token models and includes every nonzero one (no top-N cap)', () => {
     const many = {
-      key: '2026-07-15', label: '15', byTool: emptyByTool(),
+      key: '2026-07-15', label: '15', byTool: emptyBySource(),
       byModel: { a: 7, b: 6, c: 5, d: 4, e: 3, f: 2, g: 1, h: 0 },
       unattributedTokens: 0, hasUnpriced: false, total: 28,
     };
@@ -212,7 +212,7 @@ describe('bucketCsv', () => {
   });
 
   it('CSV-escapes a field containing a comma and blanks an unknown tool', () => {
-    const b = { key: 'k', label: 'k', byTool: emptyByTool(), byModel: { 'weird,name': 50 }, unattributedTokens: 0, hasUnpriced: false, total: 50 };
+    const b = { key: 'k', label: 'k', byTool: emptyBySource(), byModel: { 'weird,name': 50 }, unattributedTokens: 0, hasUnpriced: false, total: 50 };
     expect(bucketCsv(b, {})).toBe('model,tool,tokens,share\n"weird,name",,50,1.0000\n');
   });
 });

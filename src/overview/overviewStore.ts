@@ -33,7 +33,7 @@ import {
   type BucketView,
   type ToolCategory,
 } from './data';
-import { TOOLS, orderedSourceKeys, sourceMeta, type Range8b, type ToolKey, type ToolMeta } from './meta';
+import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
 import type {
@@ -87,7 +87,7 @@ export interface OverviewSnapshot {
   range: Range8b;
   customFrom: string;
   customTo: string;
-  selected: ToolKey;
+  selected: SourceKey;
   // derived (frozen at each transition; getSnapshot must not recompute per call)
   firstIso: string;
   lastIso: string;
@@ -102,7 +102,7 @@ export interface OverviewStore {
   refresh(): Promise<void>;
   setRange(r: Range8b): void;
   setCustomRange(from: string, to: string): void;
-  setSelected(k: ToolKey): void;
+  setSelected(k: SourceKey): void;
   start(): () => void;
 }
 
@@ -129,7 +129,7 @@ class Store implements OverviewStore {
     modelRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
-    range: 'total', customFrom: '', customTo: '', selected: TOOLS[0].key,
+    range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
   };
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
@@ -233,7 +233,7 @@ class Store implements OverviewStore {
     }
   }
 
-  setSelected(k: ToolKey) {
+  setSelected(k: SourceKey) {
     if (k === this.state.selected) return;
     this.state.selected = k;
     this.publish();
@@ -377,7 +377,7 @@ export interface OverviewView {
   selExecRows: CtxExecRow[];
   selMeta: string;
   selModels: ModelBar[];
-  tool: ToolMeta;
+  tool: SourceMeta;
   headline: { total: number; summaryReady: boolean };
   canOpenCostBreakdown: boolean;
 }
@@ -397,7 +397,7 @@ export function selectProfile(s: OverviewSnapshot, now: Date = new Date()): Prof
   return profileView(s.allPoints ?? [], s.profileSessions, now);
 }
 
-export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()): ToolMeta[] {
+export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()): SourceMeta[] {
   const totals = toolTotalsOfPoints(pointsIn(s.allPoints ?? [], windowOf(s.range, s.from, s.to, now)));
   return orderedSourceKeys(Object.keys(totals).filter((key) => totals[key] > 0)).map(sourceMeta);
 }

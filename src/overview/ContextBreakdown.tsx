@@ -1,6 +1,6 @@
 import { memo, useState } from 'react';
 import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type ToolCategory } from './data';
-import type { ToolMeta } from './meta';
+import type { SourceMeta } from './meta';
 import type { CtxExecRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
 import { useOverviewT } from './localize';
@@ -17,7 +17,7 @@ function ContextBreakdown({
   meta,
   execRows,
 }: {
-  tool: ToolMeta;
+  tool: SourceMeta;
   ctx: CtxTotals;
   view: BucketView | null;
   tree: ToolCategory[];

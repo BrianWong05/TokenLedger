@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { CATEGORIES, type ToolMeta } from './meta';
+import { CATEGORIES, type SourceMeta } from './meta';
 import type { ModelBar } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { CAT_KEY, formatDisplayCost, overviewT, useOverviewT, USD_IDENTITY } from './localize';
@@ -17,7 +17,7 @@ function ModelsList({
   onModelClick,
   settings = USD_IDENTITY,
 }: {
-  tool: ToolMeta;
+  tool: SourceMeta;
   toolTokens: number;
   models: ModelBar[];
   showCost?: boolean;

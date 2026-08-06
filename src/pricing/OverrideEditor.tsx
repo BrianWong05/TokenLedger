@@ -8,8 +8,8 @@ import { useT } from '../lib/i18n';
 import type { ModelPricing, RatesPerTok, Settings } from '../types';
 import type { PricingPort } from './pricing';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
-import { TOOL_ICONS } from '../overview/icons';
-import { fill, originLabelQualified, toolMeta, toolLabel, fmtRate } from './pricing.derive';
+import { sourceIcon } from '../overview/icons';
+import { fill, originLabelQualified, pricingSourceMeta, sourceLabel, fmtRate } from './pricing.derive';
 
 const FIELDS: { key: keyof RatesPerTok; labelKey: 'pricing.col.input' | 'pricing.col.output' | 'pricing.col.cacheRead' | 'pricing.col.cacheWrite' }[] = [
   { key: 'input', labelKey: 'pricing.col.input' },
@@ -86,9 +86,9 @@ export default function OverrideEditor({
     pricing.deleteOverride(model.model).then(() => onClose(true)).catch(() => setBusy(false));
   };
 
-  const meta = toolMeta(model.tool);
-  const icon = TOOL_ICONS[meta.icon] ?? TOOL_ICONS.generic;
-  const tool = toolLabel(model.tool);
+  const meta = pricingSourceMeta(model.tool);
+  const icon = sourceIcon(meta.icon);
+  const tool = sourceLabel(model.tool);
   const subtitle = hasOverride
     ? fill(t('pricing.editor.subtitleOverride'), { tool })
     : fill(t('pricing.editor.subtitleSet'), { tool });

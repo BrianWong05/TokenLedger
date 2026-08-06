@@ -4,8 +4,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import ContextBreakdown from './ContextBreakdown';
-import { TOOLS } from './meta';
-import type { CtxTotals } from './data';
+import { SOURCES } from './meta';
+import type { BucketView, CtxTotals } from './data';
 import type { CtxExecRow } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -28,14 +28,14 @@ const execRows: CtxExecRow[] = [
   { source: 'claude', kind: 'build', exe: 'npm', cmd: 'npm test', estTokens: 600, calls: 2 },
 ];
 
-function render() {
+function render(view: BucketView | null = null) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
   act(() =>
     root.render(
-      <ContextBreakdown tool={TOOLS[0]} ctx={ctx} view={null} tree={tree} meta="" execRows={execRows} />,
+      <ContextBreakdown tool={SOURCES[0]} ctx={ctx} view={view} tree={tree} meta="" execRows={execRows} />,
     ),
   );
   return container;
@@ -92,6 +92,21 @@ describe('ContextBreakdown drilldown', () => {
 
     clickRow(c, 'Execution');
     expect(queryRow(c, 'Bash')).toBeDefined();
+  });
+
+  it('renders unavailable capabilities as an em dash and measured zero as 0', () => {
+    const c = render({
+      total: 100,
+      messages: 0,
+      history: 0,
+      newInput: 0,
+      response: 0,
+      system: null,
+      reasoning: null,
+    });
+
+    expect(queryRow(c, 'Messages')?.querySelector('.val')?.textContent).toBe('0');
+    expect(queryRow(c, 'System prompt')?.querySelector('.val')?.textContent).toBe('—');
   });
 
   it('renders the exec facet table when the Bash leaf is expanded', () => {

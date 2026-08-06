@@ -1,11 +1,11 @@
-import { CATEGORIES, type ToolMeta } from './meta';
+import { CATEGORIES, type SourceMeta } from './meta';
 import type { CatTotals } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { CAT_KEY, useOverviewT } from './localize';
 
 // Real per-tool token breakdown (8b right column): the four canonical token
 // categories from the Ledger. Replaces the speculative context-content panel.
-export default function TokenBreakdown({ tool, cats }: { tool: ToolMeta; cats: CatTotals }) {
+export default function TokenBreakdown({ tool, cats }: { tool: SourceMeta; cats: CatTotals }) {
   const { t } = useOverviewT();
   const rows = CATEGORIES.map((c) => ({ ...c, tokens: cats[c.key] }));
   const total = rows.reduce((a, r) => a + r.tokens, 0);

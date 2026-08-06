@@ -3,7 +3,7 @@
 // the design mock's state logic (screen 1a <script>). No React, no fetching —
 // so every branch is unit-testable against a ModelPricing[].
 import type { ModelPricing, RatesPerTok } from '../types';
-import { sourceMeta, type ToolMeta } from '../overview/meta';
+import { sourceMeta, type SourceMeta } from '../overview/meta';
 
 export type PriceState = 'ok' | 'override' | 'unpriced' | 'est';
 export type PriceFilter = 'all' | 'unpriced' | 'override' | 'est';
@@ -26,14 +26,14 @@ export function modelState(m: ModelPricing): PriceState {
   return 'ok';
 }
 
-export function toolMeta(tool: string): ToolMeta {
-  return sourceMeta(tool);
+export function pricingSourceMeta(source: string): SourceMeta {
+  return sourceMeta(source);
 }
 
-// Displayed tool label (full source name, e.g. "Claude Code") — also the
+// Displayed Source label (full source name, e.g. "Claude Code") — also the
 // search target alongside the raw model name.
-export function toolLabel(tool: string): string {
-  return toolMeta(tool).source;
+export function sourceLabel(source: string): string {
+  return pricingSourceMeta(source).source;
 }
 
 // The two catalog ids an origin can carry. Anything else is a publisher's name
@@ -78,7 +78,7 @@ export function filterModels(models: ModelPricing[], query: string, filter: Pric
   return models.filter((m) => {
     if (filter !== 'all' && modelState(m) !== filter) return false;
     if (!q) return true;
-    return m.model.toLowerCase().includes(q) || toolLabel(m.tool).toLowerCase().includes(q);
+    return m.model.toLowerCase().includes(q) || sourceLabel(m.tool).toLowerCase().includes(q);
   });
 }
 

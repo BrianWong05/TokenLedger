@@ -9,7 +9,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it } from 'vitest';
 import ModelsList from '../overview/ModelsList';
 import OverrideEditor from './OverrideEditor';
-import { TOOLS } from '../overview/meta';
+import { SOURCES } from '../overview/meta';
 import { makeFakePricing } from './pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import type { ModelBar } from '../overview/data';
@@ -37,7 +37,7 @@ describe('ModelsList model-click entry point', () => {
     const root = createRoot(container);
     roots.push(root);
     await act(async () => root.render(
-      <ModelsList tool={TOOLS[0]} toolTokens={100} models={[bar('claude-opus-4-8')]} onModelClick={(n) => clicked.push(n)} />,
+      <ModelsList tool={SOURCES[0]} toolTokens={100} models={[bar('claude-opus-4-8')]} onModelClick={(n) => clicked.push(n)} />,
     ));
     const row = container.querySelector('.tt-model') as HTMLElement;
     expect(row.getAttribute('role')).toBe('button');
@@ -54,7 +54,7 @@ describe('ModelsList model-click entry point', () => {
         pricing.list().then((list) => setM(list.find((x) => x.model === name) ?? null));
       return (
         <>
-          <ModelsList tool={TOOLS[0]} toolTokens={100} models={[bar('claude-opus-4-8')]} onModelClick={open} />
+          <ModelsList tool={SOURCES[0]} toolTokens={100} models={[bar('claude-opus-4-8')]} onModelClick={open} />
           {m && <OverrideEditor model={m} pricing={pricing} settings={makeFakeSettings()} onClose={() => setM(null)} />}
         </>
       );

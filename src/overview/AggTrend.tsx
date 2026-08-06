@@ -1,5 +1,5 @@
 import { memo, useMemo, useState } from 'react';
-import { emptyByTool, orderedSourceKeys, sourceMeta } from './meta';
+import { emptyBySource, orderedSourceKeys, sourceMeta } from './meta';
 import { modelOwner, rankedModels, stackModels, UNATTRIBUTED_COLOR, type Bucket } from './data';
 import { fmtTok, fmtPct } from '../lib/format';
 import { PER_UNIT_KEY, useOverviewT } from './localize';
@@ -39,7 +39,7 @@ function AggTrend({
   const total = data.reduce((a, b) => a + b.total, 0);
   const avg = total / (data.length || 1);
   const peak = data.reduce((a, b) => (b.total > a.total ? b : a), data[0] ?? {
-    key: '', label: '—', byTool: emptyByTool(), byModel: {},
+    key: '', label: '—', byTool: emptyBySource(), byModel: {},
     unattributedTokens: 0, hasUnpriced: false, total: 0,
   });
   const plotW = VW - PL - PR;

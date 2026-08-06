@@ -14,7 +14,7 @@ import {
 import type { LedgerPort } from './ledger';
 import { useAutoRefresh } from './useAutoRefresh';
 import { loadCustomRange, saveCustomRange } from './rangeMemory';
-import type { Range8b, ToolKey } from './meta';
+import type { Range8b, SourceKey } from './meta';
 import { useT } from '../lib/i18n';
 
 export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) {
@@ -94,7 +94,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   /* eslint-enable react-hooks/exhaustive-deps */
 
   const setRange = useCallback((r: Range8b) => store.setRange(r), [store]);
-  const setSel = useCallback((k: ToolKey) => store.setSelected(k), [store]);
+  const setSel = useCallback((k: SourceKey) => store.setSelected(k), [store]);
   const setCustomRange = useCallback(
     (from: string, to: string) => {
       saveCustomRange(from, to);

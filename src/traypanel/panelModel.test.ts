@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { panelModel, periodWindows, seriesBucket, type PanelExtras } from './panelModel';
 import { DEFAULT_SETTINGS } from '../settings/settings';
-import { TOOL_ICONS } from '../overview/icons';
+import { SOURCE_ICONS } from '../overview/icons';
 import type { BreakdownRow, SeriesPoint, Summary } from '../types';
 
 function sum(
@@ -144,11 +144,11 @@ describe('panelModel', () => {
 
   it('catalog and unknown sources flow through source-row metadata', () => {
     const catalogued = panelModel(sum(1, 1), sum(0, null), [brow('claude', 1_000, 1.0)], S, 'en');
-    expect(catalogued.rows[0]).toMatchObject({ label: 'Claude', icon: TOOL_ICONS.claude });
+    expect(catalogued.rows[0]).toMatchObject({ label: 'Claude', icon: SOURCE_ICONS.claude });
 
     const m = panelModel(sum(1, 1), sum(0, null), [brow('weirdtool', 1_000, 1.0)], S, 'en');
     expect(m.rows[0].label).toBe('weirdtool');
-    expect(m.rows[0].icon).toBe(TOOL_ICONS.generic);
+    expect(m.rows[0].icon).toBe(SOURCE_ICONS.generic);
   });
 
   it('renders the 2b sections alone when the extra reads are absent', () => {
