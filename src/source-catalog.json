@@ -1,0 +1,106 @@
+{
+  "sources": [
+    {
+      "key": "claude",
+      "label": "Claude",
+      "source": "Claude Code",
+      "aliases": ["Claude Code"],
+      "color": "#d97757",
+      "icon": "claude",
+      "artifacts": [
+        { "id": "projects", "kind": "directory", "path": ".claude/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "codex",
+      "label": "Codex",
+      "source": "Codex",
+      "aliases": ["OpenAI Codex"],
+      "color": "#6e50f2",
+      "icon": "codex",
+      "artifacts": [
+        { "id": "sessions", "kind": "directory", "path": ".codex/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "gemini",
+      "label": "Gemini",
+      "source": "Gemini CLI",
+      "aliases": ["Google Gemini CLI"],
+      "color": "#3186ff",
+      "icon": "gemini",
+      "artifacts": [
+        { "id": "tmp", "kind": "directory", "path": ".gemini/tmp", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "projects", "kind": "file", "path": ".gemini/projects.json", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "hermes",
+      "label": "Hermes",
+      "source": "Hermes",
+      "aliases": ["Hermes Agent"],
+      "color": "#f472b6",
+      "icon": "hermes",
+      "artifacts": [
+        { "id": "state", "kind": "file", "path": ".hermes/state.db", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "grok",
+      "label": "Grok",
+      "source": "Grok Build",
+      "aliases": ["xAI Grok Build"],
+      "color": "#c3c8d2",
+      "icon": "grok",
+      "artifacts": [
+        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "antigravity",
+      "label": "Antigravity",
+      "source": "Google Antigravity",
+      "aliases": ["Antigravity IDE", "Antigravity CLI"],
+      "color": "#22d3ee",
+      "icon": "antigravity",
+      "artifacts": [
+        { "id": "conversations", "kind": "directory", "path": ".gemini/antigravity/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "cli-conversations", "kind": "directory", "path": ".gemini/antigravity-cli/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "pi",
+      "label": "pi",
+      "source": "pi",
+      "aliases": ["pi coding agent"],
+      "color": "#a3a3a3",
+      "icon": "pi",
+      "artifacts": [
+        { "id": "sessions", "kind": "directory", "path": ".pi/agent/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "session-dir", "kind": "directory", "path": null, "environment": "PI_CODING_AGENT_SESSION_DIR", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "agent-dir", "kind": "directory", "path": null, "environment": "PI_CODING_AGENT_DIR", "suffix": "sessions", "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "platforms": ["all"],
+      "prerequisite": null
+    }
+  ]
+}

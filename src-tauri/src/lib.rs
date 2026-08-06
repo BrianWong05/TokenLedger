@@ -4,6 +4,7 @@ mod pricing;
 mod queries;
 mod scan;
 mod settings;
+mod source_catalog;
 mod time;
 mod tray;
 mod types;

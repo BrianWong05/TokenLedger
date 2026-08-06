@@ -13,6 +13,7 @@ use crate::adapters::grok::scan_grok;
 use crate::adapters::hermes::scan_hermes;
 use crate::adapters::pi::scan_pi;
 use crate::db::prune_missing_files;
+use crate::source_catalog;
 use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 
 pub struct SourceRoots {
@@ -31,8 +32,8 @@ pub struct SourceRoots {
 impl SourceRoots {
     pub fn default_roots() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let session_dir = std::env::var_os("PI_CODING_AGENT_SESSION_DIR");
-        let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR");
+        let session_dir = pi_environment_value("session-dir");
+        let agent_dir = pi_environment_value("agent-dir");
         Self::from_home_and_pi_env(&home, session_dir.as_deref(), agent_dir.as_deref())
     }
 
@@ -41,25 +42,52 @@ impl SourceRoots {
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
-        let mut pi_sessions = vec![home.join(".pi/agent/sessions")];
-        if let Some(path) = session_dir.and_then(|value| visible_pi_path(home, value)) {
-            pi_sessions.push(path);
-        }
-        if let Some(path) = agent_dir.and_then(|value| visible_pi_path(home, value)) {
-            pi_sessions.push(path.join("sessions"));
-        }
+        let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
+        append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
+        append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
         SourceRoots {
-            claude: home.join(".claude/projects"),
-            codex: home.join(".codex/sessions"),
-            gemini_tmp: home.join(".gemini/tmp"),
-            gemini_projects_json: home.join(".gemini/projects.json"),
-            hermes_db: home.join(".hermes/state.db"),
-            grok_sessions: home.join(".grok/sessions"),
-            antigravity_conversations: home.join(".gemini/antigravity/conversations"),
-            antigravity_cli_conversations: home.join(".gemini/antigravity-cli/conversations"),
+            claude: catalog_root(home, "claude", "projects"),
+            codex: catalog_root(home, "codex", "sessions"),
+            gemini_tmp: catalog_root(home, "gemini", "tmp"),
+            gemini_projects_json: catalog_root(home, "gemini", "projects"),
+            hermes_db: catalog_root(home, "hermes", "state"),
+            grok_sessions: catalog_root(home, "grok", "sessions"),
+            antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
+            antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
             pi_sessions,
         }
     }
+}
+
+fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
+    let path = source_catalog::artifact(source, artifact)
+        .and_then(|artifact| artifact.path.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
+    home.join(path)
+}
+
+fn pi_environment_value(artifact: &str) -> Option<std::ffi::OsString> {
+    let environment = source_catalog::artifact("pi", artifact)
+        .and_then(|artifact| artifact.environment.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define pi.{artifact} environment"));
+    std::env::var_os(environment)
+}
+
+fn append_pi_override(
+    pi_sessions: &mut Vec<PathBuf>,
+    home: &Path,
+    artifact_id: &str,
+    value: Option<&OsStr>,
+) {
+    let Some(path) = value.and_then(|value| visible_pi_path(home, value)) else {
+        return;
+    };
+    let artifact = source_catalog::artifact("pi", artifact_id)
+        .unwrap_or_else(|| panic!("source catalog must define pi.{artifact_id}"));
+    pi_sessions.push(match artifact.suffix.as_deref() {
+        Some(suffix) => path.join(suffix),
+        None => path,
+    });
 }
 
 fn visible_pi_path(home: &Path, value: &OsStr) -> Option<PathBuf> {
@@ -97,24 +125,36 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
 }
 
 pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
-    let mut sources = Vec::with_capacity(7);
-    sources.push(run_one("claude", || scan_claude(conn, &roots.claude)));
-    sources.push(run_one("codex", || scan_codex(conn, &roots.codex)));
-    sources.push(run_one("gemini", || {
-        scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
-    }));
-    sources.push(run_one("hermes", || scan_hermes(conn, &roots.hermes_db)));
-    sources.push(run_one("grok", || scan_grok(conn, &roots.grok_sessions)));
-    sources.push(run_one("antigravity", || {
-        scan_antigravity(
-            conn,
-            &[
-                roots.antigravity_conversations.as_path(),
-                roots.antigravity_cli_conversations.as_path(),
-            ],
-        )
-    }));
-    sources.push(run_one("pi", || scan_pi(conn, &roots.pi_sessions)));
+    let catalog = source_catalog::catalog();
+    let mut sources = Vec::with_capacity(catalog.sources.len());
+    for source in &catalog.sources {
+        let status = match source.key.as_str() {
+            "claude" => run_one(&source.key, || scan_claude(conn, &roots.claude)),
+            "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex)),
+            "gemini" => run_one(&source.key, || {
+                scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
+            }),
+            "hermes" => run_one(&source.key, || scan_hermes(conn, &roots.hermes_db)),
+            "grok" => run_one(&source.key, || scan_grok(conn, &roots.grok_sessions)),
+            "antigravity" => run_one(&source.key, || {
+                scan_antigravity(
+                    conn,
+                    &[
+                        roots.antigravity_conversations.as_path(),
+                        roots.antigravity_cli_conversations.as_path(),
+                    ],
+                )
+            }),
+            "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_sessions)),
+            _ => SourceStatus {
+                source: source.key.clone(),
+                events_inserted: 0,
+                lines_skipped: 0,
+                error: Some("unsupported source catalog entry".to_string()),
+            },
+        };
+        sources.push(status);
+    }
 
     // Ledger hygiene only: drops scanned_files rows for vanished paths.
     // Never deletes events (see prune_missing_files contract). Best-effort.
@@ -148,6 +188,68 @@ mod tests {
             .iter()
             .find(|s| s.source == source)
             .unwrap_or_else(|| panic!("missing source {source}"))
+    }
+
+    #[test]
+    fn catalog_describes_the_existing_sources_and_artifact_roots() {
+        let catalog = crate::source_catalog::catalog();
+        assert_eq!(
+            catalog.sources.iter().map(|source| source.key.as_str()).collect::<Vec<_>>(),
+            ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "pi"],
+        );
+        assert!(catalog.sources.iter().all(|source| {
+            !source.label.is_empty()
+                && !source.aliases.is_empty()
+                && source.color.starts_with('#')
+                && !source.icon.is_empty()
+                && source.platforms == ["all"]
+                && source.prerequisite.is_none()
+                && source.capabilities.model
+                && source.capabilities.project
+                && source.capabilities.session
+                && source.capabilities.token_categories
+        }));
+        assert_eq!(
+            catalog.sources.iter().filter(|source| source.capabilities.context)
+                .map(|source| source.key.as_str()).collect::<Vec<_>>(),
+            ["claude", "codex", "pi"],
+        );
+        assert_eq!(
+            catalog.sources.iter().flat_map(|source| {
+                source.artifacts.iter().filter_map(move |artifact| artifact.path.as_deref()
+                    .map(|path| (source.key.as_str(), artifact.id.as_str(), path)))
+            }).collect::<Vec<_>>(),
+            [
+                ("claude", "projects", ".claude/projects"),
+                ("codex", "sessions", ".codex/sessions"),
+                ("gemini", "tmp", ".gemini/tmp"),
+                ("gemini", "projects", ".gemini/projects.json"),
+                ("hermes", "state", ".hermes/state.db"),
+                ("grok", "sessions", ".grok/sessions"),
+                ("antigravity", "conversations", ".gemini/antigravity/conversations"),
+                ("antigravity", "cli-conversations", ".gemini/antigravity-cli/conversations"),
+                ("pi", "sessions", ".pi/agent/sessions"),
+            ],
+        );
+        assert!(catalog.sources.iter().flat_map(|source| &source.artifacts).all(|artifact| {
+            matches!(artifact.kind.as_str(), "directory" | "file")
+                && artifact.platforms == ["all"]
+                && artifact.prerequisite.is_none()
+        }));
+
+        let claude = crate::source_catalog::source("claude").unwrap();
+        assert_eq!(claude.source, "Claude Code");
+        assert!(claude.artifacts.iter().any(|artifact| artifact.path.as_deref() == Some(".claude/projects")));
+
+        let hermes = crate::source_catalog::source("hermes").unwrap();
+        assert_eq!(hermes.artifacts[0].path.as_deref(), Some(".hermes/state.db"));
+
+        let pi = crate::source_catalog::source("pi").unwrap();
+        assert_eq!(pi.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(), ["sessions", "session-dir", "agent-dir"]);
+        assert_eq!(pi.artifacts[0].path.as_deref(), Some(".pi/agent/sessions"));
+        assert_eq!(pi.artifacts[1].environment.as_deref(), Some("PI_CODING_AGENT_SESSION_DIR"));
+        assert_eq!(pi.artifacts[2].environment.as_deref(), Some("PI_CODING_AGENT_DIR"));
+        assert_eq!(pi.artifacts[2].suffix.as_deref(), Some("sessions"));
     }
 
     #[test]
