@@ -9,6 +9,7 @@ import grok from './icons/grok.svg';
 import antigravity from './icons/antigravity.svg';
 import goose from './icons/goose.svg';
 import opencode from './icons/opencode.svg';
+import kilo from './icons/kilo.svg';
 import cline from './icons/cline.svg';
 import pi from './icons/pi.svg';
 
@@ -26,6 +27,7 @@ export const SOURCE_ICONS: Record<string, string> = {
   antigravity,
   goose,
   opencode,
+  kilo,
   cline,
   pi,
   generic,

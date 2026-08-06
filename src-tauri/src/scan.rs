@@ -13,6 +13,7 @@ use crate::adapters::gemini::scan_gemini;
 use crate::adapters::goose::scan_goose;
 use crate::adapters::grok::scan_grok;
 use crate::adapters::hermes::scan_hermes;
+use crate::adapters::kilo::scan_kilo;
 use crate::adapters::opencode::scan_opencode;
 use crate::adapters::pi::scan_pi;
 use crate::db::prune_missing_files;
@@ -34,6 +35,7 @@ pub struct SourceRoots {
     pub opencode_data: PathBuf,
     pub opencode_legacy: PathBuf,
     pub opencode_db: Option<PathBuf>,
+    pub kilo_db: PathBuf,
     pub cline: Vec<PathBuf>,
 }
 
@@ -59,6 +61,7 @@ impl SourceRoots {
             grok_environment_value().as_deref(),
             environment_value("cline", "cli-data").as_deref(),
             environment_value("cline", "cli-sandbox").as_deref(),
+            environment_value("kilo", "db").as_deref(),
         )
     }
 
@@ -80,6 +83,7 @@ impl SourceRoots {
             grok_home,
             None,
             None,
+            None,
         )
     }
 
@@ -92,6 +96,7 @@ impl SourceRoots {
         grok_home: Option<&OsStr>,
         cline_data: Option<&OsStr>,
         cline_sandbox_data: Option<&OsStr>,
+        kilo_db: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
@@ -108,6 +113,7 @@ impl SourceRoots {
             environment_value("opencode", "db").as_deref(),
             environment_value("opencode", "xdg-data").as_deref(),
         );
+        let kilo_db = kilo_db_root(home, std::env::consts::OS, kilo_db);
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
             codex: catalog_root(home, "codex", "sessions"),
@@ -125,6 +131,7 @@ impl SourceRoots {
             opencode_data,
             opencode_legacy,
             opencode_db,
+            kilo_db,
             cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
         }
     }
@@ -276,6 +283,25 @@ fn opencode_roots(
     (data, legacy, database)
 }
 
+fn kilo_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
+    let artifact = match platform {
+        "macos" => "db-macos",
+        "windows" => "db-windows",
+        _ => "db-linux",
+    };
+    let default = catalog_root(home, "kilo", artifact);
+    let Some(value) = value.and_then(|value| visible_path(home, value)) else {
+        return default;
+    };
+    if value.is_absolute() {
+        return value;
+    }
+    default
+        .parent()
+        .map(|parent| parent.join(value))
+        .unwrap_or(default)
+}
+
 fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
     if let Some(path) = value.and_then(|value| visible_path(home, value)) {
         return path;
@@ -412,6 +438,7 @@ fn run_scan_sources(
                         roots.opencode_db.as_deref(),
                     )
                 }),
+                "kilo" => run_one(&source.key, || scan_kilo(conn, &roots.kilo_db)),
                 "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
                 _ => SourceStatus {
                     source: source.key.clone(),
@@ -488,6 +515,7 @@ mod tests {
                 "antigravity",
                 "goose",
                 "opencode",
+                "kilo",
                 "cline",
                 "pi"
             ],
@@ -535,6 +563,9 @@ mod tests {
                 ("opencode", "channel-db", ".local/share/opencode/opencode-<channel>.db"),
                 ("opencode", "legacy-storage", ".local/share/opencode/storage"),
                 ("opencode", "xdg-data", "opencode"),
+                ("kilo", "db-macos", "Library/Application Support/kilo/kilo.db"),
+                ("kilo", "db-linux", ".local/share/kilo/kilo.db"),
+                ("kilo", "db-windows", "AppData/Local/kilo/kilo.db"),
                 ("cline", "editor-code-macos", "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
                 ("cline", "editor-code-insiders-macos", "Library/Application Support/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks"),
                 ("cline", "editor-code-linux", ".config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
@@ -654,6 +685,22 @@ mod tests {
             Some("XDG_DATA_HOME")
         );
 
+        let kilo = crate::source_catalog::source("kilo").unwrap();
+        assert_eq!(kilo.source, "Kilo CLI");
+        assert_eq!(kilo.aliases, ["Kilo Code", "Kilo Code CLI"]);
+        assert_eq!(
+            kilo.artifacts
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["db", "db-macos", "db-linux", "db-windows"]
+        );
+        assert_eq!(kilo.artifacts[0].environment.as_deref(), Some("KILO_DB"));
+        assert_eq!(
+            kilo.artifacts[1].path.as_deref(),
+            Some("Library/Application Support/kilo/kilo.db")
+        );
+
         let cline = crate::source_catalog::source("cline").unwrap();
         assert_eq!(cline.source, "Cline");
         assert_eq!(cline.aliases, ["Cline CLI", "Cline VS Code"]);
@@ -732,6 +779,39 @@ mod tests {
         );
         assert_eq!(blank.0, home.path().join(".local/share/opencode"));
         assert_eq!(blank.2, None);
+    }
+
+    #[test]
+    fn kilo_root_uses_supported_platform_paths_and_database_override() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            kilo_db_root(home.path(), "macos", None),
+            home.path().join("Library/Application Support/kilo/kilo.db")
+        );
+        assert_eq!(
+            kilo_db_root(home.path(), "linux", None),
+            home.path().join(".local/share/kilo/kilo.db")
+        );
+        assert_eq!(
+            kilo_db_root(home.path(), "windows", None),
+            home.path().join("AppData/Local/kilo/kilo.db")
+        );
+
+        let configured = home.path().join("configured/kilo.db");
+        assert_eq!(
+            kilo_db_root(
+                home.path(),
+                "linux",
+                Some(OsStr::new(configured.to_str().unwrap()))
+            ),
+            configured
+        );
+        assert_eq!(
+            kilo_db_root(home.path(), "linux", Some(OsStr::new("custom.db"))),
+            home.path().join(".local/share/kilo/custom.db")
+        );
     }
 
     #[test]
@@ -1191,6 +1271,7 @@ mod tests {
             opencode_data: tmp.path().join("opencode"),
             opencode_legacy: tmp.path().join("opencode/storage"),
             opencode_db: None,
+            kilo_db: tmp.path().join("kilo.db"),
             cline: vec![tmp.path().join("cline")],
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
@@ -1245,6 +1326,7 @@ mod tests {
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
+            kilo_db: base.join("no-kilo.db"),
             cline: vec![base.join("no-cline")],
         };
 
@@ -1268,7 +1350,7 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 10);
+        assert_eq!(status.sources.len(), 11);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1589,7 +1671,14 @@ mod tests {
         let gemini_projects = base.join("gemini-projects.json");
         fs::write(&gemini_projects, r#"{"projects":{}}"#).unwrap();
 
-        // Everything else points at paths that do not exist.
+        let kilo_db = base.join("kilo.db");
+        rusqlite::Connection::open(&kilo_db)
+            .unwrap()
+            .execute_batch("CREATE TABLE unrelated (id TEXT PRIMARY KEY);")
+            .unwrap();
+
+        // Everything else points at paths that do not exist, except the
+        // unsupported Kilo database above.
         let roots = SourceRoots {
             claude: claude_root,
             codex: base.join("no-codex"),
@@ -1604,13 +1693,14 @@ mod tests {
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
+            kilo_db,
             cline: vec![base.join("no-cline")],
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 10);
+        assert_eq!(status.sources.len(), 11);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 
@@ -1634,6 +1724,12 @@ mod tests {
         let hermes = find(&status, "hermes");
         assert_eq!(hermes.events_inserted, 0);
         assert!(hermes.error.is_none());
+        let kilo = find(&status, "kilo");
+        assert_eq!(kilo.events_inserted, 0);
+        assert!(kilo
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("kilo") && error.contains("unsupported")));
 
         // Missing directory-shaped roots → zero events, no error.
         let grok = find(&status, "grok");
@@ -1740,6 +1836,7 @@ mod tests {
             opencode_data: opencode_root.clone(),
             opencode_legacy: legacy,
             opencode_db: None,
+            kilo_db: base.join("no-kilo.db"),
             cline: vec![base.join("no-cline")],
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -1780,6 +1877,188 @@ mod tests {
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn run_scan_ingests_kilo_cli_sessions_at_session_granularity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let database_path = base.join("kilo/kilo.db");
+        fs::create_dir_all(database_path.parent().unwrap()).unwrap();
+        let source = rusqlite::Connection::open(&database_path).unwrap();
+        source
+            .execute_batch(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT,
+                    workspace_id TEXT,
+                    parent_id TEXT,
+                    slug TEXT,
+                    directory TEXT,
+                    path TEXT,
+                    title TEXT,
+                    version TEXT,
+                    cost REAL,
+                    time_created INTEGER,
+                    time_updated INTEGER,
+                    model TEXT,
+                    tokens_input INTEGER,
+                    tokens_output INTEGER,
+                    tokens_reasoning INTEGER,
+                    tokens_cache_read INTEGER,
+                    tokens_cache_write INTEGER
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );",
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO session (
+                    id, directory, time_created, time_updated, model,
+                    tokens_input, tokens_output, tokens_reasoning,
+                    tokens_cache_read, tokens_cache_write
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    "kilo-s1",
+                    "/Users/dev/projects/kilo",
+                    1_780_000_000_000i64,
+                    1_780_000_001_000i64,
+                    r#"{"id":"kilo-model"}"#,
+                    30,
+                    8,
+                    2,
+                    10,
+                    1,
+                ],
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO session (
+                    id, directory, time_created, time_updated, model,
+                    tokens_input, tokens_output, tokens_reasoning,
+                    tokens_cache_read, tokens_cache_write
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    "kilo-s2",
+                    "relative/project",
+                    1_780_000_002_000i64,
+                    1_780_000_003_000i64,
+                    Option::<String>::None,
+                    2,
+                    1,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO session (
+                    id, directory, time_created, time_updated, model,
+                    tokens_input, tokens_output, tokens_reasoning,
+                    tokens_cache_read, tokens_cache_write
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    "legacy-zero",
+                    "/Users/dev/legacy",
+                    1_780_000_004_000i64,
+                    1_780_000_005_000i64,
+                    Option::<String>::None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+            .unwrap();
+        drop(source);
+
+        let roots = SourceRoots {
+            claude: base.join("no-claude"),
+            codex: base.join("no-codex"),
+            gemini_tmp: base.join("no-gemini"),
+            gemini_projects_json: base.join("no-projects.json"),
+            hermes_db: base.join("no-hermes.db"),
+            grok_sessions: base.join("no-grok"),
+            antigravity_conversations: base.join("no-antigravity"),
+            antigravity_cli_conversations: base.join("no-antigravity-cli"),
+            goose_sessions: vec![base.join("no-goose")],
+            pi_sessions: vec![base.join("no-pi")],
+            opencode_data: base.join("no-opencode"),
+            opencode_legacy: base.join("no-opencode/storage"),
+            opencode_db: None,
+            kilo_db: database_path.clone(),
+            cline: vec![base.join("no-cline")],
+        };
+        let mut ledger = open_db(&base.join("ledger.db")).unwrap();
+        let first = run_scan(&mut ledger, &roots);
+        let kilo = find(&first, "kilo");
+        assert_eq!(kilo.events_inserted, 2);
+        assert!(kilo.error.is_none(), "unexpected error: {:?}", kilo.error);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT timestamp, model, project, input_tokens, output_tokens,
+                            cache_read_tokens, cache_write_5m_tokens, api_calls
+                     FROM events WHERE session_id = 'kilo-s1'",
+                    [],
+                    |row| Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                1_780_000_001,
+                Some("kilo-model".to_string()),
+                Some("/Users/dev/projects/kilo".to_string()),
+                30,
+                10,
+                10,
+                1,
+                1,
+            )
+        );
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT model, project FROM events WHERE session_id = 'kilo-s2'",
+                    [],
+                    |row| Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?
+                    )),
+                )
+                .unwrap(),
+            (None, None)
+        );
+
+        let second = run_scan(&mut ledger, &roots);
+        assert_eq!(find(&second, "kilo").events_inserted, 0);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE source = 'kilo'",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
+                .unwrap(),
             2
         );
     }

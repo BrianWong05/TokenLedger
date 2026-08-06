@@ -520,7 +520,7 @@ mod tests {
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
-    // functions. Empty fixture roots => 10 source statuses, zero events.
+    // functions. Empty fixture roots => 11 source statuses, zero events.
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
@@ -539,6 +539,7 @@ mod tests {
             opencode_data: dir.path().join("opencode"),
             opencode_legacy: dir.path().join("opencode/storage"),
             opencode_db: None,
+            kilo_db: dir.path().join("kilo.db"),
             cline: vec![dir.path().join("cline")],
         };
         let state = AppState {
@@ -551,7 +552,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 10);
+        assert_eq!(status.sources.len(), 11);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

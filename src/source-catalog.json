@@ -122,6 +122,23 @@
       "prerequisite": null
     },
     {
+      "key": "kilo",
+      "label": "Kilo",
+      "source": "Kilo CLI",
+      "aliases": ["Kilo Code", "Kilo Code CLI"],
+      "color": "#f59e0b",
+      "icon": "kilo",
+      "artifacts": [
+        { "id": "db", "kind": "file", "path": null, "environment": "KILO_DB", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "db-macos", "kind": "file", "path": "Library/Application Support/kilo/kilo.db", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
+        { "id": "db-linux", "kind": "file", "path": ".local/share/kilo/kilo.db", "environment": null, "suffix": null, "platforms": ["linux"], "prerequisite": null },
+        { "id": "db-windows", "kind": "file", "path": "AppData/Local/kilo/kilo.db", "environment": null, "suffix": null, "platforms": ["windows"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
       "key": "cline",
       "label": "Cline",
       "source": "Cline",

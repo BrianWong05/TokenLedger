@@ -348,6 +348,61 @@ fn build_opencode(base: &Path) {
     .unwrap();
 }
 
+fn build_kilo(base: &Path) {
+    let path = base.join("kilo/kilo.db");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            project_id TEXT,
+            workspace_id TEXT,
+            parent_id TEXT,
+            slug TEXT,
+            directory TEXT,
+            path TEXT,
+            title TEXT,
+            version TEXT,
+            cost REAL,
+            time_created INTEGER,
+            time_updated INTEGER,
+            model TEXT,
+            tokens_input INTEGER,
+            tokens_output INTEGER,
+            tokens_reasoning INTEGER,
+            tokens_cache_read INTEGER,
+            tokens_cache_write INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            data TEXT NOT NULL
+        );",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO session (
+            id, directory, time_created, time_updated, model,
+            tokens_input, tokens_output, tokens_reasoning,
+            tokens_cache_read, tokens_cache_write
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            "kilo-s1",
+            "/Users/dev/projects/kilo",
+            1_780_308_000_000i64,
+            1_780_308_001_000i64,
+            r#"{"id":"kilo-model"}"#,
+            40,
+            8,
+            2,
+            20,
+            2,
+        ],
+    )
+    .unwrap();
+}
+
 fn build_cline(base: &Path) {
     write(
         &base.join("cline/editor/tasks/shared-session/ui_messages.json"),
@@ -380,7 +435,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_ten_source_partition_invariants() {
+fn hermetic_eleven_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -392,6 +447,7 @@ fn hermetic_ten_source_partition_invariants() {
     build_antigravity(base);
     build_goose(base);
     build_opencode(base);
+    build_kilo(base);
     build_cline(base);
     build_pi(base);
 
@@ -410,6 +466,7 @@ fn hermetic_ten_source_partition_invariants() {
         opencode_data: base.join("opencode"),
         opencode_legacy: base.join("opencode/storage"),
         opencode_db: None,
+        kilo_db: base.join("kilo/kilo.db"),
         cline: vec![base.join("cline")],
     };
 
@@ -418,8 +475,20 @@ fn hermetic_ten_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the ten Sources ingested events and reported no error.
-    for src in ["claude", "codex", "gemini", "hermes", "grok", "antigravity", "goose", "opencode", "cline", "pi"] {
+    // Every one of the eleven Sources ingested events and reported no error.
+    for src in [
+        "claude",
+        "codex",
+        "gemini",
+        "hermes",
+        "grok",
+        "antigravity",
+        "goose",
+        "opencode",
+        "kilo",
+        "cline",
+        "pi",
+    ] {
         let s = status
             .sources
             .iter()
@@ -464,12 +533,12 @@ fn hermetic_ten_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all ten here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all eleven here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 10,
-        "expected >=10 sources in ctx_buckets, got {}",
+        buckets.len() >= 11,
+        "expected >=11 sources in ctx_buckets, got {}",
         buckets.len()
     );
 

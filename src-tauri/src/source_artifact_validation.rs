@@ -107,6 +107,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         opencode_data: missing.clone(),
         opencode_legacy: missing.clone(),
         opencode_db: None,
+        kilo_db: missing.clone(),
         cline: vec![missing.clone()],
     };
 
@@ -134,6 +135,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
                 roots.opencode_legacy = artifact.join("storage");
             }
         }
+        "kilo" => roots.kilo_db = artifact.to_path_buf(),
         "cline" => roots.cline = vec![artifact.to_path_buf()],
         _ => {}
     }
@@ -299,6 +301,7 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
             || source == "goose"
             || source == "antigravity"
             || source == "opencode"
+            || source == "kilo"
             || source == "cline")
             && extension.as_deref() == Some("db")
         {
@@ -340,6 +343,8 @@ const PRIVACY_MARKERS: &[&str] = &[
     "CLINE_PRIVATE_PROMPT_MARKER",
     "CLINE_PRIVATE_RESPONSE_MARKER",
     "CLINE_PRIVATE_TOOL_MARKER",
+    "KILO_PRIVATE_PROMPT_MARKER",
+    "KILO_PRIVATE_RESPONSE_MARKER",
 ];
 
 fn ledger_has_no_privacy_markers(db_path: &Path) -> bool {
@@ -483,6 +488,18 @@ mod tests {
     }
 
     #[test]
+    fn selected_kilo_artifact_is_used_as_the_single_source_root() {
+        let artifact = PathBuf::from("/private/kilo/kilo.db");
+        let missing = Path::new("/private/missing");
+
+        let roots = roots_for("kilo", &artifact, missing);
+
+        assert_eq!(roots.kilo_db, artifact);
+        assert_eq!(roots.opencode_db, None);
+        assert_eq!(roots.cline, vec![missing]);
+    }
+
+    #[test]
     fn selected_cline_artifact_is_used_as_the_single_source_root() {
         let artifact = PathBuf::from("/private/cline-data");
         let missing = Path::new("/private/missing");
@@ -574,5 +591,64 @@ mod tests {
 
         assert_eq!(report.result, "pass");
         assert_eq!(report.counts.total_tokens, 6);
+    }
+
+    #[test]
+    fn validation_accepts_a_synthetic_kilo_database_without_persisting_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("kilo/kilo.db");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        let database = rusqlite::Connection::open(&artifact).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE session (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT,
+                    workspace_id TEXT,
+                    parent_id TEXT,
+                    slug TEXT,
+                    directory TEXT,
+                    path TEXT,
+                    title TEXT,
+                    version TEXT,
+                    cost REAL,
+                    time_created INTEGER,
+                    time_updated INTEGER,
+                    model TEXT,
+                    tokens_input INTEGER,
+                    tokens_output INTEGER,
+                    tokens_reasoning INTEGER,
+                    tokens_cache_read INTEGER,
+                    tokens_cache_write INTEGER
+                );
+                CREATE TABLE message (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    time_created INTEGER NOT NULL,
+                    data TEXT NOT NULL
+                );
+                INSERT INTO session (
+                    id, directory, time_created, time_updated, model,
+                    tokens_input, tokens_output, tokens_reasoning,
+                    tokens_cache_read, tokens_cache_write
+                ) VALUES (
+                    'kilo-validation-session', '/Users/dev/kilo-validation',
+                    1780308000000, 1780308001000,
+                    '{\"id\":\"kilo-validation-model\"}', 11, 5, 1, 3, 2
+                );
+                INSERT INTO message (id, session_id, time_created, data)
+                VALUES (
+                    'private-message', 'kilo-validation-session', 1780308000000,
+                    'KILO_PRIVATE_PROMPT_MARKER KILO_PRIVATE_RESPONSE_MARKER'
+                );",
+            )
+            .unwrap();
+        drop(database);
+
+        let selection = Selection::from_values("kilo", &artifact).unwrap();
+        let report = validate(&selection);
+
+        assert_eq!(report.result, "pass");
+        assert_eq!(report.counts.total_tokens, 22);
     }
 }
