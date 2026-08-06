@@ -126,31 +126,43 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
 
 pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
     let catalog = source_catalog::catalog();
-    let mut sources = Vec::with_capacity(catalog.sources.len());
-    for source in &catalog.sources {
-        let status = match source.key.as_str() {
-            "claude" => run_one(&source.key, || scan_claude(conn, &roots.claude)),
-            "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex)),
-            "gemini" => run_one(&source.key, || {
-                scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
-            }),
-            "hermes" => run_one(&source.key, || scan_hermes(conn, &roots.hermes_db)),
-            "grok" => run_one(&source.key, || scan_grok(conn, &roots.grok_sessions)),
-            "antigravity" => run_one(&source.key, || {
-                scan_antigravity(
-                    conn,
-                    &[
-                        roots.antigravity_conversations.as_path(),
-                        roots.antigravity_cli_conversations.as_path(),
-                    ],
-                )
-            }),
-            "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_sessions)),
-            _ => SourceStatus {
-                source: source.key.clone(),
-                events_inserted: 0,
-                lines_skipped: 0,
-                error: Some("unsupported source catalog entry".to_string()),
+    run_scan_sources(conn, roots, &catalog.sources, std::env::consts::OS)
+}
+
+fn run_scan_sources(
+    conn: &mut Connection,
+    roots: &SourceRoots,
+    catalog_sources: &[source_catalog::SourceDefinition],
+    target_platform: &str,
+) -> ScanStatus {
+    let mut sources = Vec::with_capacity(catalog_sources.len());
+    for source in catalog_sources {
+        let status = match source_catalog::availability(source, target_platform) {
+            Err(error) => unavailable_source_status(&source.key, error),
+            Ok(()) => match source.key.as_str() {
+                "claude" => run_one(&source.key, || scan_claude(conn, &roots.claude)),
+                "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex)),
+                "gemini" => run_one(&source.key, || {
+                    scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
+                }),
+                "hermes" => run_one(&source.key, || scan_hermes(conn, &roots.hermes_db)),
+                "grok" => run_one(&source.key, || scan_grok(conn, &roots.grok_sessions)),
+                "antigravity" => run_one(&source.key, || {
+                    scan_antigravity(
+                        conn,
+                        &[
+                            roots.antigravity_conversations.as_path(),
+                            roots.antigravity_cli_conversations.as_path(),
+                        ],
+                    )
+                }),
+                "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_sessions)),
+                _ => SourceStatus {
+                    source: source.key.clone(),
+                    events_inserted: 0,
+                    lines_skipped: 0,
+                    error: Some("unsupported source catalog entry".to_string()),
+                },
             },
         };
         sources.push(status);
@@ -165,7 +177,19 @@ pub fn run_scan(conn: &mut Connection, roots: &SourceRoots) -> ScanStatus {
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    ScanStatus { sources, scanned_at }
+    ScanStatus {
+        sources,
+        scanned_at,
+    }
+}
+
+fn unavailable_source_status(source: &str, error: String) -> SourceStatus {
+    SourceStatus {
+        source: source.to_string(),
+        events_inserted: 0,
+        lines_skipped: 0,
+        error: Some(error),
+    }
 }
 
 #[cfg(test)]
@@ -288,6 +312,50 @@ mod tests {
             .antigravity_cli_conversations
             .ends_with(".gemini/antigravity-cli/conversations"));
         assert!(r.pi_sessions[0].ends_with(".pi/agent/sessions"));
+    }
+
+    #[test]
+    fn unavailable_catalog_source_reports_an_isolated_status_without_scanning() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("claude");
+        fs::create_dir_all(root.join("project")).unwrap();
+        fs::write(
+            root.join("project/session.jsonl"),
+            format!("{CLAUDE_LINE}\n"),
+        )
+        .unwrap();
+        let roots = SourceRoots {
+            claude: root,
+            codex: tmp.path().join("codex"),
+            gemini_tmp: tmp.path().join("gemini/tmp"),
+            gemini_projects_json: tmp.path().join("gemini/projects.json"),
+            hermes_db: tmp.path().join("hermes/state.db"),
+            grok_sessions: tmp.path().join("grok"),
+            antigravity_conversations: tmp.path().join("antigravity"),
+            antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
+            pi_sessions: vec![tmp.path().join("pi")],
+        };
+        let mut claude = crate::source_catalog::source("claude").unwrap().clone();
+        claude.prerequisite = Some("Claude service".to_string());
+
+        let mut conn = open_db(&tmp.path().join("ledger.db")).unwrap();
+        let status = run_scan_sources(&mut conn, &roots, &[claude], std::env::consts::OS);
+
+        assert_eq!(status.sources.len(), 1);
+        assert_eq!(status.sources[0].source, "claude");
+        assert_eq!(status.sources[0].events_inserted, 0);
+        assert_eq!(status.sources[0].lines_skipped, 0);
+        assert_eq!(
+            status.sources[0].error.as_deref(),
+            Some("unavailable: external prerequisite required: Claude service")
+        );
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            event_count, 0,
+            "ineligible source must not invoke its scanner"
+        );
     }
 
     #[test]
