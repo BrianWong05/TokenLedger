@@ -4,9 +4,12 @@ use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
+
+const MALFORMED_ARTIFACT_WARNING: &str = "gemini: malformed or unsupported chat Artifact";
 
 #[derive(Deserialize)]
 struct SessionFile {
@@ -35,7 +38,8 @@ struct Tokens {
 
 pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
-    let reverse = load_reverse_map(projects_json);
+    let reverse = load_reverse_map(projects_json, &mut result);
+    let mut identities = HashSet::new();
 
     if tmp_root.is_file() {
         let project_dir = tmp_root
@@ -45,7 +49,7 @@ pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path)
             .and_then(|name| name.to_str())
             .unwrap_or("");
         let project = resolve_project(project_dir, &reverse);
-        process_file(conn, tmp_root, &project, &mut result);
+        process_file(conn, tmp_root, &project, &mut result, &mut identities);
         return result;
     }
 
@@ -75,14 +79,20 @@ pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path)
                 None => continue,
             };
             if name.starts_with("session-") && name.ends_with(".json") {
-                process_file(conn, &path, &project, &mut result);
+                process_file(conn, &path, &project, &mut result, &mut identities);
             }
         }
     }
     result
 }
 
-fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut SourceScanResult) {
+fn process_file(
+    conn: &mut Connection,
+    path: &Path,
+    project: &str,
+    result: &mut SourceScanResult,
+    identities: &mut HashSet<String>,
+) {
     let path_str = path.to_string_lossy().to_string();
     let meta = match fs::metadata(path) {
         Ok(m) => m,
@@ -105,6 +115,7 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
         Ok(c) => c,
         Err(_) => {
             result.lines_skipped += 1;
+            record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
             return;
         }
     };
@@ -112,6 +123,7 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
         Ok(s) => s,
         Err(_) => {
             result.lines_skipped += 1;
+            record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
             return;
         }
     };
@@ -122,22 +134,47 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
             Some(t) => t,
             None => continue, // non-token messages contribute nothing
         };
+        if tokens.input < 0
+            || tokens.output < 0
+            || tokens.cached < 0
+            || tokens.thoughts < 0
+            || tokens.tool < 0
+            || tokens.cached > tokens.input
+        {
+            record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
+            result.lines_skipped += 1;
+            continue;
+        }
+        let input_tokens = tokens.input.saturating_sub(tokens.cached);
+        let output_tokens = tokens.output.saturating_add(tokens.thoughts);
+        let total_tokens = input_tokens
+            .saturating_add(output_tokens)
+            .saturating_add(tokens.cached);
+        if total_tokens <= 0 {
+            result.lines_skipped += 1;
+            continue;
+        }
         let ts = match iso_to_epoch(&m.timestamp) {
             Some(t) => t,
             None => {
                 result.lines_skipped += 1;
+                record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
                 continue;
             }
         };
+        let dedup_key = format!("gemini:{}:{}", session.session_id, m.id);
+        if !identities.insert(dedup_key.clone()) {
+            continue;
+        }
         events.push(UsageEvent {
-            dedup_key: format!("gemini:{}:{}", session.session_id, m.id),
+            dedup_key,
             source: "gemini".to_string(),
             timestamp: ts,
-            model: Some(m.model.clone().unwrap_or_else(|| "unknown".to_string())),
+            model: m.model.clone().filter(|model| !model.trim().is_empty()),
             project: Some(project.to_string()),
             api_calls: 1,
-            input_tokens: (tokens.input - tokens.cached).max(0),
-            output_tokens: tokens.output + tokens.thoughts,
+            input_tokens,
+            output_tokens,
             cache_read_tokens: tokens.cached,
             cache_write_5m_tokens: 0,
             cache_write_1h_tokens: 0,
@@ -166,19 +203,44 @@ fn process_file(conn: &mut Connection, path: &Path, project: &str, result: &mut 
     let _ = set_file_state(conn, &path_str, FileState { size, mtime, byte_offset: 0 });
 }
 
+fn record_gemini_warning(result: &mut SourceScanResult, warning: &str) {
+    match &mut result.error {
+        Some(existing) if !existing.contains(warning) => {
+            existing.push_str("; ");
+            existing.push_str(warning);
+        }
+        Some(_) => {}
+        None => result.error = Some(warning.to_string()),
+    }
+}
+
 /// projects.json is `{"projects": {realPath: friendlyName}}`; build friendly → real.
-fn load_reverse_map(projects_json: &Path) -> HashMap<String, String> {
+fn load_reverse_map(
+    projects_json: &Path,
+    result: &mut SourceScanResult,
+) -> HashMap<String, String> {
     #[derive(Deserialize)]
     struct Projects {
         projects: HashMap<String, String>,
     }
     let mut map = HashMap::new();
-    if let Ok(content) = fs::read_to_string(projects_json) {
-        if let Ok(p) = serde_json::from_str::<Projects>(&content) {
-            for (real, friendly) in p.projects {
-                map.insert(friendly, real);
-            }
+    let content = match fs::read_to_string(projects_json) {
+        Ok(content) => content,
+        Err(error) if error.kind() == ErrorKind::NotFound => return map,
+        Err(_) => {
+            record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
+            return map;
         }
+    };
+    let p = match serde_json::from_str::<Projects>(&content) {
+        Ok(projects) => projects,
+        Err(_) => {
+            record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
+            return map;
+        }
+    };
+    for (real, friendly) in p.projects {
+        map.insert(friendly, real);
     }
     map
 }
@@ -250,7 +312,10 @@ mod tests {
         let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
         assert_eq!(r.events_inserted, 3);
         assert_eq!(r.lines_skipped, 1); // the malformed file only
-        assert!(r.error.is_none());
+        assert!(r
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("gemini") && error.contains("malformed")));
 
         // m1: input excludes cached (1000-300); output includes thoughts (200+50)
         let (input, output, cread, model, project): (i64, i64, i64, String, String) = conn
@@ -396,5 +461,144 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_a, 0);
+    }
+
+    #[test]
+    fn missing_model_is_stored_as_unattributed_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_root = dir.path().join("tmp");
+        let projects_json = dir.path().join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
+        write(
+            &tmp_root.join("project/chats/session-unattributed.json"),
+            r#"{"sessionId":"unattributed","messages":[
+              {"id":"m","timestamp":"2026-03-01T10:00:00.000Z",
+               "tokens":{"input":100,"output":20,"cached":10,"thoughts":5,"tool":0,"total":115}}
+            ]}"#,
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("ledger.db")).unwrap();
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 1);
+
+        let (model, input, output, cached): (Option<String>, i64, i64, i64) = conn
+            .query_row(
+                "SELECT model, input_tokens, output_tokens, cache_read_tokens FROM events",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(model, None);
+        assert_eq!(input, 90);
+        assert_eq!(output, 25);
+        assert_eq!(cached, 10);
+    }
+
+    #[test]
+    fn zero_or_negative_token_observations_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_root = dir.path().join("tmp");
+        let projects_json = dir.path().join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
+        write(
+            &tmp_root.join("project/chats/session-tokens.json"),
+            r#"{"sessionId":"tokens","messages":[
+              {"id":"zero","timestamp":"2026-03-01T10:00:00.000Z","model":"gemini-2.5-flash",
+               "tokens":{"input":0,"output":0,"cached":0,"thoughts":0,"tool":0,"total":0}},
+              {"id":"negative","timestamp":"2026-03-01T10:01:00.000Z","model":"gemini-2.5-flash",
+               "tokens":{"input":-1,"output":0,"cached":0,"thoughts":0,"tool":0,"total":-1}},
+              {"id":"usage","timestamp":"2026-03-01T10:02:00.000Z","model":"gemini-2.5-flash",
+               "tokens":{"input":100,"output":20,"cached":30,"thoughts":5,"tool":10,"total":125}}
+            ]}"#,
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("ledger.db")).unwrap();
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 1);
+        assert_eq!(result.lines_skipped, 2);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn inconsistent_cache_counters_are_skipped_with_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_root = dir.path().join("tmp");
+        let projects_json = dir.path().join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
+        write(
+            &tmp_root.join("project/chats/session-inconsistent.json"),
+            r#"{"sessionId":"inconsistent","messages":[
+              {"id":"m","timestamp":"2026-03-01T10:00:00.000Z","model":"gemini-2.5-flash",
+               "tokens":{"input":10,"output":20,"cached":11,"thoughts":0,"tool":0,"total":30}}
+            ]}"#,
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("ledger.db")).unwrap();
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 0);
+        assert_eq!(result.lines_skipped, 1);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("gemini") && error.contains("malformed")));
+    }
+
+    #[test]
+    fn malformed_projects_artifact_reports_a_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_root = dir.path().join("tmp");
+        let projects_json = dir.path().join("projects.json");
+        std::fs::create_dir_all(&tmp_root).unwrap();
+        std::fs::write(&projects_json, "{ not json").unwrap();
+
+        let mut conn = crate::db::open_db(&dir.path().join("ledger.db")).unwrap();
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 0);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("gemini") && error.contains("malformed")));
+    }
+
+    #[test]
+    fn duplicate_message_identities_are_counted_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp_root = dir.path().join("tmp");
+        let projects_json = dir.path().join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
+        write(
+            &tmp_root.join("project/chats/session-duplicate.json"),
+            r#"{"sessionId":"duplicate","messages":[
+              {"id":"m","timestamp":"2026-03-01T10:00:00.000Z","model":"gemini-2.5-flash",
+              "tokens":{"input":100,"output":20,"cached":0,"thoughts":0,"tool":0,"total":120}},
+              {"id":"m","timestamp":"2026-03-01T10:00:01.000Z","model":"gemini-2.5-flash",
+              "tokens":{"input":900,"output":90,"cached":0,"thoughts":0,"tool":0,"total":990}}
+            ]}"#,
+        );
+        write(
+            &tmp_root.join("other/chats/session-duplicate-copy.json"),
+            r#"{"sessionId":"duplicate","messages":[
+              {"id":"m","timestamp":"2026-03-01T10:00:00.000Z","model":"gemini-2.5-flash",
+               "tokens":{"input":100,"output":20,"cached":0,"thoughts":0,"tool":0,"total":120}}
+            ]}"#,
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("ledger.db")).unwrap();
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 1);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT input_tokens FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            100
+        );
     }
 }

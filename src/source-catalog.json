@@ -36,8 +36,8 @@
       "color": "#3186ff",
       "icon": "gemini",
       "artifacts": [
-        { "id": "tmp", "kind": "directory", "path": ".gemini/tmp", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
-        { "id": "projects", "kind": "file", "path": ".gemini/projects.json", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+        { "id": "tmp", "kind": "directory", "path": ".gemini/tmp", "environment": "GEMINI_CLI_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "projects", "kind": "file", "path": ".gemini/projects.json", "environment": "GEMINI_CLI_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
       "platforms": ["all"],

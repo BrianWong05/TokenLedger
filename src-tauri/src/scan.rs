@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -42,28 +42,32 @@ impl SourceRoots {
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
-        Self::from_home_and_pi_env_with_hermes(
+        Self::from_home_and_pi_env_with_hermes_and_gemini(
             home,
             session_dir,
             agent_dir,
             std::env::var_os("HERMES_HOME").as_deref(),
+            gemini_environment_value().as_deref(),
         )
     }
 
-    fn from_home_and_pi_env_with_hermes(
+    fn from_home_and_pi_env_with_hermes_and_gemini(
         home: &Path,
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
         hermes_home: Option<&OsStr>,
+        gemini_home: Option<&OsStr>,
     ) -> Self {
+        let gemini_home = gemini_home_for(home, gemini_home);
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
         append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
         append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
             codex: catalog_root(home, "codex", "sessions"),
-            gemini_tmp: catalog_root(home, "gemini", "tmp"),
-            gemini_projects_json: catalog_root(home, "gemini", "projects"),
+            gemini_tmp: gemini_home.join(source_catalog::artifact_filename("gemini", "tmp")),
+            gemini_projects_json: gemini_home
+                .join(source_catalog::artifact_filename("gemini", "projects")),
             hermes_db: hermes_home_for(home, hermes_home)
                 .join(source_catalog::artifact_filename("hermes", "state")),
             grok_sessions: catalog_root(home, "grok", "sessions"),
@@ -81,11 +85,19 @@ fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
     home.join(path)
 }
 
-fn pi_environment_value(artifact: &str) -> Option<std::ffi::OsString> {
-    let environment = source_catalog::artifact("pi", artifact)
+fn environment_value(source: &str, artifact: &str) -> Option<OsString> {
+    let environment = source_catalog::artifact(source, artifact)
         .and_then(|artifact| artifact.environment.as_deref())
-        .unwrap_or_else(|| panic!("source catalog must define pi.{artifact} environment"));
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} environment"));
     std::env::var_os(environment)
+}
+
+fn pi_environment_value(artifact: &str) -> Option<OsString> {
+    environment_value("pi", artifact)
+}
+
+fn gemini_environment_value() -> Option<OsString> {
+    environment_value("gemini", "tmp")
 }
 
 fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
@@ -96,6 +108,24 @@ fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
         .parent()
         .expect("Hermes state artifact must have a parent directory")
         .to_path_buf()
+}
+
+fn gemini_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
+    let gemini_dir = catalog_artifact_parent("gemini", "tmp");
+    if let Some(path) = value.and_then(|value| visible_path(home, value)) {
+        return path.join(gemini_dir);
+    }
+    home.join(gemini_dir)
+}
+
+fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
+    let path = source_catalog::artifact(source, artifact)
+        .and_then(|artifact| artifact.path.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
+    Path::new(path)
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("source catalog artifact {source}.{artifact} path must have a parent"))
 }
 
 fn append_pi_override(
@@ -299,6 +329,16 @@ mod tests {
         let hermes = crate::source_catalog::source("hermes").unwrap();
         assert_eq!(hermes.artifacts[0].path.as_deref(), Some(".hermes/state.db"));
 
+        let gemini = crate::source_catalog::source("gemini").unwrap();
+        assert_eq!(
+            gemini
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.id == "tmp")
+                .and_then(|artifact| artifact.environment.as_deref()),
+            Some("GEMINI_CLI_HOME")
+        );
+
         let pi = crate::source_catalog::source("pi").unwrap();
         assert_eq!(pi.artifacts.iter().map(|artifact| artifact.id.as_str()).collect::<Vec<_>>(), ["sessions", "session-dir", "agent-dir"]);
         assert_eq!(pi.artifacts[0].path.as_deref(), Some(".pi/agent/sessions"));
@@ -333,29 +373,72 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         let override_home = home.path().join("configured-hermes");
-        let overridden = SourceRoots::from_home_and_pi_env_with_hermes(
+        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
             home.path(),
             None,
             None,
             Some(OsStr::new(override_home.to_str().unwrap())),
+            None,
         );
         assert_eq!(overridden.hermes_db, override_home.join("state.db"));
 
-        let blank = SourceRoots::from_home_and_pi_env_with_hermes(
+        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
             home.path(),
             None,
             None,
             Some(OsStr::new("  ")),
+            None,
         );
         assert_eq!(blank.hermes_db, home.path().join(".hermes/state.db"));
 
-        let absent = SourceRoots::from_home_and_pi_env_with_hermes(
+        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+            home.path(), None, None, None, None,
+        );
+        assert_eq!(absent.hermes_db, home.path().join(".hermes/state.db"));
+    }
+
+    #[test]
+    fn gemini_cli_home_override_is_nested_and_blank_value_falls_back() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        let overridden = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
             home.path(),
             None,
             None,
             None,
+            Some(OsStr::new("~/configured-gemini")),
         );
-        assert_eq!(absent.hermes_db, home.path().join(".hermes/state.db"));
+        assert_eq!(
+            overridden.gemini_tmp,
+            home.path().join("configured-gemini/.gemini/tmp")
+        );
+        assert_eq!(
+            overridden.gemini_projects_json,
+            home.path().join("configured-gemini/.gemini/projects.json")
+        );
+
+        let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+            home.path(),
+            None,
+            None,
+            None,
+            Some(OsStr::new("  ")),
+        );
+        assert_eq!(blank.gemini_tmp, home.path().join(".gemini/tmp"));
+        assert_eq!(
+            blank.gemini_projects_json,
+            home.path().join(".gemini/projects.json")
+        );
+
+        let absent = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+            home.path(), None, None, None, None,
+        );
+        assert_eq!(absent.gemini_tmp, home.path().join(".gemini/tmp"));
+        assert_eq!(
+            absent.gemini_projects_json,
+            home.path().join(".gemini/projects.json")
+        );
     }
 
     #[test]
@@ -374,6 +457,104 @@ mod tests {
             .antigravity_cli_conversations
             .ends_with(".gemini/antigravity-cli/conversations"));
         assert!(r.pi_sessions[0].ends_with(".pi/agent/sessions"));
+    }
+
+    #[test]
+    fn run_scan_backfills_gemini_override_queries_cost_and_retains_disappeared_usage() {
+        std::env::set_var("TZ", "UTC");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let gemini_home = base.join("configured-gemini");
+        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
+            base,
+            None,
+            None,
+            None,
+            Some(gemini_home.as_os_str()),
+        );
+        let session_path = roots
+            .gemini_tmp
+            .join("alpha/chats/session-override.json");
+        fs::create_dir_all(session_path.parent().unwrap()).unwrap();
+        fs::write(
+            &roots.gemini_projects_json,
+            r#"{"projects":{"/Users/dev/projects/gemini-demo":"alpha"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            &session_path,
+            r#"{"sessionId":"gemini-override","messages":[
+              {"id":"m1","timestamp":"2026-07-01T10:00:00.000Z","model":"gemini-priced",
+               "content":"GEMINI_PRIVATE_PROMPT_MARKER",
+               "tokens":{"input":100,"output":20,"cached":30,"thoughts":5,"tool":10,"total":125}}
+            ]}"#,
+        )
+        .unwrap();
+
+        let mut conn = open_db(&base.join("ledger.db")).unwrap();
+        pricing::set_override(
+            &conn,
+            "gemini-priced",
+            OverrideRates {
+                input: Some(1.0),
+                output: Some(2.0),
+                cache_read: Some(3.0),
+                cache_write: Some(4.0),
+            },
+        )
+        .unwrap();
+
+        let first = run_scan(&mut conn, &roots);
+        let gemini = find(&first, "gemini");
+        assert_eq!(gemini.events_inserted, 1);
+        assert!(gemini.error.is_none());
+
+        let summary = queries::summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(summary.input_tokens, 70);
+        assert_eq!(summary.output_tokens, 25);
+        assert_eq!(summary.cache_read_tokens, 30);
+        assert_eq!(summary.total_tokens, 125);
+        assert_eq!(summary.requests, 1);
+        assert_eq!(summary.cost, Some(210.0));
+
+        let source_rows = queries::breakdown(&conn, "tool", &Filters::default()).unwrap();
+        let gemini_row = source_rows
+            .iter()
+            .find(|row| row.key.as_deref() == Some("gemini"))
+            .unwrap();
+        assert_eq!(gemini_row.total_tokens, 125);
+        assert_eq!(gemini_row.requests, 1);
+        assert_eq!(gemini_row.cost, Some(210.0));
+
+        let series = queries::series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(series.len(), 1);
+        assert_eq!(series[0].source, "gemini");
+        assert_eq!(series[0].total_tokens, 125);
+        assert_eq!(series[0].requests, 1);
+        assert_eq!(series[0].cost, 210.0);
+
+        let second = run_scan(&mut conn, &roots);
+        assert_eq!(find(&second, "gemini").events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+
+        fs::remove_file(&session_path).unwrap();
+        let after_disappearance = run_scan(&mut conn, &roots);
+        assert_eq!(find(&after_disappearance, "gemini").events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "disappearing Source Artifacts do not delete Ledger history"
+        );
+
+        let durable = fs::read(base.join("ledger.db")).unwrap();
+        assert!(!durable
+            .windows("GEMINI_PRIVATE_PROMPT_MARKER".len())
+            .any(|window| window == b"GEMINI_PRIVATE_PROMPT_MARKER"));
     }
 
     #[test]
@@ -616,11 +797,12 @@ mod tests {
         fs::create_dir_all(malformed.parent().unwrap()).unwrap();
         fs::write(&malformed, b"not a Hermes sqlite database").unwrap();
 
-        let roots = SourceRoots::from_home_and_pi_env_with_hermes(
+        let roots = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini(
             base,
             None,
             None,
             Some(hermes_root.as_os_str()),
+            None,
         );
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         pricing::set_override(
@@ -699,12 +881,24 @@ mod tests {
         fs::write(pi_root.join("a-broken.jsonl"), [0xff, b'\n']).unwrap();
         fs::write(pi_root.join("b-valid.jsonl"), PI_SESSION).unwrap();
 
+        // Gemini has an existing malformed Artifact; the warning must stay
+        // Source-specific while Claude and pi continue scanning.
+        let gemini_root = base.join("gemini");
+        fs::create_dir_all(gemini_root.join("proj/chats")).unwrap();
+        fs::write(
+            gemini_root.join("proj/chats/session-broken.json"),
+            "{ not json",
+        )
+        .unwrap();
+        let gemini_projects = base.join("gemini-projects.json");
+        fs::write(&gemini_projects, r#"{"projects":{}}"#).unwrap();
+
         // Everything else points at paths that do not exist.
         let roots = SourceRoots {
             claude: claude_root,
             codex: base.join("no-codex"),
-            gemini_tmp: base.join("no-gemini"),
-            gemini_projects_json: base.join("no-projects.json"),
+            gemini_tmp: gemini_root,
+            gemini_projects_json: gemini_projects,
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
@@ -719,7 +913,7 @@ mod tests {
         assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 
-        // Claude still ingests its event even though hermes errors.
+        // Claude still ingests its event even though Gemini reports a warning.
         let claude = find(&status, "claude");
         assert_eq!(claude.events_inserted, 1);
         assert!(claude.error.is_none());
@@ -730,7 +924,10 @@ mod tests {
         assert!(codex.error.is_none());
         let gemini = find(&status, "gemini");
         assert_eq!(gemini.events_inserted, 0);
-        assert!(gemini.error.is_none());
+        assert!(gemini
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("gemini") && error.contains("malformed")));
 
         // Nonexistent Hermes DB → quiet empty Source; other sources unaffected.
         let hermes = find(&status, "hermes");
