@@ -42,6 +42,20 @@ impl SourceRoots {
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
+        Self::from_home_and_pi_env_with_hermes(
+            home,
+            session_dir,
+            agent_dir,
+            std::env::var_os("HERMES_HOME").as_deref(),
+        )
+    }
+
+    fn from_home_and_pi_env_with_hermes(
+        home: &Path,
+        session_dir: Option<&OsStr>,
+        agent_dir: Option<&OsStr>,
+        hermes_home: Option<&OsStr>,
+    ) -> Self {
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
         append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
         append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
@@ -50,7 +64,8 @@ impl SourceRoots {
             codex: catalog_root(home, "codex", "sessions"),
             gemini_tmp: catalog_root(home, "gemini", "tmp"),
             gemini_projects_json: catalog_root(home, "gemini", "projects"),
-            hermes_db: catalog_root(home, "hermes", "state"),
+            hermes_db: hermes_home_for(home, hermes_home)
+                .join(source_catalog::artifact_filename("hermes", "state")),
             grok_sessions: catalog_root(home, "grok", "sessions"),
             antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
@@ -73,6 +88,16 @@ fn pi_environment_value(artifact: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(environment)
 }
 
+fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
+    if let Some(path) = value.and_then(|value| visible_path(home, value)) {
+        return path;
+    }
+    catalog_root(home, "hermes", "state")
+        .parent()
+        .expect("Hermes state artifact must have a parent directory")
+        .to_path_buf()
+}
+
 fn append_pi_override(
     pi_sessions: &mut Vec<PathBuf>,
     home: &Path,
@@ -91,6 +116,12 @@ fn append_pi_override(
 }
 
 fn visible_pi_path(home: &Path, value: &OsStr) -> Option<PathBuf> {
+    visible_path(home, value)
+}
+
+fn visible_path(home: &Path, value: &OsStr) -> Option<PathBuf> {
+    let value = value.to_string_lossy();
+    let value = value.trim();
     if value.is_empty() {
         return None;
     }
@@ -294,6 +325,37 @@ mod tests {
                 home.path().join("custom-agent/sessions"),
             ],
         );
+    }
+
+    #[test]
+    fn hermes_home_override_is_used_and_blank_value_falls_back() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        let override_home = home.path().join("configured-hermes");
+        let overridden = SourceRoots::from_home_and_pi_env_with_hermes(
+            home.path(),
+            None,
+            None,
+            Some(OsStr::new(override_home.to_str().unwrap())),
+        );
+        assert_eq!(overridden.hermes_db, override_home.join("state.db"));
+
+        let blank = SourceRoots::from_home_and_pi_env_with_hermes(
+            home.path(),
+            None,
+            None,
+            Some(OsStr::new("  ")),
+        );
+        assert_eq!(blank.hermes_db, home.path().join(".hermes/state.db"));
+
+        let absent = SourceRoots::from_home_and_pi_env_with_hermes(
+            home.path(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(absent.hermes_db, home.path().join(".hermes/state.db"));
     }
 
     #[test]
@@ -503,6 +565,117 @@ mod tests {
         }
     }
 
+    fn build_hermes_fixture(path: &Path, rows: &[(&str, Option<&str>, i64, i64, i64, i64, i64, i64, i64, &str)]) {
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        let src = Connection::open(path).unwrap();
+        src.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                model TEXT,
+                started_at REAL NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                api_call_count INTEGER,
+                cwd TEXT
+            );",
+        )
+        .unwrap();
+        for (id, model, started_at, input, output, cache_read, cache_write, reasoning, calls, cwd) in rows {
+            src.execute(
+                "INSERT INTO sessions
+                 (id, model, started_at, input_tokens, output_tokens, cache_read_tokens,
+                  cache_write_tokens, reasoning_tokens, api_call_count, cwd)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![id, model, *started_at as f64, input, output, cache_read, cache_write, reasoning, calls, cwd],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn run_scan_backfills_hermes_profiles_queries_cost_and_retains_disappeared_usage() {
+        std::env::set_var("TZ", "UTC");
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let hermes_root = base.join("hermes");
+        let primary = hermes_root.join("state.db");
+        let profile = hermes_root.join("profiles/coder/state.db");
+        let malformed = hermes_root.join("profiles/broken/state.db");
+        build_hermes_fixture(
+            &primary,
+            &[("default", Some("hermes-priced"), 1780287300, 10, 5, 0, 0, 0, 2, "")],
+        );
+        build_hermes_fixture(
+            &profile,
+            &[("profile", None, 1780287301, 4, 2, 0, 0, 0, 1, "")],
+        );
+        fs::create_dir_all(malformed.parent().unwrap()).unwrap();
+        fs::write(&malformed, b"not a Hermes sqlite database").unwrap();
+
+        let roots = SourceRoots::from_home_and_pi_env_with_hermes(
+            base,
+            None,
+            None,
+            Some(hermes_root.as_os_str()),
+        );
+        let mut conn = open_db(&base.join("ledger.db")).unwrap();
+        pricing::set_override(
+            &conn,
+            "hermes-priced",
+            OverrideRates {
+                input: Some(1.0),
+                output: Some(1.0),
+                cache_read: Some(1.0),
+                cache_write: Some(1.0),
+            },
+        )
+        .unwrap();
+
+        let first = run_scan(&mut conn, &roots);
+        let hermes = find(&first, "hermes");
+        assert_eq!(hermes.events_inserted, 2);
+        assert!(hermes
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("hermes")));
+
+        let summary = queries::summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(summary.total_tokens, 21);
+        assert_eq!(summary.requests, 3);
+        assert_eq!(summary.unattributed_tokens, 6);
+        assert!(!summary.has_unpriced);
+        assert_eq!(summary.cost, Some(15.0));
+
+        let source_rows = queries::breakdown(&conn, "tool", &Filters::default()).unwrap();
+        let hermes_row = source_rows
+            .iter()
+            .find(|row| row.key.as_deref() == Some("hermes"))
+            .unwrap();
+        assert_eq!(hermes_row.total_tokens, 21);
+        assert_eq!(hermes_row.requests, 3);
+        assert_eq!(hermes_row.cost, Some(15.0));
+
+        let second = run_scan(&mut conn, &roots);
+        assert_eq!(find(&second, "hermes").events_inserted, 0);
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+
+        fs::remove_file(&primary).unwrap();
+        fs::remove_file(&profile).unwrap();
+        let after_disappearance = run_scan(&mut conn, &roots);
+        assert_eq!(find(&after_disappearance, "hermes").events_inserted, 0);
+        assert!(conn
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+            .unwrap() == 2);
+
+        fs::remove_file(&malformed).unwrap();
+        let missing = run_scan(&mut conn, &roots);
+        assert!(find(&missing, "hermes").error.is_none());
+    }
+
     #[test]
     fn run_scan_isolates_sources() {
         let tmp = tempfile::tempdir().unwrap();
@@ -559,9 +732,10 @@ mod tests {
         assert_eq!(gemini.events_inserted, 0);
         assert!(gemini.error.is_none());
 
-        // Nonexistent hermes DB → error string set; other sources unaffected.
+        // Nonexistent Hermes DB → quiet empty Source; other sources unaffected.
         let hermes = find(&status, "hermes");
-        assert!(hermes.error.is_some());
+        assert_eq!(hermes.events_inserted, 0);
+        assert!(hermes.error.is_none());
 
         // Missing directory-shaped roots → zero events, no error.
         let grok = find(&status, "grok");

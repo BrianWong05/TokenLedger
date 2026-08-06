@@ -1,23 +1,43 @@
 // TokenLedger — Hermes adapter.
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
 use super::{file_state_of, unchanged};
 use crate::db::{set_file_state, upsert_events};
+use crate::source_catalog;
 use crate::types::{SourceScanResult, UsageEvent};
 
 pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult {
+    let mut result = SourceScanResult::default();
+    let mut errors = Vec::new();
+    for database in discover_databases(hermes_db) {
+        let scanned = scan_hermes_database(conn, &database);
+        result.events_inserted += scanned.events_inserted;
+        result.lines_skipped += scanned.lines_skipped;
+        if let Some(error) = scanned.error {
+            errors.push(error);
+        }
+    }
+    result.error = (!errors.is_empty()).then(|| errors.join("; "));
+    result
+}
+
+fn scan_hermes_database(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult {
     // Whole-DB skip when neither the main file nor its WAL moved since the
     // last scan; without this every scan re-upserts every session, which
     // keeps the ledger churning (and the frontend reloading) forever. A
-    // missing DB never skips — it must fall through to report the open error.
+    // missing DB is a quiet no-op; an existing malformed DB reports an error.
     let db_state = file_state_of(hermes_db);
     let wal_path = hermes_db.with_extension("db-wal");
     let wal_state = file_state_of(&wal_path);
-    let db_exists = db_state.size != 0 || db_state.mtime != 0;
-    if db_exists && unchanged(conn, hermes_db, &db_state) && unchanged(conn, &wal_path, &wal_state) {
+    let db_exists = hermes_db.is_file();
+    if !db_exists {
+        return SourceScanResult::default();
+    }
+    if unchanged(conn, hermes_db, &db_state) && unchanged(conn, &wal_path, &wal_state) {
         return SourceScanResult::default();
     }
 
@@ -88,9 +108,19 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
                 }
             };
 
-        let total = input + output + cache_read + cache_write + reasoning;
-        if total <= 0 && api_call_count <= 0 {
-            skipped += 1; // no tokens and no API calls — nothing to record
+        let total = input
+            .saturating_add(output)
+            .saturating_add(cache_read)
+            .saturating_add(cache_write)
+            .saturating_add(reasoning);
+        if input < 0
+            || output < 0
+            || cache_read < 0
+            || cache_write < 0
+            || reasoning < 0
+            || total <= 0
+        {
+            skipped += 1; // zero-token observations are not usage records
             continue;
         }
 
@@ -103,14 +133,14 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
         };
 
         events.push(UsageEvent {
-            dedup_key: format!("hermes:{id}"),
+            dedup_key: dedup_key_for(&id),
             source: "hermes".to_string(),
             timestamp: started_at as i64,          // truncate fractional seconds
-            model: Some(model.unwrap_or_else(|| "unknown".to_string())),
+            model: model.and_then(|model| (!model.trim().is_empty()).then_some(model)),
             project,
             api_calls,
             input_tokens: input,
-            output_tokens: output + reasoning,      // reasoning folds into output
+            output_tokens: output.saturating_add(reasoning), // reasoning folds into output
             cache_read_tokens: cache_read,
             cache_write_5m_tokens: cache_write,     // single Hermes bucket -> 5m
             cache_write_1h_tokens: 0,
@@ -137,6 +167,73 @@ pub fn scan_hermes(conn: &mut Connection, hermes_db: &Path) -> SourceScanResult 
     SourceScanResult { events_inserted: inserted, lines_skipped: skipped, error: None }
 }
 
+fn discover_databases(primary: &Path) -> Vec<PathBuf> {
+    let mut databases = Vec::new();
+    let mut roots = Vec::new();
+    let state_filename = source_catalog::artifact_filename("hermes", "state");
+
+    add_unique_path(&mut databases, primary.to_path_buf());
+    if let Some(home) = primary.parent() {
+        add_unique_path(&mut roots, home.to_path_buf());
+        if home.parent().and_then(Path::file_name) == Some(OsStr::new("profiles")) {
+            if let Some(root) = home.parent().and_then(Path::parent) {
+                add_unique_path(&mut roots, root.to_path_buf());
+            }
+        }
+    }
+
+    for root in roots {
+        add_unique_path(&mut databases, root.join(&state_filename));
+        let profiles_root = root.join("profiles");
+        let mut profiles = std::fs::read_dir(profiles_root)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| {
+                entry
+                    .file_type()
+                    .ok()
+                    .filter(|kind| kind.is_dir())
+                    .map(|_| entry.path())
+            })
+            .collect::<Vec<_>>();
+        profiles.sort();
+        for profile in profiles {
+            add_unique_path(&mut databases, profile.join(&state_filename));
+        }
+    }
+
+    databases
+}
+
+fn add_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    let normalized = std::fs::canonicalize(&path).unwrap_or_else(|_| normalize_path(&path));
+    if !paths.iter().any(|existing| existing == &normalized) {
+        paths.push(normalized);
+    }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => match normalized.components().next_back() {
+                Some(std::path::Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                _ => normalized.push(component.as_os_str()),
+            },
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn dedup_key_for(id: &str) -> String {
+    format!("hermes:{id}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +252,7 @@ mod tests {
 
     /// Build a minimal Hermes-schema sqlite DB (subset of columns the adapter reads).
     fn build_hermes_db(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let src = Connection::open(path).unwrap();
         src.execute_batch(
             "CREATE TABLE sessions (
@@ -255,6 +353,88 @@ mod tests {
     }
 
     #[test]
+    fn discovers_profile_databases_and_preserves_profile_boundaries() {
+        let hermes_dir = tempdir().unwrap();
+        let hermes_db = hermes_dir.path().join("state.db");
+        let profile_db = hermes_dir.path().join("profiles/coder/state.db");
+        build_hermes_db(&hermes_db);
+        build_hermes_db(&profile_db);
+        Connection::open(&profile_db)
+            .unwrap()
+            .execute("UPDATE sessions SET id = 'coder-' || id", [])
+            .unwrap();
+
+        let app_dir = tempdir().unwrap();
+        let mut conn = open_db(&app_dir.path().join("tokenledger.db")).unwrap();
+
+        let res = scan_hermes(&mut conn, &hermes_db);
+        assert!(res.error.is_none(), "unexpected error: {:?}", res.error);
+        assert_eq!(res.events_inserted, 4);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events WHERE source = 'hermes'", [], |r| r.get::<_, i64>(0)).unwrap(),
+            4,
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(DISTINCT source_file) FROM events WHERE source = 'hermes'", [], |r| r.get::<_, i64>(0)).unwrap(),
+            2,
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(DISTINCT source) FROM events WHERE source = 'hermes'", [], |r| r.get::<_, i64>(0)).unwrap(),
+            1,
+        );
+
+        // A path alias that resolves to the same root cannot manufacture new
+        // Usage Records or re-scan the profile databases.
+        let alias = hermes_dir.path().join("profiles/../state.db");
+        let res = scan_hermes(&mut conn, &alias);
+        assert!(res.error.is_none(), "unexpected error: {:?}", res.error);
+        assert_eq!(res.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events WHERE source = 'hermes'", [], |r| r.get::<_, i64>(0)).unwrap(),
+            4,
+        );
+    }
+
+    #[test]
+    fn null_model_and_zero_token_observations_are_conservative() {
+        let hermes_dir = tempdir().unwrap();
+        let hermes_db = hermes_dir.path().join("state.db");
+        build_hermes_db(&hermes_db);
+        {
+            let src = Connection::open(&hermes_db).unwrap();
+            src.execute(
+                "INSERT INTO sessions VALUES ('unattributed',NULL,1780310783.7,100,20,0,0,0,4,'')",
+                [],
+            )
+            .unwrap();
+            src.execute(
+                "INSERT INTO sessions VALUES ('zero-but-called','qwen-35b',1780310784.7,0,0,0,0,0,4,'')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let app_dir = tempdir().unwrap();
+        let mut conn = open_db(&app_dir.path().join("tokenledger.db")).unwrap();
+        let res = scan_hermes(&mut conn, &hermes_db);
+        assert!(res.error.is_none(), "unexpected error: {:?}", res.error);
+        assert_eq!(res.events_inserted, 3);
+        let (model, calls): (Option<String>, i64) = conn
+            .query_row(
+                "SELECT model, api_calls FROM events WHERE dedup_key = 'hermes:unattributed'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(model, None);
+        assert_eq!(calls, 4);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events WHERE dedup_key = 'hermes:zero-but-called'", [], |r| r.get::<_, i64>(0)).unwrap(),
+            0,
+        );
+    }
+
+    #[test]
     fn hermes_ctx_is_all_null() {
         let hermes_dir = tempdir().unwrap();
         let hermes_db = hermes_dir.path().join("state.db");
@@ -281,12 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_db_reports_error_keeps_events() {
+    fn missing_db_is_a_quiet_empty_source() {
         let app_dir = tempdir().unwrap();
         let mut conn = open_db(&app_dir.path().join("tokenledger.db")).unwrap();
 
         let res = scan_hermes(&mut conn, Path::new("/nonexistent/hermes/state.db"));
-        assert!(res.error.is_some());
+        assert!(res.error.is_none());
         assert_eq!(res.events_inserted, 0);
     }
 

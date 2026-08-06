@@ -2,6 +2,7 @@
 // addition to the roots consumed by Rust discovery.
 #![allow(dead_code)]
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -64,6 +65,16 @@ pub fn source(key: &str) -> Option<&'static SourceDefinition> {
 
 pub fn artifact(source_key: &str, id: &str) -> Option<&'static ArtifactDescriptor> {
     source(source_key).and_then(|source| source.artifacts.iter().find(|artifact| artifact.id == id))
+}
+
+pub fn artifact_filename(source_key: &str, id: &str) -> PathBuf {
+    let path = artifact(source_key, id)
+        .and_then(|artifact| artifact.path.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define {source_key}.{id} path"));
+    Path::new(path)
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("source catalog artifact {source_key}.{id} path must name a file"))
 }
 
 /// Returns an explanation when a Source cannot run on the target platform or
