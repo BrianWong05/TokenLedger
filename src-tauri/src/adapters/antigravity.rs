@@ -90,10 +90,11 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
     }
 
     let path_str = db_path.to_string_lossy().to_string();
-    let uri = format!("file:{}?mode=ro", db_path.display());
+    // A plain path (not a `file:` URI) keeps Windows verbatim temp paths, which
+    // can carry a `\\?\` prefix, working in both production and tests.
     let ro = match Connection::open_with_flags(
-        &uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
     ) {
         Ok(c) => c,
         Err(e) => {

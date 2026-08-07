@@ -92,6 +92,20 @@ pub(crate) fn normalize_epoch(value: i64) -> i64 {
     }
 }
 
+/// A project path is kept when it is rooted: absolute on this platform, or
+/// POSIX-rooted (`/…`) the way the deterministic fixtures and several writers
+/// spell it. On Windows a drive-rooted path is absolute; a POSIX-rooted one is
+/// root-relative but still concrete, so it is kept rather than dropped.
+/// Relative paths stay `None` rather than being guessed.
+pub(crate) fn is_absolute_path(path: &str) -> bool {
+    Path::new(path).is_absolute() || path.starts_with('/')
+}
+
+pub(crate) fn absolute_project(project: Option<&str>) -> Option<String> {
+    let project = project?.trim();
+    (!project.is_empty() && is_absolute_path(project)).then(|| project.to_string())
+}
+
 pub(crate) fn unchanged(
     conn: &rusqlite::Connection,
     path: &Path,

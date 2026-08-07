@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::adapters::normalize_epoch;
+use crate::adapters::{absolute_project, normalize_epoch};
 use crate::db::insert_events;
 use crate::types::SourceScanResult;
 use crate::types::UsageEvent;
@@ -542,15 +542,6 @@ fn json_session_timestamp(value: &Value) -> Option<i64> {
         .or_else(|| value.get("time_created").and_then(nonnegative_i64))
         .filter(|t| *t > 0)
         .map(normalize_epoch)
-}
-
-fn absolute_project(project: Option<&str>) -> Option<String> {
-    let project = project?.trim();
-    if project.is_empty() || !Path::new(project).is_absolute() {
-        None
-    } else {
-        Some(project.to_string())
-    }
 }
 
 #[cfg(test)]

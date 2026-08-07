@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value};
 
-use crate::adapters::{normalize_epoch, upsert_events_count};
+use crate::adapters::{is_absolute_path, normalize_epoch, upsert_events_count};
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
 
@@ -284,13 +284,6 @@ fn absolute_project(folder_paths: Option<&str>) -> Option<String> {
         .map(str::trim)
         .find(|path| is_absolute_path(path))
         .map(str::to_string)
-}
-
-fn is_absolute_path(path: &str) -> bool {
-    Path::new(path).is_absolute()
-        || (path.len() >= 3
-            && path.as_bytes()[1] == b':'
-            && matches!(path.as_bytes()[2], b'/' | b'\\'))
 }
 
 fn parse_timestamp(value: &str) -> Option<i64> {

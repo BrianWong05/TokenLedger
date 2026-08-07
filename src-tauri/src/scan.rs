@@ -1151,8 +1151,14 @@ mod tests {
         assert!(r.zed_databases[0].ends_with(zed_suffix));
         assert!(!r.goose_sessions.is_empty());
         assert!(r.cline.iter().any(|path| path.ends_with(".cline/data")));
-        assert!(r.cline.iter().any(|path| path
-            .ends_with(".vscode-server/data/User/globalStorage/saoudrizwan.claude-dev/tasks")));
+        // Every platform carries at least one editor task root; the editor
+        // vendor directory is `.vscode-server/...` on Unix and
+        // `Code/User/globalStorage/...` on Windows, so assert on the common
+        // storage suffix instead of a platform-specific prefix.
+        assert!(r
+            .cline
+            .iter()
+            .any(|path| path.ends_with("globalStorage/saoudrizwan.claude-dev/tasks")));
     }
 
     #[test]

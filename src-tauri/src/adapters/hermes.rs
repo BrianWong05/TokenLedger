@@ -42,10 +42,11 @@ fn scan_hermes_database(conn: &mut Connection, hermes_db: &Path) -> SourceScanRe
     }
 
     // Open the Hermes ledger read-only so we never lock out its live writer.
-    let uri = format!("file:{}?mode=ro", hermes_db.display());
+    // A plain path (not a `file:` URI) keeps Windows verbatim temp paths, which
+    // can carry a `\\?\` prefix, working in both production and tests.
     let ro = match Connection::open_with_flags(
-        &uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        hermes_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
     ) {
         Ok(c) => c,
         Err(e) => {

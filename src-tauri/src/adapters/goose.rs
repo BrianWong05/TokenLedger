@@ -7,7 +7,7 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, Row};
 use serde_json::Value;
 
-use crate::adapters::normalize_epoch;
+use crate::adapters::{absolute_project, normalize_epoch};
 use crate::db::insert_events;
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
@@ -149,10 +149,11 @@ fn add_unique(paths: &mut Vec<PathBuf>, path: &Path) {
 }
 
 fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
-    let uri = format!("file:{}?mode=ro", path.display());
+    // A plain path (not a `file:` URI) keeps Windows verbatim temp paths, which
+    // can carry a `\\?\` prefix, working in both production and tests.
     let conn = Connection::open_with_flags(
-        &uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .map_err(|error| format!("goose: sessions database open failed: {error}"))?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
@@ -223,7 +224,7 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
                 source: SOURCE.to_string(),
                 timestamp: normalize_epoch(timestamp),
                 model: clean_model(row.model),
-                project: absolute_project(row.project),
+                project: absolute_project(row.project.as_deref()),
                 api_calls: 1,
                 input_tokens: input,
                 output_tokens: output,
@@ -301,7 +302,7 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
             source: SOURCE.to_string(),
             timestamp: normalize_epoch(timestamp),
             model: None,
-            project: absolute_project(row.project),
+            project: absolute_project(row.project.as_deref()),
             api_calls: 1,
             input_tokens: input,
             output_tokens: output,
@@ -414,10 +415,7 @@ fn scan_legacy_file(
             timestamp: normalize_epoch(timestamp),
             model: None,
             project: absolute_project(
-                value
-                    .get("working_dir")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                value.get("working_dir").and_then(Value::as_str),
             ),
             api_calls: 1,
             input_tokens: input,
@@ -551,13 +549,6 @@ fn file_mtime_timestamp(path: &Path) -> Option<i64> {
 
 fn clean_model(model: Option<String>) -> Option<String> {
     model.and_then(|model| (!model.trim().is_empty()).then_some(model))
-}
-
-fn absolute_project(project: Option<String>) -> Option<String> {
-    project.and_then(|project| {
-        let project = project.trim();
-        (!project.is_empty() && Path::new(project).is_absolute()).then_some(project.to_string())
-    })
 }
 
 fn normalize_tokens(

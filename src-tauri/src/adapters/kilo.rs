@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::adapters::{normalize_epoch, upsert_events_count};
+use crate::adapters::{absolute_project, normalize_epoch, upsert_events_count};
 use crate::types::{SourceScanResult, UsageEvent};
 
 const SOURCE: &str = "kilo";
@@ -229,14 +229,6 @@ fn model_name(raw: Option<&str>) -> Option<String> {
             .map(str::to_string),
         _ => None,
     }
-}
-
-fn absolute_project(directory: Option<&str>) -> Option<String> {
-    let directory = directory?.trim();
-    if directory.is_empty() || !Path::new(directory).is_absolute() {
-        return None;
-    }
-    Some(directory.to_string())
 }
 
 fn session_timestamp(updated: Option<i64>, created: Option<i64>) -> Option<i64> {
