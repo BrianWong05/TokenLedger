@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,21 +16,29 @@ const SOURCE: &str = "opencode";
 struct DatabaseScan {
     events: Vec<UsageEvent>,
     session_ids: HashSet<String>,
+    superseded_keys: Vec<String>,
     lines_skipped: u64,
 }
 
+/// Per-model totals for one Session. OpenCode stores usage per assistant
+/// Message with the Model that produced it, so a Session that switched Models
+/// (e.g. sub-agents on a different Model) splits into one group per Model;
+/// Messages without a proven Model fall into the None group.
 #[derive(Default)]
-struct UsageTotals {
+struct SessionTotals {
+    groups: BTreeMap<Option<String>, ModelTotals>,
+}
+
+#[derive(Default)]
+struct ModelTotals {
     input: i64,
     output: i64,
     cache_read: i64,
     cache_write: i64,
     reasoning: i64,
     reasoning_seen: bool,
-    reasoning_complete: bool,
-    model: Option<String>,
-    model_proven: bool,
-    saw_usage: bool,
+    reasoning_incomplete: bool,
+    latest_message_ms: Option<i64>,
 }
 
 #[derive(Clone)]
@@ -60,6 +68,7 @@ pub fn scan_opencode(
     let (database_paths, mut errors) = discover_databases(data_root, database_override);
     let mut modern_session_ids = HashSet::new();
     let mut event_keys = HashSet::new();
+    let mut superseded_keys = HashSet::new();
     let mut events = Vec::new();
     let mut lines_skipped = 0;
 
@@ -68,6 +77,7 @@ pub fn scan_opencode(
             Ok(scan) => {
                 modern_session_ids.extend(scan.session_ids);
                 lines_skipped += scan.lines_skipped;
+                superseded_keys.extend(scan.superseded_keys);
                 for event in scan.events {
                     if event_keys.insert(event.dedup_key.clone()) {
                         events.push(event);
@@ -84,17 +94,25 @@ pub fn scan_opencode(
             legacy_message_root(legacy_root),
             &modern_session_ids,
         ) {
-            Ok((Some(event), skipped)) => {
+            Ok((session_events, superseded, skipped)) => {
                 lines_skipped += skipped;
-                if event_keys.insert(event.dedup_key.clone()) {
-                    events.push(event);
+                superseded_keys.extend(superseded);
+                for event in session_events {
+                    if event_keys.insert(event.dedup_key.clone()) {
+                        events.push(event);
+                    }
                 }
             }
-            Ok((None, skipped)) => lines_skipped += skipped,
             Err(error) => {
                 lines_skipped += 1;
                 errors.push(error);
             }
+        }
+    }
+
+    for key in &superseded_keys {
+        if let Err(error) = conn.execute("DELETE FROM events WHERE dedup_key = ?1", [key]) {
+            errors.push(format!("{SOURCE}: stale aggregate cleanup failed: {error}"));
         }
     }
 
@@ -206,39 +224,43 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
             scan.lines_skipped += 1;
             continue;
         };
-        let mut totals = UsageTotals {
-            model_proven: true,
-            reasoning_complete: true,
-            ..Default::default()
-        };
+        let mut totals = SessionTotals::default();
         let mut messages = conn
             .prepare(
-                "SELECT data FROM message
+                "SELECT data, time_created FROM message
                  WHERE session_id = ?1 ORDER BY time_created, id",
             )
             .map_err(|error| format!("{SOURCE}: message query failed: {error}"))?;
         let message_rows = messages
-            .query_map([&session_id], |row| row.get::<_, String>(0))
+            .query_map([&session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                ))
+            })
             .map_err(|error| format!("{SOURCE}: message read failed: {error}"))?;
         for message in message_rows {
-            let data = message.map_err(|error| format!("{SOURCE}: message row failed: {error}"))?;
+            let (data, message_time) =
+                message.map_err(|error| format!("{SOURCE}: message row failed: {error}"))?;
             match serde_json::from_str::<Value>(&data) {
                 Ok(value) => match parse_message(&value) {
                     ParsedMessage::NotUsage => {}
                     ParsedMessage::Zero => scan.lines_skipped += 1,
-                    ParsedMessage::Usage(snapshot) => totals.add(snapshot),
+                    ParsedMessage::Usage(snapshot) => totals.add(snapshot, message_time),
                     ParsedMessage::Invalid => scan.lines_skipped += 1,
                 },
                 Err(_) => scan.lines_skipped += 1,
             }
         }
-        if let Some(event) = totals.event(
+        let (events, superseded) = totals.events(
             &session_id,
             timestamp,
             absolute_project(directory.as_deref()),
             path,
-        ) {
-            scan.events.push(event);
+        );
+        scan.events.extend(events);
+        if let Some(key) = superseded {
+            scan.superseded_keys.push(key);
         }
     }
 
@@ -315,7 +337,7 @@ fn scan_legacy_session(
     path: &Path,
     message_root: PathBuf,
     modern_session_ids: &HashSet<String>,
-) -> Result<(Option<UsageEvent>, u64), String> {
+) -> Result<(Vec<UsageEvent>, Option<String>, u64), String> {
     let content = fs::read_to_string(path)
         .map_err(|error| format!("{SOURCE}: legacy session read failed: {error}"))?;
     let value = serde_json::from_str::<Value>(&content)
@@ -332,17 +354,13 @@ fn scan_legacy_session(
         })
         .ok_or_else(|| format!("{SOURCE}: legacy session has no stable id"))?;
     if modern_session_ids.contains(&session_id) {
-        return Ok((None, 0));
+        return Ok((Vec::new(), None, 0));
     }
 
     let Some(timestamp) = json_session_timestamp(&value) else {
-        return Ok((None, 1));
+        return Ok((Vec::new(), None, 1));
     };
-    let mut totals = UsageTotals {
-        model_proven: true,
-        reasoning_complete: true,
-        ..Default::default()
-    };
+    let mut totals = SessionTotals::default();
     let mut lines_skipped = 0;
     let messages = message_root.join(&session_id);
     let mut message_files = Vec::new();
@@ -366,54 +384,113 @@ fn scan_legacy_session(
         match parse_message(&value) {
             ParsedMessage::NotUsage => {}
             ParsedMessage::Zero | ParsedMessage::Invalid => lines_skipped += 1,
-            ParsedMessage::Usage(snapshot) => totals.add(snapshot),
+            ParsedMessage::Usage(snapshot) => totals.add(snapshot, None),
         }
     }
 
-    Ok((
-        totals.event(
-            &session_id,
-            timestamp,
-            absolute_project(value.get("directory").and_then(Value::as_str)),
-            path,
-        ),
-        lines_skipped,
-    ))
+    let (events, superseded) = totals.events(
+        &session_id,
+        timestamp,
+        absolute_project(value.get("directory").and_then(Value::as_str)),
+        path,
+    );
+    Ok((events, superseded, lines_skipped))
 }
 
-impl UsageTotals {
-    fn add(&mut self, snapshot: UsageSnapshot) {
+fn session_dedup_key(session_id: &str) -> String {
+    format!("{SOURCE}:session:{session_id}")
+}
+
+fn split_dedup_key(session_id: &str, model: Option<&String>) -> String {
+    match model {
+        Some(model) => format!("{SOURCE}:session:{session_id}:model:{model}"),
+        None => format!("{SOURCE}:session:{session_id}:unattributed"),
+    }
+}
+
+impl SessionTotals {
+    fn add(&mut self, snapshot: UsageSnapshot, message_time: Option<i64>) {
+        self.groups
+            .entry(snapshot.model.clone())
+            .or_default()
+            .add(snapshot, message_time);
+    }
+
+    /// One UsageEvent per Model group. A single-group Session keeps the
+    /// legacy Session-level dedup key and timestamp; a multi-group Session
+    /// splits into suffixed keys and returns the legacy key it supersedes.
+    fn events(
+        &self,
+        session_id: &str,
+        session_timestamp: i64,
+        project: Option<String>,
+        source_file: &Path,
+    ) -> (Vec<UsageEvent>, Option<String>) {
+        let mut events = Vec::new();
+        if self.groups.is_empty() {
+            return (events, None);
+        }
+        if self.groups.len() == 1 {
+            let (model, totals) = self.groups.iter().next().expect("one group");
+            if let Some(event) = totals.event(
+                session_dedup_key(session_id),
+                session_id,
+                model.as_deref(),
+                session_timestamp,
+                project,
+                source_file,
+            ) {
+                events.push(event);
+            }
+            return (events, None);
+        }
+        for (model, totals) in &self.groups {
+            let timestamp = totals
+                .latest_message_ms
+                .filter(|time| *time > 0)
+                .map(normalize_epoch)
+                .unwrap_or(session_timestamp);
+            if let Some(event) = totals.event(
+                split_dedup_key(session_id, model.as_ref()),
+                session_id,
+                model.as_deref(),
+                timestamp,
+                project.clone(),
+                source_file,
+            ) {
+                events.push(event);
+            }
+        }
+        (events, Some(session_dedup_key(session_id)))
+    }
+}
+
+impl ModelTotals {
+    fn add(&mut self, snapshot: UsageSnapshot, message_time: Option<i64>) {
         self.input = self.input.saturating_add(snapshot.input);
         self.output = self.output.saturating_add(snapshot.output);
         self.cache_read = self.cache_read.saturating_add(snapshot.cache_read);
         self.cache_write = self.cache_write.saturating_add(snapshot.cache_write);
-        self.saw_usage = true;
+        if let Some(time) = message_time.filter(|time| *time > 0) {
+            self.latest_message_ms =
+                Some(self.latest_message_ms.map_or(time, |latest| latest.max(time)));
+        }
 
         match snapshot.reasoning {
             Some(reasoning) => {
                 self.reasoning_seen = true;
                 self.reasoning = self.reasoning.saturating_add(reasoning);
             }
-            None => self.reasoning_complete = false,
-        }
-
-        match snapshot.model {
-            Some(model) => {
-                if let Some(existing) = &self.model {
-                    if existing != &model {
-                        self.model_proven = false;
-                    }
-                } else {
-                    self.model = Some(model);
-                }
-            }
-            None => self.model_proven = false,
+            None => self.reasoning_incomplete = true,
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn event(
         &self,
+        dedup_key: String,
         session_id: &str,
+        model: Option<&str>,
         timestamp: i64,
         project: Option<String>,
         source_file: &Path,
@@ -423,24 +500,19 @@ impl UsageTotals {
             .saturating_add(self.output)
             .saturating_add(self.cache_read)
             .saturating_add(self.cache_write);
-        if !self.saw_usage || total <= 0 {
+        if total <= 0 {
             return None;
         }
-        let model = if self.model_proven {
-            self.model.clone()
-        } else {
-            None
-        };
-        let reasoning = if self.reasoning_seen && self.reasoning_complete {
+        let reasoning = if self.reasoning_seen && !self.reasoning_incomplete {
             Some(self.reasoning.min(self.output))
         } else {
             None
         };
         Some(UsageEvent {
-            dedup_key: format!("{SOURCE}:session:{session_id}"),
+            dedup_key,
             source: SOURCE.to_string(),
             timestamp,
-            model,
+            model: model.map(str::to_string),
             project,
             api_calls: 1,
             input_tokens: self.input,
@@ -582,10 +654,14 @@ mod tests {
     }
 
     fn insert_message(db: &Connection, id: &str, session_id: &str, data: &str) {
+        insert_message_at(db, id, session_id, 1_780_000_000_000, data);
+    }
+
+    fn insert_message_at(db: &Connection, id: &str, session_id: &str, time_ms: i64, data: &str) {
         db.execute(
             "INSERT INTO message (id, session_id, time_created, data)
              VALUES (?1, ?2, ?3, ?4)",
-            params![id, session_id, 1_780_000_000_000i64, data],
+            params![id, session_id, time_ms, data],
         )
         .unwrap();
     }
@@ -666,7 +742,7 @@ mod tests {
         let ledger_path = tmp.path().join("ledger.db");
         let mut ledger = crate::db::open_db(&ledger_path).unwrap();
         let first = scan_opencode(&mut ledger, &data_root, &legacy, None);
-        assert_eq!(first.events_inserted, 3);
+        assert_eq!(first.events_inserted, 4);
         assert!(
             first.error.is_none(),
             "unexpected scan error: {:?}",
@@ -678,7 +754,7 @@ mod tests {
             .prepare(
                 "SELECT session_id, timestamp, model, input_tokens, output_tokens,
                         cache_read_tokens, cache_write_5m_tokens, source_file
-                 FROM events WHERE source = 'opencode' ORDER BY session_id",
+                 FROM events WHERE source = 'opencode' ORDER BY session_id, model",
             )
             .unwrap()
             .query_map([], |row| {
@@ -696,7 +772,7 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
 
         let overlap = rows.iter().find(|row| row.0 == "modern-overlap").unwrap();
         assert_eq!(overlap.1, 1_780_000_100);
@@ -717,9 +793,15 @@ mod tests {
             Some(3)
         );
 
-        let unknown = rows.iter().find(|row| row.0 == "modern-unknown").unwrap();
-        assert_eq!(unknown.2, None);
-        assert_eq!((unknown.3, unknown.4), (1, 2));
+        let unknown: Vec<&EventRow> = rows
+            .iter()
+            .filter(|row| row.0 == "modern-unknown")
+            .collect();
+        assert_eq!(unknown.len(), 2, "mixed-model session splits per Model");
+        let one = unknown.iter().find(|row| row.2.as_deref() == Some("one")).unwrap();
+        let two = unknown.iter().find(|row| row.2.as_deref() == Some("two")).unwrap();
+        assert_eq!((one.3, one.4), (1, 0));
+        assert_eq!((two.3, two.4), (0, 2));
 
         let legacy_only = rows.iter().find(|row| row.0 == "legacy-only").unwrap();
         assert_eq!(legacy_only.1, 1_780_000_400);
@@ -736,7 +818,7 @@ mod tests {
                     |row| row.get::<_, i64>(0)
                 )
                 .unwrap(),
-            3
+            4
         );
 
         drop(ledger);
@@ -828,5 +910,149 @@ mod tests {
                 .as_deref(),
             Some("nightly-model")
         );
+    }
+
+    #[test]
+    fn session_gaining_a_second_model_retires_the_stale_aggregate() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let current = data_root.join("opencode.db");
+        create_database(&current);
+        let db = Connection::open(&current).unwrap();
+        insert_session(&db, "mixed", "/private/mixed", 1_780_000_900_000);
+        insert_message_at(
+            &db,
+            "m1",
+            "mixed",
+            1_780_000_500_000,
+            r#"{"role":"assistant","modelID":"model-a","tokens":{"input":10,"output":4,"cache":{"read":0,"write":0}}}"#,
+        );
+        drop(db);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let first = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert_eq!(first.events_inserted, 1);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT dedup_key, model FROM events WHERE source = 'opencode'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .unwrap(),
+            ("opencode:session:mixed".to_string(), Some("model-a".to_string()))
+        );
+
+        let db = Connection::open(&current).unwrap();
+        insert_message_at(
+            &db,
+            "m2",
+            "mixed",
+            1_780_000_700_000,
+            r#"{"role":"assistant","modelID":"model-b","tokens":{"input":2,"output":8,"cache":{"read":0,"write":0}}}"#,
+        );
+        drop(db);
+
+        let second = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert!(
+            second.error.is_none(),
+            "unexpected scan error: {:?}",
+            second.error
+        );
+        let rows: Vec<(String, Option<String>, i64, i64, i64)> = ledger
+            .prepare(
+                "SELECT dedup_key, model, timestamp, input_tokens, output_tokens
+                 FROM events WHERE source = 'opencode' ORDER BY model",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "stale aggregate row is retired, not kept");
+        assert_eq!(
+            rows[0],
+            (
+                "opencode:session:mixed:model:model-a".to_string(),
+                Some("model-a".to_string()),
+                1_780_000_500,
+                10,
+                4
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                "opencode:session:mixed:model:model-b".to_string(),
+                Some("model-b".to_string()),
+                1_780_000_700,
+                2,
+                8
+            )
+        );
+
+        let third = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert_eq!(third.events_inserted, 0);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE source = 'opencode'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn legacy_mixed_session_splits_per_model_at_the_session_timestamp() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let legacy = data_root.join("storage");
+        write_json(
+            &legacy.join("session/project/legacy-mixed.json"),
+            r#"{"id":"legacy-mixed","directory":"/private/legacy-mixed","time":{"updated":1780000600000}}"#,
+        );
+        write_json(
+            &legacy.join("message/legacy-mixed/a.json"),
+            r#"{"role":"assistant","modelID":"model-a","tokens":{"input":5,"output":1,"cache":{"read":0,"write":0}}}"#,
+        );
+        write_json(
+            &legacy.join("message/legacy-mixed/b.json"),
+            r#"{"role":"assistant","modelID":"model-b","tokens":{"input":1,"output":7,"cache":{"read":2,"write":0}}}"#,
+        );
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_opencode(&mut ledger, &data_root, &legacy, None);
+        assert_eq!(result.events_inserted, 2);
+        assert!(
+            result.error.is_none(),
+            "unexpected scan error: {:?}",
+            result.error
+        );
+        let rows: Vec<(Option<String>, i64, i64, i64)> = ledger
+            .prepare(
+                "SELECT model, timestamp, input_tokens, output_tokens
+                 FROM events WHERE source = 'opencode' ORDER BY model",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], (Some("model-a".to_string()), 1_780_000_600, 5, 1));
+        assert_eq!(rows[1], (Some("model-b".to_string()), 1_780_000_600, 1, 7));
     }
 }
