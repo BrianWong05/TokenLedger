@@ -69,11 +69,7 @@ pub(crate) fn scan_transcript(
     result
 }
 
-fn scan_file(
-    conn: &mut Connection,
-    path: &Path,
-    source: &str,
-) -> Result<(u64, u64), String> {
+fn scan_file(conn: &mut Connection, path: &Path, source: &str) -> Result<(u64, u64), String> {
     let state = FileState {
         byte_offset: TRANSCRIPT_PARSER_VERSION,
         ..file_state_of(path)
@@ -100,12 +96,7 @@ struct ParsedTranscript {
     lines_skipped: u64,
 }
 
-fn parse_file(
-    content: &str,
-    path: &Path,
-    source: &str,
-    source_file: &str,
-) -> ParsedTranscript {
+fn parse_file(content: &str, path: &Path, source: &str, source_file: &str) -> ParsedTranscript {
     // Some(parent-session) marks a subagent transcript: its Records join the
     // parent Session per ADR-0016. None means a main transcript.
     let parent_session = parent_session_from_path(path);
@@ -250,9 +241,7 @@ struct ExtractedUsage {
 /// derived by subtracting the resolved cache-read figure (ADR-0001, ADR-0016).
 fn extract_usage(v: &Value) -> Option<ExtractedUsage> {
     let pd = v.get("providerData").and_then(|p| p.as_object());
-    let normalized = pd
-        .and_then(|p| p.get("usage"))
-        .and_then(|u| u.as_object());
+    let normalized = pd.and_then(|p| p.get("usage")).and_then(|u| u.as_object());
     let anthropic = v
         .get("message")
         .and_then(|m| m.as_object())
@@ -424,7 +413,10 @@ mod tests {
 
         let events: Vec<UsageEvent> = all_events(&conn).unwrap();
         assert_eq!(events.len(), 2);
-        let fc = events.iter().find(|e| e.dedup_key == "workbuddy:c1").unwrap();
+        let fc = events
+            .iter()
+            .find(|e| e.dedup_key == "workbuddy:c1")
+            .unwrap();
         assert_eq!(fc.source, "workbuddy");
         assert_eq!(fc.model.as_deref(), Some("deepseek-v4-flash"));
         assert_eq!(fc.project.as_deref(), Some("/Users/dev/projects/alpha"));
@@ -433,7 +425,10 @@ mod tests {
         assert_eq!(fc.input_tokens, 700); // 1000 − 300 cache read
         assert_eq!(fc.cache_read_tokens, 300);
         assert_eq!(fc.output_tokens, 50);
-        let m = events.iter().find(|e| e.dedup_key == "workbuddy:m1").unwrap();
+        let m = events
+            .iter()
+            .find(|e| e.dedup_key == "workbuddy:m1")
+            .unwrap();
         assert_eq!(m.input_tokens, 500);
         assert_eq!(m.cache_read_tokens, 0);
     }
@@ -501,7 +496,10 @@ mod tests {
 
         let events: Vec<UsageEvent> = all_events(&conn).unwrap();
         assert_eq!(events.len(), 3);
-        let parent = events.iter().find(|e| e.dedup_key == "workbuddy:p1").unwrap();
+        let parent = events
+            .iter()
+            .find(|e| e.dedup_key == "workbuddy:p1")
+            .unwrap();
         assert_eq!(parent.session_id.as_deref(), Some("parent-sess"));
         for sub in events.iter().filter(|e| e.dedup_key != "workbuddy:p1") {
             assert_eq!(
@@ -527,7 +525,10 @@ mod tests {
             r#"{"type":"summary","id":"sm0","timestamp":1786091399000,"providerData":{"usage":{"requests":1,"inputTokens":0,"outputTokens":0,"totalTokens":0}}}"#,
         ];
         let events = parse(&lines.join("\n"), Path::new("/f.jsonl"));
-        assert!(events.is_empty(), "expected no Records from non-usage lines");
+        assert!(
+            events.is_empty(),
+            "expected no Records from non-usage lines"
+        );
 
         // Non-zero summary: a Record.
         let events = parse(
@@ -556,12 +557,19 @@ mod tests {
         write(
             root,
             "proj/sess.jsonl",
-            &format!("{}\nnot-json\n{}\n", fc_line("c1", "sess-a", 100, 0, 10), msg_line("m1", "sess-a", 50, 0, 5)),
+            &format!(
+                "{}\nnot-json\n{}\n",
+                fc_line("c1", "sess-a", 100, 0, 10),
+                msg_line("m1", "sess-a", 50, 0, 5)
+            ),
         );
         let mut conn = open_db(&root.join("ledger.db")).unwrap();
         let first = scan_root(&mut conn, &root.join("proj"));
         assert_eq!(first.events_inserted, 2);
-        assert_eq!(first.lines_skipped, 1, "malformed line counted, scan still green");
+        assert_eq!(
+            first.lines_skipped, 1,
+            "malformed line counted, scan still green"
+        );
         assert!(first.error.is_none());
 
         let second = scan_root(&mut conn, &root.join("proj"));
@@ -611,9 +619,7 @@ mod tests {
     #[test]
     fn subagent_path_detection_is_platform_agnostic() {
         assert_eq!(
-            parent_session_from_path(Path::new(
-                "/root/proj/parent-sess/subagents/agent-1.jsonl"
-            )),
+            parent_session_from_path(Path::new("/root/proj/parent-sess/subagents/agent-1.jsonl")),
             Some("parent-sess".to_string())
         );
         assert_eq!(
