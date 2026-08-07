@@ -3,9 +3,9 @@ import { SOURCE_ICONS } from './icons';
 import { SOURCES, emptyBySource, sourceMeta } from './meta';
 
 describe('Source catalog', () => {
-  it('keeps Kilo, Cline, Goose, OpenCode, and lowercase pi in catalog order with distinct marks', () => {
+  it('keeps Zed, Kilo, Cline, Goose, OpenCode, and lowercase pi in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'cline', 'pi',
+      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi',
     ]);
     expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'pi', label: 'pi', source: 'pi' });
     expect(emptyBySource().pi).toBe(0);
@@ -29,6 +29,16 @@ describe('Source catalog', () => {
         expect.objectContaining({ id: 'db-linux', path: '.local/share/kilo/kilo.db' }),
       ]),
     });
+    expect(sourceMeta('zed')).toMatchObject({
+      key: 'zed', label: 'Zed', source: 'Zed', icon: 'zed', aliases: ['Zed Editor'],
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
+      platforms: ['linux', 'macos', 'windows'],
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ id: 'database-macos', path: 'Library/Application Support/Zed/threads/threads.db' }),
+        expect.objectContaining({ id: 'database-linux', path: '.local/share/zed/threads/threads.db' }),
+        expect.objectContaining({ id: 'database-windows', path: 'AppData/Local/Zed/threads/threads.db' }),
+      ]),
+    });
     expect(sourceMeta('cline')).toMatchObject({
       key: 'cline', label: 'Cline', source: 'Cline', icon: 'cline', aliases: ['Cline CLI', 'Cline VS Code'],
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
@@ -42,6 +52,7 @@ describe('Source catalog', () => {
     expect(SOURCE_ICONS.kilo).toMatch(/^data:image\/svg\+xml/);
     expect(SOURCE_ICONS.cline).toMatch(/^data:image\/svg\+xml/);
     expect(SOURCE_ICONS.pi).toMatch(/^data:image\/svg\+xml/);
+    expect(SOURCE_ICONS.zed).toMatch(/^data:image\/svg\+xml/);
   });
 
   it('derives metadata from the catalog and gives historical keys neutral fallback metadata', () => {

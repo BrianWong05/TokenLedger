@@ -108,6 +108,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         opencode_legacy: missing.clone(),
         opencode_db: None,
         kilo_db: missing.clone(),
+        zed_databases: vec![missing.clone()],
         cline: vec![missing.clone()],
     };
 
@@ -136,6 +137,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
             }
         }
         "kilo" => roots.kilo_db = artifact.to_path_buf(),
+        "zed" => roots.zed_databases = vec![artifact.to_path_buf()],
         "cline" => roots.cline = vec![artifact.to_path_buf()],
         _ => {}
     }
@@ -302,6 +304,7 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
             || source == "antigravity"
             || source == "opencode"
             || source == "kilo"
+            || source == "zed"
             || source == "cline")
             && extension.as_deref() == Some("db")
         {
@@ -345,6 +348,9 @@ const PRIVACY_MARKERS: &[&str] = &[
     "CLINE_PRIVATE_TOOL_MARKER",
     "KILO_PRIVATE_PROMPT_MARKER",
     "KILO_PRIVATE_RESPONSE_MARKER",
+    "ZED_PRIVATE_PROMPT_MARKER",
+    "ZED_PRIVATE_RESPONSE_MARKER",
+    "ZED_PRIVATE_TOOL_MARKER",
 ];
 
 fn ledger_has_no_privacy_markers(db_path: &Path) -> bool {
@@ -500,6 +506,18 @@ mod tests {
     }
 
     #[test]
+    fn selected_zed_artifact_is_used_as_the_single_source_root() {
+        let artifact = PathBuf::from("/private/zed/threads.db");
+        let missing = Path::new("/private/missing");
+
+        let roots = roots_for("zed", &artifact, missing);
+
+        assert_eq!(roots.zed_databases, vec![artifact]);
+        assert_eq!(roots.kilo_db, missing);
+        assert_eq!(roots.cline, vec![missing]);
+    }
+
+    #[test]
     fn selected_cline_artifact_is_used_as_the_single_source_root() {
         let artifact = PathBuf::from("/private/cline-data");
         let missing = Path::new("/private/missing");
@@ -650,5 +668,59 @@ mod tests {
 
         assert_eq!(report.result, "pass");
         assert_eq!(report.counts.total_tokens, 22);
+    }
+
+    #[test]
+    fn validation_accepts_a_synthetic_zed_database_without_persisting_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let artifact = directory.path().join("zed/threads/threads.db");
+        fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        let database = rusqlite::Connection::open(&artifact).unwrap();
+        database
+            .execute_batch(
+                "CREATE TABLE threads (
+                    id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    data_type TEXT NOT NULL,
+                    data BLOB NOT NULL,
+                    parent_id TEXT,
+                    folder_paths TEXT,
+                    folder_paths_order TEXT,
+                    created_at TEXT
+                );",
+            )
+            .unwrap();
+        let thread = serde_json::json!({
+            "version": "0.3.0",
+            "messages": [{"content": "ZED_PRIVATE_PROMPT_MARKER"}],
+            "cumulative_token_usage": {
+                "input_tokens": 11,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 2,
+                "cache_read_input_tokens": 3
+            },
+            "request_token_usage": {"request-1": {"input_tokens": 11}},
+            "model": {"provider": "zed.dev", "model": "zed-validation-model"}
+        });
+        let compressed = zstd::encode_all(thread.to_string().as_bytes(), 0).unwrap();
+        database
+            .execute(
+                "INSERT INTO threads (
+                    id, summary, updated_at, data_type, data, folder_paths, folder_paths_order
+                 ) VALUES ('zed-validation-thread', 'ZED_PRIVATE_RESPONSE_MARKER',
+                           '2026-07-01T10:00:00Z', 'zstd', ?1,
+                           '/Users/dev/zed-validation', '0')",
+                [compressed],
+            )
+            .unwrap();
+        drop(database);
+
+        let selection = Selection::from_values("zed", &artifact).unwrap();
+        let report = validate(&selection);
+
+        assert_eq!(report.result, "pass");
+        assert_eq!(report.counts.total_tokens, 21);
+        assert!(!report.to_json().contains("ZED_PRIVATE"));
     }
 }

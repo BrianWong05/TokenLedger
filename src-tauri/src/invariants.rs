@@ -7,6 +7,7 @@
 // pub(crate) helpers exist only under test (the sole callers — e2e_real_logs
 // and the hermetic test below — are themselves test-only).
 use rusqlite::Connection;
+use serde_json::json;
 use std::path::Path;
 
 /// Primary partition is exact where attributed: messages + system + reasoning
@@ -73,7 +74,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic ten-Source fixture + the default-run test that proves the four
+// Hermetic twelve-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -403,6 +404,47 @@ fn build_kilo(base: &Path) {
     .unwrap();
 }
 
+fn build_zed(base: &Path) {
+    let path = base.join("zed/threads/threads.db");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            data_type TEXT NOT NULL,
+            data BLOB NOT NULL,
+            parent_id TEXT,
+            folder_paths TEXT,
+            folder_paths_order TEXT,
+            created_at TEXT
+        );",
+    )
+    .unwrap();
+    let thread = json!({
+        "version": "0.3.0",
+        "messages": [{"content": "ZED_PRIVATE_PROMPT_MARKER"}],
+        "cumulative_token_usage": {
+            "input_tokens": 40,
+            "output_tokens": 8,
+            "cache_creation_input_tokens": 2,
+            "cache_read_input_tokens": 20
+        },
+        "request_token_usage": {"request-1": {"input_tokens": 40}},
+        "model": {"provider": "zed.dev", "model": "zed-model"}
+    });
+    let compressed = zstd::encode_all(thread.to_string().as_bytes(), 0).unwrap();
+    db.execute(
+        "INSERT INTO threads (
+            id, summary, updated_at, data_type, data, folder_paths, folder_paths_order
+         ) VALUES ('zed-s1', 'private summary', '2026-07-01T10:00:00Z',
+                   'zstd', ?1, '/Users/dev/projects/zed', '0')",
+        [compressed],
+    )
+    .unwrap();
+}
+
 fn build_cline(base: &Path) {
     write(
         &base.join("cline/editor/tasks/shared-session/ui_messages.json"),
@@ -435,7 +477,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_eleven_source_partition_invariants() {
+fn hermetic_twelve_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -448,6 +490,7 @@ fn hermetic_eleven_source_partition_invariants() {
     build_goose(base);
     build_opencode(base);
     build_kilo(base);
+    build_zed(base);
     build_cline(base);
     build_pi(base);
 
@@ -467,6 +510,7 @@ fn hermetic_eleven_source_partition_invariants() {
         opencode_legacy: base.join("opencode/storage"),
         opencode_db: None,
         kilo_db: base.join("kilo/kilo.db"),
+        zed_databases: vec![base.join("zed/threads/threads.db")],
         cline: vec![base.join("cline")],
     };
 
@@ -475,7 +519,7 @@ fn hermetic_eleven_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the eleven Sources ingested events and reported no error.
+    // Every one of the twelve Sources ingested events and reported no error.
     for src in [
         "claude",
         "codex",
@@ -486,6 +530,7 @@ fn hermetic_eleven_source_partition_invariants() {
         "goose",
         "opencode",
         "kilo",
+        "zed",
         "cline",
         "pi",
     ] {
@@ -533,12 +578,12 @@ fn hermetic_eleven_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all eleven here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all twelve here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 11,
-        "expected >=11 sources in ctx_buckets, got {}",
+        buckets.len() >= 12,
+        "expected >=12 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -573,7 +618,7 @@ fn hermetic_eleven_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all ten.
+    // Source's totals identical: ingestion is idempotent across all twelve.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {

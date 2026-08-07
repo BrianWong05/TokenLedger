@@ -12,11 +12,35 @@ pub mod hermes;
 pub mod kilo;
 pub mod opencode;
 pub mod pi;
+pub mod zed;
 
 use std::path::{Path, PathBuf};
 
-use crate::db::get_file_state;
-use crate::types::FileState;
+use crate::db::{get_file_state, upsert_events};
+use crate::types::{FileState, UsageEvent};
+
+pub(crate) fn upsert_events_count(
+    conn: &mut rusqlite::Connection,
+    events: &[UsageEvent],
+) -> rusqlite::Result<u64> {
+    let mut seen = std::collections::HashSet::new();
+    let mut inserted = 0;
+    for event in events {
+        if !seen.insert(event.dedup_key.as_str()) {
+            continue;
+        }
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE dedup_key = ?1)",
+            [&event.dedup_key],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            inserted += 1;
+        }
+    }
+    upsert_events(conn, events)?;
+    Ok(inserted)
+}
 
 pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     if dir.is_file() {

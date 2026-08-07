@@ -540,6 +540,7 @@ mod tests {
             opencode_legacy: dir.path().join("opencode/storage"),
             opencode_db: None,
             kilo_db: dir.path().join("kilo.db"),
+            zed_databases: vec![dir.path().join("zed/threads/threads.db")],
             cline: vec![dir.path().join("cline")],
         };
         let state = AppState {
@@ -552,7 +553,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 11);
+        assert_eq!(status.sources.len(), 12);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

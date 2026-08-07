@@ -22,10 +22,22 @@ whole-file adapters share `mod.rs`'s `unchanged()` skip-check. The explicit
 call list in `run_scan` is the cost we accept: adding a Source means editing
 `scan.rs` by hand.
 
+The predicted scaling trigger has since fired outside the adapters: Source
+identity, display metadata, discovery, and capabilities were repeated across
+the scanner and presentation code, where an omitted Source could silently
+disappear. That shared declarative metadata belongs in one static Source
+Catalog. The catalog centralises facts, not behaviour; parsing, skip, and
+persistence functions remain explicit and Source-specific. One declarative
+catalog file is authoritative for both Rust and TypeScript; it contains stable
+identity, display metadata, aliases, Source Artifact roots, Capabilities, and
+external prerequisites, but no parser function or persistence policy.
+The stable lowercase key is the permanent Ledger identity; display names and
+aliases may change without rewriting history.
+
 ## Consequences
 
-Revisit only if a concrete trigger fires: the post-split persistence shells
-become genuinely identical across adapters, or adding a Source starts
-requiring edits beyond `scan.rs` and the new adapter file. Absent that, a
-future review proposing "introduce a Source trait" is re-litigating this
-decision, not finding new friction.
+Revisit the trait decision only if the post-split persistence shells become
+genuinely identical across adapters. The metadata duplication trigger has been
+answered by the Source Catalog and does not justify polymorphic scan behaviour;
+absent new behavioural uniformity, a future review proposing "introduce a
+Source trait" is re-litigating this decision, not finding new friction.

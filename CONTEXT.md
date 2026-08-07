@@ -12,10 +12,11 @@ precise meaning of each domain term, independent of how the code implements it.
 The token usage attributed to one unit of billable work from a Source. The
 "unit of work" is one API call/response for Claude, Codex, Gemini,
 Antigravity, and a pi assistant message; one reported auxiliary usage block for
-a pi summary or tool result; one user Turn for Grok; but one whole Session for
-Hermes. Failed or aborted pi work counts when it reports non-zero usage, while
-all-zero placeholders do not. (Implemented as
-`UsageEvent`.)
+a pi summary or tool result; one usage-ledger row for Goose; one user Turn for
+Grok; but one whole Session for Hermes, OpenCode, Kilo, or Zed when their
+Artifacts expose no trustworthy finer timestamps. Failed or aborted work
+counts when it reports non-zero usage, while a zero-token observation is not a
+Usage Record. (Implemented as `UsageEvent`.)
 _Avoid_: Event, row, entry
 
 **Ledger**:
@@ -30,7 +31,9 @@ The application's home tab: the presentation of the Ledger over a
 user-selected date window and Source selection — headline token total, Cost,
 usage trends, and per-Source breakdowns. Activity and Profile are the two parts
 of the tab that ignore that selection. What it shows is always a view of the
-Ledger; it never holds usage data of its own. Usage data appears on no other tab.
+Ledger; it never holds usage data of its own. Its Source selection contains
+only Sources represented in the Ledger, including Sources whose Artifacts have
+since disappeared. Usage data appears on no other tab.
 _Avoid_: Dashboard, home screen
 
 **Activity**:
@@ -102,10 +105,24 @@ panel; the menu survives only where the platform delivers no icon clicks)
 ### Sources and granularity
 
 **Source**:
-An AI tool whose local logs TokenLedger reads: Claude Code, Codex, Gemini CLI,
-Hermes, Grok Build, Google Antigravity (IDE and CLI conversations count as the
-one Antigravity Source), or pi.
+An independently operated AI coding tool whose local Source Artifacts expose a
+timestamp and non-zero token count. Its identity outlives branding changes;
+alternate surfaces, storage formats, and model backends accessed through that
+tool remain one Source rather than becoming Sources themselves.
 _Avoid_: Provider, tool, agent, integration
+
+**Source Artifact**:
+A local file or database from which TokenLedger derives Usage Records. It may
+be a Source's native record or an already-populated third-party cache, and one
+Source may have many independently supported Artifacts; TokenLedger reads each
+passively, and rejecting one Artifact never rejects the Source itself.
+_Avoid_: Data source, import file
+
+**Source Capability**:
+A kind of attribution a Source can truthfully expose, independent of whether a
+particular Source Artifact happens to contain it. An unavailable Capability is
+unknown, never a measured zero.
+_Avoid_: Feature, field, support level
 
 **Session**:
 One continuous run of a Source's agent, comprising one or more Requests. Every
@@ -147,9 +164,10 @@ does not.
 _Avoid_: Engine, LLM, variant
 
 **Unattributed Usage**:
-A Usage Record whose Source reports tokens but no Model identity, including pi
-tool-result usage and extension-provided summary usage. Its tokens and Request
-are counted, but it contributes no Cost and is displayed separately rather than
+A Usage Record whose Source reports tokens but no reliable Model identity,
+including pi tool-result usage, extension-provided summary usage, and Artifacts
+that cannot correlate a Model to each unit of work. Its tokens and Request are
+counted, but it contributes no Cost and is displayed separately rather than
 assigned to a guessed Model; alone it has no Cost, while a mixed aggregate has
 Partial Cost.
 _Avoid_: Unknown Model, other Model

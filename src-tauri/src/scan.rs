@@ -16,6 +16,7 @@ use crate::adapters::hermes::scan_hermes;
 use crate::adapters::kilo::scan_kilo;
 use crate::adapters::opencode::scan_opencode;
 use crate::adapters::pi::scan_pi;
+use crate::adapters::zed::scan_zed;
 use crate::db::prune_missing_files;
 use crate::source_catalog;
 use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
@@ -36,6 +37,7 @@ pub struct SourceRoots {
     pub opencode_legacy: PathBuf,
     pub opencode_db: Option<PathBuf>,
     pub kilo_db: PathBuf,
+    pub zed_databases: Vec<PathBuf>,
     pub cline: Vec<PathBuf>,
 }
 
@@ -114,6 +116,12 @@ impl SourceRoots {
             environment_value("opencode", "xdg-data").as_deref(),
         );
         let kilo_db = kilo_db_root(home, std::env::consts::OS, kilo_db);
+        let zed_databases = zed_database_roots(
+            home,
+            std::env::consts::OS,
+            environment_value("zed", "database-flatpak").as_deref(),
+            environment_value("zed", "database-xdg").as_deref(),
+        );
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
             codex: catalog_root(home, "codex", "sessions"),
@@ -132,6 +140,7 @@ impl SourceRoots {
             opencode_legacy,
             opencode_db,
             kilo_db,
+            zed_databases,
             cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
         }
     }
@@ -302,6 +311,47 @@ fn kilo_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
         .unwrap_or(default)
 }
 
+fn zed_database_roots(
+    home: &Path,
+    platform: &str,
+    flatpak_data_home: Option<&OsStr>,
+    xdg_data_home: Option<&OsStr>,
+) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let override_data_home = if platform == "linux" {
+        flatpak_data_home
+            .and_then(|value| visible_path(home, value))
+            .filter(|path| path.is_absolute())
+            .map(|path| (path, "database-flatpak"))
+            .or_else(|| {
+                xdg_data_home
+                    .and_then(|value| visible_path(home, value))
+                    .filter(|path| path.is_absolute())
+                    .map(|path| (path, "database-xdg"))
+            })
+    } else {
+        None
+    };
+
+    if let Some((data_home, artifact)) = override_data_home {
+        if let Some(path) = source_catalog::artifact("zed", artifact)
+            .and_then(|artifact| artifact.path.as_deref())
+        {
+            push_unique_root(&mut roots, data_home.join(path));
+        }
+    } else {
+        let artifact = match platform {
+            "macos" => "database-macos",
+            "windows" => "database-windows",
+            _ => "database-linux",
+        };
+        if let Some(path) = catalog_root_for_platform(home, "zed", artifact, platform) {
+            push_unique_root(&mut roots, path);
+        }
+    }
+    roots
+}
+
 fn hermes_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
     if let Some(path) = value.and_then(|value| visible_path(home, value)) {
         return path;
@@ -439,6 +489,7 @@ fn run_scan_sources(
                     )
                 }),
                 "kilo" => run_one(&source.key, || scan_kilo(conn, &roots.kilo_db)),
+                "zed" => run_one(&source.key, || scan_zed(conn, &roots.zed_databases)),
                 "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
                 _ => SourceStatus {
                     source: source.key.clone(),
@@ -516,6 +567,7 @@ mod tests {
                 "goose",
                 "opencode",
                 "kilo",
+                "zed",
                 "cline",
                 "pi"
             ],
@@ -525,7 +577,11 @@ mod tests {
                 && !source.aliases.is_empty()
                 && source.color.starts_with('#')
                 && !source.icon.is_empty()
-                && source.platforms == ["all"]
+                && if source.key == "zed" {
+                    source.platforms == ["linux", "macos", "windows"]
+                } else {
+                    source.platforms == ["all"]
+                }
                 && source.prerequisite.is_none()
                 && source.capabilities.model
                 && source.capabilities.project
@@ -566,6 +622,11 @@ mod tests {
                 ("kilo", "db-macos", "Library/Application Support/kilo/kilo.db"),
                 ("kilo", "db-linux", ".local/share/kilo/kilo.db"),
                 ("kilo", "db-windows", "AppData/Local/kilo/kilo.db"),
+                ("zed", "database-macos", "Library/Application Support/Zed/threads/threads.db"),
+                ("zed", "database-linux", ".local/share/zed/threads/threads.db"),
+                ("zed", "database-windows", "AppData/Local/Zed/threads/threads.db"),
+                ("zed", "database-xdg", "zed/threads/threads.db"),
+                ("zed", "database-flatpak", "zed/threads/threads.db"),
                 ("cline", "editor-code-macos", "Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
                 ("cline", "editor-code-insiders-macos", "Library/Application Support/Code - Insiders/User/globalStorage/saoudrizwan.claude-dev/tasks"),
                 ("cline", "editor-code-linux", ".config/Code/User/globalStorage/saoudrizwan.claude-dev/tasks"),
@@ -701,6 +762,14 @@ mod tests {
             Some("Library/Application Support/kilo/kilo.db")
         );
 
+        let zed = crate::source_catalog::source("zed").unwrap();
+        assert_eq!(zed.source, "Zed");
+        assert_eq!(zed.aliases, ["Zed Editor"]);
+        assert_eq!(zed.platforms, ["linux", "macos", "windows"]);
+        assert_eq!(zed.artifacts[0].id, "database-macos");
+        assert_eq!(zed.artifacts[3].environment.as_deref(), Some("XDG_DATA_HOME"));
+        assert_eq!(zed.artifacts[4].environment.as_deref(), Some("FLATPAK_XDG_DATA_HOME"));
+
         let cline = crate::source_catalog::source("cline").unwrap();
         assert_eq!(cline.source, "Cline");
         assert_eq!(cline.aliases, ["Cline CLI", "Cline VS Code"]);
@@ -811,6 +880,49 @@ mod tests {
         assert_eq!(
             kilo_db_root(home.path(), "linux", Some(OsStr::new("custom.db"))),
             home.path().join(".local/share/kilo/custom.db")
+        );
+    }
+
+    #[test]
+    fn zed_roots_use_supported_platform_paths_and_xdg_overrides() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            zed_database_roots(home.path(), "macos", None, None),
+            vec![home
+                .path()
+                .join("Library/Application Support/Zed/threads/threads.db")]
+        );
+        assert_eq!(
+            zed_database_roots(home.path(), "linux", None, None),
+            vec![home.path().join(".local/share/zed/threads/threads.db")]
+        );
+        assert_eq!(
+            zed_database_roots(home.path(), "windows", None, None),
+            vec![home.path().join("AppData/Local/Zed/threads/threads.db")]
+        );
+
+        let xdg = home.path().join("configured-data");
+        assert_eq!(
+            zed_database_roots(
+                home.path(),
+                "linux",
+                None,
+                Some(OsStr::new(xdg.to_str().unwrap()))
+            ),
+            vec![xdg.join("zed/threads/threads.db")]
+        );
+
+        let flatpak = home.path().join("flatpak-data");
+        assert_eq!(
+            zed_database_roots(
+                home.path(),
+                "linux",
+                Some(OsStr::new(flatpak.to_str().unwrap())),
+                Some(OsStr::new(xdg.to_str().unwrap()))
+            ),
+            vec![flatpak.join("zed/threads/threads.db")]
         );
     }
 
@@ -1031,6 +1143,12 @@ mod tests {
             .antigravity_cli_conversations
             .ends_with(".gemini/antigravity-cli/conversations"));
         assert!(r.pi_sessions[0].ends_with(".pi/agent/sessions"));
+        let zed_suffix = match std::env::consts::OS {
+            "macos" => "Library/Application Support/Zed/threads/threads.db",
+            "windows" => "AppData/Local/Zed/threads/threads.db",
+            _ => ".local/share/zed/threads/threads.db",
+        };
+        assert!(r.zed_databases[0].ends_with(zed_suffix));
         assert!(!r.goose_sessions.is_empty());
         assert!(r.cline.iter().any(|path| path.ends_with(".cline/data")));
         assert!(r.cline.iter().any(|path| path
@@ -1272,6 +1390,7 @@ mod tests {
             opencode_legacy: tmp.path().join("opencode/storage"),
             opencode_db: None,
             kilo_db: tmp.path().join("kilo.db"),
+            zed_databases: vec![tmp.path().join("zed/threads/threads.db")],
             cline: vec![tmp.path().join("cline")],
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
@@ -1327,6 +1446,7 @@ mod tests {
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
             kilo_db: base.join("no-kilo.db"),
+            zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
         };
 
@@ -1350,7 +1470,7 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 11);
+        assert_eq!(status.sources.len(), 12);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1676,6 +1796,11 @@ mod tests {
             .unwrap()
             .execute_batch("CREATE TABLE unrelated (id TEXT PRIMARY KEY);")
             .unwrap();
+        let zed_db = base.join("zed.db");
+        rusqlite::Connection::open(&zed_db)
+            .unwrap()
+            .execute_batch("CREATE TABLE unrelated (id TEXT PRIMARY KEY);")
+            .unwrap();
 
         // Everything else points at paths that do not exist, except the
         // unsupported Kilo database above.
@@ -1694,13 +1819,14 @@ mod tests {
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
             kilo_db,
+            zed_databases: vec![zed_db],
             cline: vec![base.join("no-cline")],
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 11);
+        assert_eq!(status.sources.len(), 12);
         assert_eq!(status.sources.last().unwrap().source, "pi");
         assert!(status.scanned_at > 0);
 
@@ -1730,6 +1856,12 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("kilo") && error.contains("unsupported")));
+        let zed = find(&status, "zed");
+        assert_eq!(zed.events_inserted, 0);
+        assert!(zed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("zed") && error.contains("unsupported")));
 
         // Missing directory-shaped roots → zero events, no error.
         let grok = find(&status, "grok");
@@ -1837,6 +1969,7 @@ mod tests {
             opencode_legacy: legacy,
             opencode_db: None,
             kilo_db: base.join("no-kilo.db"),
+            zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -1998,6 +2131,7 @@ mod tests {
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
             kilo_db: database_path.clone(),
+            zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
         };
         let mut ledger = open_db(&base.join("ledger.db")).unwrap();

@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::db::upsert_events;
+use crate::adapters::upsert_events_count;
 use crate::types::{SourceScanResult, UsageEvent};
 
 const SOURCE: &str = "kilo";
@@ -211,26 +211,6 @@ fn ensure_schema(database: &Connection) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn upsert_events_count(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<u64> {
-    let mut seen = HashSet::new();
-    let mut inserted = 0;
-    for event in events {
-        if !seen.insert(event.dedup_key.as_str()) {
-            continue;
-        }
-        let exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM events WHERE dedup_key = ?1)",
-            [&event.dedup_key],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            inserted += 1;
-        }
-    }
-    upsert_events(conn, events)?;
-    Ok(inserted)
 }
 
 fn model_name(raw: Option<&str>) -> Option<String> {

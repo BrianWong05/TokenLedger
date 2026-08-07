@@ -139,6 +139,24 @@
       "prerequisite": null
     },
     {
+      "key": "zed",
+      "label": "Zed",
+      "source": "Zed",
+      "aliases": ["Zed Editor"],
+      "color": "#5f5ce6",
+      "icon": "zed",
+      "artifacts": [
+        { "id": "database-macos", "kind": "file", "path": "Library/Application Support/Zed/threads/threads.db", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
+        { "id": "database-linux", "kind": "file", "path": ".local/share/zed/threads/threads.db", "environment": null, "suffix": null, "platforms": ["linux"], "prerequisite": null },
+        { "id": "database-windows", "kind": "file", "path": "AppData/Local/Zed/threads/threads.db", "environment": null, "suffix": null, "platforms": ["windows"], "prerequisite": null },
+        { "id": "database-xdg", "kind": "file", "path": "zed/threads/threads.db", "environment": "XDG_DATA_HOME", "suffix": null, "platforms": ["linux"], "prerequisite": null },
+        { "id": "database-flatpak", "kind": "file", "path": "zed/threads/threads.db", "environment": "FLATPAK_XDG_DATA_HOME", "suffix": null, "platforms": ["linux"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["linux", "macos", "windows"],
+      "prerequisite": null
+    },
+    {
       "key": "cline",
       "label": "Cline",
       "source": "Cline",
