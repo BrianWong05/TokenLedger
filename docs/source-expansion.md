@@ -120,6 +120,10 @@ trustworthy finer timing.
 - Junie
 - Kiro
 - ZCode
+- Antigravity's encrypted `.pb` Session format — the IDE's current
+  storage; whole-file ciphertext that no offline key/mode combination
+  decrypts, so only the `.db` shape is scanned. Investigated 2026-08-08; see
+  `docs/source-evidence/antigravity.md`.
 
 These candidates lack enough evidence to design a truthful production parser.
 They remain pending rather than rejected.

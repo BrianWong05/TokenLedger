@@ -1,10 +1,11 @@
 // TokenLedger — Google Antigravity adapter.
 //
-// Antigravity (IDE agent and CLI) stores each conversation as a SQLite
+// Antigravity (IDE agent and CLI) stores each Session as a SQLite
 // database: `~/.gemini/antigravity/conversations/<uuid>.db` (IDE) and
 // `~/.gemini/antigravity-cli/conversations/<uuid>.db` (CLI), same schema.
-// Sibling `<uuid>.pb` files are encrypted legacy conversations only the
-// live language server can decrypt — skipped.
+// Sibling `<uuid>.pb` files are encrypted Sessions — legacy *and* current
+// format — that only the live language server can decrypt; skipped.
+// See docs/source-evidence/antigravity.md.
 //
 // Each `gen_metadata` row is one generation (one API call) encoded as a
 // protobuf blob. There is no published .proto; field numbers below follow

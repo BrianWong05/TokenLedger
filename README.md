@@ -136,9 +136,12 @@ distort something in a way worth knowing before you trust a figure.
   rather than per call, timestamped at the session's start — so a session opened
   Monday and worked through Wednesday books all of its tokens on Monday. That
   bends Trend and Activity, not just the totals.
-- **Google Antigravity counts as one source.** Its IDE and CLI keep separate
-  conversation databases; both are read and reported under a single Antigravity
-  source rather than split.
+- **Google Antigravity counts as one source, and sees only its SQLite
+  Sessions.** Its IDE and CLI keep separate Session databases; both
+  are read and reported under a single Antigravity source rather than split.
+  Sessions Antigravity stores as encrypted `.pb` files — the IDE's
+  current default — are unreadable offline and contribute nothing; see
+  `docs/source-evidence/antigravity.md`.
 - **Claude Code rolls worktrees up.** A git worktree is attributed to its parent
   repository rather than appearing as a project of its own.
 - **Goose has two supported storage shapes.** Modern `usage_ledger` rows are
