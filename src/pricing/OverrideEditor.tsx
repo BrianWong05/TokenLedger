@@ -107,7 +107,7 @@ export default function OverrideEditor({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="tl-pr-dialog-head">
-          <span className="tl-pr-icon">
+          <span className={'tl-pr-icon ' + model.tool}>
             {icon ? <img src={icon} alt="" width={15} height={15} /> : <b>{tool[0]}</b>}
           </span>
           <div style={{ flex: 1, minWidth: 0 }}>

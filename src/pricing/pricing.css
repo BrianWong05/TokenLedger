@@ -245,8 +245,10 @@
 .tl-pr-icon img {
   display: block;
 }
-/* grok's mark is near-white; keep a dark chip so it stays legible in light mode */
-:root[data-theme='light'] .tl-pr-icon.grok {
+/* grok's, pi's and opencode's marks are near-white; keep a dark chip so they stay legible in light mode */
+:root[data-theme='light'] .tl-pr-icon.grok,
+:root[data-theme='light'] .tl-pr-icon.pi,
+:root[data-theme='light'] .tl-pr-icon.opencode {
   background: #23232b;
   border-color: #23232b;
 }

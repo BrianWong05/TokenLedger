@@ -1,4 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <rect x="3.5" y="4" width="17" height="16" rx="3"/>
-  <path d="m8 9 3 3-3 3M13.5 15H17"/>
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Official OpenCode mark vendored from github.com/anomalyco/opencode (packages/console/app/src/asset/brand/opencode-logo-dark-square.svg) on 2026-08-08; light mode backs it with a dark chip (overview.css, pricing.css). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300" fill="none">
+  <g transform="translate(30, 0)">
+    <path d="M180 240H60V120H180V240Z" fill="#4B4646"/>
+    <path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="#F1ECEC"/>
+  </g>
 </svg>

@@ -328,7 +328,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
 function SourceIcon({ tool }: { tool: SourceMeta }) {
   const src = sourceIcon(tool.icon);
   return (
-    <span className="tt-toolicon">
+    <span className={'tt-toolicon ' + tool.icon}>
       {src ? (
         <img src={src} alt="" width={20} height={20} />
       ) : (

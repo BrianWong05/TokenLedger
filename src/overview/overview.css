@@ -643,6 +643,13 @@
   font-weight: 800;
   line-height: 1;
 }
+/* pi's and opencode's marks are near-white; keep a dark chip so they stay legible in light mode */
+:root[data-theme='light'] .tt-toolicon.pi,
+:root[data-theme='light'] .tt-toolicon.opencode {
+  background: #23232b;
+  border-radius: 6px;
+  padding: 3px;
+}
 .tt-toolcard .num {
   font-size: 19px;
   font-weight: 600;
