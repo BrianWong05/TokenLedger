@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic eight-Source fixture — not only
+// on every plain `cargo test` against a hermetic twelve-Source fixture — not only
 // under the #[ignore] real-log e2e. The four assert_* helpers hold the exact
 // SQL + messages the e2e used to inline; both callers share them.
 //

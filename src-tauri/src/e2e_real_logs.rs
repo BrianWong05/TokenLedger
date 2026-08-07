@@ -67,7 +67,7 @@ fn e2e_real_logs() {
 
     // Context attribution invariants (spec 2026-07-10-context-breakdown).
     // The universal cross-Source invariants live in crate::invariants, shared
-    // with the hermetic eight-Source test so both exercise identical SQL.
+    // with the hermetic twelve-Source test so both exercise identical SQL.
     crate::invariants::assert_partition_exact(&conn);
     crate::invariants::assert_secondary_subset(&conn);
     crate::invariants::assert_hermes_ctx_null(&conn);
