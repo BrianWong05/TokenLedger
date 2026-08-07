@@ -112,6 +112,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         cline: vec![missing.clone()],
         workbuddy: missing.clone(),
         codebuddy: missing.clone(),
+        qoder_db: missing.clone(),
     };
 
     match source {
@@ -142,6 +143,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "cline" => roots.cline = vec![artifact.to_path_buf()],
         "workbuddy" => roots.workbuddy = artifact.to_path_buf(),
         "codebuddy" => roots.codebuddy = artifact.to_path_buf(),
+        "qoder" => roots.qoder_db = artifact.to_path_buf(),
         _ => {}
     }
 
@@ -308,7 +310,8 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
             || source == "opencode"
             || source == "kilo"
             || source == "zed"
-            || source == "cline")
+            || source == "cline"
+            || source == "qoder")
             && extension.as_deref() == Some("db")
         {
             considered = true;

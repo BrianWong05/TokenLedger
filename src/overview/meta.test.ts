@@ -3,11 +3,11 @@ import { SOURCE_ICONS } from './icons';
 import { SOURCES, emptyBySource, sourceMeta } from './meta';
 
 describe('Source catalog', () => {
-  it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, WorkBuddy, and CodeBuddy in catalog order with distinct marks', () => {
+  it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, WorkBuddy, CodeBuddy, and Qoder in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'workbuddy', 'codebuddy',
+      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'workbuddy', 'codebuddy', 'qoder',
     ]);
-    expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'codebuddy', label: 'CodeBuddy', source: 'CodeBuddy', icon: 'codebuddy' });
+    expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder' });
     expect(emptyBySource().pi).toBe(0);
     expect(emptyBySource().kilo).toBe(0);
     expect(sourceMeta('codebuddy')).toMatchObject({
@@ -15,6 +15,13 @@ describe('Source catalog', () => {
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
       artifacts: expect.arrayContaining([
         expect.objectContaining({ id: 'projects', path: '.codebuddy/projects' }),
+      ]),
+    });
+    expect(sourceMeta('qoder')).toMatchObject({
+      key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder', aliases: ['Qoder IDE', 'Qoder CN'],
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ id: 'db-macos', path: 'Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db' }),
       ]),
     });
     expect(sourceMeta('workbuddy')).toMatchObject({

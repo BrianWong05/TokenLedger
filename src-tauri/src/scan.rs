@@ -17,6 +17,7 @@ use crate::adapters::hermes::scan_hermes;
 use crate::adapters::kilo::scan_kilo;
 use crate::adapters::opencode::scan_opencode;
 use crate::adapters::pi::scan_pi;
+use crate::adapters::qoder::scan_qoder;
 use crate::adapters::workbuddy::scan_workbuddy;
 use crate::adapters::zed::scan_zed;
 use crate::db::prune_missing_files;
@@ -43,6 +44,7 @@ pub struct SourceRoots {
     pub cline: Vec<PathBuf>,
     pub workbuddy: PathBuf,
     pub codebuddy: PathBuf,
+    pub qoder_db: PathBuf,
 }
 
 impl SourceRoots {
@@ -68,6 +70,7 @@ impl SourceRoots {
             environment_value("cline", "cli-data").as_deref(),
             environment_value("cline", "cli-sandbox").as_deref(),
             environment_value("kilo", "db").as_deref(),
+            None,
         )
     }
 
@@ -90,6 +93,7 @@ impl SourceRoots {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -103,6 +107,7 @@ impl SourceRoots {
         cline_data: Option<&OsStr>,
         cline_sandbox_data: Option<&OsStr>,
         kilo_db: Option<&OsStr>,
+        qoder_db: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
@@ -120,6 +125,7 @@ impl SourceRoots {
             environment_value("opencode", "xdg-data").as_deref(),
         );
         let kilo_db = kilo_db_root(home, std::env::consts::OS, kilo_db);
+        let qoder_db = qoder_db_root(home, std::env::consts::OS, qoder_db);
         let zed_databases = zed_database_roots(
             home,
             std::env::consts::OS,
@@ -148,6 +154,7 @@ impl SourceRoots {
             cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
             workbuddy: catalog_root(home, "workbuddy", "projects"),
             codebuddy: catalog_root(home, "codebuddy", "projects"),
+            qoder_db,
         }
     }
 }
@@ -305,6 +312,25 @@ fn kilo_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
         _ => "db-linux",
     };
     let default = catalog_root(home, "kilo", artifact);
+    let Some(value) = value.and_then(|value| visible_path(home, value)) else {
+        return default;
+    };
+    if value.is_absolute() {
+        return value;
+    }
+    default
+        .parent()
+        .map(|parent| parent.join(value))
+        .unwrap_or(default)
+}
+
+fn qoder_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
+    let artifact = match platform {
+        "macos" => "db-macos",
+        "windows" => "db-windows",
+        _ => "db-linux",
+    };
+    let default = catalog_root(home, "qoder", artifact);
     let Some(value) = value.and_then(|value| visible_path(home, value)) else {
         return default;
     };
@@ -499,6 +525,7 @@ fn run_scan_sources(
                 "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
                 "workbuddy" => run_one(&source.key, || scan_workbuddy(conn, &roots.workbuddy)),
                 "codebuddy" => run_one(&source.key, || scan_codebuddy(conn, &roots.codebuddy)),
+                "qoder" => run_one(&source.key, || scan_qoder(conn, &roots.qoder_db)),
                 _ => SourceStatus {
                     source: source.key.clone(),
                     events_inserted: 0,
@@ -579,7 +606,8 @@ mod tests {
                 "cline",
                 "pi",
                 "workbuddy",
-                "codebuddy"
+                "codebuddy",
+                "qoder"
             ],
         );
         assert!(catalog.sources.iter().all(|source| {
@@ -649,6 +677,9 @@ mod tests {
                 ("pi", "sessions", ".pi/agent/sessions"),
                 ("workbuddy", "projects", ".workbuddy/projects"),
                 ("codebuddy", "projects", ".codebuddy/projects"),
+                ("qoder", "db-macos", "Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-linux", ".config/QoderCN/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-windows", "AppData/Roaming/QoderCN/SharedClientCache/cache/db/local.db"),
             ],
         );
         assert!(catalog
@@ -1412,6 +1443,7 @@ mod tests {
             cline: vec![tmp.path().join("cline")],
             workbuddy: tmp.path().join("no-workbuddy"),
             codebuddy: tmp.path().join("no-codebuddy"),
+            qoder_db: tmp.path().join("no-qoder"),
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -1470,6 +1502,7 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
+            qoder_db: base.join("no-qoder"),
         };
 
         let db_path = base.join("ledger.db");
@@ -1492,8 +1525,8 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 14);
-        assert_eq!(status.sources.last().unwrap().source, "codebuddy");
+        assert_eq!(status.sources.len(), 15);
+        assert_eq!(status.sources.last().unwrap().source, "qoder");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
         assert_eq!(pi.events_inserted, 4);
@@ -1845,13 +1878,14 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
+            qoder_db: base.join("no-qoder"),
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 14);
-        assert_eq!(status.sources.last().unwrap().source, "codebuddy");
+        assert_eq!(status.sources.len(), 15);
+        assert_eq!(status.sources.last().unwrap().source, "qoder");
         assert!(status.scanned_at > 0);
 
         // Claude still ingests its event even though Gemini reports a warning.
@@ -1997,6 +2031,7 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
+            qoder_db: base.join("no-qoder"),
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
@@ -2161,6 +2196,7 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
+            qoder_db: base.join("no-qoder"),
         };
         let mut ledger = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut ledger, &roots);

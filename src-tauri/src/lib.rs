@@ -538,6 +538,7 @@ mod tests {
             cline: vec![dir.path().join("cline")],
             workbuddy: dir.path().join("workbuddy"),
             codebuddy: dir.path().join("codebuddy"),
+            qoder_db: dir.path().join("qoder.db"),
         };
         let state = AppState {
             db: Mutex::new(conn),
@@ -549,7 +550,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 14);
+        assert_eq!(status.sources.len(), 15);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

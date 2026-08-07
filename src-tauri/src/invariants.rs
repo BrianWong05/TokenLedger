@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic fourteen-Source fixture — not
+// on every plain `cargo test` against a hermetic fifteen-Source fixture — not
 // only under the #[ignore] real-log e2e. The four assert_* helpers hold the
 // exact SQL + messages the e2e used to inline; both callers share them.
 //
@@ -79,7 +79,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic fourteen-Source fixture + the default-run test that proves the four
+// Hermetic fifteen-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -551,8 +551,51 @@ fn build_codebuddy(base: &Path) {
     );
 }
 
+// qoder: a SQLite chat_message table where each usage-bearing assistant row is
+// one Record. prompt_tokens includes cached_tokens, so Input = prompt − cached
+// (ADR-0001). model_info carries the model_key. No cache-write, no reasoning,
+// no Context tiers (catalog: context false).
+fn build_qoder(base: &Path) {
+    let path = base.join("qoder/local.db");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE chat_message (
+            id VARCHAR(64) PRIMARY KEY,
+            session_id VARCHAR(64),
+            request_id VARCHAR(64),
+            role VARCHAR(64),
+            content text,
+            summary text,
+            summary_modified INTEGER,
+            summary_trigger INTEGER DEFAULT 0,
+            tool_result text,
+            token_info text,
+            model_info text,
+            extra text DEFAULT '',
+            gmt_create INTEGER
+        );",
+    )
+    .unwrap();
+    // prompt 25038 = 420 fresh + 24618 cached.
+    db.execute(
+        "INSERT INTO chat_message (id, session_id, role, content, token_info, model_info, gmt_create)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            "qoder-m1",
+            "task-qoder.session.execution",
+            "assistant",
+            "QODER_PRIVATE_PROMPT_MARKER",
+            r#"{"prompt_tokens":25038,"completion_tokens":470,"cached_tokens":24618,"max_input_tokens":1000000}"#,
+            r#"{"model_key":"qmodel_38max"}"#,
+            1_786_112_276_027i64,
+        ],
+    )
+    .unwrap();
+}
+
 #[test]
-fn hermetic_fourteen_source_partition_invariants() {
+fn hermetic_fifteen_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -570,6 +613,7 @@ fn hermetic_fourteen_source_partition_invariants() {
     build_pi(base);
     build_workbuddy(base);
     build_codebuddy(base);
+    build_qoder(base);
 
     let roots = SourceRoots {
         claude: base.join("claude"),
@@ -591,6 +635,7 @@ fn hermetic_fourteen_source_partition_invariants() {
         cline: vec![base.join("cline")],
         workbuddy: base.join("workbuddy"),
         codebuddy: base.join("codebuddy"),
+        qoder_db: base.join("qoder/local.db"),
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -598,7 +643,7 @@ fn hermetic_fourteen_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the fourteen Sources ingested events and reported no error.
+    // Every one of the fifteen Sources ingested events and reported no error.
     for src in [
         "claude",
         "codex",
@@ -614,6 +659,7 @@ fn hermetic_fourteen_source_partition_invariants() {
         "pi",
         "workbuddy",
         "codebuddy",
+        "qoder",
     ] {
         let s = status
             .sources
@@ -670,7 +716,7 @@ fn hermetic_fourteen_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all fourteen here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all fifteen here).
     let buckets = crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
         buckets.len() >= 14,
@@ -713,7 +759,7 @@ fn hermetic_fourteen_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all fourteen.
+    // Source's totals identical: ingestion is idempotent across all fifteen.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {
