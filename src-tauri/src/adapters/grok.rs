@@ -130,7 +130,7 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
 
 struct SessionMeta {
     session_id: String,
-    model: String,
+    model: Option<String>,
     project: Option<String>,
     fallback_ts: i64,
 }
@@ -157,7 +157,9 @@ fn read_session_meta(
         .map(percent_decode)
         .filter(|p| p.starts_with('/'));
 
-    let mut model = "unknown".to_string();
+    // Never a sentinel: usage without a reliable Model stays Unattributed
+    // (ADR-0008), so a missing summary or current_model_id means None.
+    let mut model: Option<String> = None;
     let mut fallback_ts = 0;
     let summary_path = session_dir.join("summary.json");
     if summary_path.exists() {
@@ -182,7 +184,7 @@ fn read_session_meta(
         };
         if let Some(m) = v.get("current_model_id").and_then(Value::as_str) {
             if !m.is_empty() {
-                model = m.to_string();
+                model = Some(m.to_string());
             }
         }
         if let Some(cwd) = v.pointer("/info/cwd").and_then(Value::as_str) {
@@ -456,7 +458,7 @@ fn make_event(
         dedup_key: format!("grok:{}:{}", meta.session_id, turn_index),
         source: "grok".to_string(),
         timestamp,
-        model: Some(meta.model.clone()),
+        model: meta.model.clone(),
         project: meta.project.clone(),
         api_calls: 1, // logs expose turn boundaries only, not API calls
         input_tokens,
@@ -617,12 +619,12 @@ mod tests {
         );
 
         let (_app, conn, _res) = scan(tmp.path());
-        let (model, project): (String, Option<String>) = conn
+        let (model, project): (Option<String>, Option<String>) = conn
             .query_row("SELECT model, project FROM events", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
             .unwrap();
-        assert_eq!(model, "unknown");
+        assert_eq!(model, None); // no summary.json → Unattributed, never "unknown"
         assert_eq!(project, Some("/Users/dev/beta".to_string()));
     }
 
