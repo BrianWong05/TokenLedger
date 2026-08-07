@@ -195,6 +195,20 @@
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
       "platforms": ["all"],
       "prerequisite": null
+    },
+    {
+      "key": "workbuddy",
+      "label": "WorkBuddy",
+      "source": "WorkBuddy",
+      "aliases": ["WorkBuddy desktop"],
+      "color": "#7c6cf0",
+      "icon": "workbuddy",
+      "artifacts": [
+        { "id": "projects", "kind": "directory", "path": ".workbuddy/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
     }
   ]
 }

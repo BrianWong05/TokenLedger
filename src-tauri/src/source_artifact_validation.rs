@@ -110,6 +110,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         kilo_db: missing.clone(),
         zed_databases: vec![missing.clone()],
         cline: vec![missing.clone()],
+        workbuddy: missing.clone(),
     };
 
     match source {
@@ -139,6 +140,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "kilo" => roots.kilo_db = artifact.to_path_buf(),
         "zed" => roots.zed_databases = vec![artifact.to_path_buf()],
         "cline" => roots.cline = vec![artifact.to_path_buf()],
+        "workbuddy" => roots.workbuddy = artifact.to_path_buf(),
         _ => {}
     }
 

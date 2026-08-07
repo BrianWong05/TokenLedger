@@ -3,7 +3,7 @@
 A desktop app (Tauri v2) for macOS, Windows, and Linux that tracks token usage
 and estimated cost across the AI coding agents and assistants on your machine —
 **Claude Code**, **Codex CLI**, **Gemini CLI**, **Hermes**, **Grok Build**,
-**Google Antigravity**, **Goose**, **OpenCode**, **Cline**, **Kilo**, **Zed**, and **pi** — by parsing each tool's local logs into a
+**Google Antigravity**, **Goose**, **OpenCode**, **Cline**, **Kilo**, **Zed**, **pi**, and **WorkBuddy** — by parsing each tool's local logs into a
 normalized SQLite ledger.
 
 **Status: 0.1.0.** Driven daily on macOS. Windows and Linux build and pass the
@@ -112,6 +112,7 @@ updates.
 | [Kilo](https://kilocode.ai) | Kilo Code CLI | `~/Library/Application Support/kilo/kilo.db` on macOS; `~/.local/share/kilo/kilo.db` on Linux; `%LOCALAPPDATA%\\kilo\\kilo.db` on Windows; `$KILO_DB` when overridden |
 | [Zed](https://zed.dev) | Zed Editor's hosted agent | `~/Library/Application Support/Zed/threads/threads.db` on macOS; `~/.local/share/zed/threads/threads.db` on Linux; `%LOCALAPPDATA%\\Zed\\threads\\threads.db` on Windows; XDG and Flatpak data-home branches on Linux |
 | [pi](https://github.com/earendil-works/pi) | Agent toolkit — unified LLM API, agent loop, TUI, coding agent CLI | `~/.pi/agent/sessions/**/*.jsonl` |
+| WorkBuddy | Desktop AI assistant | `~/.workbuddy/projects/**/*.jsonl` |
 
 Most paths above are under your home directory and are read passively. `GROK_HOME`
 and `GOOSE_PATH_ROOT` may point discovery at different roots. The
@@ -122,7 +123,7 @@ mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 
 ## Where the numbers bend
 
-Every source logs what it wants to, not what a ledger would like. Eight of them
+Every source logs what it wants to, not what a ledger would like. Nine of them
 distort something in a way worth knowing before you trust a figure.
 
 - **Grok Build's cost is not trustworthy.** Its logs carry a single running
@@ -151,6 +152,14 @@ distort something in a way worth knowing before you trust a figure.
   Session's updated timestamp. Trend and Activity are honest about that coarse
   timing rather than inventing per-Request points; see the `docs/source-evidence/`
   records for the exact supported shapes.
+- **WorkBuddy's cache fields disagree, and subagents are additive.** Its
+  transcript's `inputTokens` includes cache reads, so Input is derived by
+  subtracting the cache-read figure — preferring the OpenAI-style
+  `prompt_cache_hit_tokens`, falling back to the Anthropic-style
+  `cache_read_input_tokens`. Subagent transcripts are scanned as extra Records
+  in the parent Session, never double-counted. WorkBuddy's logged `credit` is
+  ignored and repriced from TokenLedger's rates. See ADR-0016 and
+  `docs/source-evidence/workbuddy.md`.
 
 Everything else is exact, or says so when it isn't: a source that cannot
 attribute a figure shows "—", never a zero standing in for an unknown.

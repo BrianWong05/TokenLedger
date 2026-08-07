@@ -12,6 +12,7 @@ pub mod hermes;
 pub mod kilo;
 pub mod opencode;
 pub mod pi;
+pub mod workbuddy;
 pub mod zed;
 
 use std::path::{Path, PathBuf};

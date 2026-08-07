@@ -16,6 +16,7 @@ use crate::adapters::hermes::scan_hermes;
 use crate::adapters::kilo::scan_kilo;
 use crate::adapters::opencode::scan_opencode;
 use crate::adapters::pi::scan_pi;
+use crate::adapters::workbuddy::scan_workbuddy;
 use crate::adapters::zed::scan_zed;
 use crate::db::prune_missing_files;
 use crate::source_catalog;
@@ -39,6 +40,7 @@ pub struct SourceRoots {
     pub kilo_db: PathBuf,
     pub zed_databases: Vec<PathBuf>,
     pub cline: Vec<PathBuf>,
+    pub workbuddy: PathBuf,
 }
 
 impl SourceRoots {
@@ -142,6 +144,7 @@ impl SourceRoots {
             kilo_db,
             zed_databases,
             cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
+            workbuddy: catalog_root(home, "workbuddy", "projects"),
         }
     }
 }
@@ -491,6 +494,7 @@ fn run_scan_sources(
                 "kilo" => run_one(&source.key, || scan_kilo(conn, &roots.kilo_db)),
                 "zed" => run_one(&source.key, || scan_zed(conn, &roots.zed_databases)),
                 "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
+                "workbuddy" => run_one(&source.key, || scan_workbuddy(conn, &roots.workbuddy)),
                 _ => SourceStatus {
                     source: source.key.clone(),
                     events_inserted: 0,
@@ -569,7 +573,8 @@ mod tests {
                 "kilo",
                 "zed",
                 "cline",
-                "pi"
+                "pi",
+                "workbuddy"
             ],
         );
         assert!(catalog.sources.iter().all(|source| {
@@ -637,6 +642,7 @@ mod tests {
                 ("cline", "editor-server-insiders", ".vscode-server-insiders/data/User/globalStorage/saoudrizwan.claude-dev/tasks"),
                 ("cline", "cli-default-data", ".cline/data"),
                 ("pi", "sessions", ".pi/agent/sessions"),
+                ("workbuddy", "projects", ".workbuddy/projects"),
             ],
         );
         assert!(catalog
@@ -1398,6 +1404,7 @@ mod tests {
             kilo_db: tmp.path().join("kilo.db"),
             zed_databases: vec![tmp.path().join("zed/threads/threads.db")],
             cline: vec![tmp.path().join("cline")],
+            workbuddy: tmp.path().join("no-workbuddy"),
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -1454,6 +1461,7 @@ mod tests {
             kilo_db: base.join("no-kilo.db"),
             zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
+            workbuddy: base.join("no-workbuddy"),
         };
 
         let db_path = base.join("ledger.db");
@@ -1476,8 +1484,8 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 12);
-        assert_eq!(status.sources.last().unwrap().source, "pi");
+        assert_eq!(status.sources.len(), 13);
+        assert_eq!(status.sources.last().unwrap().source, "workbuddy");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
         assert_eq!(pi.events_inserted, 4);
@@ -1827,13 +1835,14 @@ mod tests {
             kilo_db,
             zed_databases: vec![zed_db],
             cline: vec![base.join("no-cline")],
+            workbuddy: base.join("no-workbuddy"),
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 12);
-        assert_eq!(status.sources.last().unwrap().source, "pi");
+        assert_eq!(status.sources.len(), 13);
+        assert_eq!(status.sources.last().unwrap().source, "workbuddy");
         assert!(status.scanned_at > 0);
 
         // Claude still ingests its event even though Gemini reports a warning.
@@ -1977,6 +1986,7 @@ mod tests {
             kilo_db: base.join("no-kilo.db"),
             zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
+            workbuddy: base.join("no-workbuddy"),
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
@@ -2139,6 +2149,7 @@ mod tests {
             kilo_db: database_path.clone(),
             zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
+            workbuddy: base.join("no-workbuddy"),
         };
         let mut ledger = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut ledger, &roots);

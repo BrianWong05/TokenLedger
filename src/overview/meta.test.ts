@@ -3,13 +3,20 @@ import { SOURCE_ICONS } from './icons';
 import { SOURCES, emptyBySource, sourceMeta } from './meta';
 
 describe('Source catalog', () => {
-  it('keeps Zed, Kilo, Cline, Goose, OpenCode, and lowercase pi in catalog order with distinct marks', () => {
+  it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, and WorkBuddy in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi',
+      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'workbuddy',
     ]);
-    expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'pi', label: 'pi', source: 'pi' });
+    expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'workbuddy', label: 'WorkBuddy', source: 'WorkBuddy', icon: 'workbuddy' });
     expect(emptyBySource().pi).toBe(0);
     expect(emptyBySource().kilo).toBe(0);
+    expect(sourceMeta('workbuddy')).toMatchObject({
+      key: 'workbuddy', label: 'WorkBuddy', source: 'WorkBuddy', icon: 'workbuddy', aliases: ['WorkBuddy desktop'],
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ id: 'projects', path: '.workbuddy/projects' }),
+      ]),
+    });
     expect(sourceMeta('opencode')).toMatchObject({
       key: 'opencode', label: 'OpenCode', source: 'OpenCode', icon: 'opencode', aliases: ['OpenCode CLI'],
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },

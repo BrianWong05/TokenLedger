@@ -1,7 +1,7 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic twelve-Source fixture — not only
-// under the #[ignore] real-log e2e. The four assert_* helpers hold the exact
-// SQL + messages the e2e used to inline; both callers share them.
+// on every plain `cargo test` against a hermetic thirteen-Source fixture — not
+// only under the #[ignore] real-log e2e. The four assert_* helpers hold the
+// exact SQL + messages the e2e used to inline; both callers share them.
 //
 // The whole module is #[cfg(test)]-gated at the lib.rs mod declaration, so the
 // pub(crate) helpers exist only under test (the sole callers — e2e_real_logs
@@ -74,7 +74,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic twelve-Source fixture + the default-run test that proves the four
+// Hermetic thirteen-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -460,6 +460,43 @@ fn build_cline(base: &Path) {
     );
 }
 
+// workbuddy: a parent Session with a cache-heavy function_call (inputTokens
+// includes the cache read, reported OpenAI-style), a message line carrying
+// Anthropic-style usage, non-usage line types, plus a subagent transcript that
+// joins the parent Session — proving the additive-no-double-count rule.
+fn build_workbuddy(base: &Path) {
+    let parent = base.join("workbuddy/Users-dev-projects-alpha/parent-sess.jsonl");
+    write(
+        &parent,
+        concat!(
+            // function_call with cache-inclusive inputTokens (OpenAI-style).
+            r#"{"type":"function_call","id":"wb-fc-1","sessionId":"parent-sess","timestamp":1786091399000,"cwd":"/Users/dev/projects/alpha","providerData":{"model":"deepseek-v4-flash","usage":{"requests":1,"inputTokens":32221,"outputTokens":198,"totalTokens":32419},"rawUsage":{"prompt_tokens":32221,"completion_tokens":198,"prompt_cache_hit_tokens":32000,"prompt_cache_miss_tokens":221,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"prompt_cache_write_tokens":0,"completion_thinking_tokens":104,"credit":0.93}}}"#,
+            "\n",
+            // message with Anthropic-style usage.
+            r#"{"type":"message","id":"wb-msg-1","sessionId":"parent-sess","timestamp":1786091400000,"cwd":"/Users/dev/projects/alpha","message":{"usage":{"input_tokens":37247,"output_tokens":454,"total_tokens":37701,"cache_read_input_tokens":36224}}}"#,
+            "\n",
+            // Non-usage line types: never Records.
+            r#"{"type":"reasoning","id":"wb-rea-1","timestamp":1786091399500,"providerData":{"model":"deepseek-v4-flash"}}"#,
+            "\n",
+            r#"{"type":"function_call_result","id":"wb-fcr-1","timestamp":1786091399600,"output":{"type":"text","text":"ok"}}"#,
+            "\n",
+            r#"{"type":"ai-title","id":"wb-t-1","timestamp":1786091399700}"#,
+            "\n",
+            // Zero-token summary: not a Record.
+            r#"{"type":"summary","id":"wb-sm-0","timestamp":1786091399800,"providerData":{"usage":{"requests":1,"inputTokens":0,"outputTokens":0,"totalTokens":0}}}"#,
+            "\n",
+        ),
+    );
+    // Subagent transcript: joins the parent Session (path-derived).
+    write(
+        &base.join("workbuddy/Users-dev-projects-alpha/parent-sess/subagents/agent-1.jsonl"),
+        concat!(
+            r#"{"type":"function_call","id":"wb-sub-1","sessionId":"sub-sess","timestamp":1786091410000,"cwd":"/Users/dev/projects/alpha","providerData":{"model":"deepseek-v4-flash","usage":{"requests":1,"inputTokens":1000,"outputTokens":50,"totalTokens":1050},"rawUsage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":1000}}}"#,
+            "\n",
+        ),
+    );
+}
+
 fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
     let db = Connection::open(path).unwrap();
     db.execute_batch(
@@ -477,7 +514,7 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
 }
 
 #[test]
-fn hermetic_twelve_source_partition_invariants() {
+fn hermetic_thirteen_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -493,6 +530,7 @@ fn hermetic_twelve_source_partition_invariants() {
     build_zed(base);
     build_cline(base);
     build_pi(base);
+    build_workbuddy(base);
 
     let roots = SourceRoots {
         claude: base.join("claude"),
@@ -512,6 +550,7 @@ fn hermetic_twelve_source_partition_invariants() {
         kilo_db: base.join("kilo/kilo.db"),
         zed_databases: vec![base.join("zed/threads/threads.db")],
         cline: vec![base.join("cline")],
+        workbuddy: base.join("workbuddy"),
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -519,7 +558,7 @@ fn hermetic_twelve_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the twelve Sources ingested events and reported no error.
+    // Every one of the thirteen Sources ingested events and reported no error.
     for src in [
         "claude",
         "codex",
@@ -533,6 +572,7 @@ fn hermetic_twelve_source_partition_invariants() {
         "zed",
         "cline",
         "pi",
+        "workbuddy",
     ] {
         let s = status
             .sources
@@ -578,12 +618,12 @@ fn hermetic_twelve_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all twelve here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all thirteen here).
     let buckets =
         crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 12,
-        "expected >=12 sources in ctx_buckets, got {}",
+        buckets.len() >= 13,
+        "expected >=13 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -618,7 +658,7 @@ fn hermetic_twelve_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all twelve.
+    // Source's totals identical: ingestion is idempotent across all thirteen.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {
