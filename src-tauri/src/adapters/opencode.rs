@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
+use crate::adapters::normalize_epoch;
 use crate::db::insert_events;
 use crate::types::SourceScanResult;
 use crate::types::UsageEvent;
@@ -525,7 +526,10 @@ fn nonnegative_i64(value: &Value) -> Option<i64> {
 }
 
 fn session_timestamp(updated: Option<i64>, created: Option<i64>) -> Option<i64> {
-    updated.or(created).and_then(normalize_timestamp)
+    updated
+        .or(created)
+        .filter(|t| *t > 0)
+        .map(normalize_epoch)
 }
 
 fn json_session_timestamp(value: &Value) -> Option<i64> {
@@ -536,18 +540,8 @@ fn json_session_timestamp(value: &Value) -> Option<i64> {
         .and_then(nonnegative_i64)
         .or_else(|| value.get("time_updated").and_then(nonnegative_i64))
         .or_else(|| value.get("time_created").and_then(nonnegative_i64))
-        .and_then(normalize_timestamp)
-}
-
-fn normalize_timestamp(value: i64) -> Option<i64> {
-    if value <= 0 {
-        return None;
-    }
-    if value >= 100_000_000_000 {
-        Some(value / 1_000)
-    } else {
-        Some(value)
-    }
+        .filter(|t| *t > 0)
+        .map(normalize_epoch)
 }
 
 fn absolute_project(project: Option<&str>) -> Option<String> {

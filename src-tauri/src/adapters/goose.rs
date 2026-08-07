@@ -7,6 +7,7 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, Row};
 use serde_json::Value;
 
+use crate::adapters::normalize_epoch;
 use crate::db::insert_events;
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
@@ -518,14 +519,6 @@ fn json_timestamp(value: Option<&Value>) -> Option<i64> {
     parse_number(text)
         .map(normalize_epoch)
         .or_else(|| iso_to_epoch(text))
-}
-
-fn normalize_epoch(value: i64) -> i64 {
-    if value > 10_000_000_000 || value < -10_000_000_000 {
-        value / 1000
-    } else {
-        value
-    }
 }
 
 fn filename_timestamp(path: &Path) -> Option<i64> {

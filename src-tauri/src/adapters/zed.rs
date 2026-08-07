@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value};
 
-use crate::adapters::upsert_events_count;
+use crate::adapters::{normalize_epoch, upsert_events_count};
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
 
@@ -296,20 +296,9 @@ fn is_absolute_path(path: &str) -> bool {
 fn parse_timestamp(value: &str) -> Option<i64> {
     let value = value.trim();
     if let Ok(timestamp) = value.parse::<i64>() {
-        return normalize_timestamp(timestamp);
+        return (timestamp > 0).then(|| normalize_epoch(timestamp));
     }
     iso_to_epoch(value)
-}
-
-fn normalize_timestamp(timestamp: i64) -> Option<i64> {
-    if timestamp <= 0 {
-        return None;
-    }
-    Some(if timestamp > 10_000_000_000 {
-        timestamp / 1000
-    } else {
-        timestamp
-    })
 }
 
 fn push_unique_path(paths: &mut Vec<PathBuf>, path: PathBuf) {

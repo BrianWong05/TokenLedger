@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::adapters::file_state_of;
+use crate::adapters::{file_state_of, normalize_epoch};
 use crate::db::{set_file_state, upsert_events};
 use crate::time::iso_to_epoch;
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
@@ -738,16 +738,6 @@ fn timestamp_from_value(value: Option<&Value>) -> Option<i64> {
             iso_to_epoch(value).or_else(|| value.parse::<i64>().ok().map(normalize_epoch))
         }
         _ => None,
-    }
-}
-
-fn normalize_epoch(value: i64) -> i64 {
-    if value.abs() >= 1_000_000_000_000_000 {
-        value / 1_000_000
-    } else if value.abs() >= 1_000_000_000_000 {
-        value / 1_000
-    } else {
-        value
     }
 }
 

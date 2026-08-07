@@ -77,6 +77,21 @@ pub(crate) fn file_state_of(path: &Path) -> FileState {
     }
 }
 
+/// Normalize an epoch value a Source writer may store in seconds,
+/// milliseconds, or microseconds into epoch seconds. Shared by the adapters
+/// whose writers emit timestamps in more than one unit; callers that require a
+/// strictly positive timestamp keep their own guard.
+pub(crate) fn normalize_epoch(value: i64) -> i64 {
+    let magnitude = value.unsigned_abs();
+    if magnitude >= 1_000_000_000_000_000 {
+        value / 1_000_000
+    } else if magnitude >= 1_000_000_000_000 {
+        value / 1_000
+    } else {
+        value
+    }
+}
+
 pub(crate) fn unchanged(
     conn: &rusqlite::Connection,
     path: &Path,

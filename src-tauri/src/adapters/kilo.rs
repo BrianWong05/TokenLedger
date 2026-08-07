@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::adapters::upsert_events_count;
+use crate::adapters::{normalize_epoch, upsert_events_count};
 use crate::types::{SourceScanResult, UsageEvent};
 
 const SOURCE: &str = "kilo";
@@ -241,19 +241,9 @@ fn absolute_project(directory: Option<&str>) -> Option<String> {
 
 fn session_timestamp(updated: Option<i64>, created: Option<i64>) -> Option<i64> {
     updated
-        .and_then(normalize_timestamp)
-        .or_else(|| created.and_then(normalize_timestamp))
-}
-
-fn normalize_timestamp(timestamp: i64) -> Option<i64> {
-    if timestamp <= 0 {
-        return None;
-    }
-    Some(if timestamp > 10_000_000_000 {
-        timestamp / 1000
-    } else {
-        timestamp
-    })
+        .filter(|t| *t > 0)
+        .map(normalize_epoch)
+        .or_else(|| created.filter(|t| *t > 0).map(normalize_epoch))
 }
 
 #[cfg(test)]
