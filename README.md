@@ -3,7 +3,7 @@
 A desktop app (Tauri v2) for macOS, Windows, and Linux that tracks token usage
 and estimated cost across the AI coding agents and assistants on your machine —
 **Claude Code**, **Codex CLI**, **Gemini CLI**, **Hermes**, **Grok Build**,
-**Google Antigravity**, **Goose**, **Cline**, and **pi** — by parsing each tool's local logs into a
+**Google Antigravity**, **Goose**, **OpenCode**, **Cline**, **Kilo**, **Zed**, and **pi** — by parsing each tool's local logs into a
 normalized SQLite ledger.
 
 **Status: 0.1.0.** Driven daily on macOS. Windows and Linux build and pass the
@@ -107,7 +107,10 @@ updates.
 | [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`) |
 | [Google Antigravity](https://antigravity.google) | Google's agentic development platform | `~/.gemini/antigravity{,-cli}/conversations/*.db` |
 | [Goose](https://github.com/block/goose) | Block's local coding agent | `~/Library/Application Support/Block/goose/data/sessions/sessions.db` on macOS; `~/.local/share/goose/sessions/sessions.db` on Linux; `%APPDATA%\\Block\\goose\\data\\sessions\\sessions.db` on Windows; `$GOOSE_PATH_ROOT/data/sessions` when overridden (legacy `.jsonl` in the platform data directory) |
+| [OpenCode](https://github.com/sst/opencode) | OpenCode CLI | `~/.local/share/opencode/opencode.db` (or `$OPENCODE_DB`), `opencode-<channel>.db`, and legacy `~/.local/share/opencode/storage` (or `$OPENCODE_DATA_DIR`) |
 | [Cline](https://cline.bot) | IDE and CLI coding agent | VS Code and editor-server task folders; `~/.cline/data/sessions/*.json` or `$CLINE_DATA_DIR/sessions/*.json` |
+| [Kilo](https://kilocode.ai) | Kilo Code CLI | `~/Library/Application Support/kilo/kilo.db` on macOS; `~/.local/share/kilo/kilo.db` on Linux; `%LOCALAPPDATA%\\kilo\\kilo.db` on Windows; `$KILO_DB` when overridden |
+| [Zed](https://zed.dev) | Zed Editor's hosted agent | `~/Library/Application Support/Zed/threads/threads.db` on macOS; `~/.local/share/zed/threads/threads.db` on Linux; `%LOCALAPPDATA%\\Zed\\threads\\threads.db` on Windows; XDG and Flatpak data-home branches on Linux |
 | [pi](https://github.com/earendil-works/pi) | Agent toolkit — unified LLM API, agent loop, TUI, coding agent CLI | `~/.pi/agent/sessions/**/*.jsonl` |
 
 Most paths above are under your home directory and are read passively. `GROK_HOME`
@@ -119,7 +122,7 @@ mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 
 ## Where the numbers bend
 
-Every source logs what it wants to, not what a ledger would like. Five of them
+Every source logs what it wants to, not what a ledger would like. Eight of them
 distort something in a way worth knowing before you trust a figure.
 
 - **Grok Build's cost is not trustworthy.** Its logs carry a single running
@@ -142,6 +145,12 @@ distort something in a way worth knowing before you trust a figure.
   Goose's cache-write bucket has no TTL, so TokenLedger books it as 5-minute
   Cache write; Goose's logged Cost is ignored and repriced from TokenLedger's
   rates.
+- **OpenCode, Kilo, and Zed book at Session granularity.** Their supported
+  Artifacts prove Session totals but not a trustworthy timestamp for every
+  Request, so each usage-bearing Session becomes one Usage Record at the
+  Session's updated timestamp. Trend and Activity are honest about that coarse
+  timing rather than inventing per-Request points; see the `docs/source-evidence/`
+  records for the exact supported shapes.
 
 Everything else is exact, or says so when it isn't: a source that cannot
 attribute a figure shows "—", never a zero standing in for an unknown.
@@ -171,6 +180,42 @@ Blank and whitespace-only values are ignored. Cline's cache-write counter has
 no TTL, so it is normalized to the 5-minute Cache write category. Missing
 Model or relative Project values remain unavailable; no conversation content is
 stored, and TokenLedger never starts, controls, or authenticates Cline.
+
+## OpenCode
+
+TokenLedger reads OpenCode's local SQLite database (`opencode.db` and
+`opencode-<channel>.db` variants) and legacy JSON storage under the supported
+platform roots, overridable with `OPENCODE_DB` and `OPENCODE_DATA_DIR`. The
+database's Session totals are booked as one Usage Record per usage-bearing
+Session at the Session's updated timestamp, because the supported Artifact does
+not prove a trustworthy per-Request timestamp. Unknown or unproven Models
+become Unattributed Usage rather than being guessed from the last Model in a
+Session. TokenLedger never starts OpenCode, authenticates, or performs any
+remote synchronization; no conversation content is stored.
+
+## Kilo
+
+TokenLedger reads Kilo CLI's current `kilo.db` session database from the
+supported platform roots, overridable with `KILO_DB`. Usage is aggregated on
+the Session row, so each usage-bearing Session becomes one Usage Record at the
+Session's updated timestamp. Legacy editor migrations containing only zero-token
+rows produce no Usage Records. Unknown or unproven Models become Unattributed
+Usage; no conversation content is stored, and TokenLedger never starts,
+authenticates, or synchronizes Kilo.
+
+## Zed
+
+TokenLedger reads Zed's native hosted-model thread database
+(`threads/threads.db`) from the supported platform roots, including the XDG and
+Flatpak data-home branches on Linux. Only thread rows whose serialized provider
+is exactly `zed.dev` are persisted; external ACP sessions are excluded before
+any Usage Record is written. Zed stores cumulative usage on a whole thread
+without a trustworthy per-Request timestamp, so each usage-bearing Session
+becomes one Usage Record at the Session's updated timestamp. Unknown Models
+become Unattributed Usage; no conversation content is stored, and TokenLedger
+never starts, authenticates, or synchronizes Zed. The evidence record in
+`docs/source-evidence/zed.md` notes that the genuine private-Artifact gate was
+still pending when the adapter landed.
 
 ## pi
 
@@ -282,7 +327,8 @@ cargo test --manifest-path src-tauri/Cargo.toml \
 ```
 
 Supported Source keys are `claude`, `codex`, `gemini`, `hermes`, `grok`,
-`antigravity`, `goose`, `cline`, and `pi`. Real-Artifact validation is ignored by default and
+`antigravity`, `goose`, `opencode`, `cline`, `kilo`, `zed`, and `pi`.
+Real-Artifact validation is ignored by default and
 is not required by CI; committed synthetic fixtures remain the deterministic
 evidence for normal test runs. A production support claim still requires the
 genuine Artifact to be corroborated by an upstream schema or writer, or by

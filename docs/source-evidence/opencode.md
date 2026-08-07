@@ -1,0 +1,49 @@
+# OpenCode Source evidence
+
+Status as of 2026-08-07: the OpenCode adapter and synthetic validation are
+implemented; the genuine private-Artifact gate remains pending because no
+OpenCode `opencode.db` or legacy JSON storage was available in the validation
+workspace. This file deliberately does not claim a private-artifact pass.
+
+## Upstream corroboration
+
+The supported shapes are the current and legacy storage of
+[OpenCode](https://github.com/sst/opencode), the OpenCode CLI:
+
+- The current storage is a SQLite database (default `~/.local/share/opencode/
+  opencode.db`, overridable with `OPENCODE_DB`, and `opencode-<channel>.db`
+  channel variants) whose session and message rows carry usage totals.
+- The legacy storage is JSON under `~/.local/share/opencode/storage`
+  (overridable with `OPENCODE_DATA_DIR`, plus the `XDG_DATA_HOME` branch).
+- OpenCode's supported Artifact exposes Session totals but not a trustworthy
+  timestamp for every Request, so usage is booked at the Session level.
+
+## Private validation
+
+Run the ignored validation only against a locally selected genuine artifact:
+
+```sh
+TOKENLEDGER_VALIDATION_SOURCE=opencode \
+TOKENLEDGER_VALIDATION_ARTIFACT=/private/path/to/opencode.db \
+cargo test --manifest-path src-tauri/Cargo.toml source_artifact_validation -- --ignored --nocapture
+```
+
+The report emits aggregate counts, a schema fingerprint, and pass/fail only.
+It does not print the artifact path or content, and no real artifact belongs in
+the repository.
+
+## Synthetic coverage
+
+The committed tests cover SQLite session/message usage totals, legacy JSON
+storage parsing, model reliability handling (a Model is only attributed when
+proven), session-level timestamps, malformed and unsupported data, deduplication
+of equivalent roots, privacy-marker absence from the Ledger, platform roots,
+first-scan backfill, unchanged rescans, disappearance, source isolation, and
+cross-Source partition invariants.
+
+## Fidelity limitations
+
+OpenCode's supported Artifact exposes Session totals without trustworthy
+per-Request timing, so one Usage Record is created per usage-bearing Session at
+the Session's updated timestamp. Unknown or unproven Models become Unattributed
+Usage rather than being guessed from the last Model in a Session.
