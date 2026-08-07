@@ -201,7 +201,7 @@
       "label": "WorkBuddy",
       "source": "WorkBuddy",
       "aliases": ["WorkBuddy desktop"],
-      "color": "#7c6cf0",
+      "color": "#0d9488",
       "icon": "workbuddy",
       "artifacts": [
         { "id": "projects", "kind": "directory", "path": ".workbuddy/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
