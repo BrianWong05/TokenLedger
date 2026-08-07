@@ -18,10 +18,18 @@ describe('Source catalog', () => {
       ]),
     });
     expect(sourceMeta('qoder')).toMatchObject({
-      key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder', aliases: ['Qoder IDE', 'Qoder CN'],
+      key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder', aliases: ['Qoder IDE', 'Qoder CLI', 'Qoder CN'],
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
       artifacts: expect.arrayContaining([
         expect.objectContaining({ id: 'db-macos', path: 'Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db' }),
+        expect.objectContaining({ id: 'db-linux', path: '.config/QoderCN/SharedClientCache/cache/db/local.db' }),
+        expect.objectContaining({ id: 'db-windows', path: 'AppData/Roaming/QoderCN/SharedClientCache/cache/db/local.db' }),
+        expect.objectContaining({ id: 'db-intl-macos', path: 'Library/Application Support/Qoder/SharedClientCache/cache/db/local.db' }),
+        expect.objectContaining({ id: 'db-intl-linux', path: '.config/Qoder/SharedClientCache/cache/db/local.db' }),
+        expect.objectContaining({ id: 'db-intl-windows', path: 'AppData/Roaming/Qoder/SharedClientCache/cache/db/local.db' }),
+        expect.objectContaining({ id: 'projects', path: '.qoder/projects' }),
+        expect.objectContaining({ id: 'cli-projects', path: '.qoder-cli/projects' }),
+        expect.objectContaining({ id: 'cn-projects', path: '.qoder-cn/projects' }),
       ]),
     });
     expect(sourceMeta('workbuddy')).toMatchObject({

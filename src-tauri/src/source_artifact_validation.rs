@@ -112,7 +112,8 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         cline: vec![missing.clone()],
         workbuddy: missing.clone(),
         codebuddy: missing.clone(),
-        qoder_db: missing.clone(),
+        qoder_databases: vec![missing.clone()],
+        qoder_cli_projects: vec![missing.clone()],
     };
 
     match source {
@@ -143,7 +144,13 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "cline" => roots.cline = vec![artifact.to_path_buf()],
         "workbuddy" => roots.workbuddy = artifact.to_path_buf(),
         "codebuddy" => roots.codebuddy = artifact.to_path_buf(),
-        "qoder" => roots.qoder_db = artifact.to_path_buf(),
+        "qoder" => {
+            if artifact.is_dir() {
+                roots.qoder_cli_projects = vec![artifact.to_path_buf()];
+            } else {
+                roots.qoder_databases = vec![artifact.to_path_buf()];
+            }
+        }
         _ => {}
     }
 
@@ -357,6 +364,8 @@ const PRIVACY_MARKERS: &[&str] = &[
     "ZED_PRIVATE_PROMPT_MARKER",
     "ZED_PRIVATE_RESPONSE_MARKER",
     "ZED_PRIVATE_TOOL_MARKER",
+    "QODER_PRIVATE_PROMPT_MARKER",
+    "QODER_CLI_PRIVATE_PROMPT_MARKER",
 ];
 
 fn ledger_has_no_privacy_markers(db_path: &Path) -> bool {
@@ -729,5 +738,34 @@ mod tests {
         assert_eq!(report.result, "pass");
         assert_eq!(report.counts.total_tokens, 21);
         assert!(!report.to_json().contains("ZED_PRIVATE"));
+    }
+
+    #[test]
+    fn validation_accepts_a_synthetic_qoder_cli_transcript_without_persisting_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let session_dir = directory
+            .path()
+            .join("qoder-cn/projects/-Users-dev-qoder-validation");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("qcli-validation.jsonl"),
+            concat!(
+                r#"{"type":"assistant","uuid":"u1","timestamp":"2026-08-07T16:53:21.465Z","message":{"id":"chatcmpl-val-1","model":"qmodel_38max","role":"assistant","content":[{"type":"text","text":"QODER_CLI_PRIVATE_PROMPT_MARKER"}],"usage":{"input_tokens":11,"output_tokens":5,"cache_read_input_tokens":3,"cache_creation_input_tokens":2,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1}}},"cwd":"/Users/dev/qoder-validation","sessionId":"qcli-validation"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let selection = Selection::from_values(
+            "qoder",
+            &directory.path().join("qoder-cn/projects"),
+        )
+        .unwrap();
+        let report = validate(&selection);
+
+        assert_eq!(report.result, "pass");
+        assert_eq!(report.counts.records, 1);
+        assert_eq!(report.counts.total_tokens, 21); // 11 + 5 + 3 + 2
+        assert!(!report.to_json().contains("QODER_CLI_PRIVATE"));
     }
 }

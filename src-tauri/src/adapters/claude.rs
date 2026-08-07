@@ -261,27 +261,9 @@ fn parse_line_event(v: &serde_json::Value, source_file: &str, encoded_dir: &str)
         return None;
     }
     let msg = &v["message"];
-    let usage = &msg["usage"];
-
-    let input = usage["input_tokens"].as_i64().unwrap_or(0);
-    let output = usage["output_tokens"].as_i64().unwrap_or(0);
-    let cache_read = usage["cache_read_input_tokens"].as_i64().unwrap_or(0);
-    let cc_total = usage["cache_creation_input_tokens"].as_i64().unwrap_or(0);
-    let cc = &usage["cache_creation"];
-    let (cw5m, cw1h) = if cc.is_object() {
-        (
-            cc["ephemeral_5m_input_tokens"].as_i64().unwrap_or(0),
-            cc["ephemeral_1h_input_tokens"].as_i64().unwrap_or(0),
-        )
-    } else {
-        // sub-object absent: whole creation total is 5m-TTL
-        (cc_total, 0)
-    };
 
     // <synthetic> error placeholders have all-zero usage: skip, don't count.
-    if input == 0 && output == 0 && cache_read == 0 && cw5m == 0 && cw1h == 0 {
-        return None;
-    }
+    let usage = super::claude_shaped_usage(msg)?;
 
     let id = match msg["id"].as_str() {
         Some(s) if !s.is_empty() => s,
@@ -313,11 +295,11 @@ fn parse_line_event(v: &serde_json::Value, source_file: &str, encoded_dir: &str)
         model: Some(model),
         project,
         api_calls: 1,
-        input_tokens: input,
-        output_tokens: output,
-        cache_read_tokens: cache_read,
-        cache_write_5m_tokens: cw5m,
-        cache_write_1h_tokens: cw1h,
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        cache_read_tokens: usage.cache_read,
+        cache_write_5m_tokens: usage.cache_write_5m,
+        cache_write_1h_tokens: usage.cache_write_1h,
         source_file: source_file.to_string(),
         session_id,
         reasoning_tokens: None,

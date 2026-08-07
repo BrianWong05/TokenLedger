@@ -592,6 +592,68 @@ fn build_qoder(base: &Path) {
         ],
     )
     .unwrap();
+    drop(db);
+
+    // The IDE also ships as the plain-Qoder edition with an identically shaped
+    // database; both databases coexist and merge into the one Source.
+    let intl_path = base.join("qoder-intl/local.db");
+    std::fs::create_dir_all(intl_path.parent().unwrap()).unwrap();
+    let intl_db = Connection::open(&intl_path).unwrap();
+    intl_db
+        .execute_batch(
+            "CREATE TABLE chat_message (
+                id VARCHAR(64) PRIMARY KEY,
+                session_id VARCHAR(64),
+                request_id VARCHAR(64),
+                role VARCHAR(64),
+                content text,
+                summary text,
+                summary_modified INTEGER,
+                summary_trigger INTEGER DEFAULT 0,
+                tool_result text,
+                token_info text,
+                model_info text,
+                extra text DEFAULT '',
+                gmt_create INTEGER
+            );",
+        )
+        .unwrap();
+    // prompt 300 = 100 fresh + 200 cached.
+    intl_db
+        .execute(
+            "INSERT INTO chat_message (id, session_id, role, content, token_info, model_info, gmt_create)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "qoder-intl-m1",
+                "task-intl.session.execution",
+                "assistant",
+                "QODER_PRIVATE_PROMPT_MARKER",
+                r#"{"prompt_tokens":300,"completion_tokens":20,"cached_tokens":200,"max_input_tokens":1000000}"#,
+                r#"{"model_key":"qmodel_38max"}"#,
+                1_786_112_276_028i64,
+            ],
+        )
+        .unwrap();
+    drop(intl_db);
+
+    // CLI transcript family: one Claude-Code-shaped assistant line with the
+    // ephemeral cache-write split; content carries a private marker.
+    let cli_path = base.join("qoder-cli/projects/-Users-dev-projects-alpha/qcli-sess.jsonl");
+    std::fs::create_dir_all(cli_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &cli_path,
+        concat!(
+            r#"{"type":"assistant","uuid":"qu-1","timestamp":"2026-08-07T16:53:21.465Z","#,
+            r#""message":{"id":"chatcmpl-qcli-1","model":"qmodel_38max","role":"assistant","#,
+            r#""content":[{"type":"text","text":"QODER_CLI_PRIVATE_PROMPT_MARKER"}],"#,
+            r#""usage":{"input_tokens":120,"output_tokens":30,"cache_read_input_tokens":500,"#,
+            r#""cache_creation_input_tokens":7,"cache_creation":{"ephemeral_5m_input_tokens":4,"#,
+            r#""ephemeral_1h_input_tokens":3}}}},"#,
+            r#""cwd":"/Users/dev/projects/alpha","sessionId":"qcli-sess"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -635,7 +697,8 @@ fn hermetic_fifteen_source_partition_invariants() {
         cline: vec![base.join("cline")],
         workbuddy: base.join("workbuddy"),
         codebuddy: base.join("codebuddy"),
-        qoder_db: base.join("qoder/local.db"),
+        qoder_databases: vec![base.join("qoder/local.db"), base.join("qoder-intl/local.db")],
+        qoder_cli_projects: vec![base.join("qoder-cli/projects")],
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();

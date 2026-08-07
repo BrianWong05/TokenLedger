@@ -44,7 +44,10 @@ pub struct SourceRoots {
     pub cline: Vec<PathBuf>,
     pub workbuddy: PathBuf,
     pub codebuddy: PathBuf,
-    pub qoder_db: PathBuf,
+    // The IDE databases (QoderCN and plain-Qoder variants) and the CLI
+    // transcript roots are one Qoder Source.
+    pub qoder_databases: Vec<PathBuf>,
+    pub qoder_cli_projects: Vec<PathBuf>,
 }
 
 impl SourceRoots {
@@ -125,7 +128,7 @@ impl SourceRoots {
             environment_value("opencode", "xdg-data").as_deref(),
         );
         let kilo_db = kilo_db_root(home, std::env::consts::OS, kilo_db);
-        let qoder_db = qoder_db_root(home, std::env::consts::OS, qoder_db);
+        let qoder_databases = qoder_database_roots(home, std::env::consts::OS, qoder_db);
         let zed_databases = zed_database_roots(
             home,
             std::env::consts::OS,
@@ -154,7 +157,11 @@ impl SourceRoots {
             cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
             workbuddy: catalog_root(home, "workbuddy", "projects"),
             codebuddy: catalog_root(home, "codebuddy", "projects"),
-            qoder_db,
+            qoder_databases,
+            qoder_cli_projects: ["projects", "cli-projects", "cn-projects"]
+                .iter()
+                .map(|artifact| catalog_root(home, "qoder", artifact))
+                .collect(),
         }
     }
 }
@@ -324,23 +331,29 @@ fn kilo_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
         .unwrap_or(default)
 }
 
-fn qoder_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
-    let artifact = match platform {
-        "macos" => "db-macos",
-        "windows" => "db-windows",
-        _ => "db-linux",
+fn qoder_database_roots(home: &Path, platform: &str, value: Option<&OsStr>) -> Vec<PathBuf> {
+    // The IDE ships as two products — QoderCN and the plain-Qoder edition —
+    // which may coexist on one machine; both databases belong to one Source.
+    let artifacts = match platform {
+        "macos" => ["db-macos", "db-intl-macos"],
+        "windows" => ["db-windows", "db-intl-windows"],
+        _ => ["db-linux", "db-intl-linux"],
     };
-    let default = catalog_root(home, "qoder", artifact);
-    let Some(value) = value.and_then(|value| visible_path(home, value)) else {
-        return default;
-    };
-    if value.is_absolute() {
-        return value;
+    if let Some(value) = value.and_then(|value| visible_path(home, value)) {
+        if value.is_absolute() {
+            return vec![value];
+        }
+        if let Some(root) = catalog_root(home, "qoder", artifacts[0])
+            .parent()
+            .map(|parent| parent.join(value))
+        {
+            return vec![root];
+        }
     }
-    default
-        .parent()
-        .map(|parent| parent.join(value))
-        .unwrap_or(default)
+    artifacts
+        .iter()
+        .map(|artifact| catalog_root(home, "qoder", artifact))
+        .collect()
 }
 
 fn zed_database_roots(
@@ -525,7 +538,9 @@ fn run_scan_sources(
                 "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
                 "workbuddy" => run_one(&source.key, || scan_workbuddy(conn, &roots.workbuddy)),
                 "codebuddy" => run_one(&source.key, || scan_codebuddy(conn, &roots.codebuddy)),
-                "qoder" => run_one(&source.key, || scan_qoder(conn, &roots.qoder_db)),
+                "qoder" => run_one(&source.key, || {
+                    scan_qoder(conn, &roots.qoder_databases, &roots.qoder_cli_projects)
+                }),
                 _ => SourceStatus {
                     source: source.key.clone(),
                     events_inserted: 0,
@@ -680,6 +695,12 @@ mod tests {
                 ("qoder", "db-macos", "Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db"),
                 ("qoder", "db-linux", ".config/QoderCN/SharedClientCache/cache/db/local.db"),
                 ("qoder", "db-windows", "AppData/Roaming/QoderCN/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-intl-macos", "Library/Application Support/Qoder/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-intl-linux", ".config/Qoder/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-intl-windows", "AppData/Roaming/Qoder/SharedClientCache/cache/db/local.db"),
+                ("qoder", "projects", ".qoder/projects"),
+                ("qoder", "cli-projects", ".qoder-cli/projects"),
+                ("qoder", "cn-projects", ".qoder-cn/projects"),
             ],
         );
         assert!(catalog
@@ -1443,7 +1464,8 @@ mod tests {
             cline: vec![tmp.path().join("cline")],
             workbuddy: tmp.path().join("no-workbuddy"),
             codebuddy: tmp.path().join("no-codebuddy"),
-            qoder_db: tmp.path().join("no-qoder"),
+            qoder_databases: vec![tmp.path().join("no-qoder")],
+            qoder_cli_projects: vec![tmp.path().join("no-qoder-cli")],
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -1502,7 +1524,8 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
-            qoder_db: base.join("no-qoder"),
+            qoder_databases: vec![base.join("no-qoder")],
+            qoder_cli_projects: vec![base.join("no-qoder-cli")],
         };
 
         let db_path = base.join("ledger.db");
@@ -1878,7 +1901,8 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
-            qoder_db: base.join("no-qoder"),
+            qoder_databases: vec![base.join("no-qoder")],
+            qoder_cli_projects: vec![base.join("no-qoder-cli")],
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -2031,7 +2055,8 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
-            qoder_db: base.join("no-qoder"),
+            qoder_databases: vec![base.join("no-qoder")],
+            qoder_cli_projects: vec![base.join("no-qoder-cli")],
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
@@ -2196,7 +2221,8 @@ mod tests {
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
             codebuddy: base.join("no-codebuddy"),
-            qoder_db: base.join("no-qoder"),
+            qoder_databases: vec![base.join("no-qoder")],
+            qoder_cli_projects: vec![base.join("no-qoder-cli")],
         };
         let mut ledger = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut ledger, &roots);

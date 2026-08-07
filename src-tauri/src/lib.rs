@@ -538,7 +538,8 @@ mod tests {
             cline: vec![dir.path().join("cline")],
             workbuddy: dir.path().join("workbuddy"),
             codebuddy: dir.path().join("codebuddy"),
-            qoder_db: dir.path().join("qoder.db"),
+            qoder_databases: vec![dir.path().join("qoder.db")],
+            qoder_cli_projects: vec![dir.path().join("qoder-cli")],
         };
         let state = AppState {
             db: Mutex::new(conn),

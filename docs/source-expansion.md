@@ -54,6 +54,15 @@ After the catalog, add these proven roots to existing Sources:
 - Gemini: `$GEMINI_CLI_HOME/.gemini/tmp`, falling back to `~/.gemini/tmp`.
 - Grok: `$GROK_HOME/sessions`, falling back to `~/.grok/sessions`, once the
   Artifact fixture confirms the supplied convention.
+- Qoder: the CLI transcript roots `~/.qoder/projects`,
+  `~/.qoder-cli/projects`, and `~/.qoder-cn/projects` alongside the IDE
+  `local.db` database, verified maintainer-side 2026-08-08. The IDE ships as
+  two editions — QoderCN (`QoderCN/SharedClientCache/cache/db/local.db`) and
+  the plain-Qoder edition (`Qoder/SharedClientCache/cache/db/local.db`) — with
+  the same `chat_message` shape; they may coexist on one machine and both are
+  scanned. The CLI transcripts share the Claude-Code shape and its usage rule;
+  `~/.qoder-cli` carries no token usage today and is scanned quietly until it
+  does.
 
 `~/.claude/transcripts` remains evidence-gated because other programs can write
 Claude-shaped records there; it must not be attributed to Claude until origin

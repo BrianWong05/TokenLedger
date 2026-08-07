@@ -169,6 +169,52 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+pub(crate) struct ClaudeShapedUsage {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write_5m: i64,
+    pub cache_write_1h: i64,
+}
+
+/// Token figures from a Claude-Code-shaped assistant `message` object.
+/// `input_tokens` is fresh input (cache reads and writes are separate fields);
+/// `cache_creation_input_tokens` splits into the ephemeral 5m/1h buckets when
+/// the `cache_creation` sub-object is present, and books whole to the 5m
+/// bucket when it is absent. An all-zero observation (e.g. a `<synthetic>`
+/// error placeholder) is not a Usage Record and returns None. Shared by every
+/// Source whose writer emits this exact shape (ADR-0016 ethos: identical
+/// shapes share one parsing rule).
+pub(crate) fn claude_shaped_usage(message: &serde_json::Value) -> Option<ClaudeShapedUsage> {
+    let usage = &message["usage"];
+    let input = usage["input_tokens"].as_i64().unwrap_or(0);
+    let output = usage["output_tokens"].as_i64().unwrap_or(0);
+    let cache_read = usage["cache_read_input_tokens"].as_i64().unwrap_or(0);
+    let cc_total = usage["cache_creation_input_tokens"].as_i64().unwrap_or(0);
+    let cc = &usage["cache_creation"];
+    let (cache_write_5m, cache_write_1h) = if cc.is_object() {
+        (
+            cc["ephemeral_5m_input_tokens"].as_i64().unwrap_or(0),
+            cc["ephemeral_1h_input_tokens"].as_i64().unwrap_or(0),
+        )
+    } else {
+        // sub-object absent: whole creation total is 5m-TTL
+        (cc_total, 0)
+    };
+
+    if input == 0 && output == 0 && cache_read == 0 && cache_write_5m == 0 && cache_write_1h == 0 {
+        return None;
+    }
+
+    Some(ClaudeShapedUsage {
+        input,
+        output,
+        cache_read,
+        cache_write_5m,
+        cache_write_1h,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
