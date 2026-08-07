@@ -44,7 +44,9 @@ use rusqlite::{Connection, OpenFlags};
 
 // Bump to force a full re-parse of every WorkBuddy/CodeBuddy Session when the
 // parser changes (the byte-offset slot carries it through `unchanged`).
-const TRANSCRIPT_PARSER_VERSION: i64 = 1;
+// 2: prefer `requestModelId` over `model` (the variant-suffix fix).
+// 3: re-parse so the keep-max Latest policy rewrites already-booked models.
+const TRANSCRIPT_PARSER_VERSION: i64 = 3;
 
 pub fn scan_workbuddy(conn: &mut Connection, projects_root: &Path) -> SourceScanResult {
     let mut seen = HashSet::new();
@@ -305,12 +307,15 @@ fn parse_line_event(
         .filter(|ts| *ts > 0)?;
 
     let pd = v.get("providerData").and_then(|p| p.as_object());
+    // `requestModelId` is the Model the request actually ran on; `model` can
+    // carry an internal variant suffix no catalog carries (`glm-5.2-x` for
+    // `glm-5.2`), so it is only the fallback.
     let model = pd
-        .and_then(|p| p.get("model"))
+        .and_then(|p| p.get("requestModelId"))
         .and_then(|m| m.as_str())
         .filter(|m| !m.is_empty())
         .or_else(|| {
-            pd.and_then(|p| p.get("requestModelId"))
+            pd.and_then(|p| p.get("model"))
                 .and_then(|m| m.as_str())
                 .filter(|m| !m.is_empty())
         })
@@ -678,6 +683,23 @@ mod tests {
         assert_eq!(events.len(), 1);
         // No credit field exists on a Usage Event: Cost resolves downstream.
         assert_eq!(events[0].model.as_deref(), Some("deepseek-v4-flash"));
+    }
+
+    #[test]
+    fn request_model_id_wins_over_a_variant_suffixed_model() {
+        // Real Artifacts log the internal variant in `model` (`glm-5.2-x`)
+        // beside the clean id in `requestModelId` (`glm-5.2`); the id is what
+        // a price resolves against. When it is absent, `model` still works.
+        let lines = [
+            r#"{"type":"function_call","id":"v1","sessionId":"s","timestamp":1786091399000,"cwd":"/x","providerData":{"model":"glm-5.2-x","requestModelId":"glm-5.2","usage":{"requests":1,"inputTokens":100,"outputTokens":10}}}"#,
+            r#"{"type":"function_call","id":"v2","sessionId":"s","timestamp":1786091399000,"cwd":"/x","providerData":{"model":"hy3","usage":{"requests":1,"inputTokens":100,"outputTokens":10}}}"#,
+        ];
+        let events = parse(&lines.join("\n"), Path::new("/f.jsonl"));
+        assert_eq!(events.len(), 2);
+        let v1 = events.iter().find(|e| e.dedup_key == "workbuddy:v1").unwrap();
+        assert_eq!(v1.model.as_deref(), Some("glm-5.2"), "not the -x variant");
+        let v2 = events.iter().find(|e| e.dedup_key == "workbuddy:v2").unwrap();
+        assert_eq!(v2.model.as_deref(), Some("hy3"), "model is the fallback");
     }
 
     #[test]

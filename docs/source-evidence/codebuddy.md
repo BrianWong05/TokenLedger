@@ -32,8 +32,11 @@ The usage schema is byte-for-byte the WorkBuddy shape:
   `completion_thinking_tokens`, `credit`, `cached_tokens`
 - nested `message.usage` — Anthropic-style `input_tokens`, `output_tokens`,
   `total_tokens`, `cache_read_input_tokens`
-- `providerData.model`/`requestModelId`/`requestModelName` — model `hy3` in
-  every sample
+- `providerData.requestModelId` — the clean Model id the request ran on; the
+  shared parser prefers it (ADR-0016). `providerData.model` usually equals it
+  but can carry an internal variant suffix no catalog carries, so it is only
+  the fallback. `providerData.requestModelName` is display casing. In every
+  live CodeBuddy sample all three agreed on `hy3`
 
 The cache convention matches WorkBuddy exactly: `usage.inputTokens` includes
 cache reads (`inputTokens=25190`, `prompt_cache_hit_tokens=512`,

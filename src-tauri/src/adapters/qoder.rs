@@ -21,6 +21,11 @@
 //!    ignored. The message `content` is never read — only numeric usage and
 //!    identity fields.
 //!
+//!    Subagent messages (`agent_sub_*` sessions) log no `model_info`; their
+//!    Model falls back to the parent session's logged Model via
+//!    `chat_session.parent_session_id` — one hop away in the same Artifact.
+//!    Without the link a Record stays model-less (Unattributed), never fails.
+//!
 //! 2. The Qoder CLI products (`~/.qoder/projects`, `~/.qoder-cli/projects`,
 //!    `~/.qoder-cn/projects`) write Claude-Code-shaped JSONL transcripts. Each
 //!    usage-bearing `assistant` line is one Usage Record, deduplicating on
@@ -63,9 +68,27 @@ const SUPPORTED_SCHEMA: &[(&str, &[&str])] = &[(
     ],
 )];
 
+// Qoder logs internal routing aliases, never the backing Model; the catalogs
+// price only the real name. Translate on ingest so Cost resolves (the alias
+// itself would be Unpriced forever). Mapping confirmed by the user; the
+// Artifacts carry no evidence of their own.
+const MODEL_ALIASES: &[(&str, &str)] = &[("qmodel_38max", "qwen3.8-max")];
+
+fn translate_model(model: Option<String>) -> Option<String> {
+    model.map(|m| {
+        MODEL_ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == m)
+            .map(|(_, real)| real.to_string())
+            .unwrap_or(m)
+    })
+}
+
 // Bump to force a full re-parse of every Qoder CLI transcript when the parser
 // changes (the byte-offset slot carries it through `unchanged`).
-const TRANSCRIPT_PARSER_VERSION: i64 = 1;
+// 2: translate routing aliases (qmodel_38max -> qwen3.8-max).
+// 3: re-parse so the keep-max Latest policy rewrites already-booked models.
+const TRANSCRIPT_PARSER_VERSION: i64 = 3;
 
 #[derive(Default)]
 struct DatabaseScan {
@@ -262,11 +285,12 @@ fn parse_line_event(
         .and_then(|t| t.as_str())
         .and_then(crate::time::iso_to_epoch)?;
 
-    let model = msg
-        .get("model")
-        .and_then(|m| m.as_str())
-        .filter(|m| !m.is_empty())
-        .map(str::to_owned);
+    let model = translate_model(
+        msg.get("model")
+            .and_then(|m| m.as_str())
+            .filter(|m| !m.is_empty())
+            .map(str::to_owned),
+    );
 
     let project = match v.get("cwd").and_then(|c| c.as_str()) {
         Some(cwd) => Some(rollup_worktree(cwd)),
@@ -310,6 +334,8 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
     ensure_schema(&database)?;
 
     let mut scan = DatabaseScan::default();
+    // Subagent messages log no model_info; their parent session's does.
+    let model_fallback = subagent_model_fallbacks(&database);
     // Only rows with a non-empty token_info can carry usage; the role guard
     // keeps user/tool rows (which never carry usage) out of the parse path.
     let mut stmt = database
@@ -349,16 +375,24 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
             }
         };
 
-        let model = model_info
-            .as_deref()
-            .and_then(parse_model)
-            .filter(|m| !m.is_empty());
-
         let session = session_id
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
+
+        let model = translate_model(
+            model_info
+                .as_deref()
+                .and_then(parse_model)
+                .filter(|m| !m.is_empty())
+                .or_else(|| {
+                    session
+                        .as_deref()
+                        .and_then(|s| model_fallback.get(s))
+                        .cloned()
+                }),
+        );
 
         scan.events.push(UsageEvent {
             dedup_key: format!("{SOURCE}:{id}"),
@@ -387,6 +421,63 @@ struct ExtractedUsage {
     input: i64,
     output: i64,
     cache_read: i64,
+}
+
+/// The fallback Model for sessions whose messages log no `model_info`: Qoder
+/// omits it on subagent conversations (`agent_sub_*`), but every such session
+/// carries a `parent_session_id` whose own messages DO log it — one hop away,
+/// in the same Artifact. Keyed by subagent session id. Best-effort: a missing
+/// `chat_session` table or column yields an empty map rather than an error,
+/// and the Records simply stay model-less as before.
+fn subagent_model_fallbacks(
+    database: &Connection,
+) -> std::collections::HashMap<String, String> {
+    // Each session's own logged Model, first observation wins. ORDER BY id
+    // makes that deterministic and matches the main scan's row order.
+    let mut session_model: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if let Ok(mut stmt) = database.prepare(
+        "SELECT session_id, model_info FROM chat_message \
+         WHERE model_info IS NOT NULL AND model_info != '' \
+         ORDER BY id",
+    ) {
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            })
+            .into_iter()
+            .flatten()
+            .flatten();
+        for (session_id, model_info) in rows {
+            if let (Some(id), Some(model)) = (session_id, parse_model(&model_info)) {
+                session_model.entry(id).or_insert(model);
+            }
+        }
+    }
+
+    // Subagent session -> its parent's Model.
+    let mut fallback = std::collections::HashMap::new();
+    if let Ok(mut stmt) = database.prepare(
+        "SELECT session_id, parent_session_id FROM chat_session \
+         WHERE parent_session_id IS NOT NULL AND parent_session_id != ''",
+    ) {
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .into_iter()
+            .flatten()
+            .flatten();
+        for (session_id, parent_id) in rows {
+            if let Some(model) = session_model.get(&parent_id) {
+                fallback.insert(session_id, model.clone());
+            }
+        }
+    }
+    fallback
 }
 
 /// Parse `token_info` JSON: `{"prompt_tokens","completion_tokens","cached_tokens","max_input_tokens"}`.
@@ -419,7 +510,7 @@ fn parse_usage(token_info: &str) -> Option<ExtractedUsage> {
 }
 
 /// Parse `model_info` JSON: `{"model_key":"qmodel_38max"}`. Returns the raw
-/// model_key string (display + price matching use the raw logged name).
+/// `model_key`; `translate_model` then maps routing aliases to real names.
 fn parse_model(model_info: &str) -> Option<String> {
     let v: Value = serde_json::from_str(model_info).ok()?;
     v.get("model_key")
@@ -552,7 +643,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, "qoder:m1");
-        assert_eq!(rows[0].1.as_deref(), Some("qmodel_38max"));
+        assert_eq!(rows[0].1.as_deref(), Some("qwen3.8-max")); // alias translated
         assert_eq!(rows[0].2, 420); // 25038 − 24618
         assert_eq!(rows[0].3, 470);
         assert_eq!(rows[0].4, 24618);
@@ -642,6 +733,88 @@ mod tests {
             })
             .unwrap();
         assert_eq!(model, None, "missing model_info yields no model");
+    }
+
+    #[test]
+    fn subagent_messages_inherit_the_parent_sessions_model() {
+        // Qoder logs no model_info on agent_sub conversations; the parent
+        // session's messages carry it, so the Model is one hop away.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("local.db");
+        create_database(&db_path);
+        let db = Connection::open(&db_path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE chat_session (
+                session_id VARCHAR(64) PRIMARY KEY,
+                parent_session_id VARCHAR(64)
+            );",
+        )
+        .unwrap();
+        // Parent quest session logs the alias; subagent session does not.
+        insert_message(
+            &db,
+            "p1",
+            Some("task-parent.session.execution"),
+            "assistant",
+            Some(
+                r#"{"prompt_tokens":100,"completion_tokens":10,"cached_tokens":0,"max_input_tokens":1000000}"#,
+            ),
+            Some(r#"{"model_key":"qmodel_38max"}"#),
+            1_786_112_276_027i64,
+        );
+        insert_message(
+            &db,
+            "s1",
+            Some("agent-sub-1"),
+            "assistant",
+            Some(
+                r#"{"prompt_tokens":50,"completion_tokens":5,"cached_tokens":0,"max_input_tokens":1000000}"#,
+            ),
+            None, // no model_info on subagent messages
+            1_786_112_276_028i64,
+        );
+        // Orphan session: no parent link -> stays model-less.
+        insert_message(
+            &db,
+            "o1",
+            Some("orphan-session"),
+            "assistant",
+            Some(
+                r#"{"prompt_tokens":30,"completion_tokens":3,"cached_tokens":0,"max_input_tokens":1000000}"#,
+            ),
+            None,
+            1_786_112_276_029i64,
+        );
+        db.execute(
+            "INSERT INTO chat_session (session_id, parent_session_id) VALUES \
+             ('agent-sub-1', 'task-parent.session.execution'), \
+             ('task-parent.session.execution', NULL)",
+            [],
+        )
+        .unwrap();
+        drop(db);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, std::slice::from_ref(&db_path), &[]);
+        assert_eq!(result.events_inserted, 3);
+        assert!(result.error.is_none());
+
+        let model_of = |key: &str| -> Option<String> {
+            ledger
+                .query_row(
+                    "SELECT model FROM events WHERE dedup_key = ?1",
+                    [key],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(model_of("qoder:p1").as_deref(), Some("qwen3.8-max"));
+        assert_eq!(
+            model_of("qoder:s1").as_deref(),
+            Some("qwen3.8-max"),
+            "subagent inherits the parent's Model, translated"
+        );
+        assert_eq!(model_of("qoder:o1"), None, "no parent link: model-less");
     }
 
     #[test]
@@ -742,7 +915,7 @@ mod tests {
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
                 )
                 .unwrap();
-        assert_eq!(row.0.as_deref(), Some("qmodel_38max"));
+        assert_eq!(row.0.as_deref(), Some("qwen3.8-max")); // alias translated
         assert_eq!(row.1.as_deref(), Some("/Users/dev/projects/alpha"));
         assert_eq!(row.2.as_deref(), Some("qcli-sess"));
         assert_eq!(row.3, 420); // fresh input; cache read is separate

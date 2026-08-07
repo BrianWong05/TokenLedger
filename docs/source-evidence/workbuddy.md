@@ -28,9 +28,11 @@ and `ai-title` lines never carry usage.
 
 Each usage-bearing line carries the model at that Request:
 
-- `providerData.model` — the raw logged Model name (e.g. `deepseek-v4-flash`,
-  `hy3`), what is displayed and what a price resolves against
-- `providerData.requestModelId` — equals `model` in the samples
+- `providerData.requestModelId` — the clean Model id the request ran on
+  (e.g. `glm-5.2`), what a price resolves against; the parser prefers it
+- `providerData.model` — usually equals `requestModelId`, but can carry an
+  internal variant suffix no catalog carries (`glm-5.2-x` beside
+  `requestModelId` `glm-5.2`); the parser uses it only as fallback
 - `providerData.requestModelName` — display casing only (`Deepseek-V4-Flash`)
 
 and three usage representations of the same Request:

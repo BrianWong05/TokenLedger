@@ -273,11 +273,17 @@ enum InsertConflict {
 // first-writer-stable across re-scans), it only fills v2 NULLs left by the
 // pre-migration ledger. Hence FirstWriter's COALESCE(events, excluded) argument
 // order is the OPPOSITE of BackfillFromExcluded's, and is load-bearing.
+// Latest is the one tie exception: a parser-version re-parse re-inserts every
+// row with equal output, and the fix it carries (e.g. a corrected Model name)
+// must REPLACE the stored value or the bump would change nothing for existing
+// rows. Model is derived from the Request's own content, so a forked copy
+// carries the same value and last-writer-wins cannot re-attribute anything.
 enum KeepMax {
     Skip,        // the conflict key; not in the SET body
     Winner,      // CASE: strictly-greater output_tokens takes excluded, else keeps events
     FirstWriter, // COALESCE(events.x, excluded.x): fill NULLs, never re-attribute
     Hybrid,      // winner takes excluded, else COALESCE(events.x, excluded.x)
+    Latest,      // always excluded: the newest write has the better answer
 }
 
 // Canonical column order: matches the events table and every ?N placeholder.
@@ -288,7 +294,7 @@ const COLS: [EventCol; 21] = {
         EventCol { name: "dedup_key",             insert: Immutable,            keep: Skip,         keep_ord: 0 },
         EventCol { name: "source",                insert: Immutable,            keep: Winner,       keep_ord: 1 },
         EventCol { name: "timestamp",             insert: Immutable,            keep: Winner,       keep_ord: 7 },
-        EventCol { name: "model",                 insert: Immutable,            keep: Winner,       keep_ord: 8 },
+        EventCol { name: "model",                 insert: Immutable,            keep: Latest,       keep_ord: 8 },
         EventCol { name: "project",               insert: Immutable,            keep: Winner,       keep_ord: 6 },
         EventCol { name: "api_calls",             insert: Immutable,            keep: Winner,       keep_ord: 9 },
         EventCol { name: "input_tokens",          insert: Immutable,            keep: Winner,       keep_ord: 2 },
@@ -353,6 +359,10 @@ fn keep_entry(c: &EventCol) -> String {
                 "{n}{g}= CASE WHEN excluded.output_tokens > events.output_tokens \
                  THEN excluded.{n}{g}ELSE COALESCE(events.{n},{g}excluded.{n}){g}END"
             )
+        }
+        KeepMax::Latest => {
+            let g = " ".repeat(17 - len);
+            format!("{n}{g}= excluded.{n}")
         }
     }
 }
@@ -806,7 +816,7 @@ mod tests {
         );
         assert_eq!(
             KEEP_MAX_SQL.as_str(),
-            "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(dedup_key) DO UPDATE SET source           = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source           ELSE events.source           END, input_tokens     = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.input_tokens     ELSE events.input_tokens     END, cache_read_tokens= CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_read_tokens ELSE events.cache_read_tokens END, cache_write_5m_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_5m_tokens ELSE events.cache_write_5m_tokens END, cache_write_1h_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_1h_tokens ELSE events.cache_write_1h_tokens END, project          = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.project          ELSE events.project          END, timestamp        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.timestamp        ELSE events.timestamp        END, model            = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.model            ELSE events.model            END, api_calls        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.api_calls        ELSE events.api_calls        END, source_file      = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source_file      ELSE events.source_file      END, session_id       = COALESCE(events.session_id, excluded.session_id), reasoning_tokens = COALESCE(events.reasoning_tokens, excluded.reasoning_tokens), ctx_messages  = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_messages  ELSE COALESCE(events.ctx_messages,  excluded.ctx_messages)  END, ctx_system    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_system    ELSE COALESCE(events.ctx_system,    excluded.ctx_system)    END, ctx_reasoning = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_reasoning ELSE COALESCE(events.ctx_reasoning, excluded.ctx_reasoning) END, ctx_toolcalls = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_toolcalls ELSE COALESCE(events.ctx_toolcalls, excluded.ctx_toolcalls) END, ctx_agents    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_agents    ELSE COALESCE(events.ctx_agents,    excluded.ctx_agents)    END, ctx_mcp       = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_mcp       ELSE COALESCE(events.ctx_mcp,       excluded.ctx_mcp)       END, ctx_skills    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_skills    ELSE COALESCE(events.ctx_skills,    excluded.ctx_skills)    END, output_tokens    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.output_tokens    ELSE events.output_tokens    END WHERE excluded.output_tokens >= events.output_tokens"
+            "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, source_file, session_id, reasoning_tokens, ctx_messages, ctx_system, ctx_reasoning, ctx_toolcalls, ctx_agents, ctx_mcp, ctx_skills) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21) ON CONFLICT(dedup_key) DO UPDATE SET source           = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source           ELSE events.source           END, input_tokens     = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.input_tokens     ELSE events.input_tokens     END, cache_read_tokens= CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_read_tokens ELSE events.cache_read_tokens END, cache_write_5m_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_5m_tokens ELSE events.cache_write_5m_tokens END, cache_write_1h_tokens = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.cache_write_1h_tokens ELSE events.cache_write_1h_tokens END, project          = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.project          ELSE events.project          END, timestamp        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.timestamp        ELSE events.timestamp        END, model            = excluded.model, api_calls        = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.api_calls        ELSE events.api_calls        END, source_file      = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.source_file      ELSE events.source_file      END, session_id       = COALESCE(events.session_id, excluded.session_id), reasoning_tokens = COALESCE(events.reasoning_tokens, excluded.reasoning_tokens), ctx_messages  = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_messages  ELSE COALESCE(events.ctx_messages,  excluded.ctx_messages)  END, ctx_system    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_system    ELSE COALESCE(events.ctx_system,    excluded.ctx_system)    END, ctx_reasoning = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_reasoning ELSE COALESCE(events.ctx_reasoning, excluded.ctx_reasoning) END, ctx_toolcalls = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_toolcalls ELSE COALESCE(events.ctx_toolcalls, excluded.ctx_toolcalls) END, ctx_agents    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_agents    ELSE COALESCE(events.ctx_agents,    excluded.ctx_agents)    END, ctx_mcp       = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_mcp       ELSE COALESCE(events.ctx_mcp,       excluded.ctx_mcp)       END, ctx_skills    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.ctx_skills    ELSE COALESCE(events.ctx_skills,    excluded.ctx_skills)    END, output_tokens    = CASE WHEN excluded.output_tokens > events.output_tokens THEN excluded.output_tokens    ELSE events.output_tokens    END WHERE excluded.output_tokens >= events.output_tokens"
         );
     }
 
@@ -1170,6 +1180,34 @@ mod tests {
             .unwrap();
         assert_eq!(out, 999);
         assert_eq!(file2, "fileB.jsonl");
+    }
+
+    #[test]
+    fn keep_max_tie_updates_model_but_not_attribution() {
+        let (_dir, mut conn) = temp_db();
+        let mut first = sample_event("claude:rep:1", "fileA.jsonl");
+        first.session_id = Some("sess-A".to_string());
+        first.model = Some("glm-5.2-x".to_string());
+        insert_events_keep_max_output(&mut conn, &[first]).unwrap();
+
+        // A parser-version re-parse re-inserts the same row (equal output)
+        // carrying a corrected Model name: Latest must replace the stored
+        // value, or the version bump would change nothing for existing rows.
+        let mut reparsed = sample_event("claude:rep:1", "fileA.jsonl");
+        reparsed.session_id = Some("sess-A".to_string());
+        reparsed.model = Some("glm-5.2".to_string());
+        let n = insert_events_keep_max_output(&mut conn, &[reparsed]).unwrap();
+        assert_eq!(n, 0);
+        let (model, sid, file): (Option<String>, Option<String>, String) = conn
+            .query_row(
+                "SELECT model, session_id, source_file FROM events WHERE dedup_key='claude:rep:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(model, Some("glm-5.2".to_string()), "tie takes the re-parsed model");
+        assert_eq!(sid, Some("sess-A".to_string()), "attribution stays first-writer");
+        assert_eq!(file, "fileA.jsonl");
     }
 
     #[test]
