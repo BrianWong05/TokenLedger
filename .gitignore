@@ -28,3 +28,4 @@ dist-ssr
 # read it (e.g. docs/agents/issue-tracker.md) and it should match the repo.
 .planning/
 graphify-out/
+.workbuddy/

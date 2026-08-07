@@ -87,6 +87,10 @@ trustworthy finer timing.
 - GitHub Copilot CLI
 - Kimchi
 - Oh My Pi
+- WorkBuddy — genuine private Artifact verified 2026-08-07
+  (`~/.workbuddy/projects/**/*.jsonl`); parser design agreed in ADR-0016
+- CodeBuddy — genuine private Artifact verified 2026-08-07
+  (`~/.codebuddy/projects/**/*.jsonl`); shares WorkBuddy's parser per ADR-0016
 
 ## Needs semantic design and a private Artifact
 
@@ -95,7 +99,6 @@ trustworthy finer timing.
 - Kimi — Kimi Code is stronger than the legacy format; unreliable historical
   Model correlation becomes Unattributed Usage.
 - Roo Code — never assign the last Session Model to every Request.
-- CodeBuddy — prove cache inclusivity and per-Request Model placement.
 - Cursor — prove collision-safe identity for cache rows.
 - Trae — cache-backed and dependent on an externally performed sync.
 - Antigravity IDE cache — part of the existing Antigravity Source and dependent
@@ -108,7 +111,6 @@ trustworthy finer timing.
 - Junie
 - Kiro
 - ZCode
-- WorkBuddy
 
 These candidates lack enough evidence to design a truthful production parser.
 They remain pending rather than rejected.
@@ -124,9 +126,10 @@ They remain pending rather than rejected.
   tokens. This does not exclude Kilo's current CLI Artifact.
 - Mux `session-usage.json` as an event source — it is a mutable cumulative
   snapshot. This does not exclude Mux event history.
-- The supplied WorkBuddy project path — it is not proven to represent the
-  desktop Source's primary history. This does not permanently exclude
-  WorkBuddy.
+- The earlier supplied WorkBuddy project path — it was not proven to represent
+  the desktop Source's primary history at the time. Superseded 2026-08-07 by a
+  verified live Artifact at `~/.workbuddy/projects/**/*.jsonl`; WorkBuddy is
+  no longer excluded (ADR-0016).
 
 ## Scan and presentation contract
 
