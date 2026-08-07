@@ -524,6 +524,41 @@ pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
     Ok((after - before).max(0) as u64)
 }
 
+/// Like insert_events, but first deletes every row whose dedup_key matches one
+/// of the `superseded` GLOB patterns, in the same transaction. A Source uses
+/// this when its Artifact proves that coarser Records were replaced by the
+/// Records being inserted and carry the same usage — the only deletion the
+/// Ledger's add-only rule permits (see CONTEXT.md, Ledger).
+pub fn insert_events_superseding(
+    conn: &mut Connection,
+    superseded: &[String],
+    events: &[UsageEvent],
+) -> rusqlite::Result<u64> {
+    let tx = conn.transaction()?;
+    // Count distinct NEW rows: a key that survives a supersession delete only
+    // to be re-inserted unchanged is not new, so check existence before the
+    // deletes run rather than diffing COUNT(*).
+    let mut existed_stmt = tx.prepare("SELECT 1 FROM events WHERE dedup_key = ?1")?;
+    let mut existed = 0i64;
+    for e in events {
+        if existed_stmt.exists([e.dedup_key.as_str()])? {
+            existed += 1;
+        }
+    }
+    drop(existed_stmt);
+    for pattern in superseded {
+        tx.execute("DELETE FROM events WHERE dedup_key GLOB ?1", [pattern])?;
+    }
+    {
+        let mut stmt = tx.prepare(&INSERT_SQL)?;
+        for e in events {
+            stmt.execute(&event_params(e)[..])?;
+        }
+    }
+    tx.commit()?;
+    Ok(((events.len() as i64) - existed).max(0) as u64)
+}
+
 /// Like insert_events but, on dedup_key conflict, keeps the row with the greater
 /// output_tokens. Needed for Claude: one turn is logged as several content-block
 /// lines sharing (message.id, requestId) with a growing output_tokens snapshot;

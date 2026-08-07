@@ -15,8 +15,8 @@ Antigravity, and a pi assistant message; one reported auxiliary usage block for
 a pi summary or tool result; one usage-ledger row for Goose; one user Turn for
 Grok; but one whole Session for Hermes, Kilo, or Zed when their
 Artifacts expose no trustworthy finer timestamps — with OpenCode splitting
-a Session into one Record per Model when its Messages prove the Session
-used several Models. Failed or aborted work
+a Session into one Record per Model its Requests prove, plus one Record
+for any Requests whose Model is unproven. Failed or aborted work
 counts when it reports non-zero usage, while a zero-token observation is not a
 Usage Record. (Implemented as `UsageEvent`.)
 _Avoid_: Event, row, entry
@@ -26,8 +26,8 @@ The permanent record of every Usage Record ever ingested — the system of
 record, not a cache. Because Sources prune their logs (Claude Code deletes
 transcripts after ~30 days), a Usage Record persists in the Ledger after its
 source log is gone; scans only ever add Records, never delete them — except
-to supersede a coarser Record with finer-grained Records that the Source
-proves carry the same usage, as OpenCode's per-Model split does.
+to supersede a coarser Record with Records that the Source proves carry the
+same usage, as OpenCode's per-Model split does.
 _Avoid_: Cache, database, store
 
 **Overview**:

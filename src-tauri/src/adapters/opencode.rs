@@ -6,17 +6,18 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use crate::adapters::{absolute_project, normalize_epoch};
-use crate::db::insert_events;
+use crate::db::insert_events_superseding;
 use crate::types::SourceScanResult;
 use crate::types::UsageEvent;
 
 const SOURCE: &str = "opencode";
 
 #[derive(Default)]
-struct DatabaseScan {
+struct OpencodeScan {
     events: Vec<UsageEvent>,
     session_ids: HashSet<String>,
-    superseded_keys: Vec<String>,
+    superseded: HashSet<String>,
+    seen_keys: HashSet<String>,
     lines_skipped: u64,
 }
 
@@ -66,24 +67,12 @@ pub fn scan_opencode(
     database_override: Option<&Path>,
 ) -> SourceScanResult {
     let (database_paths, mut errors) = discover_databases(data_root, database_override);
-    let mut modern_session_ids = HashSet::new();
-    let mut event_keys = HashSet::new();
-    let mut superseded_keys = HashSet::new();
-    let mut events = Vec::new();
+    let mut harvest = OpencodeScan::default();
     let mut lines_skipped = 0;
 
     for path in database_paths {
         match scan_database(&path) {
-            Ok(scan) => {
-                modern_session_ids.extend(scan.session_ids);
-                lines_skipped += scan.lines_skipped;
-                superseded_keys.extend(scan.superseded_keys);
-                for event in scan.events {
-                    if event_keys.insert(event.dedup_key.clone()) {
-                        events.push(event);
-                    }
-                }
-            }
+            Ok(scan) => absorb(&mut harvest, scan),
             Err(error) => errors.push(error),
         }
     }
@@ -92,31 +81,19 @@ pub fn scan_opencode(
         match scan_legacy_session(
             &session_path,
             legacy_message_root(legacy_root),
-            &modern_session_ids,
+            &harvest.session_ids,
         ) {
-            Ok((session_events, superseded, skipped)) => {
-                lines_skipped += skipped;
-                superseded_keys.extend(superseded);
-                for event in session_events {
-                    if event_keys.insert(event.dedup_key.clone()) {
-                        events.push(event);
-                    }
-                }
-            }
+            Ok(scan) => absorb(&mut harvest, scan),
             Err(error) => {
                 lines_skipped += 1;
                 errors.push(error);
             }
         }
     }
+    lines_skipped += harvest.lines_skipped;
 
-    for key in &superseded_keys {
-        if let Err(error) = conn.execute("DELETE FROM events WHERE dedup_key = ?1", [key]) {
-            errors.push(format!("{SOURCE}: stale aggregate cleanup failed: {error}"));
-        }
-    }
-
-    let events_inserted = match insert_events(conn, &events) {
+    let superseded: Vec<String> = harvest.superseded.into_iter().collect();
+    let events_inserted = match insert_events_superseding(conn, &superseded, &harvest.events) {
         Ok(inserted) => inserted,
         Err(error) => {
             errors.push(format!("{SOURCE}: Ledger insert failed: {error}"));
@@ -128,6 +105,19 @@ pub fn scan_opencode(
         events_inserted,
         lines_skipped,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
+    }
+}
+
+/// Merge one scanned Session's results into the run's harvest, keeping the
+/// first writer for each dedup key across databases and legacy storage.
+fn absorb(harvest: &mut OpencodeScan, scan: OpencodeScan) {
+    harvest.lines_skipped += scan.lines_skipped;
+    harvest.session_ids.extend(scan.session_ids);
+    harvest.superseded.extend(scan.superseded);
+    for event in scan.events {
+        if harvest.seen_keys.insert(event.dedup_key.clone()) {
+            harvest.events.push(event);
+        }
     }
 }
 
@@ -190,13 +180,13 @@ fn add_unique(paths: &mut Vec<PathBuf>, path: &Path) {
     }
 }
 
-fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
+fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("{SOURCE}: database open failed: {error}"))?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
     ensure_schema(&conn)?;
 
-    let mut scan = DatabaseScan::default();
+    let mut scan = OpencodeScan::default();
     let mut sessions = conn
         .prepare(
             "SELECT id, directory, time_created, time_updated
@@ -259,9 +249,7 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
             path,
         );
         scan.events.extend(events);
-        if let Some(key) = superseded {
-            scan.superseded_keys.push(key);
-        }
+        scan.superseded.extend(superseded);
     }
 
     Ok(scan)
@@ -337,7 +325,7 @@ fn scan_legacy_session(
     path: &Path,
     message_root: PathBuf,
     modern_session_ids: &HashSet<String>,
-) -> Result<(Vec<UsageEvent>, Option<String>, u64), String> {
+) -> Result<OpencodeScan, String> {
     let content = fs::read_to_string(path)
         .map_err(|error| format!("{SOURCE}: legacy session read failed: {error}"))?;
     let value = serde_json::from_str::<Value>(&content)
@@ -354,14 +342,17 @@ fn scan_legacy_session(
         })
         .ok_or_else(|| format!("{SOURCE}: legacy session has no stable id"))?;
     if modern_session_ids.contains(&session_id) {
-        return Ok((Vec::new(), None, 0));
+        return Ok(OpencodeScan::default());
     }
 
     let Some(timestamp) = json_session_timestamp(&value) else {
-        return Ok((Vec::new(), None, 1));
+        return Ok(OpencodeScan {
+            lines_skipped: 1,
+            ..Default::default()
+        });
     };
     let mut totals = SessionTotals::default();
-    let mut lines_skipped = 0;
+    let mut scan = OpencodeScan::default();
     let messages = message_root.join(&session_id);
     let mut message_files = Vec::new();
     collect_json_files(&messages, &mut message_files);
@@ -370,20 +361,20 @@ fn scan_legacy_session(
         let content = match fs::read_to_string(&message_path) {
             Ok(content) => content,
             Err(_) => {
-                lines_skipped += 1;
+                scan.lines_skipped += 1;
                 continue;
             }
         };
         let value = match serde_json::from_str::<Value>(&content) {
             Ok(value) => value,
             Err(_) => {
-                lines_skipped += 1;
+                scan.lines_skipped += 1;
                 continue;
             }
         };
         match parse_message(&value) {
             ParsedMessage::NotUsage => {}
-            ParsedMessage::Zero | ParsedMessage::Invalid => lines_skipped += 1,
+            ParsedMessage::Zero | ParsedMessage::Invalid => scan.lines_skipped += 1,
             ParsedMessage::Usage(snapshot) => totals.add(snapshot, None),
         }
     }
@@ -394,11 +385,19 @@ fn scan_legacy_session(
         absolute_project(value.get("directory").and_then(Value::as_str)),
         path,
     );
-    Ok((events, superseded, lines_skipped))
+    scan.events = events;
+    scan.superseded.extend(superseded);
+    Ok(scan)
 }
 
 fn session_dedup_key(session_id: &str) -> String {
     format!("{SOURCE}:session:{session_id}")
+}
+
+/// GLOB pattern covering every split dedup key of a Session. GLOB (not LIKE)
+/// so the `_` in OpenCode session ids stays literal.
+fn split_dedup_glob(session_id: &str) -> String {
+    format!("{SOURCE}:session:{session_id}:*")
 }
 
 fn split_dedup_key(session_id: &str, model: Option<&String>) -> String {
@@ -406,6 +405,16 @@ fn split_dedup_key(session_id: &str, model: Option<&String>) -> String {
         Some(model) => format!("{SOURCE}:session:{session_id}:model:{model}"),
         None => format!("{SOURCE}:session:{session_id}:unattributed"),
     }
+}
+
+/// The identity one Model group of a Session is booked under.
+struct GroupBooking {
+    dedup_key: String,
+    session_id: String,
+    model: Option<String>,
+    timestamp: i64,
+    project: Option<String>,
+    source_file: PathBuf,
 }
 
 impl SessionTotals {
@@ -416,33 +425,35 @@ impl SessionTotals {
             .add(snapshot, message_time);
     }
 
-    /// One UsageEvent per Model group. A single-group Session keeps the
-    /// legacy Session-level dedup key and timestamp; a multi-group Session
-    /// splits into suffixed keys and returns the legacy key it supersedes.
+    /// One UsageEvent per Model group, plus the GLOB patterns of stale rows
+    /// this booking supersedes. Supersession is symmetric: whichever shape a
+    /// Session now has (one group or several), every row of the other shape
+    /// is replaced, so transitions in either direction leave no stale rows.
     fn events(
         &self,
         session_id: &str,
         session_timestamp: i64,
         project: Option<String>,
         source_file: &Path,
-    ) -> (Vec<UsageEvent>, Option<String>) {
+    ) -> (Vec<UsageEvent>, Vec<String>) {
         let mut events = Vec::new();
         if self.groups.is_empty() {
-            return (events, None);
+            return (events, Vec::new());
         }
         if self.groups.len() == 1 {
             let (model, totals) = self.groups.iter().next().expect("one group");
-            if let Some(event) = totals.event(
-                session_dedup_key(session_id),
-                session_id,
-                model.as_deref(),
-                session_timestamp,
+            let booking = GroupBooking {
+                dedup_key: session_dedup_key(session_id),
+                session_id: session_id.to_string(),
+                model: model.clone(),
+                timestamp: session_timestamp,
                 project,
-                source_file,
-            ) {
+                source_file: source_file.to_path_buf(),
+            };
+            if let Some(event) = totals.event(booking) {
                 events.push(event);
             }
-            return (events, None);
+            return (events, vec![split_dedup_glob(session_id)]);
         }
         for (model, totals) in &self.groups {
             let timestamp = totals
@@ -450,18 +461,22 @@ impl SessionTotals {
                 .filter(|time| *time > 0)
                 .map(normalize_epoch)
                 .unwrap_or(session_timestamp);
-            if let Some(event) = totals.event(
-                split_dedup_key(session_id, model.as_ref()),
-                session_id,
-                model.as_deref(),
+            let booking = GroupBooking {
+                dedup_key: split_dedup_key(session_id, model.as_ref()),
+                session_id: session_id.to_string(),
+                model: model.clone(),
                 timestamp,
-                project.clone(),
-                source_file,
-            ) {
+                project: project.clone(),
+                source_file: source_file.to_path_buf(),
+            };
+            if let Some(event) = totals.event(booking) {
                 events.push(event);
             }
         }
-        (events, Some(session_dedup_key(session_id)))
+        (
+            events,
+            vec![session_dedup_key(session_id), split_dedup_glob(session_id)],
+        )
     }
 }
 
@@ -485,16 +500,7 @@ impl ModelTotals {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn event(
-        &self,
-        dedup_key: String,
-        session_id: &str,
-        model: Option<&str>,
-        timestamp: i64,
-        project: Option<String>,
-        source_file: &Path,
-    ) -> Option<UsageEvent> {
+    fn event(&self, booking: GroupBooking) -> Option<UsageEvent> {
         let total = self
             .input
             .saturating_add(self.output)
@@ -509,19 +515,19 @@ impl ModelTotals {
             None
         };
         Some(UsageEvent {
-            dedup_key,
+            dedup_key: booking.dedup_key,
             source: SOURCE.to_string(),
-            timestamp,
-            model: model.map(str::to_string),
-            project,
+            timestamp: booking.timestamp,
+            model: booking.model,
+            project: booking.project,
             api_calls: 1,
             input_tokens: self.input,
             output_tokens: self.output,
             cache_read_tokens: self.cache_read,
             cache_write_5m_tokens: self.cache_write,
             cache_write_1h_tokens: 0,
-            source_file: source_file.to_string_lossy().into_owned(),
-            session_id: Some(session_id.to_string()),
+            source_file: booking.source_file.to_string_lossy().into_owned(),
+            session_id: Some(booking.session_id),
             reasoning_tokens: reasoning,
             ctx: Default::default(),
         })
@@ -913,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn session_gaining_a_second_model_retires_the_stale_aggregate() {
+    fn session_gaining_a_second_model_supersedes_the_stale_aggregate() {
         let tmp = tempdir().unwrap();
         let data_root = tmp.path().join("opencode");
         fs::create_dir_all(&data_root).unwrap();
@@ -978,7 +984,7 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(rows.len(), 2, "stale aggregate row is retired, not kept");
+        assert_eq!(rows.len(), 2, "stale aggregate row is superseded, not kept");
         assert_eq!(
             rows[0],
             (
@@ -1011,6 +1017,98 @@ mod tests {
                 )
                 .unwrap(),
             2
+        );
+
+        let db = Connection::open(&current).unwrap();
+        db.execute("DELETE FROM message WHERE id = 'm2'", [])
+            .unwrap();
+        drop(db);
+
+        let fourth = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert!(
+            fourth.error.is_none(),
+            "unexpected scan error: {:?}",
+            fourth.error
+        );
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT dedup_key, model, input_tokens, output_tokens
+                     FROM events WHERE source = 'opencode'",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                "opencode:session:mixed".to_string(),
+                Some("model-a".to_string()),
+                10,
+                4
+            ),
+            "split rows are superseded when the session is single-Model again"
+        );
+    }
+
+    #[test]
+    fn mixed_session_books_a_model_less_group_as_unattributed() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let current = data_root.join("opencode.db");
+        create_database(&current);
+        let db = Connection::open(&current).unwrap();
+        insert_session(&db, "split", "/private/split", 1_780_000_900_000);
+        insert_message(
+            &db,
+            "m1",
+            "split",
+            r#"{"role":"assistant","modelID":"model-a","tokens":{"input":10,"output":1,"cache":{"read":0,"write":0}}}"#,
+        );
+        insert_message(
+            &db,
+            "m2",
+            "split",
+            r#"{"role":"assistant","tokens":{"input":3,"output":7,"cache":{"read":0,"write":0}}}"#,
+        );
+        drop(db);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert_eq!(result.events_inserted, 2);
+        let rows: Vec<(String, Option<String>, i64, i64)> = ledger
+            .prepare(
+                "SELECT dedup_key, model, input_tokens, output_tokens
+                 FROM events WHERE source = 'opencode' ORDER BY dedup_key",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            (
+                "opencode:session:split:model:model-a".to_string(),
+                Some("model-a".to_string()),
+                10,
+                1
+            )
+        );
+        assert_eq!(
+            rows[1],
+            (
+                "opencode:session:split:unattributed".to_string(),
+                None,
+                3,
+                7
+            ),
+            "the model-less group books NULL, never a sentinel"
         );
     }
 
