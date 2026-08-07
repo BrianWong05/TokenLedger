@@ -36,7 +36,10 @@ use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use pricing::{ModelPricing, RatesPerTok};
-use queries::{BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint, Summary, TrendPoint};
+use queries::{
+    BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint,
+    Summary, TrendPoint,
+};
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
 use types::ScanStatus;
@@ -206,28 +209,19 @@ fn ctx_resources(
 }
 
 #[tauri::command]
-fn ctx_buckets(
-    state: State<'_, AppState>,
-    filters: Filters,
-) -> Result<Vec<CtxBuckets>, String> {
+fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBuckets>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_buckets(&db, &filters).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn ctx_tools(
-    state: State<'_, AppState>,
-    filters: Filters,
-) -> Result<Vec<CtxToolRow>, String> {
+fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_tools(&db, &filters).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn ctx_exec(
-    state: State<'_, AppState>,
-    filters: Filters,
-) -> Result<Vec<CtxExecRow>, String> {
+fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
 }
@@ -520,7 +514,7 @@ mod tests {
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
-    // functions. Empty fixture roots => 13 source statuses, zero events.
+    // functions. Empty fixture roots => 14 source statuses, zero events.
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
@@ -543,6 +537,7 @@ mod tests {
             zed_databases: vec![dir.path().join("zed/threads/threads.db")],
             cline: vec![dir.path().join("cline")],
             workbuddy: dir.path().join("workbuddy"),
+            codebuddy: dir.path().join("codebuddy"),
         };
         let state = AppState {
             db: Mutex::new(conn),
@@ -554,7 +549,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 13);
+        assert_eq!(status.sources.len(), 14);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

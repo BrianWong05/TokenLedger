@@ -42,7 +42,10 @@ fn e2e_real_logs() {
     for row in &by_tool {
         println!(
             "  {:<8} tokens={:<12} requests={:<8} cost={:?}",
-            row.key.as_deref().unwrap_or("Unattributed usage"), row.total_tokens, row.requests, row.cost
+            row.key.as_deref().unwrap_or("Unattributed usage"),
+            row.total_tokens,
+            row.requests,
+            row.cost
         );
     }
 
@@ -59,7 +62,11 @@ fn e2e_real_logs() {
     println!("  unpriced_models     {:?}", summary.unpriced_models);
     println!("  cache_hit_rate      {:.4}", summary.cache_hit_rate);
 
-    assert_eq!(status.sources.len(), 13, "expected all 13 sources to report");
+    assert_eq!(
+        status.sources.len(),
+        14,
+        "expected all 14 sources to report"
+    );
     assert!(
         summary.total_tokens > 0,
         "expected non-zero tokens scanning real logs"
@@ -90,7 +97,9 @@ fn e2e_real_logs() {
         let mut stmt = conn
             .prepare("SELECT source, kind, COUNT(DISTINCT name) FROM ctx_resources GROUP BY source, kind")
             .unwrap();
-        let it = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        let it = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
         it.collect::<rusqlite::Result<Vec<_>>>().unwrap()
     };
     println!("=== ctx resources ===");
@@ -108,7 +117,10 @@ fn e2e_real_logs() {
     println!("  input_tokens        {}", claude_summary.input_tokens);
     println!("  output_tokens       {}", claude_summary.output_tokens);
     println!("  cache_read_tokens   {}", claude_summary.cache_read_tokens);
-    println!("  cache_write_tokens  {}", claude_summary.cache_write_tokens);
+    println!(
+        "  cache_write_tokens  {}",
+        claude_summary.cache_write_tokens
+    );
     println!("  total_tokens        {}", claude_summary.total_tokens);
     println!("  requests            {}", claude_summary.requests);
     println!("  cost                {:?}", claude_summary.cost);
@@ -128,10 +140,15 @@ fn e2e_real_logs() {
     let tools = queries::ctx_tools(&conn, &all).unwrap();
     println!("=== top ctx_tools ===");
     for t in tools.iter().take(12) {
-        println!("  {:<8} {:<28} est={:<10} calls={}", t.source, t.name, t.est_tokens, t.calls);
+        println!(
+            "  {:<8} {:<28} est={:<10} calls={}",
+            t.source, t.name, t.est_tokens, t.calls
+        );
     }
     assert!(
-        tools.iter().any(|t| t.source == "claude" && t.est_tokens > 0),
+        tools
+            .iter()
+            .any(|t| t.source == "claude" && t.est_tokens > 0),
         "expected claude tool weights on real logs"
     );
 
@@ -139,7 +156,8 @@ fn e2e_real_logs() {
     // for claude on real logs; print the top kinds and executables.
     let exec = queries::ctx_exec(&conn, &all).unwrap();
     assert!(
-        exec.iter().any(|r| r.source == "claude" && r.est_tokens > 0),
+        exec.iter()
+            .any(|r| r.source == "claude" && r.est_tokens > 0),
         "expected claude ctx_exec rows on real logs"
     );
     let mut by_kind: std::collections::HashMap<&str, (i64, i64)> = std::collections::HashMap::new();

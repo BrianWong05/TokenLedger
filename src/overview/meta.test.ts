@@ -3,13 +3,20 @@ import { SOURCE_ICONS } from './icons';
 import { SOURCES, emptyBySource, sourceMeta } from './meta';
 
 describe('Source catalog', () => {
-  it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, and WorkBuddy in catalog order with distinct marks', () => {
+  it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, WorkBuddy, and CodeBuddy in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'workbuddy',
+      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'workbuddy', 'codebuddy',
     ]);
-    expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'workbuddy', label: 'WorkBuddy', source: 'WorkBuddy', icon: 'workbuddy' });
+    expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'codebuddy', label: 'CodeBuddy', source: 'CodeBuddy', icon: 'codebuddy' });
     expect(emptyBySource().pi).toBe(0);
     expect(emptyBySource().kilo).toBe(0);
+    expect(sourceMeta('codebuddy')).toMatchObject({
+      key: 'codebuddy', label: 'CodeBuddy', source: 'CodeBuddy', icon: 'codebuddy', aliases: ['CodeBuddy CLI', 'CodeBuddy IDE', 'CodeBuddy VS Code'],
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ id: 'projects', path: '.codebuddy/projects' }),
+      ]),
+    });
     expect(sourceMeta('workbuddy')).toMatchObject({
       key: 'workbuddy', label: 'WorkBuddy', source: 'WorkBuddy', icon: 'workbuddy', aliases: ['WorkBuddy desktop'],
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },

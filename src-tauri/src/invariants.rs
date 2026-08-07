@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic thirteen-Source fixture — not
+// on every plain `cargo test` against a hermetic fourteen-Source fixture — not
 // only under the #[ignore] real-log e2e. The four assert_* helpers hold the
 // exact SQL + messages the e2e used to inline; both callers share them.
 //
@@ -22,7 +22,10 @@ pub(crate) fn assert_partition_exact(conn: &Connection) {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(bad_partition, 0, "primary partition must equal billed context exactly");
+    assert_eq!(
+        bad_partition, 0,
+        "primary partition must equal billed context exactly"
+    );
 }
 
 /// Secondary categories (toolcalls / mcp / skills) are subsets of messages.
@@ -37,7 +40,10 @@ pub(crate) fn assert_secondary_subset(conn: &Connection) {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(bad_subset, 0, "secondary categories are subsets of messages");
+    assert_eq!(
+        bad_subset, 0,
+        "secondary categories are subsets of messages"
+    );
 }
 
 /// Hermes records no content: every ctx category stays NULL.
@@ -55,8 +61,7 @@ pub(crate) fn assert_hermes_ctx_null(conn: &Connection) {
 /// Exact-bucket partition per source: history + new_input + system + response
 /// + reasoning == total usage for that source.
 pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
-    let buckets =
-        crate::queries::ctx_buckets(conn, &crate::queries::Filters::default()).unwrap();
+    let buckets = crate::queries::ctx_buckets(conn, &crate::queries::Filters::default()).unwrap();
     for b in &buckets {
         let (tot_in, tot_out, tot_cr, tot_cw): (i64, i64, i64, i64) = conn
             .query_row(
@@ -67,14 +72,14 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
             )
             .unwrap();
         let total = tot_in + tot_out + tot_cr + tot_cw;
-        let sum = b.history + b.new_input + b.system.unwrap_or(0) + b.response
-            + b.reasoning.unwrap_or(0);
+        let sum =
+            b.history + b.new_input + b.system.unwrap_or(0) + b.response + b.reasoning.unwrap_or(0);
         assert_eq!(sum, total, "bucket partition exact for {}", b.source);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic thirteen-Source fixture + the default-run test that proves the four
+// Hermetic fourteen-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -199,7 +204,16 @@ fn build_grok(base: &Path) {
 fn build_antigravity(base: &Path) {
     let dir = base.join("antigravity");
     std::fs::create_dir_all(&dir).unwrap();
-    let gen = gen_blob("gemini-3-flash-a", 1_780_300_000, 1132, 500, 20_000, 300, 150, "resp-1");
+    let gen = gen_blob(
+        "gemini-3-flash-a",
+        1_780_300_000,
+        1132,
+        500,
+        20_000,
+        300,
+        150,
+        "resp-1",
+    );
     ag_build_db(&dir.join("conv-1.db"), &[gen]);
 }
 
@@ -266,7 +280,8 @@ fn build_pi(base: &Path) {
     std::fs::write(
         dir.join("session.jsonl"),
         include_str!("adapters/fixtures/pi/basic-session.jsonl"),
-    ).unwrap();
+    )
+    .unwrap();
 }
 
 fn build_goose(base: &Path) {
@@ -513,8 +528,31 @@ fn ag_build_db(path: &Path, gens: &[Vec<u8>]) {
     }
 }
 
+// codebuddy: the same transcript shape as WorkBuddy, plus the `summary` line
+// type first seen in CodeBuddy transcripts — a zero-token summary is not a
+// Record, a non-zero one is. Shares the parser (ADR-0016).
+fn build_codebuddy(base: &Path) {
+    write(
+        &base.join("codebuddy/Users-dev-projects-alpha/cb-sess.jsonl"),
+        concat!(
+            // Anthropic-style usage on a message line (cache read populated).
+            r#"{"type":"message","id":"cb-msg-1","sessionId":"cb-sess","timestamp":1786092914695,"cwd":"/Users/dev/projects/alpha","message":{"usage":{"input_tokens":25190,"output_tokens":10,"total_tokens":25200,"cache_read_input_tokens":512}}}"#,
+            "\n",
+            // Non-zero summary: a Record (model hy3).
+            r#"{"type":"summary","id":"cb-sm-1","timestamp":1786092915000,"cwd":"/Users/dev/projects/alpha","providerData":{"model":"hy3","usage":{"requests":1,"inputTokens":100,"outputTokens":5,"totalTokens":105}}}"#,
+            "\n",
+            // Zero-token summary: not a Record.
+            r#"{"type":"summary","id":"cb-sm-0","timestamp":1786092916000,"providerData":{"usage":{"requests":1,"inputTokens":0,"outputTokens":0,"totalTokens":0}}}"#,
+            "\n",
+            // Non-usage line type: never a Record.
+            r#"{"type":"file-history-snapshot","id":"cb-fh-1","timestamp":1786092917000,"snapshot":{}}"#,
+            "\n",
+        ),
+    );
+}
+
 #[test]
-fn hermetic_thirteen_source_partition_invariants() {
+fn hermetic_fourteen_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -531,6 +569,7 @@ fn hermetic_thirteen_source_partition_invariants() {
     build_cline(base);
     build_pi(base);
     build_workbuddy(base);
+    build_codebuddy(base);
 
     let roots = SourceRoots {
         claude: base.join("claude"),
@@ -551,6 +590,7 @@ fn hermetic_thirteen_source_partition_invariants() {
         zed_databases: vec![base.join("zed/threads/threads.db")],
         cline: vec![base.join("cline")],
         workbuddy: base.join("workbuddy"),
+        codebuddy: base.join("codebuddy"),
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -558,7 +598,7 @@ fn hermetic_thirteen_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the thirteen Sources ingested events and reported no error.
+    // Every one of the fourteen Sources ingested events and reported no error.
     for src in [
         "claude",
         "codex",
@@ -573,6 +613,7 @@ fn hermetic_thirteen_source_partition_invariants() {
         "cline",
         "pi",
         "workbuddy",
+        "codebuddy",
     ] {
         let s = status
             .sources
@@ -606,24 +647,34 @@ fn hermetic_thirteen_source_partition_invariants() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(claude_nz > 0, "expected a claude event with nonzero system AND reasoning");
+    assert!(
+        claude_nz > 0,
+        "expected a claude event with nonzero system AND reasoning"
+    );
 
     // Claude drill-down tables populated (Bash tool_use + its result).
     let tools: i64 = conn
-        .query_row("SELECT COUNT(*) FROM ctx_tools WHERE source='claude'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM ctx_tools WHERE source='claude'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!(tools > 0, "claude ctx_tools empty");
     let exec: i64 = conn
-        .query_row("SELECT COUNT(*) FROM ctx_exec WHERE source='claude'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM ctx_exec WHERE source='claude'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all thirteen here).
-    let buckets =
-        crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
+    // Every Source with billed tokens surfaces in ctx_buckets (all fourteen here).
+    let buckets = crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 13,
-        "expected >=13 sources in ctx_buckets, got {}",
+        buckets.len() >= 14,
+        "expected >=14 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -639,7 +690,11 @@ fn hermetic_thirteen_source_partition_invariants() {
         .unwrap();
     assert!(pi_attr > 0, "pi produced no attributed events");
     let pi_tools: i64 = conn
-        .query_row("SELECT COUNT(*) FROM ctx_tools WHERE source='pi'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM ctx_tools WHERE source='pi'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!(pi_tools > 0, "pi ctx_tools empty");
     let pi_unattributed: i64 = conn
@@ -658,13 +713,21 @@ fn hermetic_thirteen_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all thirteen.
+    // Source's totals identical: ingestion is idempotent across all fourteen.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {
-        assert_eq!(s.events_inserted, 0, "{}: second scan re-inserted", s.source);
+        assert_eq!(
+            s.events_inserted, 0,
+            "{}: second scan re-inserted",
+            s.source
+        );
     }
-    assert_eq!(totals_before, source_totals(&conn), "second-scan totals drifted");
+    assert_eq!(
+        totals_before,
+        source_totals(&conn),
+        "second-scan totals drifted"
+    );
 }
 
 // (source, total tokens, requests) per Source — a stable-totals fingerprint.

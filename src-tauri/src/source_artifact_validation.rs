@@ -111,6 +111,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         zed_databases: vec![missing.clone()],
         cline: vec![missing.clone()],
         workbuddy: missing.clone(),
+        codebuddy: missing.clone(),
     };
 
     match source {
@@ -126,8 +127,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "goose" => roots.goose_sessions = vec![artifact.to_path_buf()],
         "pi" => roots.pi_sessions = vec![artifact.to_path_buf()],
         "opencode" => {
-            if artifact.is_file()
-                || artifact.extension().and_then(|ext| ext.to_str()) == Some("db")
+            if artifact.is_file() || artifact.extension().and_then(|ext| ext.to_str()) == Some("db")
             {
                 roots.opencode_db = Some(artifact.to_path_buf());
             } else if artifact.file_name().and_then(|name| name.to_str()) == Some("storage") {
@@ -141,6 +141,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "zed" => roots.zed_databases = vec![artifact.to_path_buf()],
         "cline" => roots.cline = vec![artifact.to_path_buf()],
         "workbuddy" => roots.workbuddy = artifact.to_path_buf(),
+        "codebuddy" => roots.codebuddy = artifact.to_path_buf(),
         _ => {}
     }
 
@@ -606,7 +607,8 @@ mod tests {
         )
         .unwrap();
 
-        let selection = Selection::from_values("cline", directory.path().join("cline").as_path()).unwrap();
+        let selection =
+            Selection::from_values("cline", directory.path().join("cline").as_path()).unwrap();
         let report = validate(&selection);
 
         assert_eq!(report.result, "pass");

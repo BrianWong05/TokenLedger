@@ -2,6 +2,7 @@
 // URL string). Every source has a mark; the monogram fallback in SourceIcon is a
 // safety net only.
 import claude from './icons/claude.svg';
+import codebuddy from './icons/codebuddy.svg';
 import codex from './icons/codex.svg';
 import gemini from './icons/gemini.svg';
 import hermes from './icons/hermes.svg';
@@ -22,6 +23,7 @@ const generic = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" vi
 // disappear behind a missing asset.
 export const SOURCE_ICONS: Record<string, string> = {
   claude,
+  codebuddy,
   codex,
   gemini,
   hermes,

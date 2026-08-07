@@ -209,6 +209,20 @@
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
       "platforms": ["all"],
       "prerequisite": null
+    },
+    {
+      "key": "codebuddy",
+      "label": "CodeBuddy",
+      "source": "CodeBuddy",
+      "aliases": ["CodeBuddy CLI", "CodeBuddy IDE", "CodeBuddy VS Code"],
+      "color": "#38bdf8",
+      "icon": "codebuddy",
+      "artifacts": [
+        { "id": "projects", "kind": "directory", "path": ".codebuddy/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "platforms": ["all"],
+      "prerequisite": null
     }
   ]
 }

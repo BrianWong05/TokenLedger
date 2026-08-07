@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use crate::adapters::antigravity::scan_antigravity;
 use crate::adapters::claude::scan_claude;
 use crate::adapters::cline::scan_cline;
+use crate::adapters::codebuddy::scan_codebuddy;
 use crate::adapters::codex::scan_codex;
 use crate::adapters::gemini::scan_gemini;
 use crate::adapters::goose::scan_goose;
@@ -41,6 +42,7 @@ pub struct SourceRoots {
     pub zed_databases: Vec<PathBuf>,
     pub cline: Vec<PathBuf>,
     pub workbuddy: PathBuf,
+    pub codebuddy: PathBuf,
 }
 
 impl SourceRoots {
@@ -145,6 +147,7 @@ impl SourceRoots {
             zed_databases,
             cline: cline_roots(home, std::env::consts::OS, cline_data, cline_sandbox_data),
             workbuddy: catalog_root(home, "workbuddy", "projects"),
+            codebuddy: catalog_root(home, "codebuddy", "projects"),
         }
     }
 }
@@ -495,6 +498,7 @@ fn run_scan_sources(
                 "zed" => run_one(&source.key, || scan_zed(conn, &roots.zed_databases)),
                 "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline)),
                 "workbuddy" => run_one(&source.key, || scan_workbuddy(conn, &roots.workbuddy)),
+                "codebuddy" => run_one(&source.key, || scan_codebuddy(conn, &roots.codebuddy)),
                 _ => SourceStatus {
                     source: source.key.clone(),
                     events_inserted: 0,
@@ -574,7 +578,8 @@ mod tests {
                 "zed",
                 "cline",
                 "pi",
-                "workbuddy"
+                "workbuddy",
+                "codebuddy"
             ],
         );
         assert!(catalog.sources.iter().all(|source| {
@@ -643,6 +648,7 @@ mod tests {
                 ("cline", "cli-default-data", ".cline/data"),
                 ("pi", "sessions", ".pi/agent/sessions"),
                 ("workbuddy", "projects", ".workbuddy/projects"),
+                ("codebuddy", "projects", ".codebuddy/projects"),
             ],
         );
         assert!(catalog
@@ -1405,6 +1411,7 @@ mod tests {
             zed_databases: vec![tmp.path().join("zed/threads/threads.db")],
             cline: vec![tmp.path().join("cline")],
             workbuddy: tmp.path().join("no-workbuddy"),
+            codebuddy: tmp.path().join("no-codebuddy"),
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -1462,6 +1469,7 @@ mod tests {
             zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
+            codebuddy: base.join("no-codebuddy"),
         };
 
         let db_path = base.join("ledger.db");
@@ -1484,8 +1492,8 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 13);
-        assert_eq!(status.sources.last().unwrap().source, "workbuddy");
+        assert_eq!(status.sources.len(), 14);
+        assert_eq!(status.sources.last().unwrap().source, "codebuddy");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
         assert_eq!(pi.events_inserted, 4);
@@ -1836,13 +1844,14 @@ mod tests {
             zed_databases: vec![zed_db],
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
+            codebuddy: base.join("no-codebuddy"),
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 13);
-        assert_eq!(status.sources.last().unwrap().source, "workbuddy");
+        assert_eq!(status.sources.len(), 14);
+        assert_eq!(status.sources.last().unwrap().source, "codebuddy");
         assert!(status.scanned_at > 0);
 
         // Claude still ingests its event even though Gemini reports a warning.
@@ -1987,6 +1996,7 @@ mod tests {
             zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
+            codebuddy: base.join("no-codebuddy"),
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
@@ -2150,6 +2160,7 @@ mod tests {
             zed_databases: vec![base.join("no-zed/threads.db")],
             cline: vec![base.join("no-cline")],
             workbuddy: base.join("no-workbuddy"),
+            codebuddy: base.join("no-codebuddy"),
         };
         let mut ledger = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut ledger, &roots);

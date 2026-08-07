@@ -1,9 +1,9 @@
 # CodeBuddy Source evidence
 
 Status as of 2026-08-07: the genuine private-Artifact gate is met from a live
-install that began producing usage during this session; the adapter and
-synthetic fixture are not yet implemented. This file records what the live
-Artifact proves and the agreed parser design.
+install that produced usage during this session; the adapter and synthetic
+fixture are implemented (Issue #78). This file records what the live Artifact
+proves and the agreed parser design.
 
 ## Artifact
 

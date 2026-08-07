@@ -2,6 +2,7 @@ pub mod antigravity;
 pub mod claude;
 pub mod claude_ctx;
 pub mod cline;
+pub mod codebuddy;
 pub mod codex;
 pub mod ctx;
 pub mod exec_class;
@@ -107,11 +108,7 @@ pub(crate) fn absolute_project(project: Option<&str>) -> Option<String> {
     (!project.is_empty() && is_absolute_path(project)).then(|| project.to_string())
 }
 
-pub(crate) fn unchanged(
-    conn: &rusqlite::Connection,
-    path: &Path,
-    current: &FileState,
-) -> bool {
+pub(crate) fn unchanged(conn: &rusqlite::Connection, path: &Path, current: &FileState) -> bool {
     match get_file_state(conn, &path.to_string_lossy()) {
         // byte_offset carries the caller's parser version (0 where unused), so
         // bumping it re-parses files whose size/mtime never changed.
@@ -194,6 +191,9 @@ mod tests {
         assert_eq!(rollup_worktree("/Users/dev/repo"), "/Users/dev/repo");
         assert_eq!(rollup_worktree(r"C:\Users\dev\repo"), r"C:\Users\dev\repo");
         // ".claude/worktrees" as a plain directory name, not the marker path
-        assert_eq!(rollup_worktree("/Users/dev/worktrees"), "/Users/dev/worktrees");
+        assert_eq!(
+            rollup_worktree("/Users/dev/worktrees"),
+            "/Users/dev/worktrees"
+        );
     }
 }
