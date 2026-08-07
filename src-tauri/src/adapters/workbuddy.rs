@@ -23,21 +23,47 @@
 //!
 //! The logged billed `credit` is ignored: Cost resolves from the catalog by the
 //! raw Model name elsewhere (ADR-0002).
+//!
+//! WorkBuddy also carries a SQLite metadata fallback (Issue #79): its
+//! `workbuddy.db` `sessions` table supplies Session metadata and discovery for
+//! Sessions whose JSONL transcript the Source has pruned. A pruned Session
+//! still surfaces as history (cwd, model, timestamps, title) via the
+//! `source_sessions` table — never token figures, which only a Usage Record
+//! may carry. `session_usage.used/size` and `credit_json` are storage
+//! accounting and billed credit, and are never read as usage. CodeBuddy has no
+//! equivalent metadata store, so the fallback is WorkBuddy-only.
 
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::{absolute_project, file_state_of, find_jsonl, normalize_epoch, unchanged};
-use crate::db::{insert_events_keep_max_output, set_file_state};
+use crate::db::{insert_events_keep_max_output, set_file_state, upsert_source_session};
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 // Bump to force a full re-parse of every WorkBuddy/CodeBuddy Session when the
 // parser changes (the byte-offset slot carries it through `unchanged`).
 const TRANSCRIPT_PARSER_VERSION: i64 = 1;
 
 pub fn scan_workbuddy(conn: &mut Connection, projects_root: &Path) -> SourceScanResult {
-    scan_transcript(conn, projects_root, "workbuddy")
+    let mut seen = HashSet::new();
+    let mut result = scan_transcript_collect(conn, projects_root, "workbuddy", &mut seen);
+    // The genuine-pruned-Session fallback (Issue #79): Sessions the Source's
+    // metadata store knows about but whose JSONL transcript is gone still
+    // surface as history — metadata only, never token figures. Best-effort:
+    // a missing or unreadable workbuddy.db never fails the Source.
+    match record_pruned_session_metadata(conn, projects_root, &seen) {
+        Ok(()) => {}
+        Err(error) => match result.error.as_mut() {
+            Some(previous) => {
+                previous.push_str("; ");
+                previous.push_str(&error);
+            }
+            None => result.error = Some(error),
+        },
+    }
+    result
 }
 
 /// Shared scan entry for both Sources. CodeBuddy reuses this with its own key
@@ -47,11 +73,39 @@ pub(crate) fn scan_transcript(
     projects_root: &Path,
     source: &str,
 ) -> SourceScanResult {
+    scan_transcript_collect(conn, projects_root, source, &mut HashSet::new())
+}
+
+/// `scan_transcript` plus the set of Session ids that have a transcript on
+/// disk, so the SQLite fallback can tell a pruned Session from a live one.
+/// The identity follows the parse rule: a main transcript is the file stem
+/// (WorkBuddy names main files `<session-id>.jsonl`), a subagent transcript
+/// joins its parent Session from the path.
+fn scan_transcript_collect(
+    conn: &mut Connection,
+    projects_root: &Path,
+    source: &str,
+    seen: &mut HashSet<String>,
+) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
     find_jsonl(projects_root, &mut files);
     files.sort();
     for path in files {
+        match parent_session_from_path(&path) {
+            Some(parent) => {
+                seen.insert(parent);
+            }
+            None => {
+                if let Some(stem) = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .filter(|s| !s.is_empty())
+                {
+                    seen.insert(stem);
+                }
+            }
+        }
         match scan_file(conn, &path, source) {
             Ok((inserted, skipped)) => {
                 result.events_inserted += inserted;
@@ -67,6 +121,80 @@ pub(crate) fn scan_transcript(
         }
     }
     result
+}
+
+/// Read `workbuddy.db` (the sibling of the projects root) and record metadata
+/// for Sessions whose transcript is no longer on disk. Only `sessions` rows
+/// are read; `session_usage.used/size` and `credit_json` are storage
+/// accounting and billed credit, never token usage (ADR-0016). A missing
+/// `workbuddy.db`, a missing `sessions` table, or a deleted Session
+/// (`deleted_at IS NOT NULL`) is skipped quietly — the store contributes
+/// metadata, never usage, and never errors the Source.
+fn record_pruned_session_metadata(
+    conn: &mut Connection,
+    projects_root: &Path,
+    seen: &HashSet<String>,
+) -> Result<(), String> {
+    let db_path = projects_root
+        .parent()
+        .map(|p| p.join("workbuddy.db"))
+        .unwrap_or_else(|| projects_root.join("workbuddy.db"));
+    if !db_path.is_file() {
+        return Ok(());
+    }
+    let ro = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(ro) => ro,
+        Err(error) => {
+            return Err(format!(
+                "workbuddy: metadata open {}: {error}",
+                db_path.display()
+            ))
+        }
+    };
+    let mut stmt = match ro.prepare(
+        "SELECT id, cwd, model, title, created_at, updated_at \
+         FROM sessions WHERE deleted_at IS NULL",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Ok(()), // no sessions table: nothing to contribute
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, i64>(4)?,
+            row.get::<_, i64>(5)?,
+        ))
+    }) {
+        Ok(rows) => rows,
+        Err(error) => return Err(format!("workbuddy: metadata read: {error}")),
+    };
+    for row in rows {
+        let (id, cwd, model, title, created_at, updated_at) = match row {
+            Ok(row) => row,
+            Err(error) => return Err(format!("workbuddy: metadata row: {error}")),
+        };
+        if seen.contains(&id) {
+            continue; // transcript exists: it is the source of truth
+        }
+        let error_id = id.clone();
+        upsert_source_session(
+            conn,
+            "workbuddy",
+            &crate::types::SourceSessionMeta {
+                session_id: id,
+                cwd,
+                model,
+                title,
+                created_at: normalize_epoch(created_at),
+                updated_at: normalize_epoch(updated_at),
+            },
+        )
+        .map_err(|error| format!("workbuddy: metadata upsert {error_id}: {error}"))?;
+    }
+    Ok(())
 }
 
 fn scan_file(conn: &mut Connection, path: &Path, source: &str) -> Result<(u64, u64), String> {
@@ -390,7 +518,9 @@ mod tests {
     }
 
     fn scan_root(conn: &mut Connection, root: &Path) -> SourceScanResult {
-        scan_transcript(conn, root, "workbuddy")
+        // Full scan_workbuddy (transcript + SQLite metadata fallback), so the
+        // #79 pruned-Session tests exercise the real entry point.
+        scan_workbuddy(conn, root)
     }
 
     #[test]
@@ -632,5 +762,277 @@ mod tests {
             parent_session_from_path(Path::new("/root/proj/parent-sess.jsonl")),
             None
         );
+    }
+
+    // --- Issue #79: SQLite metadata fallback for pruned Sessions ---
+
+    /// One synthetic `workbuddy.db` sessions row.
+    struct MetaRow {
+        id: &'static str,
+        cwd: &'static str,
+        model: &'static str,
+        title: &'static str,
+        created_at: i64,
+        updated_at: i64,
+        deleted_at: Option<i64>,
+    }
+
+    /// Build a `workbuddy.db` at `root/workbuddy.db` (the projects root's
+    /// sibling — scan_root passes `root/proj` as the projects root, so the
+    /// adapter looks for its parent's `workbuddy.db`) holding the given
+    /// `sessions` rows.
+    fn write_metadata_db(root: &Path, rows: &[MetaRow]) {
+        let db_path = root.join("workbuddy.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 cwd TEXT,
+                 model TEXT,
+                 title TEXT,
+                 created_at INTEGER,
+                 updated_at INTEGER,
+                 deleted_at INTEGER
+             );
+             CREATE TABLE session_usage (
+                 session_id TEXT PRIMARY KEY,
+                 used INTEGER,
+                 size INTEGER,
+                 credit_json TEXT
+             );",
+        )
+        .unwrap();
+        for row in rows {
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, model, title, created_at, updated_at, deleted_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    row.id,
+                    row.cwd,
+                    row.model,
+                    row.title,
+                    row.created_at,
+                    row.updated_at,
+                    row.deleted_at
+                ],
+            )
+            .unwrap();
+        }
+        // Storage accounting and billed credit — must never surface as usage.
+        conn.execute(
+            "INSERT INTO session_usage (session_id, used, size, credit_json) \
+             VALUES ('pruned-1', 999999999, 888888888, '{\"credit\":99.99}')",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn pruned_session_surfaces_as_metadata_never_usage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // One live Session with a transcript, one pruned Session with none.
+        write(
+            root,
+            "proj/live-sess.jsonl",
+            &fc_line("c1", "live-sess", 1000, 300, 50),
+        );
+        write_metadata_db(
+            root,
+            &[
+                MetaRow {
+                    id: "live-sess",
+                    cwd: "/Users/dev/projects/alpha",
+                    model: "deepseek-v4-flash",
+                    title: "Live",
+                    created_at: 1786000000,
+                    updated_at: 1786091399,
+                    deleted_at: None,
+                },
+                MetaRow {
+                    id: "pruned-1",
+                    cwd: "/Users/dev/projects/beta",
+                    model: "hy3",
+                    title: "Pruned work",
+                    created_at: 1785900000,
+                    updated_at: 1786000000,
+                    deleted_at: None,
+                },
+            ],
+        );
+        let mut conn = open_db(&root.join("ledger.db")).unwrap();
+        let result = scan_root(&mut conn, &root.join("proj"));
+        assert!(result.error.is_none());
+
+        // The live Session books its transcript usage.
+        let events = all_events(&conn).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].session_id.as_deref(), Some("live-sess"));
+        // The pruned Session is metadata-only: no events, no invented tokens.
+        let pruned_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id = 'pruned-1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pruned_events, 0);
+
+        let row: (Option<String>, Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT cwd, model, title, created_at FROM source_sessions \
+                 WHERE source='workbuddy' AND session_id='pruned-1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some("/Users/dev/projects/beta"));
+        assert_eq!(row.1.as_deref(), Some("hy3"));
+        assert_eq!(row.2.as_deref(), Some("Pruned work"));
+        assert_eq!(row.3, 1785900000);
+    }
+
+    #[test]
+    fn transcript_wins_and_metadata_never_double_books() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "proj/live-sess.jsonl",
+            &fc_line("c1", "live-sess", 1000, 300, 50),
+        );
+        write_metadata_db(
+            root,
+            &[MetaRow {
+                id: "live-sess",
+                cwd: "/Users/dev/projects/alpha",
+                model: "deepseek-v4-flash",
+                title: "Live",
+                created_at: 1786000000,
+                updated_at: 1786091399,
+                deleted_at: None,
+            }],
+        );
+        let mut conn = open_db(&root.join("ledger.db")).unwrap();
+        scan_root(&mut conn, &root.join("proj"));
+
+        // The live Session's metadata row is NOT written: the transcript is the
+        // source of truth and the SQLite row never duplicates it.
+        let meta_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_sessions WHERE session_id = 'live-sess'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(meta_count, 0);
+        let events = all_events(&conn).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].input_tokens, 700);
+    }
+
+    #[test]
+    fn missing_metadata_db_is_scanned_quietly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(root, "proj/sess.jsonl", &fc_line("c1", "s", 100, 0, 10));
+        let mut conn = open_db(&root.join("ledger.db")).unwrap();
+        let result = scan_root(&mut conn, &root.join("proj"));
+        assert_eq!(result.events_inserted, 1);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn session_usage_and_credit_are_never_surfaced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_metadata_db(
+            root,
+            &[MetaRow {
+                id: "pruned-1",
+                cwd: "/Users/dev/projects/beta",
+                model: "hy3",
+                title: "Pruned",
+                created_at: 1785900000,
+                updated_at: 1786000000,
+                deleted_at: None,
+            }],
+        );
+        let mut conn = open_db(&root.join("ledger.db")).unwrap();
+        scan_root(&mut conn, &root.join("proj"));
+
+        // session_usage.used/size/credit_json (999999999 / 99.99) never become
+        // tokens or Cost: the pruned Session has zero events, and the metadata
+        // row carries no token columns.
+        let pruned_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE source = 'workbuddy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pruned_events, 0);
+        let meta_tokens: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_sessions \
+                 WHERE session_id='pruned-1' AND (cwd IS NULL OR model IS NULL)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(meta_tokens, 0, "metadata row must keep cwd and model");
+    }
+
+    #[test]
+    fn pruned_session_metadata_rescan_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_metadata_db(
+            root,
+            &[MetaRow {
+                id: "pruned-1",
+                cwd: "/Users/dev/projects/beta",
+                model: "hy3",
+                title: "Pruned",
+                created_at: 1785900000,
+                updated_at: 1786000000,
+                deleted_at: None,
+            }],
+        );
+        let mut conn = open_db(&root.join("ledger.db")).unwrap();
+        scan_root(&mut conn, &root.join("proj"));
+        scan_root(&mut conn, &root.join("proj"));
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "metadata-only Session is not duplicated on rescan"
+        );
+    }
+
+    #[test]
+    fn deleted_sessions_never_resurface() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_metadata_db(
+            root,
+            &[MetaRow {
+                id: "gone-1",
+                cwd: "/x",
+                model: "hy3",
+                title: "Deleted",
+                created_at: 1785900000,
+                updated_at: 1786000000,
+                deleted_at: Some(1786000001),
+            }],
+        );
+        let mut conn = open_db(&root.join("ledger.db")).unwrap();
+        scan_root(&mut conn, &root.join("proj"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM source_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "deleted Sessions never resurface as history");
     }
 }

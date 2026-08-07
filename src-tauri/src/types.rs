@@ -42,6 +42,19 @@ pub struct FileState {
     pub byte_offset: i64,
 }
 
+/// Metadata (never token figures) for a Source Session whose transcript the
+/// Source has pruned (ADR-0016). Recorded so the Session still leaves history
+/// in the Ledger; only cwd/model/timestamps/title, never usage.
+#[derive(Debug, Clone)]
+pub struct SourceSessionMeta {
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+    pub title: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Default, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceScanResult {

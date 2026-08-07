@@ -66,8 +66,12 @@ keeps the four token categories mutually exclusive across Sources.
 created_at, updated_at, title) and a `session_usage` table whose `used`/`size`
 columns are storage accounting — their values do not match JSONL token totals —
 plus a `credit_json` of billed credit amounts. No table carries token usage.
-The SQLite fallback therefore supplies Session metadata and discovery for
-Sessions whose JSONL is pruned; it can never produce Usage Records (ADR-0016).
+The SQLite fallback (Issue #79, implemented) therefore supplies Session
+metadata and discovery for Sessions whose JSONL is pruned: a Session present in
+`sessions` but with no transcript on disk is recorded into the Ledger's
+`source_sessions` table (cwd, model, timestamps, title) — metadata only, never
+token figures. Deleted Sessions (`deleted_at` set) never resurface. `used`/
+`size`/`credit_json` are never read as usage (ADR-0016).
 
 ## Subagents are additive (resolved)
 

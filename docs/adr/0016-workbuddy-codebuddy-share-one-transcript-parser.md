@@ -46,7 +46,10 @@ The `workbuddy.db` `sessions` table supplies Session metadata and discovery
 (cwd, model, status, timestamps) for Sessions whose JSONL is pruned;
 `session_usage.used/size` are storage accounting, not tokens, and
 `credit_json` holds billed credits. No table can produce a Usage Record, so
-usage comes exclusively from the JSONL transcripts.
+usage comes exclusively from the JSONL transcripts. Implemented (Issue #79)
+via the Ledger's `source_sessions` table: a pruned Session is recorded as
+metadata (never token figures), deleted Sessions never resurface, and the
+upsert is idempotent per (source, session_id).
 
 ## Logged credit is ignored
 
