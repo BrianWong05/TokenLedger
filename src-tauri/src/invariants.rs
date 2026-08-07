@@ -596,10 +596,10 @@ fn build_qoder(base: &Path) {
 
     // The IDE also ships as the plain-Qoder edition with an identically shaped
     // database; both databases coexist and merge into the one Source.
-    let intl_path = base.join("qoder-intl/local.db");
-    std::fs::create_dir_all(intl_path.parent().unwrap()).unwrap();
-    let intl_db = Connection::open(&intl_path).unwrap();
-    intl_db
+    let edition_path = base.join("qoder-edition/local.db");
+    std::fs::create_dir_all(edition_path.parent().unwrap()).unwrap();
+    let edition_db = Connection::open(&edition_path).unwrap();
+    edition_db
         .execute_batch(
             "CREATE TABLE chat_message (
                 id VARCHAR(64) PRIMARY KEY,
@@ -619,13 +619,13 @@ fn build_qoder(base: &Path) {
         )
         .unwrap();
     // prompt 300 = 100 fresh + 200 cached.
-    intl_db
+    edition_db
         .execute(
             "INSERT INTO chat_message (id, session_id, role, content, token_info, model_info, gmt_create)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![
-                "qoder-intl-m1",
-                "task-intl.session.execution",
+                "qoder-edition-m1",
+                "task-edition.session.execution",
                 "assistant",
                 "QODER_PRIVATE_PROMPT_MARKER",
                 r#"{"prompt_tokens":300,"completion_tokens":20,"cached_tokens":200,"max_input_tokens":1000000}"#,
@@ -634,7 +634,7 @@ fn build_qoder(base: &Path) {
             ],
         )
         .unwrap();
-    drop(intl_db);
+    drop(edition_db);
 
     // CLI transcript family: one Claude-Code-shaped assistant line with the
     // ephemeral cache-write split; content carries a private marker.
@@ -697,7 +697,7 @@ fn hermetic_fifteen_source_partition_invariants() {
         cline: vec![base.join("cline")],
         workbuddy: base.join("workbuddy"),
         codebuddy: base.join("codebuddy"),
-        qoder_databases: vec![base.join("qoder/local.db"), base.join("qoder-intl/local.db")],
+        qoder_databases: vec![base.join("qoder/local.db"), base.join("qoder-edition/local.db")],
         qoder_cli_projects: vec![base.join("qoder-cli/projects")],
     };
 

@@ -73,7 +73,6 @@ impl SourceRoots {
             environment_value("cline", "cli-data").as_deref(),
             environment_value("cline", "cli-sandbox").as_deref(),
             environment_value("kilo", "db").as_deref(),
-            None,
         )
     }
 
@@ -96,7 +95,6 @@ impl SourceRoots {
             None,
             None,
             None,
-            None,
         )
     }
 
@@ -110,7 +108,6 @@ impl SourceRoots {
         cline_data: Option<&OsStr>,
         cline_sandbox_data: Option<&OsStr>,
         kilo_db: Option<&OsStr>,
-        qoder_db: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
@@ -128,7 +125,7 @@ impl SourceRoots {
             environment_value("opencode", "xdg-data").as_deref(),
         );
         let kilo_db = kilo_db_root(home, std::env::consts::OS, kilo_db);
-        let qoder_databases = qoder_database_roots(home, std::env::consts::OS, qoder_db);
+        let qoder_databases = qoder_database_roots(home, std::env::consts::OS);
         let zed_databases = zed_database_roots(
             home,
             std::env::consts::OS,
@@ -158,7 +155,7 @@ impl SourceRoots {
             workbuddy: catalog_root(home, "workbuddy", "projects"),
             codebuddy: catalog_root(home, "codebuddy", "projects"),
             qoder_databases,
-            qoder_cli_projects: ["projects", "cli-projects", "cn-projects"]
+            qoder_cli_projects: ["qoder-projects", "qoder-cli-projects", "qoder-cn-projects"]
                 .iter()
                 .map(|artifact| catalog_root(home, "qoder", artifact))
                 .collect(),
@@ -331,25 +328,14 @@ fn kilo_db_root(home: &Path, platform: &str, value: Option<&OsStr>) -> PathBuf {
         .unwrap_or(default)
 }
 
-fn qoder_database_roots(home: &Path, platform: &str, value: Option<&OsStr>) -> Vec<PathBuf> {
+fn qoder_database_roots(home: &Path, platform: &str) -> Vec<PathBuf> {
     // The IDE ships as two products — QoderCN and the plain-Qoder edition —
     // which may coexist on one machine; both databases belong to one Source.
     let artifacts = match platform {
-        "macos" => ["db-macos", "db-intl-macos"],
-        "windows" => ["db-windows", "db-intl-windows"],
-        _ => ["db-linux", "db-intl-linux"],
+        "macos" => ["db-cn-macos", "db-qoder-macos"],
+        "windows" => ["db-cn-windows", "db-qoder-windows"],
+        _ => ["db-cn-linux", "db-qoder-linux"],
     };
-    if let Some(value) = value.and_then(|value| visible_path(home, value)) {
-        if value.is_absolute() {
-            return vec![value];
-        }
-        if let Some(root) = catalog_root(home, "qoder", artifacts[0])
-            .parent()
-            .map(|parent| parent.join(value))
-        {
-            return vec![root];
-        }
-    }
     artifacts
         .iter()
         .map(|artifact| catalog_root(home, "qoder", artifact))
@@ -692,15 +678,15 @@ mod tests {
                 ("pi", "sessions", ".pi/agent/sessions"),
                 ("workbuddy", "projects", ".workbuddy/projects"),
                 ("codebuddy", "projects", ".codebuddy/projects"),
-                ("qoder", "db-macos", "Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db"),
-                ("qoder", "db-linux", ".config/QoderCN/SharedClientCache/cache/db/local.db"),
-                ("qoder", "db-windows", "AppData/Roaming/QoderCN/SharedClientCache/cache/db/local.db"),
-                ("qoder", "db-intl-macos", "Library/Application Support/Qoder/SharedClientCache/cache/db/local.db"),
-                ("qoder", "db-intl-linux", ".config/Qoder/SharedClientCache/cache/db/local.db"),
-                ("qoder", "db-intl-windows", "AppData/Roaming/Qoder/SharedClientCache/cache/db/local.db"),
-                ("qoder", "projects", ".qoder/projects"),
-                ("qoder", "cli-projects", ".qoder-cli/projects"),
-                ("qoder", "cn-projects", ".qoder-cn/projects"),
+                ("qoder", "db-cn-macos", "Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-cn-linux", ".config/QoderCN/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-cn-windows", "AppData/Roaming/QoderCN/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-qoder-macos", "Library/Application Support/Qoder/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-qoder-linux", ".config/Qoder/SharedClientCache/cache/db/local.db"),
+                ("qoder", "db-qoder-windows", "AppData/Roaming/Qoder/SharedClientCache/cache/db/local.db"),
+                ("qoder", "qoder-projects", ".qoder/projects"),
+                ("qoder", "qoder-cli-projects", ".qoder-cli/projects"),
+                ("qoder", "qoder-cn-projects", ".qoder-cn/projects"),
             ],
         );
         assert!(catalog

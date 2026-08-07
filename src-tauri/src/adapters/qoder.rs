@@ -158,19 +158,15 @@ fn scan_qoder_cli(conn: &mut Connection, roots: &[PathBuf]) -> SourceScanResult 
     }
     files.sort();
     for path in files {
+        let mut file_result = SourceScanResult::default();
         match scan_file(conn, &path) {
             Ok((inserted, skipped)) => {
-                result.events_inserted += inserted;
-                result.lines_skipped += skipped;
+                file_result.events_inserted = inserted;
+                file_result.lines_skipped = skipped;
             }
-            Err(error) => match result.error.as_mut() {
-                Some(previous) => {
-                    previous.push_str("; ");
-                    previous.push_str(&error);
-                }
-                None => result.error = Some(error),
-            },
+            Err(error) => file_result.error = Some(error),
         }
+        merge_result(&mut result, file_result);
     }
     result
 }
@@ -870,12 +866,12 @@ mod tests {
         );
         drop(db);
         // The plain-Qoder edition keeps an identically shaped second database.
-        let intl_path = tmp.path().join("intl/local.db");
-        create_database(&intl_path);
-        let intl_db = Connection::open(&intl_path).unwrap();
+        let edition_path = tmp.path().join("edition/local.db");
+        create_database(&edition_path);
+        let edition_db = Connection::open(&edition_path).unwrap();
         insert_message(
-            &intl_db,
-            "intl-m1",
+            &edition_db,
+            "edition-m1",
             Some("s"),
             "assistant",
             Some(
@@ -884,7 +880,7 @@ mod tests {
             Some(r#"{"model_key":"qmodel_38max"}"#),
             1_786_112_276_028i64,
         );
-        drop(intl_db);
+        drop(edition_db);
         let root = tmp.path().join("projects");
         write(
             &root,
@@ -896,7 +892,7 @@ mod tests {
         );
 
         let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
-        let databases = [db_path, intl_path];
+        let databases = [db_path, edition_path];
         let result = scan_qoder(&mut ledger, &databases, &[root]);
         assert_eq!(result.events_inserted, 3, "one Record per Artifact family");
         assert!(result.error.is_none());
@@ -917,9 +913,7 @@ mod tests {
         write(
             &root,
             "proj/s.jsonl",
-            &format!(
-                r#"{{"type":"assistant","timestamp":"2026-08-07T16:53:21.465Z","message":{{"id":"chatcmpl-p1","model":"qmodel_38max","content":[{{"type":"text","text":"QODER_CLI_PRIVATE_PROMPT_MARKER"}}],"usage":{{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#,
-            ),
+            r#"{"type":"assistant","timestamp":"2026-08-07T16:53:21.465Z","message":{"id":"chatcmpl-p1","model":"qmodel_38max","content":[{"type":"text","text":"QODER_CLI_PRIVATE_PROMPT_MARKER"}],"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
         );
         let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
         scan_qoder(&mut ledger, &[], &[root]);
