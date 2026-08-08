@@ -62,6 +62,7 @@ export default function TrendModal({
   exporter,
   returnFocusRef,
   onClose,
+  prototypeVariant,
 }: {
   allPoints: SeriesPoint[]; // the full unbounded daily series
   firstIso: string;
@@ -76,6 +77,13 @@ export default function TrendModal({
   exporter: ExportPort;
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
+  // PROTOTYPE (throwaway) — window-scoped model-breakdown placement round.
+  // Only the demo-trend.html entry passes this; production never does, so the
+  // default renders exactly today's behaviour. Delete after the round:
+  //   A — second "By model · window" section below the bucket inspector
+  //   B — inspector reads the window at rest, the bucket while hovering
+  //   C — the by-model rows become window-scoped; the rest stays per-bucket
+  prototypeVariant?: 'A' | 'B' | 'C';
 }) {
   const { t, lang } = useOverviewT();
   const { settings } = useSettings();
@@ -175,6 +183,8 @@ export default function TrendModal({
   // key if it survives.
   const winId = `${range}|${from}|${to}|${per}`;
   const [sel, setSel] = useState<{ win: string; key: string } | null>(null);
+  // PROTOTYPE: variant B tells "mouse on a bar" apart from the sticky selection.
+  const [hovering, setHovering] = useState(false);
   const peak = data.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
   const activeKey = sel && sel.win === winId ? sel.key : null;
   const selBucket = data.find((b) => b.key === activeKey) ?? peak;
@@ -225,29 +235,26 @@ export default function TrendModal({
       : per === 'month'
         ? `${monthShortL(parseInt(b.key.slice(5, 7), 10) - 1, lang)} ${b.key.slice(0, 4)}`
         : fmtIsoDateL(b.key, lang);
-  // Top-6 models in the selected bucket, largest first; the rest fold into one
-  // muted remainder row (color '' → grey).
-  const selRows: {
-    key: string;
-    name: string;
-    source?: string;
-    val: number;
-    color: string;
-    more: boolean;
-  }[] = [];
-  if (selBucket) {
-    const ranked = rankedModels(selBucket.byModel);
+  // Top-6 models, largest first; the rest fold into one muted remainder row
+  // (color '' → grey). Shared by the bucket read-out and — PROTOTYPE — the
+  // window-scoped breakdown the placement candidates show.
+  type InspRow = { key: string; name: string; source?: string; val: number; color: string; more: boolean };
+  const buildRows = (
+    byModel: Record<string, number>,
+    modelSources: Record<string, string[]> | undefined,
+    unattributedTokens: number,
+  ): InspRow[] => {
+    const rows: InspRow[] = [];
+    const ranked = rankedModels(byModel);
     for (const [m, v] of ranked.slice(0, 6)) {
-      // Owner resolved from THIS bucket: a Model name shared by two Sources
+      // Owner resolved from THIS record: a Model name shared by two Sources
       // would otherwise take whichever the window-wide map happened to pick.
-      const owner = modelOwner(selBucket.modelSources, modelTool, m);
-      selRows.push({
-        key: m, name: m, source: owner.label, val: v, color: owner.color, more: false,
-      });
+      const owner = modelOwner(modelSources, modelTool, m);
+      rows.push({ key: m, name: m, source: owner.label, val: v, color: owner.color, more: false });
     }
     const rest = ranked.slice(6);
     if (rest.length) {
-      selRows.push({
+      rows.push({
         key: '__more__',
         name: `${rest.length} ${t('overview.trend.moreModels')}`,
         val: rest.reduce((a, [, v]) => a + v, 0),
@@ -255,19 +262,69 @@ export default function TrendModal({
         more: true,
       });
     }
-    if (selBucket.unattributedTokens > 0) {
-      selRows.push({
+    if (unattributedTokens > 0) {
+      rows.push({
         key: 'unattributed-usage',
         name: t('overview.unattributedUsage'),
-        val: selBucket.unattributedTokens,
+        val: unattributedTokens,
         color: UNATTRIBUTED_COLOR,
         more: false,
       });
     }
-  }
+    return rows;
+  };
+  const selRows: InspRow[] = selBucket
+    ? buildRows(selBucket.byModel, selBucket.modelSources, selBucket.unattributedTokens)
+    : [];
+  // PROTOTYPE: the whole window's model split, aggregated across its buckets
+  // (byModel summed; modelSources unioned so a shared Model name reads
+  // 'Codex + pi' rather than claiming one Source).
+  const win = useMemo(() => {
+    const byModel: Record<string, number> = {};
+    const modelSources: Record<string, string[]> = {};
+    let unattributedTokens = 0;
+    for (const b of data) {
+      for (const [m, v] of Object.entries(b.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
+      for (const [m, srcs] of Object.entries(b.modelSources ?? {})) {
+        const owners = (modelSources[m] ??= []);
+        for (const s of srcs) if (!owners.includes(s)) owners.push(s);
+      }
+      unattributedTokens += b.unattributedTokens;
+    }
+    return { byModel, modelSources, unattributedTokens };
+  }, [data]);
+  const winRows: InspRow[] = prototypeVariant
+    ? buildRows(win.byModel, win.modelSources, win.unattributedTokens)
+    : [];
   const selTotal = selBucket?.total ?? 0;
   // WebKit can't resolve var() in an SVG stroke; pick the outline per theme.
   const outline = colors === CHART_LIGHT ? '#12151b' : '#e8ecf4';
+  // PROTOTYPE: variant B at rest describes the window, so no single bar is
+  // emphasised until the mouse is actually on one.
+  const atRestB = prototypeVariant === 'B' && !hovering;
+
+  const rowsList = (rows: InspRow[], base: number) => (
+    <div className="tt-trend-insp-rows">
+      {rows.map((r) => (
+        <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
+          <div className="lab">
+            <span className="dot" style={r.more ? undefined : { background: r.color }} />
+            <span className="name">
+              {r.name}
+              {r.source && <em className="src">{r.source}</em>}
+            </span>
+            <span className="num">
+              {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (base || 1))}</span>
+            </span>
+          </div>
+          <div className="track">
+            <div className="fill" style={{ width: (r.val / (base || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
+          </div>
+        </div>
+      ))}
+      {rows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
+    </div>
+  );
 
   return (
     <div
@@ -336,7 +393,7 @@ export default function TrendModal({
         <div className="tt-trend-modal-body">
           <div className="tt-trend-modal-main">
             <div className="tt-trend-modal-chart">
-              <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }}>
+              <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }} onMouseLeave={() => setHovering(false)}>
                 {grid.map((g, i) => (
                   <g key={i}>
                     <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke={colors.grid} strokeWidth={1} />
@@ -349,7 +406,7 @@ export default function TrendModal({
                   const x = PL + i * slot + (slot - barW) / 2;
                   let y = BASE;
                   return (
-                    <g key={i} opacity={selIndex === i ? 1 : 0.42} style={{ transition: 'opacity .15s' }}>
+                    <g key={i} opacity={atRestB || selIndex === i ? 1 : 0.42} style={{ transition: 'opacity .15s' }}>
                       {segsOf(b).map((s) => {
                         const seg = h(s.val);
                         y -= seg;
@@ -358,7 +415,7 @@ export default function TrendModal({
                     </g>
                   );
                 })}
-                {selIndex >= 0 && (
+                {selIndex >= 0 && !atRestB && (
                   <rect
                     x={PL + selIndex * slot + (slot - barW) / 2 - 2.5}
                     y={BASE - h(selTotal) - 2.5}
@@ -382,7 +439,7 @@ export default function TrendModal({
                 {data.map((b, i) => {
                   const bh = h(b.total);
                   return (
-                    <rect key={'hit' + i} x={PL + i * slot + (slot - barW) / 2} y={BASE - bh} width={barW} height={bh} fill="transparent" onMouseOver={() => setSel({ win: winId, key: b.key })} />
+                    <rect key={'hit' + i} x={PL + i * slot + (slot - barW) / 2} y={BASE - bh} width={barW} height={bh} fill="transparent" onMouseOver={() => { setSel({ win: winId, key: b.key }); setHovering(true); }} />
                   );
                 })}
               </svg>
@@ -423,7 +480,30 @@ export default function TrendModal({
           </div>
 
           <aside className="tt-trend-insp">
-            {selBucket && (
+            {atRestB && (
+              // PROTOTYPE variant B: at rest the inspector reads the whole
+              // window; hovering a bar swaps in that bucket, mouse-out reverts.
+              <>
+                <div className="tt-trend-insp-head">
+                  <div>
+                    <div className="eyebrow">Selected period</div>
+                    <div className="date">{rangeLabel}</div>
+                  </div>
+                </div>
+                <div className="tt-trend-insp-tok" title={windowUnreadableTitle || undefined}>
+                  <span className="val">{windowUnreadableTitle && '≥ '}{fmtTok(total)}</span>
+                  <span className="unit">{t('overview.tokens')}</span>
+                </div>
+                <div className="tt-trend-insp-div" />
+                <div className="eyebrow">{t('overview.trend.byModel')}</div>
+                {rowsList(winRows, total)}
+                <div className="tt-trend-insp-cost">
+                  <span>{t('overview.estCost')}</span>
+                  <span className="amt">{costLabel}</span>
+                </div>
+              </>
+            )}
+            {!atRestB && selBucket && (
               <>
                 <div className="tt-trend-insp-head">
                   <div>
@@ -440,27 +520,14 @@ export default function TrendModal({
                   {selDeltaPct >= 0 ? '+' : '−'}{Math.abs(selDeltaPct)}% {t('overview.trend.vsAvg')}
                 </div>
                 <div className="tt-trend-insp-div" />
-                <div className="eyebrow">{t('overview.trend.byModel')}</div>
-                <div className="tt-trend-insp-rows">
-                  {selRows.map((r) => (
-                    <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
-                      <div className="lab">
-                        <span className="dot" style={r.more ? undefined : { background: r.color }} />
-                        <span className="name">
-                          {r.name}
-                          {r.source && <em className="src">{r.source}</em>}
-                        </span>
-                        <span className="num">
-                          {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (selTotal || 1))}</span>
-                        </span>
-                      </div>
-                      <div className="track">
-                        <div className="fill" style={{ width: (r.val / (selTotal || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
-                      </div>
-                    </div>
-                  ))}
-                  {selRows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
+                {/* PROTOTYPE variant C: the rows describe the window, the rest
+                    of the inspector stays per-bucket. */}
+                <div className="eyebrow">
+                  {prototypeVariant === 'C'
+                    ? <>{t('overview.trend.byModel')} · {rangeLabel}</>
+                    : t('overview.trend.byModel')}
                 </div>
+                {prototypeVariant === 'C' ? rowsList(winRows, total) : rowsList(selRows, selTotal)}
                 <div className="tt-trend-insp-cost">
                   <span>{t('overview.estCost')}</span>
                   <span className="amt">
@@ -493,6 +560,15 @@ export default function TrendModal({
                   </svg>
                   {t('overview.trend.exportCsv')}
                 </button>
+              </>
+            )}
+            {prototypeVariant === 'A' && (
+              // PROTOTYPE variant A: the window's breakdown as a second
+              // section below the untouched bucket inspector.
+              <>
+                <div className="tt-trend-insp-div" />
+                <div className="eyebrow">{t('overview.trend.byModel')} · {rangeLabel}</div>
+                {rowsList(winRows, total)}
               </>
             )}
           </aside>
