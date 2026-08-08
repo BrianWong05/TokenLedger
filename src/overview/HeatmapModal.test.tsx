@@ -134,15 +134,19 @@ describe('Activity Enlarge', () => {
   it('locks page scroll while open and unlocks on close', async () => {
     const { container: c } = await mount();
     await open(c);
-    expect(document.documentElement.style.overflow).toBe('hidden');
-    expect(document.body.style.overflow).toBe('hidden');
+    expect(document.body.classList.contains('tl-dialog-open')).toBe(true);
+    const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(true);
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(dialog()).toBeNull();
-    expect(document.documentElement.style.overflow).toBe('');
-    expect(document.body.style.overflow).toBe('');
+    expect(document.body.classList.contains('tl-dialog-open')).toBe(false);
+    const after = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
   });
 
   it('closes on Escape and returns focus to the Enlarge control', async () => {

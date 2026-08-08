@@ -76,6 +76,18 @@ body {
   overscroll-behavior: none;
 }
 
+/* modal page lock (useModalPageLock): while a dialog is open the page behind
+   it must not scroll (the hook swallows scroll input) nor let its text be
+   selected. The dialog itself opts back in so its own text stays selectable. */
+body.tl-dialog-open {
+  -webkit-user-select: none;
+  user-select: none;
+}
+body.tl-dialog-open [role='dialog'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 body {
   margin: 0;
   background: var(--bg);

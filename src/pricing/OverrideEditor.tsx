@@ -9,6 +9,7 @@ import type { ModelPricing, RatesPerTok, Settings } from '../types';
 import type { PricingPort } from './pricing';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
 import { sourceIcon } from '../overview/icons';
+import { useModalPageLock } from '../overview/useDialogChrome';
 import { fill, originLabelQualified, pricingSourceMeta, sourceLabel, fmtRate } from './pricing.derive';
 
 const FIELDS: { key: keyof RatesPerTok; labelKey: 'pricing.col.input' | 'pricing.col.output' | 'pricing.col.cacheRead' | 'pricing.col.cacheWrite' }[] = [
@@ -36,6 +37,9 @@ export default function OverrideEditor({
   onClose: (changed: boolean) => void;
 }) {
   const { t } = useT();
+  // The editor owns its own focus/Escape handling, but the page behind it must
+  // stay inert like the Overview modals': no scroll, no text selection.
+  useModalPageLock();
   const hasOverride = !!model.overrideRates;
   const catalog = model.catalog;
   // Names who set the rate, the way the rates table does — a publisher by name,

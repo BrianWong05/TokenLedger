@@ -34,7 +34,7 @@ async function open(m: ModelPricing, opts: { pricing?: ReturnType<typeof makeFak
     <OverrideEditor model={m} pricing={pricing} settings={settings} onClose={(changed) => { closedWith = changed; }} />,
   ));
   await settle();
-  return { container, pricing, get closedWith() { return closedWith; } };
+  return { container, pricing, root, get closedWith() { return closedWith; } };
 }
 
 function typeInto(el: HTMLInputElement, value: string) {
@@ -47,6 +47,20 @@ const field = (c: HTMLElement, key: string) => c.querySelector(`#tl-pr-f-${key}`
 const saveBtn = (c: HTMLElement) => c.querySelector('.tl-pr-save') as HTMLButtonElement;
 
 describe('OverrideEditor', () => {
+  it('locks page scroll and selection behind the dialog, restoring both on close', async () => {
+    const r = await open(model('hermes-4-70b'));
+    expect(document.body.classList.contains('tl-dialog-open')).toBe(true);
+    const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(true);
+
+    await act(async () => r.root.unmount());
+    expect(document.body.classList.contains('tl-dialog-open')).toBe(false);
+    const after = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
+  });
+
   it('loads an existing override as per-1M values (×1e6)', async () => {
     const { container } = await open(model('hermes-4-405b'));
     expect(field(container, 'input').value).toBe('1.2');

@@ -192,19 +192,20 @@ describe('CostBreakdownModal missing-Cost reasons', () => {
 });
 
 describe('CostBreakdownModal page scroll lock', () => {
-  it('locks both page scroll roots while open and restores their previous values', async () => {
-    document.documentElement.style.overflow = 'clip';
-    document.body.style.overflow = 'scroll';
-
+  it('locks page scroll while open and unlocks on close', async () => {
     await mountModal();
 
-    expect(document.documentElement.style.overflow).toBe('hidden');
-    expect(document.body.style.overflow).toBe('hidden');
+    expect(document.body.classList.contains('tl-dialog-open')).toBe(true);
+    const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(true);
 
     const root = roots.pop()!;
     act(() => root.unmount());
 
-    expect(document.documentElement.style.overflow).toBe('clip');
-    expect(document.body.style.overflow).toBe('scroll');
+    expect(document.body.classList.contains('tl-dialog-open')).toBe(false);
+    const after = new WheelEvent('wheel', { bubbles: true, cancelable: true });
+    document.body.dispatchEvent(after);
+    expect(after.defaultPrevented).toBe(false);
   });
 });
