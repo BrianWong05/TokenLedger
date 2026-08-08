@@ -67,14 +67,20 @@ function ModelsList({
                 {name}
                 {m.cacheEstimated && <span className="tt-tag">{t('overview.cacheEst')}</span>}
               </span>
+              {/* the spaces are load-bearing: flex drops whitespace-only items, so
+                  they cost no layout, but without them the row's text content runs
+                  together ("claude-fable-55.64M$4.2460%") for screen readers and copy-paste */}
+              {' '}
               <span className="figs">
-                <span className="tok">{fmtTok(m.tokens)}</span>
+                <span className="tok">{fmtTok(m.tokens)}</span>{' '}
                 {showCost && (
-                  <span className="cost">
-                    {unattributed
-                      ? overviewT(lang, 'overview.unavailableCost')
-                      : formatDisplayCost(m.cost, false, settings, lang)}
-                  </span>
+                  <>
+                    <span className="cost">
+                      {unattributed
+                        ? overviewT(lang, 'overview.unavailableCost')
+                        : formatDisplayCost(m.cost, false, settings, lang)}
+                    </span>{' '}
+                  </>
                 )}
                 <span className="pct">{fmtPct(m.share)}</span>
               </span>

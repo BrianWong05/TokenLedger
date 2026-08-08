@@ -228,6 +228,23 @@ describe('Overview presentation', () => {
     expect(row.tabIndex).toBe(-1);
   });
 
+  it('separates a Model row\'s figures so they never read as one run', async () => {
+    const priced: BreakdownRow = {
+      key: 'claude-opus-4-8', source: 'claude', inputTokens: 30, outputTokens: 20,
+      cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 400, requests: 1,
+      cost: 1.5, reasoningTokens: null, convs: 1, cacheEstimated: false,
+      hasUnpriced: false, unattributedTokens: 0,
+    };
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 400, byModel: { 'claude-opus-4-8': 400 } })],
+      summary,
+      modelRows: [priced],
+    });
+
+    // Name, tokens, Cost and share each stand apart, single-spaced.
+    expect(c.querySelector('.tt-model .top')?.textContent).toBe('claude-opus-4-8 400 $1.50 100%');
+  });
+
   it('renders the 2D activity grid as a fixed-pitch scrollable calendar', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({

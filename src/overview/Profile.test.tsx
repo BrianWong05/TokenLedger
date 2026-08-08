@@ -65,6 +65,11 @@ describe('Profile', () => {
     expect(rows[1].querySelector<HTMLElement>('.fill')!.style.width).toBe('27.2%');
   });
 
+  it('separates a row\'s figures so they never read as one run', () => {
+    const rows = [...mount(view()).querySelectorAll<HTMLElement>('.tt-profile-model .row')];
+    expect(rows[0].textContent).toBe('1 claude-opus-4-6 14.64B 48.8%');
+  });
+
   it('shows no Cost anywhere — the block is tokens only', () => {
     expect(mount(view()).textContent).not.toContain('$');
   });

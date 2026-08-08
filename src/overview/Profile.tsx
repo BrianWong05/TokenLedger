@@ -48,10 +48,13 @@ function Profile({ profile }: { profile: ProfileView }) {
           return (
             <div className="tt-profile-model" key={m.name}>
               <div className="fill" style={{ width: pct }} />
+              {/* the spaces are load-bearing: flex drops whitespace-only items, so they
+                  cost no layout, but without them the row's text content runs together
+                  ("1claude-fable-516.51B53.6%") for screen readers and copy-paste */}
               <div className="row">
-                <span className="rank">{i + 1}</span>
-                <span className="name">{m.name}</span>
-                <span className="tok">{fmtTok(m.tokens)}</span>
+                <span className="rank">{i + 1}</span>{' '}
+                <span className="name">{m.name}</span>{' '}
+                <span className="tok">{fmtTok(m.tokens)}</span>{' '}
                 <span className="pct" title={t('overview.profile.shareTitle')}>{pct}</span>
               </div>
             </div>
