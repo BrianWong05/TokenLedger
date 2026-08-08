@@ -29,6 +29,9 @@ interface ModeAnimation {
 interface TokenTotalHeadlineProps {
   total: number;
   summaryReady: boolean;
+  // Non-null makes the total a floor (ADR-0017): rendered as a ≥ prefix whose
+  // hover text is this string — the per-Source unreadable-session reasons.
+  incomplete?: string | null;
 }
 
 type HeadlineStyle = CSSProperties & {
@@ -166,6 +169,7 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
 export default function TokenTotalHeadline({
   total,
   summaryReady,
+  incomplete = null,
 }: TokenTotalHeadlineProps) {
   const { t } = useOverviewT();
   const [mode, setMode] = useState<TokenDisplayMode>(loadDisplayMode);
@@ -186,7 +190,9 @@ export default function TokenTotalHeadline({
   const restingDisplay =
     awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
   const action = mode === 'exact' ? t('overview.showCompact') : t('overview.showExact');
-  const layoutLength = modeAnimation ? modeAnimation.to.length : restingDisplay.length;
+  // The ≥ marker sits outside the counter but inside the width budget.
+  const layoutLength =
+    (modeAnimation ? modeAnimation.to.length : restingDisplay.length) + (incomplete ? 2 : 0);
   const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 48px)`;
   const headlineStyle: HeadlineStyle = {
     display: 'block',
@@ -241,10 +247,15 @@ export default function TokenTotalHeadline({
       className="tt-b8-total"
       onClick={toggleMode}
       title={action}
-      aria-label={`${exact} ${t('overview.totalTokensAria')} ${action}`}
+      aria-label={`${incomplete ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${action}`}
       aria-busy={modeAnimation ? true : undefined}
       style={headlineStyle}
     >
+      {incomplete && (
+        <span className="tt-b8-total-mark" title={incomplete}>
+          {'≥ '}
+        </span>
+      )}
       {modeAnimation ? (
         <SpringCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
       ) : (

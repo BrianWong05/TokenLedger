@@ -13,6 +13,7 @@ import { detectPlatform, type Platform } from '../lib/platform';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
+import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import type { Filters } from '../types';
 import './TrayPanel.css';
 
@@ -100,6 +101,9 @@ export default function TrayPanel({
   const ledger = ports?.ledger ?? tauriLedger;
   const settings = ports?.settings ?? tauriSettings;
   const [model, setModel] = useState<PanelModel | null>(null);
+  // The selected window's token figure is a floor (≥) when an Unreadable
+  // Artifact could hold usage in it (ADR-0017) — same rules as everywhere.
+  const [tokensPartial, setTokensPartial] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('today');
@@ -140,12 +144,14 @@ export default function TrayPanel({
           ledger.breakdown('project', current),
           ledger.series(current, seriesBucket(periodRef.current)),
           ledger.lastScan(),
+          ledger.scanSources(),
         ]),
       ]),
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
-      const [t, y, rows, s, models, projects, series, scannedAt] = fetched[0].value;
+      const [t, y, rows, s, models, projects, series, scannedAt, sources] = fetched[0].value;
+      setTokensPartial(unreadableSourcesIn(sources, w.start).length > 0);
       setModel(
         panelModel(t, y, rows, s, s.language === 'zh-Hant' ? 'zh-Hant' : 'en', {
           period: periodRef.current,
@@ -287,7 +293,7 @@ export default function TrayPanel({
               )}
             </div>
             <span className="tp-sub">
-              {model ? `${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
+              {model ? `${tokensPartial ? '≥ ' : ''}${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
             </span>
           </div>
         )}

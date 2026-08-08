@@ -96,9 +96,9 @@ the icon's figures are always Today, the local calendar day, while the panel
 selects its own (Today, Yesterday, or the trailing 30 days) and everything it
 shows describes that selection. A day with no usage reads "0 · $0.00" rather
 than leaving the icon to stand alone.
-Every Cost figure follows the same rules as everywhere else: Partial Cost's
-"≥" marker, Unpriced never shown as $0, a window with no usage at $0.00,
-Display Currency honored.
+Every figure follows the same rules as everywhere else: Partial Cost's
+"≥" marker, the Unreadable Artifact "≥" on token figures, Unpriced never
+shown as $0, a window with no usage at $0.00, Display Currency honored.
 The platform's own facility that hosts it — a Linux system tray and the
 AppIndicator library behind it, the Windows notification area — keeps its
 native name, because that is a place, not this application's presence in it.
@@ -121,6 +121,19 @@ be a Source's native record or an already-populated third-party cache, and one
 Source may have many independently supported Artifacts; TokenLedger reads each
 passively, and rejecting one Artifact never rejects the Source itself.
 _Avoid_: Data source, import file
+
+**Unreadable Artifact**:
+A Source Artifact that is present on every scan yet can never be parsed
+without running the Source's own programs, which ADR-0013 forbids — an
+encrypted Session with no published scheme. Not a malformed instance of a
+supported shape, so it emits no warning (there is no action to request); it
+is counted instead, and every token total whose window its content could fall
+in is shown as a floor with the same "≥" marker as Partial Cost (ADR-0017),
+so a Source with unreadable Sessions and a Source read in full never look
+alike. Content is never newer than its file, so only a window starting after
+the Artifact's last write is definitely complete.
+_Avoid_: Blocked artifact, encrypted artifact, unsupported artifact, skipped
+file
 
 **Source Capability**:
 A kind of attribution a Source can truthfully expose, independent of whether a

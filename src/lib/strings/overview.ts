@@ -156,6 +156,12 @@ export const overview = {
     // scan footer
     'overview.scanIn': 'in',
     'overview.scanSkipped': 'skipped',
+    'overview.scanUnreadable': 'unreadable',
+
+    // Unreadable Artifacts (ADR-0017): the ≥ reason and its aria reading
+    'overview.unreadableSessionOne': 'session unreadable',
+    'overview.unreadableSessionMany': 'sessions unreadable',
+    'overview.atLeast': 'at least',
 
     // models list
     'overview.modelsHead': 'Models',
@@ -327,6 +333,11 @@ export const overview = {
 
     'overview.scanIn': '匯入',
     'overview.scanSkipped': '略過',
+    'overview.scanUnreadable': '無法讀取',
+
+    'overview.unreadableSessionOne': '個工作階段無法讀取',
+    'overview.unreadableSessionMany': '個工作階段無法讀取',
+    'overview.atLeast': '至少',
 
     'overview.modelsHead': '模型',
 

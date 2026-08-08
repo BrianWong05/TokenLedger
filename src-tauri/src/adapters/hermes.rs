@@ -165,7 +165,7 @@ fn scan_hermes_database(conn: &mut Connection, hermes_db: &Path) -> SourceScanRe
         let _ = set_file_state(conn, &wal_path.to_string_lossy(), wal_state);
     }
 
-    SourceScanResult { events_inserted: inserted, lines_skipped: skipped, error: None }
+    SourceScanResult { events_inserted: inserted, lines_skipped: skipped, ..Default::default() }
 }
 
 fn discover_databases(primary: &Path) -> Vec<PathBuf> {

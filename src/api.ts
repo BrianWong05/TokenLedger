@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   ScanStatus,
+  SourceStatus,
   Summary,
   SeriesPoint,
   BreakdownRow,
@@ -22,6 +23,12 @@ export function scan(): Promise<ScanStatus> {
 // Epoch seconds of the last Scan this launch; 0 when none has run yet.
 export function fetchLastScan(): Promise<number> {
   return invoke('last_scan');
+}
+
+// The most recent scan's per-source statuses, without rescanning — the
+// traypanel's read for the Unreadable-Artifact ≥ marker (ADR-0017).
+export function fetchScanSources(): Promise<SourceStatus[]> {
+  return invoke('scan_sources');
 }
 
 export function fetchSummary(filters: Filters): Promise<Summary> {

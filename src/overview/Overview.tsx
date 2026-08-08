@@ -13,10 +13,10 @@ import AggTrend from './AggTrend';
 import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
 import { RangeSegments } from './RangePicker';
-import type { SourceMeta } from './meta';
+import { sourceMeta, type SourceMeta } from './meta';
 import { sourceIcon } from './icons';
 import { fmtPct, formatCompactTokenTotal } from '../lib/format';
-import { formatSummaryCost, useOverviewT } from './localize';
+import { countLabel, formatSummaryCost, useOverviewT } from './localize';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
@@ -104,9 +104,16 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
-    summary, modelRows, canOpenCostBreakdown, headline,
+    summary, modelRows, canOpenCostBreakdown, headline, unreadable,
     panels,
   } = useOverview(ports);
+
+  // The ≥ reason (ADR-0017), hover text on the marker itself: which Sources
+  // hold Unreadable Artifacts whose content could fall in this window.
+  const unreadableTitle = unreadable
+    .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.artifactsUnreadable, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}`)
+    .join(' · ');
+  const unreadableKeys = new Set(unreadable.map((u) => u.source));
 
   // Stable identity so the memoized ModelsList skips per-tick re-renders.
   const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
@@ -180,7 +187,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       <div className="tt-hero">
         <div className="tt-hero-head">
           <div className="tt-eyebrow">{t('overview.totalTokens')} · {rangeLabel}</div>
-          <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} />
+          <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} incomplete={unreadableTitle || null} />
           {canOpenCostBreakdown ? (
             <button
               ref={setCostBreakdownFocusTarget}
@@ -225,7 +232,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 <div className="num">
                   {/* the space is load-bearing: flex trims it visually, but it keeps
                       the two figures from reading as one number to a screen reader */}
-                  {formatCompactTokenTotal(toolTotals[tl.key], 3)} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
+                  {unreadableKeys.has(tl.key) ? '≥ ' : ''}{formatCompactTokenTotal(toolTotals[tl.key], 3)} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
                 </div>
                 {tl.nModels > 0 && (
                   <div className="sub">
@@ -278,6 +285,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               {i > 0 && <span className="sep">·</span>}
               <span>
                 {s.source}: {s.eventsInserted} {t('overview.scanIn')} / {s.linesSkipped} {t('overview.scanSkipped')}
+                {s.artifactsUnreadable > 0 && ` / ${s.artifactsUnreadable} ${t('overview.scanUnreadable')}`}
               </span>
             </Fragment>
           ))}

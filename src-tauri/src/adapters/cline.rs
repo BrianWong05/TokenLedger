@@ -148,6 +148,7 @@ pub fn scan_cline(conn: &mut Connection, roots: &[PathBuf]) -> SourceScanResult 
         events_inserted,
         lines_skipped,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
+        ..Default::default()
     }
 }
 

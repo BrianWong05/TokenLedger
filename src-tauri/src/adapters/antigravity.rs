@@ -4,8 +4,9 @@
 // database: `~/.gemini/antigravity/conversations/<uuid>.db` (IDE) and
 // `~/.gemini/antigravity-cli/conversations/<uuid>.db` (CLI), same schema.
 // Sibling `<uuid>.pb` files are encrypted Sessions — legacy *and* current
-// format — that only the live language server can decrypt; skipped.
-// See docs/source-evidence/antigravity.md.
+// format — that only the live language server can decrypt: Unreadable
+// Artifacts, counted (never warned) so token totals can carry the ≥ marker.
+// See docs/source-evidence/antigravity.md and ADR-0017.
 //
 // Each `gen_metadata` row is one generation (one API call) encoded as a
 // protobuf blob. There is no published .proto; field numbers below follow
@@ -76,8 +77,15 @@ pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanRes
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("db") {
-                process_db(conn, &path, &mut result);
+            match path.extension().and_then(|e| e.to_str()) {
+                Some("db") => process_db(conn, &path, &mut result),
+                Some("pb") => {
+                    result.artifacts_unreadable += 1;
+                    let mtime = file_state_of(&path).mtime;
+                    result.unreadable_max_mtime =
+                        Some(result.unreadable_max_mtime.unwrap_or(i64::MIN).max(mtime));
+                }
+                _ => {}
             }
         }
     }
@@ -547,19 +555,28 @@ mod tests {
         assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 0);
     }
 
+    // .pb Sessions never parse and never warn — they are Unreadable Artifacts
+    // (ADR-0017): counted, with the latest mtime kept so token totals can
+    // carry the ≥ marker for windows their content could fall in.
     #[test]
-    fn scans_multiple_roots_and_ignores_pb_files() {
+    fn scans_multiple_roots_and_counts_pb_files_as_unreadable() {
         let ide = tempdir().unwrap();
         let cli = tempdir().unwrap();
         build_db(&ide.path().join("a.db"), &[gen_blob("m", 100, 0, 1, 0, 1, 0, "a")], None);
         build_db(&cli.path().join("b.db"), &[gen_blob("m", 100, 0, 2, 0, 2, 0, "b")], None);
         std::fs::write(ide.path().join("old.pb"), b"\x14\xae%\x8ca_encrypted").unwrap();
+        std::fs::write(cli.path().join("new.pb"), b"\x99also_encrypted").unwrap();
 
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
         let res = scan_antigravity(&mut conn, &[ide.path(), cli.path()]);
         assert!(res.error.is_none());
         assert_eq!(res.events_inserted, 2);
+        assert_eq!(res.artifacts_unreadable, 2);
+        let expected = file_state_of(&ide.path().join("old.pb"))
+            .mtime
+            .max(file_state_of(&cli.path().join("new.pb")).mtime);
+        assert_eq!(res.unreadable_max_mtime, Some(expected));
     }
 
     #[test]

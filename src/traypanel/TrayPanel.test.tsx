@@ -104,6 +104,37 @@ describe('TrayPanel', () => {
     expect(actions).toEqual(['Open TokenLedger', 'Rescan now', 'Settings…', 'Quit TokenLedger']);
   });
 
+  // Unreadable Artifacts (ADR-0017): the panel's token figure is a floor when
+  // one could hold usage in the selected window — the same ≥ the bar title
+  // and the Overview carry, read from the last scan without rescanning.
+  it('marks the token figure ≥ when an Unreadable Artifact could touch the window', async () => {
+    const ledger = makeFakeLedger({
+      summary,
+      modelRows: toolRows,
+      scan: {
+        scannedAt: 0,
+        sources: [{
+          source: 'antigravity', eventsInserted: 0, linesSkipped: 0,
+          artifactsUnreadable: 100,
+          unreadableMaxMtime: Math.floor(Date.now() / 1000),
+          error: null,
+        }],
+      },
+    });
+    const settings = makeFakeSettings();
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings }} />);
+    });
+    await settle();
+
+    expect(container.querySelector('.tp-sub')?.textContent).toBe('≥ 3.4M tok · 1,912 req');
+  });
+
   it('renders the Models section and the stats strip from the extra reads', async () => {
     const ledger = makeFakeLedger({
       summary: { ...summary, cacheHitRate: 0.9124 },
