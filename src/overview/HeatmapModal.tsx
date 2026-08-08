@@ -90,6 +90,7 @@ export default function HeatmapModal({
         backdropArmed.current = false;
       }}
     >
+      <span className="tl-modal-dragstrip" aria-hidden="true" data-tauri-drag-region />
       <section
         ref={modalRef}
         className="tt-heat-modal"
@@ -98,7 +99,9 @@ export default function HeatmapModal({
         aria-labelledby="tt-heat-modal-title"
         tabIndex={-1}
       >
-        <header className="tt-heat-modal-head">
+        {/* the backdrop covers the shell's drag handles, so the dialog's own
+            header is one ("deep": the whole strip drags, buttons still click) */}
+        <header className="tt-heat-modal-head" data-tauri-drag-region="deep">
           <div>
             <div className="tt-heat-modal-eyebrow">
               <span className="dot" />

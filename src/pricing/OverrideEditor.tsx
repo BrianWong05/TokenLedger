@@ -103,6 +103,7 @@ export default function OverrideEditor({
       onClick={() => close(false)}
       onKeyDown={(e) => { if (e.key === 'Escape') close(false); }}
     >
+      <span className="tl-modal-dragstrip" aria-hidden="true" data-tauri-drag-region />
       <div
         className="tl-pr-dialog"
         role="dialog"
@@ -110,7 +111,9 @@ export default function OverrideEditor({
         aria-labelledby="tl-pr-dialog-name"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="tl-pr-dialog-head">
+        {/* the backdrop covers the shell's drag handles, so the dialog's own
+            header is one ("deep": the whole strip drags, buttons still click) */}
+        <div className="tl-pr-dialog-head" data-tauri-drag-region="deep">
           <span className={'tl-pr-icon ' + model.tool}>
             {icon ? <img src={icon} alt="" width={15} height={15} /> : <b>{tool[0]}</b>}
           </span>

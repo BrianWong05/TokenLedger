@@ -88,6 +88,27 @@ body.tl-dialog-open [role='dialog'] {
   user-select: text;
 }
 
+/* A dialog's backdrop covers the shell's window-drag handles, so every backdrop
+   opens with this strip over the title-bar row (the toolbar's height) — the
+   window still moves from where it always did. Only that row: a drag region
+   swallows the click, and the rest of the backdrop has to keep closing the
+   dialog. The dialog itself stays above it if a short window makes them meet. */
+.tl-modal-dragstrip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 52px;
+  /* the backdrops center their children (grid place-items / flex), which
+     shrink-wraps an out-of-flow child too — opt back out of that alignment */
+  justify-self: stretch;
+  align-self: start;
+}
+.tl-modal-dragstrip ~ [role='dialog'] {
+  position: relative;
+  z-index: 1;
+}
+
 body {
   margin: 0;
   background: var(--bg);

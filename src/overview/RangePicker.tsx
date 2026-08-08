@@ -294,7 +294,10 @@ export default function RangePicker({ at, trigger, from, to, firstIso, lastIso, 
   };
 
   return (
-    <div className="tt-dp" ref={wrap}>
+    // The popover renders inside its trigger's row, which in the Trend enlarge
+    // is a "deep" drag region — the calendar's own surface must not move the
+    // window, so it opts out for its whole subtree.
+    <div className="tt-dp" ref={wrap} data-tauri-drag-region="false">
       <div
         className="tt-dp-pop"
         ref={pop}
