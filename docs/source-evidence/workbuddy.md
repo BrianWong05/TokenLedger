@@ -16,7 +16,8 @@ live alongside the main file.
 
 ## Evidence from the live install
 
-Verified against the machine's own WorkBuddy data (2026-08-07): four real
+Verified against real WorkBuddy data from one genuine macOS installation
+(2026-08-07): four real
 Sessions under `~/.workbuddy/projects/`, including the Session in which this
 documentation was written, status `working` in `~/.workbuddy/workbuddy.db`.
 

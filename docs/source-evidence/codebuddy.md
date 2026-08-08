@@ -14,7 +14,8 @@ line carries the absolute working directory.
 
 ## Evidence from the live install
 
-Verified against the machine's own CodeBuddy data (2026-08-07): one Session
+Verified against real CodeBuddy data from one genuine macOS installation
+(2026-08-07): one Session
 (`f7bde4fb…`, cwd `/Users/brianwong/Project/usage`) whose transcript grew from
 12 lines with no usage at 18:53 to 25 lines with 4 usage-bearing lines by
 19:00 while this documentation session ran. Line types observed: `message`,
