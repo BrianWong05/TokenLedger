@@ -62,11 +62,6 @@ pub struct AppState {
     /// figures are, and the resident capture scans at start-up, so freshness
     /// from a previous launch would answer a question nobody asked.
     pub last_scan: AtomicI64,
-    /// The most recent scan's per-source statuses, held so the Menu Bar Extra
-    /// (title and panel) can apply the Unreadable-Artifact ≥ marker (ADR-0017)
-    /// without rescanning. In memory only: empty until the launch's first scan,
-    /// which the resident capture runs at start-up anyway.
-    pub scan_sources: Mutex<Vec<types::SourceStatus>>,
 }
 
 /// Fetch both price catalogs and rebuild the prices table, then tell the frontend
@@ -146,9 +141,6 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
     // Every scan lands here — the command, the tray's "Scan now", and the
     // resident capture — so the panel's freshness read-out cannot miss one.
     state.last_scan.store(status.scanned_at, Ordering::Relaxed);
-    if let Ok(mut sources) = state.scan_sources.lock() {
-        *sources = status.sources.clone();
-    }
     tray::refresh(app);
     // Release scan_lock BEFORE the lookup: it reads the whole prices table to
     // decide, and holding the scan gate across that would delay the next scan for
@@ -171,12 +163,17 @@ fn last_scan(state: State<'_, AppState>) -> i64 {
     state.last_scan.load(Ordering::Relaxed)
 }
 
-/// The most recent scan's per-source statuses, without rescanning — the
-/// traypanel reads these to apply the Unreadable-Artifact ≥ marker (ADR-0017)
-/// to its own window's token figure. Empty until this launch's first scan.
+/// Sources currently holding Unreadable Artifacts (ADR-0017), from the
+/// persisted per-scan state — no rescan, and honest from launch because the
+/// answer survives restarts. The traypanel reads this to put the ≥ floor
+/// marker on its own window's token figure.
 #[tauri::command]
-fn scan_sources(state: State<'_, AppState>) -> Vec<types::SourceStatus> {
-    state.scan_sources.lock().map(|s| s.clone()).unwrap_or_default()
+fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadable> {
+    state
+        .db
+        .lock()
+        .map(|db| db::load_unreadable(&db))
+        .unwrap_or_default()
 }
 
 #[tauri::command]
@@ -421,7 +418,6 @@ pub fn run() {
                 scan_lock: Mutex::new(()),
                 price_lookups: Mutex::new(Default::default()),
                 last_scan: AtomicI64::new(0),
-                scan_sources: Mutex::new(Vec::new()),
             });
 
             tray::build(app.handle())?;
@@ -493,7 +489,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan,
             last_scan,
-            scan_sources,
+            unreadable_artifacts,
             summary,
             trend,
             series,
@@ -565,7 +561,6 @@ mod tests {
             scan_lock: Mutex::new(()),
             price_lookups: Mutex::new(Default::default()),
             last_scan: AtomicI64::new(0),
-            scan_sources: Mutex::new(Vec::new()),
         };
 
         let mut db = state.db.lock().unwrap();

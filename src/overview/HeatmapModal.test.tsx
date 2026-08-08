@@ -14,7 +14,7 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import { isoOf } from './data';
-import type { Filters, SeriesPoint, Summary } from '../types';
+import type { Filters, ScanStatus, SeriesPoint, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -66,7 +66,7 @@ async function settle(times = 4) {
   }
 }
 
-async function mount(): Promise<{ container: HTMLElement; ledger: ReturnType<typeof makeFakeLedger> }> {
+async function mount(scan?: ScanStatus): Promise<{ container: HTMLElement; ledger: ReturnType<typeof makeFakeLedger> }> {
   // Point costs are deliberately zero: the enlarge's Cost must come from the
   // year-window Summary fetch, never from summing series points.
   const ledger = makeFakeLedger({
@@ -76,6 +76,7 @@ async function mount(): Promise<{ container: HTMLElement; ledger: ReturnType<typ
       pt({ bucket: daysAgo(1), source: 'codex', totalTokens: 200 }),
     ],
     summary,
+    ...(scan ? { scan } : {}),
   });
   const container = document.createElement('div');
   document.body.append(container);
@@ -129,6 +130,26 @@ describe('Activity Enlarge', () => {
 
     // The landscape itself is present and rotatable (grab cursor class).
     expect(modal.querySelector('.tt-heat-modal-canvas svg.grab')).toBeTruthy();
+  });
+
+  // Unreadable Artifacts (ADR-0017): the year window's token total is a floor,
+  // so it carries the same ≥ as the Overview headline, with the reason as
+  // hover text on the stat.
+  it('marks the year token total ≥ when Unreadable Artifacts touch the window', async () => {
+    const { container: c } = await mount({
+      scannedAt: 0,
+      sources: [{
+        source: 'antigravity', eventsInserted: 0, linesSkipped: 0,
+        artifactsUnreadable: 100,
+        unreadableMaxMtime: Math.floor(Date.now() / 1000),
+        error: null,
+      }],
+    });
+    const modal = await open(c);
+
+    const tokStat = modal.querySelector('.tt-heat-modal-stats .stat')!;
+    expect(tokStat.textContent).toContain('≥');
+    expect(tokStat.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
   });
 
   it('locks page scroll while open and unlocks on close', async () => {

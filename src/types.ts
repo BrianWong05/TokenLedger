@@ -10,6 +10,7 @@ export type { CtxBuckets } from './bindings/CtxBuckets';
 export type { CtxToolRow } from './bindings/CtxToolRow';
 export type { CtxExecRow } from './bindings/CtxExecRow';
 export type { SourceStatus } from './bindings/SourceStatus';
+export type { SourceUnreadable } from './bindings/SourceUnreadable';
 export type { ScanStatus } from './bindings/ScanStatus';
 
 // ---- App-shell contract (hand-written to match the parallel backend wave) ----

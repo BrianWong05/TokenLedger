@@ -222,12 +222,8 @@ pub fn refresh(app: &AppHandle) {
         ) else {
             return;
         };
-        let partial = state
-            .scan_sources
-            .lock()
-            .map(|s| tokens_partial(&s, start))
-            .unwrap_or(false);
-        tray_title(&today, &settings, partial)
+        let floor = tokens_are_floor(&crate::db::load_unreadable(&db), start);
+        tray_title(&today, &settings, floor)
     };
     show_today(&tray, &title);
 }
@@ -341,17 +337,17 @@ fn clamp_or_leave(v: f64, lo: f64, hi: f64) -> f64 {
 /// follows the glossary: "≥ " marker when Partial (priced total over a set
 /// with Unpriced Models or Unattributed Usage), and a day with usage but no
 /// available Cost shows tokens alone — never $0. The token figure carries its
-/// own "≥ " when an Unreadable Artifact could hold usage in the window
-/// (ADR-0017) — the same rules as everywhere else, per the glossary's Menu
-/// Bar Extra entry. ponytail: the bar drops the missing-Cost wording for
+/// own "≥ " floor marker when an Unreadable Artifact could hold usage in the
+/// window (ADR-0017) — the same rules as everywhere else, per the glossary's
+/// Menu Bar Extra entry. ponytail: the bar drops the missing-Cost wording for
 /// space; the menu's per-Source rows (#24) spell it out.
 fn tray_title(
     today: &crate::queries::Summary,
     settings: &crate::settings::Settings,
-    tokens_partial: bool,
+    tokens_floor: bool,
 ) -> String {
-    let tmark = if tokens_partial { "≥ " } else { "" };
-    let toks = format!("{tmark}{}", fmt_tokens(today.total_tokens));
+    let floor_mark = if tokens_floor { "≥ " } else { "" };
+    let toks = format!("{floor_mark}{}", fmt_tokens(today.total_tokens));
     match today.cost {
         None => toks,
         Some(c) => {
@@ -364,11 +360,13 @@ fn tray_title(
 /// A token figure is a floor when any Source holds an Unreadable Artifact
 /// whose content could fall in the window. Content is never newer than its
 /// file, so `mtime >= window start` is the test — nothing bounds the content's
-/// age downward (Antigravity's migration rewrote old Sessions as new files).
-fn tokens_partial(sources: &[crate::types::SourceStatus], window_start: i64) -> bool {
-    sources.iter().any(|s| {
-        s.artifacts_unreadable > 0
-            && s.unreadable_max_mtime.is_some_and(|m| m >= window_start)
+/// age downward (Antigravity's migration rewrote old Sessions as new files) —
+/// and an unknown mtime marks conservatively. Mirror of unreadableSourcesIn
+/// in src/lib/tokenCompleteness.ts; keep the two shapes in step.
+fn tokens_are_floor(unreadable: &[crate::types::SourceUnreadable], window_start: i64) -> bool {
+    unreadable.iter().any(|u| {
+        u.artifacts_unreadable > 0
+            && u.unreadable_max_mtime.is_none_or(|m| m >= window_start)
     })
 }
 
@@ -521,28 +519,27 @@ mod tests {
         );
     }
 
-    fn unreadable_status(count: u64, max_mtime: Option<i64>) -> crate::types::SourceStatus {
-        crate::types::SourceStatus {
+    fn unreadable(count: u64, max_mtime: Option<i64>) -> crate::types::SourceUnreadable {
+        crate::types::SourceUnreadable {
             source: "antigravity".to_string(),
-            events_inserted: 0,
-            lines_skipped: 0,
             artifacts_unreadable: count,
             unreadable_max_mtime: max_mtime,
-            error: None,
         }
     }
 
     // mtime is the only honest bound: content is never newer than its file,
     // and nothing bounds it downward (Antigravity's migration rewrote old
     // Sessions as new files). So only a window starting after every
-    // Unreadable Artifact's last write is definitely complete.
+    // Unreadable Artifact's last write is definitely complete — and an
+    // unknown mtime marks conservatively.
     #[test]
-    fn tokens_partial_tests_mtime_against_window_start() {
-        assert!(tokens_partial(&[unreadable_status(100, Some(1_000))], 1_000));
-        assert!(tokens_partial(&[unreadable_status(100, Some(1_001))], 1_000));
-        assert!(!tokens_partial(&[unreadable_status(100, Some(999))], 1_000));
-        assert!(!tokens_partial(&[unreadable_status(0, None)], 0));
-        assert!(!tokens_partial(&[], 0));
+    fn tokens_are_floor_tests_mtime_against_window_start() {
+        assert!(tokens_are_floor(&[unreadable(100, Some(1_000))], 1_000));
+        assert!(tokens_are_floor(&[unreadable(100, Some(1_001))], 1_000));
+        assert!(!tokens_are_floor(&[unreadable(100, Some(999))], 1_000));
+        assert!(tokens_are_floor(&[unreadable(100, None)], 1_000));
+        assert!(!tokens_are_floor(&[unreadable(0, None)], 0));
+        assert!(!tokens_are_floor(&[], 0));
     }
 
     #[test]

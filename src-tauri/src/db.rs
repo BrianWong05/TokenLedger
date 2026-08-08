@@ -247,6 +247,18 @@ CREATE TABLE IF NOT EXISTS source_sessions (
 );
 PRAGMA user_version = 10;";
 
+// Unreadable Artifacts per Source (ADR-0017): count + latest mtime, upserted
+// by every scan for every scanned Source. Persisted (not held in memory) so
+// the ≥ floor marker is honest from launch, before the first scan of a run —
+// metadata only, never content, per ADR-0011. No BEGIN/COMMIT: migrate() wraps.
+const SCHEMA_V11: &str = "\
+CREATE TABLE IF NOT EXISTS unreadable_artifacts (
+  source TEXT PRIMARY KEY,
+  count INTEGER NOT NULL,
+  max_mtime INTEGER
+);
+PRAGMA user_version = 11;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -429,7 +441,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 10) and no-ops.
+    // the committed user_version (currently 11) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -462,6 +474,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 10 {
             conn.execute_batch(SCHEMA_V10)?;
+        }
+        if version < 11 {
+            conn.execute_batch(SCHEMA_V11)?;
         }
         Ok(())
     };
@@ -832,6 +847,42 @@ pub fn upsert_source_session(
     Ok(())
 }
 
+/// Persist every scanned Source's Unreadable-Artifact state (ADR-0017),
+/// zero counts included so a Source whose Artifacts become readable stops
+/// marking. Written by every scan; read back for the ≥ floor marker.
+pub fn record_unreadable(
+    conn: &Connection,
+    statuses: &[crate::types::SourceStatus],
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO unreadable_artifacts (source, count, max_mtime) \
+         VALUES (?1, ?2, ?3)",
+    )?;
+    for s in statuses {
+        stmt.execute(params![s.source, s.artifacts_unreadable as i64, s.unreadable_max_mtime])?;
+    }
+    Ok(())
+}
+
+/// Sources currently holding Unreadable Artifacts — the persisted state, so
+/// the answer is honest from launch, before this run's first scan.
+pub fn load_unreadable(conn: &Connection) -> Vec<crate::types::SourceUnreadable> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT source, count, max_mtime FROM unreadable_artifacts WHERE count > 0 ORDER BY source",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([], |r| {
+        Ok(crate::types::SourceUnreadable {
+            source: r.get(0)?,
+            artifacts_unreadable: r.get::<_, i64>(1)?.max(0) as u64,
+            unreadable_max_mtime: r.get(2)?,
+        })
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,14 +932,44 @@ mod tests {
         (dir, conn)
     }
 
+    // Unreadable-Artifact state (ADR-0017) round-trips per scan: zero counts
+    // are written (so a Source whose Artifacts become readable stops marking)
+    // but never loaded, and a later scan's counts replace the earlier ones.
+    #[test]
+    fn unreadable_artifacts_roundtrip_and_replace() {
+        let (_dir, conn) = temp_db();
+        let status = |source: &str, count, mtime| crate::types::SourceStatus {
+            source: source.to_string(),
+            events_inserted: 0,
+            lines_skipped: 0,
+            artifacts_unreadable: count,
+            unreadable_max_mtime: mtime,
+            error: None,
+        };
+
+        record_unreadable(&conn, &[status("antigravity", 100, Some(1_000)), status("claude", 0, None)])
+            .unwrap();
+        assert_eq!(
+            load_unreadable(&conn),
+            vec![crate::types::SourceUnreadable {
+                source: "antigravity".to_string(),
+                artifacts_unreadable: 100,
+                unreadable_max_mtime: Some(1_000),
+            }]
+        );
+
+        record_unreadable(&conn, &[status("antigravity", 0, None)]).unwrap();
+        assert_eq!(load_unreadable(&conn), vec![]);
+    }
+
     #[test]
     fn fresh_db_has_tables_and_user_version() {
         let (_dir, conn) = temp_db();
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner"] {
+        assert_eq!(version, 11);
+        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -917,7 +998,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
     }
 
     #[test]
@@ -970,7 +1051,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
         let model_not_null: i64 = conn.query_row(
             "SELECT [notnull] FROM pragma_table_info('events') WHERE name = 'model'",
             [],
@@ -1046,7 +1127,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
         let has_catalog: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('prices') WHERE name = 'catalog'",
             [],
@@ -1111,7 +1192,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -1270,7 +1351,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -1376,7 +1457,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
     }
 
     #[test]
@@ -1537,7 +1618,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1622,7 +1703,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1659,7 +1740,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, 11);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",

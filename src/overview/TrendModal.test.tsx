@@ -15,7 +15,7 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import { isoOf } from './data';
-import type { Filters, SeriesPoint, Summary } from '../types';
+import type { Filters, ScanStatus, SeriesPoint, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -83,6 +83,7 @@ async function mount(
   over: Partial<Summary> = {},
   seedDayPoints?: SeriesPoint[],
   seedHourPoints?: SeriesPoint[],
+  scan?: ScanStatus,
 ): Promise<{
   container: HTMLElement;
   ledger: ReturnType<typeof makeFakeLedger>;
@@ -96,6 +97,7 @@ async function mount(
     ],
     hourPoints: seedHourPoints ?? [],
     summary: { ...summary, ...over },
+    ...(scan ? { scan } : {}),
   });
   const exporter = makeFakeExporter();
   const container = document.createElement('div');
@@ -358,6 +360,30 @@ describe('Usage-trend Enlarge', () => {
     expect(pageActiveRange(c)).toBe('Total');
     expect(pageEyebrow()).toBe(before);
     expect(localStorage.getItem('tokenledger.customRange')).toBeNull();
+  });
+
+  // Unreadable Artifacts (ADR-0017): the dialog's window total and the
+  // inspected bucket's token figure are floors, marked like every other
+  // token total, with the reason as hover text.
+  it('marks the window total and the inspected bucket ≥ under Unreadable Artifacts', async () => {
+    const { container: c } = await mount({}, undefined, undefined, {
+      scannedAt: 0,
+      sources: [{
+        source: 'antigravity', eventsInserted: 0, linesSkipped: 0,
+        artifactsUnreadable: 100,
+        unreadableMaxMtime: Math.floor(Date.now() / 1000),
+        error: null,
+      }],
+    });
+    await open(c);
+
+    const totalStat = dialog()!.querySelector('.tt-trend-modal-stats .stat')!;
+    expect(totalStat.textContent).toContain('≥');
+    expect(totalStat.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
+
+    const inspTok = dialog()!.querySelector('.tt-trend-insp-tok')!;
+    expect(inspTok.textContent).toContain('≥');
+    expect(inspTok.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
   });
 
   it('opens the date picker from its Custom segment, and Escape closes it without closing the dialog', async () => {

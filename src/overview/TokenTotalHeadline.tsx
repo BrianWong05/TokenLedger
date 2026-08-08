@@ -247,7 +247,7 @@ export default function TokenTotalHeadline({
       className="tt-b8-total"
       onClick={toggleMode}
       title={action}
-      aria-label={`${incomplete ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${action}`}
+      aria-label={`${incomplete ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${incomplete ? `${incomplete}. ` : ''}${action}`}
       aria-busy={modeAnimation ? true : undefined}
       style={headlineStyle}
     >

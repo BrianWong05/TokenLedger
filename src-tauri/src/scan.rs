@@ -548,6 +548,11 @@ fn run_scan_sources(
     // Never deletes events (see prune_missing_files contract). Best-effort.
     let _ = prune_missing_files(conn);
 
+    // Persist every Source's Unreadable-Artifact state (ADR-0017) so the ≥
+    // floor marker is honest from launch, before a run's first scan.
+    // Best-effort, like the pruning above.
+    let _ = crate::db::record_unreadable(conn, &sources);
+
     let scanned_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

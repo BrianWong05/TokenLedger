@@ -14,6 +14,8 @@ import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period }
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
 import { unreadableSourcesIn } from '../lib/tokenCompleteness';
+import { sourceMeta } from '../overview/meta';
+import { countLabel } from '../overview/localize';
 import type { Filters } from '../types';
 import './TrayPanel.css';
 
@@ -103,7 +105,11 @@ export default function TrayPanel({
   const [model, setModel] = useState<PanelModel | null>(null);
   // The selected window's token figure is a floor (≥) when an Unreadable
   // Artifact could hold usage in it (ADR-0017) — same rules as everywhere.
-  const [tokensPartial, setTokensPartial] = useState(false);
+  // The reason rides along as the marker's hover text.
+  const [tokensFloor, setTokensFloor] = useState<{ marked: boolean; reason: string }>({
+    marked: false,
+    reason: '',
+  });
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('today');
@@ -144,16 +150,23 @@ export default function TrayPanel({
           ledger.breakdown('project', current),
           ledger.series(current, seriesBucket(periodRef.current)),
           ledger.lastScan(),
-          ledger.scanSources(),
+          ledger.unreadableArtifacts(),
         ]),
       ]),
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
       const [t, y, rows, s, models, projects, series, scannedAt, sources] = fetched[0].value;
-      setTokensPartial(unreadableSourcesIn(sources, w.start).length > 0);
+      const lang = s.language === 'zh-Hant' ? 'zh-Hant' : 'en';
+      const unread = unreadableSourcesIn(sources, w.start);
+      setTokensFloor({
+        marked: unread.length > 0,
+        reason: unread
+          .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.artifactsUnreadable, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}`)
+          .join(' · '),
+      });
       setModel(
-        panelModel(t, y, rows, s, s.language === 'zh-Hant' ? 'zh-Hant' : 'en', {
+        panelModel(t, y, rows, s, lang, {
           period: periodRef.current,
           now: new Date(),
           models,
@@ -292,8 +305,8 @@ export default function TrayPanel({
                 <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
               )}
             </div>
-            <span className="tp-sub">
-              {model ? `${tokensPartial ? '≥ ' : ''}${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
+            <span className="tp-sub" title={tokensFloor.marked ? tokensFloor.reason : undefined}>
+              {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
             </span>
           </div>
         )}

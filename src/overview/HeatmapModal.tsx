@@ -17,11 +17,15 @@ import { useDialogChrome } from './useDialogChrome';
 export default function HeatmapModal({
   days,
   summary,
+  unreadableTitle = '',
   returnFocusRef,
   onClose,
 }: {
   days: Day[];
   summary: Summary | null; // year-window Summary; null while it loads
+  // Non-empty makes the year window's token total a floor (ADR-0017): the ≥
+  // reason, e.g. "Antigravity: 100 sessions unreadable".
+  unreadableTitle?: string;
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
@@ -138,9 +142,9 @@ export default function HeatmapModal({
         </header>
 
         <div className="tt-heat-modal-stats">
-          <div className="stat">
+          <div className="stat" title={unreadableTitle || undefined}>
             <span className="lbl">{t('overview.totalTokens')}</span>
-            <span className="val">{fmtTok(stats.totalTokens)}</span>
+            <span className="val">{unreadableTitle && '≥ '}{fmtTok(stats.totalTokens)}</span>
           </div>
           <span className="sep" />
           <div className="stat" title={t('overview.notBilled')}>

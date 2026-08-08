@@ -498,11 +498,19 @@ describe('Overview presentation', () => {
     expect(mark.textContent).toContain('≥');
     expect(mark.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
 
+    // The reason is visible text beside the eyebrow (Partial Cost's pattern),
+    // not tooltip-only, and it reaches the screen reader via the aria-label.
+    expect(c.querySelector('.tt-eyebrow')?.textContent).toContain('100 sessions unreadable');
+    expect(c.querySelector('.tt-b8-total')?.getAttribute('aria-label')).toContain(
+      'Antigravity: 100 sessions unreadable',
+    );
+
     const cards = Array.from(c.querySelectorAll<HTMLButtonElement>('.tt-toolcards button'));
-    const cardText = (name: string) =>
-      cards.find((card) => card.textContent?.includes(name))?.textContent ?? '';
-    expect(cardText('Antigravity')).toContain('≥');
-    expect(cardText('Claude')).not.toContain('≥');
+    const card = (name: string) => cards.find((el) => el.textContent?.includes(name))!;
+    expect(card('Antigravity').textContent).toContain('≥');
+    expect(card('Antigravity').getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
+    expect(card('Claude').textContent).not.toContain('≥');
+    expect(card('Claude').getAttribute('title')).toBeNull();
 
     expect(c.querySelector('.tt-scan-foot')?.textContent).toContain(
       'antigravity: 0 in / 0 skipped / 100 unreadable',

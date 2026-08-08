@@ -5,7 +5,7 @@ import type { LedgerPort } from './ledger';
 import type {
   Filters,
   ScanStatus,
-  SourceStatus,
+  SourceUnreadable,
   SeriesPoint,
   Summary,
   BreakdownRow,
@@ -65,7 +65,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
-    scan: [], lastScan: [], scanSources: [], series: [], summary: [], breakdown: [],
+    scan: [], lastScan: [], unreadableArtifacts: [], series: [], summary: [], breakdown: [],
     ctxResources: [], ctxBuckets: [], ctxTools: [], ctxExec: [],
   };
   const fails = new Map<string, unknown>();
@@ -77,7 +77,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     switch (method) {
       case 'scan': return data.scan;
       case 'lastScan': return data.lastScan;
-      case 'scanSources': return data.scan.sources;
+      case 'unreadableArtifacts': return data.scan.sources.filter((s) => s.artifactsUnreadable > 0);
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
       case 'breakdown':
@@ -111,7 +111,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     calls,
     scan: () => respond('scan', []) as Promise<ScanStatus>,
     lastScan: () => respond('lastScan', []) as Promise<number>,
-    scanSources: () => respond('scanSources', []) as Promise<SourceStatus[]>,
+    unreadableArtifacts: () => respond('unreadableArtifacts', []) as Promise<SourceUnreadable[]>,
     series: (filters: Filters, bucket: 'day' | 'hour') =>
       respond('series', [filters, bucket]) as Promise<SeriesPoint[]>,
     summary: (filters: Filters) => respond('summary', [filters]) as Promise<Summary>,

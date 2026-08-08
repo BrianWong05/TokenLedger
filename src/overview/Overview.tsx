@@ -13,10 +13,11 @@ import AggTrend from './AggTrend';
 import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
 import { RangeSegments } from './RangePicker';
-import { sourceMeta, type SourceMeta } from './meta';
+import type { SourceMeta } from './meta';
 import { sourceIcon } from './icons';
 import { fmtPct, formatCompactTokenTotal } from '../lib/format';
-import { countLabel, formatSummaryCost, useOverviewT } from './localize';
+import { countLabel, formatSummaryCost, unreadableReasons, useOverviewT } from './localize';
+import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
@@ -108,12 +109,16 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
     panels,
   } = useOverview(ports);
 
-  // The ≥ reason (ADR-0017), hover text on the marker itself: which Sources
-  // hold Unreadable Artifacts whose content could fall in this window.
-  const unreadableTitle = unreadable
-    .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.artifactsUnreadable, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}`)
-    .join(' · ');
+  // The ≥ reason (ADR-0017): which Sources hold Unreadable Artifacts whose
+  // content could fall in this window — visible count beside the eyebrow,
+  // per-Source detail as hover text on the marked figures.
+  const unreadableTitle = unreadableReasons(unreadable, lang);
+  const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
   const unreadableKeys = new Set(unreadable.map((u) => u.source));
+  const cardUnreadableTitle = (key: string) => {
+    const u = unreadable.find((s) => s.source === key);
+    return u ? unreadableReasons([u], lang) : undefined;
+  };
 
   // Stable identity so the memoized ModelsList skips per-tick re-renders.
   const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
@@ -186,7 +191,14 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       {/* HERO: totals + proportion bar + per-source cards */}
       <div className="tt-hero">
         <div className="tt-hero-head">
-          <div className="tt-eyebrow">{t('overview.totalTokens')} · {rangeLabel}</div>
+          <div className="tt-eyebrow">
+            {t('overview.totalTokens')} · {rangeLabel}
+            {unreadableCount > 0 && (
+              <span className="tt-b8-cost-mark" title={unreadableTitle}>
+                {' · '}{countLabel(unreadableCount, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}
+              </span>
+            )}
+          </div>
           <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} incomplete={unreadableTitle || null} />
           {canOpenCostBreakdown ? (
             <button
@@ -224,6 +236,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 className={'tt-toolcard' + (active ? ' active' : '')}
                 onClick={() => setSel(tl.key)}
                 style={active ? { borderColor: tl.color, background: tl.color + '14' } : undefined}
+                title={cardUnreadableTitle(tl.key)}
               >
                 <div className="lbl">
                   <SourceIcon tool={tl} />
@@ -305,6 +318,10 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
         <HeatmapModal
           days={panels.heatmap.days}
           summary={heatSummary}
+          unreadableTitle={unreadableReasons(
+            unreadableSourcesIn(scanSources, heatFilters().startTs ?? null),
+            lang,
+          )}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />
@@ -314,6 +331,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           allPoints={allPoints}
           firstIso={firstIso}
           lastIso={lastIso}
+          unreadable={unreadableSourcesIn(scanSources, null)}
           initialRange={range}
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}

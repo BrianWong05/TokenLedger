@@ -4,9 +4,9 @@ Status as of 2026-08-09: the Antigravity adapter reads the SQLite Session
 databases (`.db`) of both the IDE and the CLI, verified against real
 databases from one genuine macOS installation (detailed below). The encrypted
 `.pb` Session files are Unreadable Artifacts (ADR-0017): they cannot be read
-passively, so their tokens never reach the Ledger — a missing-Artifact
-limitation, not a parser gap — and the adapter counts them so every affected
-token total reads as a "≥" floor rather than passing for complete.
+passively, so their tokens never reach the Ledger — the evidence is withheld,
+not misparsed — and the adapter counts them so every affected token total
+reads as a "≥" floor rather than passing for complete.
 
 ## Supported shape: `<uuid>.db`
 

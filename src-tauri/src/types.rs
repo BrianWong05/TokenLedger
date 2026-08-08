@@ -86,6 +86,22 @@ pub struct SourceStatus {
     pub error: Option<String>,
 }
 
+/// One Source's persisted Unreadable-Artifact state (ADR-0017), written by
+/// every scan and read back for the ≥ floor marker — from the DB rather than
+/// scan memory, so the Menu Bar Extra is honest from launch, before this
+/// run's first scan lands. Field names mirror SourceStatus so the frontend
+/// rule (src/lib/tokenCompleteness.ts) reads both shapes.
+#[derive(Debug, Serialize, Clone, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct SourceUnreadable {
+    pub source: String,
+    #[ts(type = "number")]
+    pub artifacts_unreadable: u64,
+    #[ts(type = "number | null")]
+    pub unreadable_max_mtime: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]

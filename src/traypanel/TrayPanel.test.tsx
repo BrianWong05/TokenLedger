@@ -132,7 +132,9 @@ describe('TrayPanel', () => {
     });
     await settle();
 
-    expect(container.querySelector('.tp-sub')?.textContent).toBe('≥ 3.4M tok · 1,912 req');
+    const sub = container.querySelector('.tp-sub')!;
+    expect(sub.textContent).toBe('≥ 3.4M tok · 1,912 req');
+    expect(sub.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
   });
 
   it('renders the Models section and the stats strip from the extra reads', async () => {

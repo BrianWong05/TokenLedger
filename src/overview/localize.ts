@@ -14,7 +14,7 @@ import {
   isPartialCost,
   type CostCompleteness,
 } from '../lib/costCompleteness';
-import type { Range8b } from './meta';
+import { sourceMeta, type Range8b } from './meta';
 import type { PresetKey } from './data';
 import type { Settings } from '../types';
 
@@ -72,6 +72,18 @@ export function weekdayNarrowL(dow: number, lang: Lang): string {
 // both keys carry the same measure phrase and the count leads unchanged.
 export function countLabel(n: number, oneKey: OverviewKey, manyKey: OverviewKey, lang: Lang): string {
   return `${n} ${translate(lang, n === 1 ? oneKey : manyKey)}`;
+}
+
+// The ≥ floor marker's reason (ADR-0017): which Sources hold Unreadable
+// Artifacts whose content could fall in the marked window, e.g.
+// "Antigravity: 100 sessions unreadable". One builder for every ≥ surface.
+export function unreadableReasons(
+  sources: { source: string; artifactsUnreadable: number }[],
+  lang: Lang,
+): string {
+  return sources
+    .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.artifactsUnreadable, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}`)
+    .join(' · ');
 }
 
 // Picker shortcut -> string key, same no-computed-key discipline as RANGE_LABEL_KEY.
