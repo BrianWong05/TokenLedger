@@ -57,6 +57,7 @@ export default function CostBreakdownModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
+      <span className="tl-modal-dragstrip" aria-hidden="true" data-tauri-drag-region />
       <section
         ref={modalRef}
         className="tt-cost-modal"
@@ -65,7 +66,9 @@ export default function CostBreakdownModal({
         aria-labelledby="tt-cost-modal-title"
         tabIndex={-1}
       >
-        <header className="tt-cost-modal-head">
+        {/* the backdrop covers the shell's drag handles, so the dialog's own
+            header is one ("deep": the whole strip drags, buttons still click) */}
+        <header className="tt-cost-modal-head" data-tauri-drag-region="deep">
           <div>
             <div className="tt-cost-modal-eyebrow" id="tt-cost-modal-title">
               {t('overview.estTotalCost')}

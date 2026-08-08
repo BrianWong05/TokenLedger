@@ -326,6 +326,7 @@ export default function TrendModal({
         backdropArmed.current = false;
       }}
     >
+      <span className="tl-modal-dragstrip" aria-hidden="true" data-tauri-drag-region />
       <section
         ref={modalRef}
         className="tt-trend-modal"
@@ -334,7 +335,10 @@ export default function TrendModal({
         aria-labelledby="tt-trend-modal-title"
         tabIndex={-1}
       >
-        <header className="tt-trend-modal-head">
+        {/* the backdrop covers the shell's drag handles, so the dialog's own
+            header is one — "deep" so the whole strip drags, its buttons still
+            click (Tauri exempts clickable elements) */}
+        <header className="tt-trend-modal-head" data-tauri-drag-region="deep">
           <div>
             <div className="tt-trend-modal-title" id="tt-trend-modal-title">
               {t('overview.usageTrend')}
