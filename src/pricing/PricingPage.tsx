@@ -92,7 +92,10 @@ export default function PricingPage({
         />
       ) : (
         <>
-          <div className="tl-pr-toolbar">
+          {/* the toolbar pins to the window top and its empty stretch is a
+              window-drag handle (frameless window); mousedown on the child
+              controls does not start a drag */}
+          <div className="tl-pr-toolbar" data-tauri-drag-region>
             <div className="tl-pr-search">
               <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden="true">
                 <circle cx="6" cy="6" r="4.6" stroke="var(--muted)" strokeWidth="1.4" fill="none" />
@@ -120,7 +123,9 @@ export default function PricingPage({
                 </button>
               ))}
             </div>
-            <span className="tl-pr-spacer" />
+            {/* the empty stretch doubles as the drag handle, like the shell's
+                tl-nav-spacer */}
+            <span className="tl-pr-spacer" data-tauri-drag-region />
             <span className="tl-pr-catnote">{t('pricing.catalogNote')}</span>
             <button
               type="button"
@@ -264,10 +269,10 @@ function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: Re
 function LoadingSkeleton({ note, title }: { note: string; title: string }) {
   return (
     <>
-      <div className="tl-pr-toolbar">
+      <div className="tl-pr-toolbar" data-tauri-drag-region>
         <span className="tl-pr-skel" style={{ width: 250, height: 35 }} />
         <span className="tl-pr-skel" style={{ width: 216, height: 31 }} />
-        <span className="tl-pr-spacer" />
+        <span className="tl-pr-spacer" data-tauri-drag-region />
         <span className="tl-pr-loading-note">
           <span
             style={{

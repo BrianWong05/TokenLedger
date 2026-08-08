@@ -254,6 +254,10 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
 
   return (
     <div className="tl-page tl-page-settings">
+      {/* the window's top strip doubles as its drag handle (frameless window);
+          pinned so scrolled groups never reach the window top, where a drag
+          would select their text instead of moving the window */}
+      <span className="tl-set-dragstrip" aria-hidden="true" data-tauri-drag-region />
       <div className="set-col">
         <section className="set-group">
           <div className="set-group-label">{t('settings.appearance')}</div>

@@ -59,6 +59,11 @@ describe('PricingPage', () => {
     expect(cells).toEqual(['$15.00', '$75.00', '$1.50', '$18.75']);
   });
 
+  it('pins a window-drag toolbar at the window top so dragging never selects rows', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    expect(c.querySelector('.tl-pr-toolbar')?.hasAttribute('data-tauri-drag-region')).toBe(true);
+  });
+
   it('renders pi Model ownership with the lowercase label and official mark', async () => {
     const pricing = makeFakePricing([{
       model: 'pi-response-model',

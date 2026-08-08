@@ -126,6 +126,11 @@ describe('SettingsPage', () => {
     expect(text).toContain('Nothing leaves this computer.');
   });
 
+  it('keeps a pinned window-drag strip at the window top', async () => {
+    const c = await mount(makeFakeSettings({ firstRunDone: true }));
+    expect(c.querySelector('.tl-set-dragstrip')?.hasAttribute('data-tauri-drag-region')).toBe(true);
+  });
+
   it('renders the Scanning group and persists the auto-refresh interval', async () => {
     localStorage.removeItem(STORAGE_KEY);
     const port = makeFakeSettings({ firstRunDone: true });

@@ -26,8 +26,24 @@
 
 .tl-page-settings {
   display: flex;
-  justify-content: center;
-  padding: 26px 24px 30px;
+  flex-direction: column;
+  align-items: center;
+  /* the top padding lives on the pinned drag strip so it sits flush at the
+     window top */
+  padding: 0 24px 30px;
+}
+
+/* the window's top strip is its drag handle (frameless window); pinned so
+   scrolled groups never reach the window top, where a drag would select
+   their text instead of moving the window */
+.tl-set-dragstrip {
+  align-self: stretch;
+  flex: none;
+  height: 26px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-app);
 }
 
 .set-col {

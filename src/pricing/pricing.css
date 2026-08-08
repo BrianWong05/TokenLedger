@@ -36,7 +36,9 @@
 }
 
 .tl-page-pricing {
-  padding: 18px 22px 30px;
+  /* the top padding lives on the pinned toolbar so it sits flush at the
+     window top and doubles as the window-drag strip */
+  padding: 0 22px 30px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -46,10 +48,21 @@
 
 /* ---- toolbar ---- */
 .tl-pr-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10; /* above the scrolling card, below the override editor backdrop (20) */
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  /* full-bleed: the page owns the side padding, but the pinned bar must cover
+     the whole main area so scrolled rows never slip past its edges */
+  margin: 0 -22px;
+  padding: 14px 22px;
+  border-bottom: 1px solid var(--border-subtle);
+  /* the Overview toolbar's opaque stack, so scrolled content never shows
+     through the pinned bar */
+  background: linear-gradient(180deg, var(--bg-hover), transparent), var(--bg-app);
 }
 .tl-pr-search {
   display: flex;
