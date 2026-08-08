@@ -47,7 +47,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 
 const scanWith = (errs: [string, string | null][]): ScanStatus => ({
   scannedAt: 0,
-  sources: errs.map(([source, error]) => ({ source, eventsInserted: 0, linesSkipped: 0, error })),
+  sources: errs.map(([source, error]) => ({ source, eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error })),
 });
 
 // refresh() then flush the initial (delay-0) reload cycle.
@@ -126,7 +126,7 @@ describe('overviewStore refresh / scan', () => {
 
     ledger.data.scan = {
       scannedAt: 0,
-      sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, error: null }],
+      sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     await store.refresh();
     clock.advance(0);
@@ -346,7 +346,7 @@ describe('overviewStore first-load vs later series failure', () => {
     // Scan must report an ingest: an idle rescan would skip the fetch entirely.
     ledger.data.scan = {
       scannedAt: 0,
-      sources: [{ source: 'claude', eventsInserted: 1, linesSkipped: 0, error: null }],
+      sources: [{ source: 'claude', eventsInserted: 1, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     ledger.failNext('series', 'sboom2');
     await store.refresh();
@@ -387,7 +387,7 @@ describe('overviewStore selection auto-correct', () => {
     ledger.data.dayPoints = [pt({ source: 'goose', totalTokens: 42 })];
     ledger.data.scan = {
       scannedAt: 0,
-      sources: [{ source: 'goose', eventsInserted: 1, linesSkipped: 0, error: null }],
+      sources: [{ source: 'goose', eventsInserted: 1, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     await store.refresh();
     clock.advance(0);

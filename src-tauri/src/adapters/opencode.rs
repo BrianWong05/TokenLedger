@@ -177,6 +177,7 @@ pub fn scan_opencode(
         events_inserted,
         lines_skipped,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
+        ..Default::default()
     }
 }
 

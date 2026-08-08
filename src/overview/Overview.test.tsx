@@ -147,8 +147,8 @@ describe('Overview presentation', () => {
       scan: {
         scannedAt: 1_782_907_202,
         sources: [
-          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, error: null },
-          { source: 'pi', eventsInserted: 3, linesSkipped: 2, error: null },
+          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+          { source: 'pi', eventsInserted: 3, linesSkipped: 2, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
         ],
       },
     });
@@ -459,8 +459,8 @@ describe('Overview presentation', () => {
     const scan: ScanStatus = {
       scannedAt: 0,
       sources: [
-        { source: 'claude', eventsInserted: 412, linesSkipped: 0, error: null },
-        { source: 'codex', eventsInserted: 88, linesSkipped: 2, error: null },
+        { source: 'claude', eventsInserted: 412, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        { source: 'codex', eventsInserted: 88, linesSkipped: 2, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
       ],
     };
     const { container: c } = await mount({
@@ -472,6 +472,76 @@ describe('Overview presentation', () => {
     const foot = c.querySelector('.tt-scan-foot')!.textContent ?? '';
     expect(foot).toContain('claude: 412 in / 0 skipped');
     expect(foot).toContain('codex: 88 in / 2 skipped');
+  });
+
+  // Unreadable Artifacts (ADR-0017): the window's token totals are floors, so
+  // the headline and the affected Source's card carry the same ≥ marker as
+  // Partial Cost, with the per-Source reasons as the marker's hover text.
+  it('marks token totals as floors when a Source holds Unreadable Artifacts', async () => {
+    const scan: ScanStatus = {
+      scannedAt: 0,
+      sources: [
+        { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
+        { source: 'claude', eventsInserted: 412, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+      ],
+    };
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ source: 'claude', totalTokens: 300 }),
+        pt({ source: 'antigravity', totalTokens: 100 }),
+      ],
+      summary,
+      scan,
+    });
+
+    const mark = c.querySelector<HTMLElement>('.tt-b8-total .tt-b8-total-mark')!;
+    expect(mark.textContent).toContain('≥');
+    expect(mark.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
+
+    // The reason is visible text beside the eyebrow (Partial Cost's pattern),
+    // not tooltip-only, and it reaches the screen reader via the aria-label.
+    expect(c.querySelector('.tt-eyebrow')?.textContent).toContain('100 sessions unreadable');
+    expect(c.querySelector('.tt-b8-total')?.getAttribute('aria-label')).toContain(
+      'Antigravity: 100 sessions unreadable',
+    );
+
+    const cards = Array.from(c.querySelectorAll<HTMLButtonElement>('.tt-toolcards button'));
+    const card = (name: string) => cards.find((el) => el.textContent?.includes(name))!;
+    expect(card('Antigravity').textContent).toContain('≥');
+    expect(card('Antigravity').getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
+    expect(card('Claude').textContent).not.toContain('≥');
+    expect(card('Claude').getAttribute('title')).toBeNull();
+
+    expect(c.querySelector('.tt-scan-foot')?.textContent).toContain(
+      'antigravity: 0 in / 0 skipped / 100 unreadable',
+    );
+  });
+
+  // The same scan, viewed through a window that starts after every Unreadable
+  // Artifact's last write, is definitely complete — no marker. Content is
+  // never newer than its file, so only the window's start matters.
+  it('drops the ≥ marker when the window starts after the last unreadable write', async () => {
+    const scan: ScanStatus = {
+      scannedAt: 0,
+      sources: [
+        // mtime far in the past; the day/week/month ranges all start later.
+        { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 100, unreadableMaxMtime: 946_684_800, error: null },
+      ],
+    };
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+      scan,
+    });
+
+    // Default range is total (unbounded start): marked.
+    expect(c.querySelector('.tt-b8-total .tt-b8-total-mark')).not.toBeNull();
+
+    const monthBtn = Array.from(c.querySelectorAll<HTMLButtonElement>('button'))
+      .find((b) => b.textContent === 'Month')!;
+    await act(async () => monthBtn.click());
+    await settle();
+    expect(c.querySelector('.tt-b8-total .tt-b8-total-mark')).toBeNull();
   });
 
   it('renders the last-scan label at the scan wall-clock time (backend sends epoch seconds)', async () => {

@@ -222,7 +222,8 @@ pub fn refresh(app: &AppHandle) {
         ) else {
             return;
         };
-        tray_title(&today, &settings)
+        let floor = tokens_are_floor(&crate::db::load_unreadable(&db), start);
+        tray_title(&today, &settings, floor)
     };
     show_today(&tray, &title);
 }
@@ -335,11 +336,18 @@ fn clamp_or_leave(v: f64, lo: f64, hi: f64) -> f64 {
 /// missing one (queries::summary), so it needs no case of its own here. Cost
 /// follows the glossary: "≥ " marker when Partial (priced total over a set
 /// with Unpriced Models or Unattributed Usage), and a day with usage but no
-/// available Cost shows tokens alone — never $0. ponytail: the bar drops the
-/// missing-Cost wording for space; the menu's per-Source rows (#24) spell it
-/// out.
-fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Settings) -> String {
-    let toks = fmt_tokens(today.total_tokens);
+/// available Cost shows tokens alone — never $0. The token figure carries its
+/// own "≥ " floor marker when an Unreadable Artifact could hold usage in the
+/// window (ADR-0017) — the same rules as everywhere else, per the glossary's
+/// Menu Bar Extra entry. ponytail: the bar drops the missing-Cost wording for
+/// space; the menu's per-Source rows (#24) spell it out.
+fn tray_title(
+    today: &crate::queries::Summary,
+    settings: &crate::settings::Settings,
+    tokens_floor: bool,
+) -> String {
+    let floor_mark = if tokens_floor { "≥ " } else { "" };
+    let toks = format!("{floor_mark}{}", fmt_tokens(today.total_tokens));
     match today.cost {
         None => toks,
         Some(c) => {
@@ -347,6 +355,19 @@ fn tray_title(today: &crate::queries::Summary, settings: &crate::settings::Setti
             format!("{toks} · {marker}{cost}", cost = fmt_cost(c, settings))
         }
     }
+}
+
+/// A token figure is a floor when any Source holds an Unreadable Artifact
+/// whose content could fall in the window. Content is never newer than its
+/// file, so `mtime >= window start` is the test — nothing bounds the content's
+/// age downward (Antigravity's migration rewrote old Sessions as new files) —
+/// and an unknown mtime marks conservatively. Mirror of unreadableSourcesIn
+/// in src/lib/tokenCompleteness.ts; keep the two shapes in step.
+fn tokens_are_floor(unreadable: &[crate::types::SourceUnreadable], window_start: i64) -> bool {
+    unreadable.iter().any(|u| {
+        u.artifacts_unreadable > 0
+            && u.unreadable_max_mtime.is_none_or(|m| m >= window_start)
+    })
 }
 
 /// The Linux menu's Today row: the bar title, prefixed — a menu row, unlike a
@@ -459,11 +480,11 @@ mod tests {
     #[test]
     fn no_usage_day_reads_zero_in_the_display_currency() {
         assert_eq!(
-            tray_title(&sum(0, Some(0.0), false), &Settings::default()),
+            tray_title(&sum(0, Some(0.0), false), &Settings::default(), false),
             "0 · $0.00"
         );
         assert_eq!(
-            tray_title(&sum(0, Some(0.0), false), &currency("JPY", 155.0)),
+            tray_title(&sum(0, Some(0.0), false), &currency("JPY", 155.0), false),
             "0 · ¥0"
         );
     }
@@ -471,7 +492,7 @@ mod tests {
     #[test]
     fn plain_day_shows_tokens_and_cost() {
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(12.84), false), &Settings::default()),
+            tray_title(&sum(3_400_000, Some(12.84), false), &Settings::default(), false),
             "3.4M · $12.84"
         );
     }
@@ -479,9 +500,46 @@ mod tests {
     #[test]
     fn partial_cost_carries_the_marker() {
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default()),
+            tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default(), false),
             "3.4M · ≥ $12.80"
         );
+    }
+
+    // The token figure carries its own ≥ (ADR-0017): an Unreadable Artifact
+    // makes the count a floor, independently of whether the Cost is Partial.
+    #[test]
+    fn unreadable_artifacts_mark_the_token_figure() {
+        assert_eq!(
+            tray_title(&sum(3_400_000, Some(12.84), false), &Settings::default(), true),
+            "≥ 3.4M · $12.84"
+        );
+        assert_eq!(
+            tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default(), true),
+            "≥ 3.4M · ≥ $12.80"
+        );
+    }
+
+    fn unreadable(count: u64, max_mtime: Option<i64>) -> crate::types::SourceUnreadable {
+        crate::types::SourceUnreadable {
+            source: "antigravity".to_string(),
+            artifacts_unreadable: count,
+            unreadable_max_mtime: max_mtime,
+        }
+    }
+
+    // mtime is the only honest bound: content is never newer than its file,
+    // and nothing bounds it downward (Antigravity's migration rewrote old
+    // Sessions as new files). So only a window starting after every
+    // Unreadable Artifact's last write is definitely complete — and an
+    // unknown mtime marks conservatively.
+    #[test]
+    fn tokens_are_floor_tests_mtime_against_window_start() {
+        assert!(tokens_are_floor(&[unreadable(100, Some(1_000))], 1_000));
+        assert!(tokens_are_floor(&[unreadable(100, Some(1_001))], 1_000));
+        assert!(!tokens_are_floor(&[unreadable(100, Some(999))], 1_000));
+        assert!(tokens_are_floor(&[unreadable(100, None)], 1_000));
+        assert!(!tokens_are_floor(&[unreadable(0, None)], 0));
+        assert!(!tokens_are_floor(&[], 0));
     }
 
     #[test]
@@ -489,7 +547,7 @@ mod tests {
         let mut today = sum(3_400_000, Some(12.8), false);
         today.unattributed_tokens = 400;
         assert_eq!(
-            tray_title(&today, &Settings::default()),
+            tray_title(&today, &Settings::default(), false),
             "3.4M · ≥ $12.80"
         );
     }
@@ -499,7 +557,7 @@ mod tests {
         let mut today = sum(964_200, None, false);
         today.unattributed_tokens = 964_200;
         assert_eq!(
-            tray_title(&today, &Settings::default()),
+            tray_title(&today, &Settings::default(), false),
             "964.2K"
         );
     }
@@ -515,7 +573,7 @@ mod tests {
     #[test]
     fn display_currency_multiplies_and_uses_its_symbol() {
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(10.0), false), &currency("HKD", 7.8)),
+            tray_title(&sum(3_400_000, Some(10.0), false), &currency("HKD", 7.8), false),
             "3.4M · HK$78.00"
         );
     }
@@ -523,7 +581,7 @@ mod tests {
     #[test]
     fn zero_decimal_currency_drops_the_cents() {
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(1.0), false), &currency("JPY", 155.0)),
+            tray_title(&sum(3_400_000, Some(1.0), false), &currency("JPY", 155.0), false),
             "3.4M · ¥155"
         );
     }
@@ -531,11 +589,11 @@ mod tests {
     #[test]
     fn large_amounts_group_thousands_like_the_frontend() {
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(200.0), false), &currency("HKD", 7.8)),
+            tray_title(&sum(3_400_000, Some(200.0), false), &currency("HKD", 7.8), false),
             "3.4M · HK$1,560.00"
         );
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(12345.6), false), &Settings::default()),
+            tray_title(&sum(3_400_000, Some(12345.6), false), &Settings::default(), false),
             "3.4M · $12,345.60"
         );
     }
@@ -543,7 +601,7 @@ mod tests {
     #[test]
     fn unmapped_currency_falls_back_to_amount_code() {
         assert_eq!(
-            tray_title(&sum(3_400_000, Some(2.0), false), &currency("SEK", 10.5)),
+            tray_title(&sum(3_400_000, Some(2.0), false), &currency("SEK", 10.5), false),
             "3.4M · 21.00 SEK"
         );
     }
@@ -551,7 +609,7 @@ mod tests {
     #[test]
     fn all_unpriced_day_shows_tokens_alone_never_zero_dollars() {
         assert_eq!(
-            tray_title(&sum(964_200, None, true), &Settings::default()),
+            tray_title(&sum(964_200, None, true), &Settings::default(), false),
             "964.2K"
         );
     }
@@ -560,7 +618,7 @@ mod tests {
     // decimals trimmed, plain digits under 1K.
     #[test]
     fn token_totals_use_the_frontend_compact_form() {
-        let t = |n| tray_title(&sum(n, None, false), &Settings::default());
+        let t = |n| tray_title(&sum(n, None, false), &Settings::default(), false);
         assert_eq!(t(999_999), "1M");
         assert_eq!(t(847), "847");
         assert_eq!(t(1_912_345_678), "1.91B");

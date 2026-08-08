@@ -37,6 +37,8 @@ import {
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
+import { parseLocalDate } from '../lib/dateRange';
+import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import type {
   Filters,
   ScanStatus,
@@ -386,6 +388,9 @@ export interface OverviewView {
   tool: SourceMeta;
   headline: { total: number; summaryReady: boolean };
   canOpenCostBreakdown: boolean;
+  // Sources whose Unreadable Artifacts could hold usage in this window
+  // (ADR-0017) — every token total shown for the window is a floor.
+  unreadable: SourceStatus[];
 }
 
 // The 365-day heatmap grid depends only on the full series. Callers MUST
@@ -417,6 +422,11 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
   );
   const toolTotals = toolTotalsOfPoints(rpts);
   const ctx = ctxTotals(rpts, s.selected);
+  const win = windowOf(s.range, s.from, s.to, now);
+  const unreadable = unreadableSourcesIn(
+    s.scanSources,
+    win.fromIso ? Math.floor(parseLocalDate(win.fromIso).getTime() / 1000) : null,
+  );
   const selBuckets = s.ctxBuckets.find((b) => b.source === s.selected) ?? null;
   const selToolRows = s.ctxToolRows.filter((r) => r.source === s.selected);
   return {
@@ -447,5 +457,6 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     tool: sourceMeta(s.selected),
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
+    unreadable,
   };
 }

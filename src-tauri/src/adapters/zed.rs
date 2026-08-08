@@ -88,6 +88,7 @@ pub fn scan_zed(conn: &mut Connection, databases: &[PathBuf]) -> SourceScanResul
         events_inserted,
         lines_skipped,
         error: (!warnings.is_empty()).then(|| warnings.join("; ")),
+        ..Default::default()
     }
 }
 

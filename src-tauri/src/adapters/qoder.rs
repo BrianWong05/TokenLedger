@@ -165,7 +165,7 @@ fn scan_qoder_database(conn: &mut Connection, database: &Path) -> SourceScanResu
     SourceScanResult {
         events_inserted,
         lines_skipped: scan.lines_skipped,
-        error: None,
+        ..Default::default()
     }
 }
 

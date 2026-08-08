@@ -1,10 +1,12 @@
 # Antigravity Source evidence
 
-Status as of 2026-08-08: the Antigravity adapter reads the SQLite Session
+Status as of 2026-08-09: the Antigravity adapter reads the SQLite Session
 databases (`.db`) of both the IDE and the CLI, verified against real
-databases from one genuine macOS installation (detailed below). The encrypted `.pb` Session files are
-evidence-blocked: they cannot be read passively, so their tokens never reach
-the Ledger. This is a missing-Artifact limitation, not a parser gap.
+databases from one genuine macOS installation (detailed below). The encrypted
+`.pb` Session files are Unreadable Artifacts (ADR-0017): they cannot be read
+passively, so their tokens never reach the Ledger — the evidence is withheld,
+not misparsed — and the adapter counts them so every affected token total
+reads as a "≥" floor rather than passing for complete.
 
 ## Supported shape: `<uuid>.db`
 
@@ -52,13 +54,17 @@ may hold more readable `.db` Sessions:
   Artifacts and never runs the Source's programs.
 
 The `.pb` shape reopens only if Antigravity publishes the scheme or writes a
-passively readable usage Artifact. Until then the adapter skips `.pb` files
-silently. That deviates from ADR-0015's rule that an existing unsupported
-Artifact emits a Source-specific warning; the deviation is deliberate and
-recorded here rather than papered over: `.pb` is not a malformed instance of
-a supported shape but a permanently rejected Artifact class — present on
-every scan and unparseable offline without violating ADR-0013 — so a repeated
-warning would be noise with no remedy.
+passively readable usage Artifact. Until then the adapter treats `.pb` files
+as Unreadable Artifacts (ADR-0017): never warned, but counted. The no-warning
+half stands on the reasoning first recorded here: `.pb` is not a malformed
+instance of a supported shape but a permanently rejected Artifact class —
+present on every scan and unparseable offline without violating ADR-0013 —
+so a repeated warning would be noise with no remedy. That argument defeats
+the warning, which requests an action that does not exist; it never reached
+the numbers. A completeness marker asks nothing, and without one a Source
+with a hundred unreadable Sessions and a Source read in full look alike — so
+the adapter reports the `.pb` count and latest mtime, and every token total
+whose window that content could fall in carries the "≥" marker.
 
 ## Synthetic coverage
 
@@ -66,4 +72,5 @@ The committed tests cover generation decoding with workspace and per-
 generation timestamps, wire-alias resolution and era-based `gemini-default`
 mapping, responseId deduplication, zero-row skipping, unchanged-rescan and
 growth-rescan idempotency, parser-version bump re-parsing, multi-root IDE +
-CLI scanning, `.pb` files ignored, and missing roots staying quiet.
+CLI scanning, `.pb` files counted as Unreadable Artifacts (count and latest
+mtime, no warning), and missing roots staying quiet.

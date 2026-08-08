@@ -16,7 +16,8 @@ import { RangeSegments } from './RangePicker';
 import type { SourceMeta } from './meta';
 import { sourceIcon } from './icons';
 import { fmtPct, formatCompactTokenTotal } from '../lib/format';
-import { formatSummaryCost, useOverviewT } from './localize';
+import { countLabel, formatSummaryCost, unreadableReasons, useOverviewT } from './localize';
+import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
@@ -104,9 +105,20 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
-    summary, modelRows, canOpenCostBreakdown, headline,
+    summary, modelRows, canOpenCostBreakdown, headline, unreadable,
     panels,
   } = useOverview(ports);
+
+  // The ≥ reason (ADR-0017): which Sources hold Unreadable Artifacts whose
+  // content could fall in this window — visible count beside the eyebrow,
+  // per-Source detail as hover text on the marked figures.
+  const unreadableTitle = unreadableReasons(unreadable, lang);
+  const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
+  const unreadableKeys = new Set(unreadable.map((u) => u.source));
+  const cardUnreadableTitle = (key: string) => {
+    const u = unreadable.find((s) => s.source === key);
+    return u ? unreadableReasons([u], lang) : undefined;
+  };
 
   // Stable identity so the memoized ModelsList skips per-tick re-renders.
   const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
@@ -179,8 +191,15 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
       {/* HERO: totals + proportion bar + per-source cards */}
       <div className="tt-hero">
         <div className="tt-hero-head">
-          <div className="tt-eyebrow">{t('overview.totalTokens')} · {rangeLabel}</div>
-          <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} />
+          <div className="tt-eyebrow">
+            {t('overview.totalTokens')} · {rangeLabel}
+            {unreadableCount > 0 && (
+              <span className="tt-b8-cost-mark" title={unreadableTitle}>
+                {' · '}{countLabel(unreadableCount, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}
+              </span>
+            )}
+          </div>
+          <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} incomplete={unreadableTitle || null} />
           {canOpenCostBreakdown ? (
             <button
               ref={setCostBreakdownFocusTarget}
@@ -217,6 +236,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 className={'tt-toolcard' + (active ? ' active' : '')}
                 onClick={() => setSel(tl.key)}
                 style={active ? { borderColor: tl.color, background: tl.color + '14' } : undefined}
+                title={cardUnreadableTitle(tl.key)}
               >
                 <div className="lbl">
                   <SourceIcon tool={tl} />
@@ -225,7 +245,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 <div className="num">
                   {/* the space is load-bearing: flex trims it visually, but it keeps
                       the two figures from reading as one number to a screen reader */}
-                  {formatCompactTokenTotal(toolTotals[tl.key], 3)} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
+                  {unreadableKeys.has(tl.key) ? '≥ ' : ''}{formatCompactTokenTotal(toolTotals[tl.key], 3)} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
                 </div>
                 {tl.nModels > 0 && (
                   <div className="sub">
@@ -278,6 +298,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               {i > 0 && <span className="sep">·</span>}
               <span>
                 {s.source}: {s.eventsInserted} {t('overview.scanIn')} / {s.linesSkipped} {t('overview.scanSkipped')}
+                {s.artifactsUnreadable > 0 && ` / ${s.artifactsUnreadable} ${t('overview.scanUnreadable')}`}
               </span>
             </Fragment>
           ))}
@@ -297,6 +318,10 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
         <HeatmapModal
           days={panels.heatmap.days}
           summary={heatSummary}
+          unreadableTitle={unreadableReasons(
+            unreadableSourcesIn(scanSources, heatFilters().startTs ?? null),
+            lang,
+          )}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />
@@ -306,6 +331,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
           allPoints={allPoints}
           firstIso={firstIso}
           lastIso={lastIso}
+          unreadable={unreadableSourcesIn(scanSources, null)}
           initialRange={range}
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}

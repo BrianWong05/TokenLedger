@@ -163,6 +163,19 @@ fn last_scan(state: State<'_, AppState>) -> i64 {
     state.last_scan.load(Ordering::Relaxed)
 }
 
+/// Sources currently holding Unreadable Artifacts (ADR-0017), from the
+/// persisted per-scan state — no rescan, and honest from launch because the
+/// answer survives restarts. The traypanel reads this to put the ≥ floor
+/// marker on its own window's token figure.
+#[tauri::command]
+fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadable> {
+    state
+        .db
+        .lock()
+        .map(|db| db::load_unreadable(&db))
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 fn summary(state: State<'_, AppState>, filters: Filters) -> Result<Summary, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -476,6 +489,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             scan,
             last_scan,
+            unreadable_artifacts,
             summary,
             trend,
             series,

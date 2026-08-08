@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import type { SeriesPoint, Summary } from '../types';
+import type { SeriesPoint, SourceUnreadable, Summary } from '../types';
+import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import { bucketCsv, bucketFilters, csvFilename, hourlyDayOf, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
 import { orderedSourceKeys, sourceMeta, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
@@ -13,6 +14,7 @@ import {
   PER_UNIT_KEY,
   RANGE_LONG_KEY,
   SEL_HEADING_KEY,
+  unreadableReasons,
   useOverviewT,
 } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
@@ -52,6 +54,7 @@ export default function TrendModal({
   allPoints,
   firstIso,
   lastIso,
+  unreadable = [],
   initialRange,
   initialCustomFrom,
   initialCustomTo,
@@ -63,6 +66,9 @@ export default function TrendModal({
   allPoints: SeriesPoint[]; // the full unbounded daily series
   firstIso: string;
   lastIso: string;
+  // Sources holding Unreadable Artifacts (ADR-0017), unfiltered — the dialog
+  // applies the floor rule to its own window and to the inspected bucket.
+  unreadable?: SourceUnreadable[];
   initialRange: Range8b;
   initialCustomFrom: string;
   initialCustomTo: string;
@@ -194,6 +200,21 @@ export default function TrendModal({
       () => {},
     );
   }, [selKey, per, ledger]);
+
+  // The floor rule (ADR-0017) against the dialog's own window and against the
+  // inspected bucket: a figure is marked when unreadable content could fall in
+  // it, i.e. its start precedes some Unreadable Artifact's last write. Empty
+  // string = complete; non-empty doubles as the ≥ marker's hover reason.
+  const windowUnreadableTitle = unreadableReasons(
+    unreadableSourcesIn(unreadable, rangeToFilters(range, from, to).startTs ?? null),
+    lang,
+  );
+  const selUnreadableTitle = selKey
+    ? unreadableReasons(
+        unreadableSourcesIn(unreadable, bucketFilters(selKey, per).startTs ?? null),
+        lang,
+      )
+    : '';
 
   // Inspector read-outs for the selected bucket.
   const selRank = selBucket ? 1 + data.filter((b) => b.total > selBucket.total).length : 0;
@@ -369,8 +390,8 @@ export default function TrendModal({
 
             <div className="tt-trend-modal-foot">
               <div className="tt-trend-modal-stats">
-                <div className="stat">
-                  <b>{fmtTok(total)}</b>
+                <div className="stat" title={windowUnreadableTitle || undefined}>
+                  <b>{windowUnreadableTitle && '≥ '}{fmtTok(total)}</b>
                   <span>{t('overview.total')} · {rangeLabel}</span>
                 </div>
                 <div className="stat">
@@ -411,8 +432,8 @@ export default function TrendModal({
                   </div>
                   <span className="rank">#{selRank} / {data.length}</span>
                 </div>
-                <div className="tt-trend-insp-tok">
-                  <span className="val">{fmtTok(selTotal)}</span>
+                <div className="tt-trend-insp-tok" title={selUnreadableTitle || undefined}>
+                  <span className="val">{selUnreadableTitle && '≥ '}{fmtTok(selTotal)}</span>
                   <span className="unit">{t('overview.tokens')}</span>
                 </div>
                 <div className={'tt-trend-insp-delta ' + (selDeltaPct >= 0 ? 'up' : 'down')}>

@@ -93,6 +93,7 @@ pub fn scan_goose(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceSca
         events_inserted,
         lines_skipped,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
+        ..Default::default()
     }
 }
 

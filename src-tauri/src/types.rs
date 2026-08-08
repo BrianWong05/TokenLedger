@@ -60,6 +60,13 @@ pub struct SourceSessionMeta {
 pub struct SourceScanResult {
     pub events_inserted: u64,
     pub lines_skipped: u64,
+    /// Unreadable Artifacts seen this scan (ADR-0017): present but permanently
+    /// unparseable without violating ADR-0013, so counted — never warned — and
+    /// the count marks token totals as floors.
+    pub artifacts_unreadable: u64,
+    /// Latest mtime among them, epoch seconds. Content is never newer than its
+    /// file, so a window is definitely complete iff this precedes its start.
+    pub unreadable_max_mtime: Option<i64>,
     pub error: Option<String>,
 }
 
@@ -72,7 +79,27 @@ pub struct SourceStatus {
     pub events_inserted: u64,
     #[ts(type = "number")]
     pub lines_skipped: u64,
+    #[ts(type = "number")]
+    pub artifacts_unreadable: u64,
+    #[ts(type = "number | null")]
+    pub unreadable_max_mtime: Option<i64>,
     pub error: Option<String>,
+}
+
+/// One Source's persisted Unreadable-Artifact state (ADR-0017), written by
+/// every scan and read back for the ≥ floor marker — from the DB rather than
+/// scan memory, so the Menu Bar Extra is honest from launch, before this
+/// run's first scan lands. Field names mirror SourceStatus so the frontend
+/// rule (src/lib/tokenCompleteness.ts) reads both shapes.
+#[derive(Debug, Serialize, Clone, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct SourceUnreadable {
+    pub source: String,
+    #[ts(type = "number")]
+    pub artifacts_unreadable: u64,
+    #[ts(type = "number | null")]
+    pub unreadable_max_mtime: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Clone, TS)]

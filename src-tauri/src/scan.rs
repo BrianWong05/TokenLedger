@@ -466,12 +466,16 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
             source: source.to_string(),
             events_inserted: r.events_inserted,
             lines_skipped: r.lines_skipped,
+            artifacts_unreadable: r.artifacts_unreadable,
+            unreadable_max_mtime: r.unreadable_max_mtime,
             error: r.error,
         },
         Err(_) => SourceStatus {
             source: source.to_string(),
             events_inserted: 0,
             lines_skipped: 0,
+            artifacts_unreadable: 0,
+            unreadable_max_mtime: None,
             error: Some("adapter panicked".to_string()),
         },
     }
@@ -531,6 +535,8 @@ fn run_scan_sources(
                     source: source.key.clone(),
                     events_inserted: 0,
                     lines_skipped: 0,
+                    artifacts_unreadable: 0,
+                    unreadable_max_mtime: None,
                     error: Some("unsupported source catalog entry".to_string()),
                 },
             },
@@ -541,6 +547,11 @@ fn run_scan_sources(
     // Ledger hygiene only: drops scanned_files rows for vanished paths.
     // Never deletes events (see prune_missing_files contract). Best-effort.
     let _ = prune_missing_files(conn);
+
+    // Persist every Source's Unreadable-Artifact state (ADR-0017) so the ≥
+    // floor marker is honest from launch, before a run's first scan.
+    // Best-effort, like the pruning above.
+    let _ = crate::db::record_unreadable(conn, &sources);
 
     let scanned_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -558,6 +569,8 @@ fn unavailable_source_status(source: &str, error: String) -> SourceStatus {
         source: source.to_string(),
         events_inserted: 0,
         lines_skipped: 0,
+        artifacts_unreadable: 0,
+        unreadable_max_mtime: None,
         error: Some(error),
     }
 }

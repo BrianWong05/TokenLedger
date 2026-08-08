@@ -83,7 +83,7 @@ pub fn scan_kilo(conn: &mut Connection, database: &Path) -> SourceScanResult {
     SourceScanResult {
         events_inserted,
         lines_skipped: scan.lines_skipped,
-        error: None,
+        ..Default::default()
     }
 }
 

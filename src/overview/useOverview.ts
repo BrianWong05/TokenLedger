@@ -134,6 +134,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     modelRows: snap.modelRows,
     canOpenCostBreakdown: view.canOpenCostBreakdown,
     headline: view.headline,
+    unreadable: view.unreadable,
     panels: {
       heatmap: { days },
       profile,
