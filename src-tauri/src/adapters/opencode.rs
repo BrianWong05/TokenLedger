@@ -12,6 +12,78 @@ use crate::types::UsageEvent;
 
 const SOURCE: &str = "opencode";
 
+/// OpenCode's Antigravity plugin exposes Google Antigravity's models under
+/// `antigravity-…` prefixed names — internal routing aliases that match no
+/// catalog row (CONTEXT.md §Model: an alias names no model and would price
+/// against nothing). Translate to the underlying real Model so price
+/// resolution succeeds, mirroring Qoder's `qmodel_38max` → `qwen3.8-max`
+/// step in `adapters::qoder`.
+///
+/// Two shapes appear in the wild:
+/// - `-thinking-{level}` for the plugin's thinking-budget Claude Models
+///   (e.g. `antigravity-claude-sonnet-4-5-thinking-high`).
+/// - bare variant suffixes for the Gemini picker: `-minimal/-low/-medium/-high`
+///   on Gemini 3 Flash and `-low/-high` on Gemini 3 Pro
+///   (e.g. `antigravity-gemini-3-flash-medium`).
+///
+/// All variants resolve to the same base catalog row today — Antigravity's
+/// pricing is a flat per-model figure, not per-variant. Unknown aliases pass
+/// through untouched so a renamed Model surfaces in the Pricing tab as
+/// Unpriced rather than silently mis-pricing against a guessed catalog row
+/// (the rename signal defined in `adapters::antigravity::resolve_model`).
+///
+/// Target names are bare Model ids (not `gemini/`-prefixed): the same way
+/// Qoder books `qwen3.8-max`, so OpenCode's booking joins Gemini CLI's and
+/// Antigravity's for the same Model, and a user Override keyed on
+/// the bare name matches (the Override tier matches exact raw names).
+/// Resolution still lands on the direct-API publisher rate: the `gemini/`
+/// catalog key normalizes to this bare name and outranks the Vertex spelling
+/// under ADR-0009, so the merged row carries the Gemini rate.
+///
+/// Known divergence: `adapters::antigravity::resolve_model` resolves its own
+/// `gemini-3-flash-a/-b` wire aliases to `gemini-3.5-flash` (the Antigravity
+/// IDE's "3-flash" line is really 3.5 Flash), while this OpenCode surface —
+/// a different plugin and API path — maps to `gemini-3-flash-preview` per the
+/// plugin's documented transformation. The user approved the latter; the
+/// divergence is deliberate and re-checked if Antigravity renames the line.
+fn translate_antigravity(raw: &str) -> String {
+    let Some(stripped) = raw.strip_prefix("antigravity-") else {
+        return raw.to_string();
+    };
+    match split_antigravity_variant(stripped) {
+        "gemini-3-pro" | "gemini-3-pro-preview" => "gemini-3-pro-preview",
+        "gemini-3-flash" | "gemini-3-flash-preview" => "gemini-3-flash-preview",
+        "claude-sonnet-4-5" => "claude-sonnet-4-5",
+        "claude-opus-4-5" => "claude-opus-4-5",
+        // Unknown alias — return the RAW name so it stays visible in the
+        // Pricing tab as Unpriced (the rename signal).
+        _ => return raw.to_string(),
+    }
+    .to_string()
+}
+
+/// Strip the variant suffix off an `antigravity-…` body, returning the base
+/// Model name. Prefers the `-thinking-{level}` form before any plain
+/// `{level}` suffix so `claude-sonnet-4-5-thinking-low` reads as a thinking
+/// variant of sonnet rather than a bare `-low` Gemini variant. The plain
+/// suffixes are mutually exclusive, so their order does not change the
+/// result — the array is sorted longest-first only to keep the check
+/// obvious.
+fn split_antigravity_variant(stripped: &str) -> &str {
+    if let Some(idx) = stripped.find("-thinking-") {
+        return &stripped[..idx];
+    }
+    if let Some(base) = stripped.strip_suffix("-thinking") {
+        return base;
+    }
+    for level in ["-minimal", "-medium", "-high", "-max", "-low"] {
+        if let Some(base) = stripped.strip_suffix(level) {
+            return base;
+        }
+    }
+    stripped
+}
+
 #[derive(Default)]
 struct OpencodeScan {
     events: Vec<UsageEvent>,
@@ -453,7 +525,21 @@ impl SessionTotals {
             if let Some(event) = totals.event(booking) {
                 events.push(event);
             }
-            return (events, vec![split_dedup_glob(session_id)]);
+            // Supersession must include the BARE session key alongside the GLOB:
+            // single-model events live at `opencode:session:<sid>` (no `:*`)
+            // and the GLOB `opencode:session:<sid>:*` requires the trailing `:`
+            // to match — verified in SQLite GLOB semantics. Without the bare
+            // pattern, a re-scan whose new shape lands on the bare key (e.g.
+            // the alias translation rewrites `antigravity-…` to its real
+            // Model id) does NOT delete the old Record, and `INSERT_SQL`'s
+            // ON CONFLICT skips the `model` column on conflict (it's
+            // `Immutable`), so the Record's model name never updates and stays
+            // permanently Unpriced. Mirroring the multi-model branch makes
+            // both directions symmetric.
+            return (
+                events,
+                vec![session_dedup_key(session_id), split_dedup_glob(session_id)],
+            );
         }
         for (model, totals) in &self.groups {
             let timestamp = totals
@@ -570,7 +656,10 @@ fn parse_message(value: &Value) -> ParsedMessage {
         .get("modelID")
         .and_then(Value::as_str)
         .filter(|model| !model.is_empty())
-        .map(str::to_string);
+        .map(str::to_string)
+        // Antigravity Plugin logs `antigravity-…` routing aliases — translate
+        // to the underlying real Model so pricing catalogs can resolve them.
+        .map(|model| translate_antigravity(&model));
     let snapshot = UsageSnapshot {
         input,
         output,
@@ -630,6 +719,259 @@ mod tests {
     use tempfile::tempdir;
 
     type EventRow = (String, i64, Option<String>, i64, i64, i64, i64, String);
+
+    #[test]
+    fn translate_antigravity_resolves_known_aliases_and_their_variants() {
+        // Bare ids (the Qoder precedent, CONTEXT.md §Model: raw name is
+        // displayed); the bare-name rationale is in the function doc.
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-3-pro"),
+            "gemini-3-pro-preview"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-3-pro-preview"),
+            "gemini-3-pro-preview"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-3-pro-low"),
+            "gemini-3-pro-preview"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-3-pro-high"),
+            "gemini-3-pro-preview"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-3-flash"),
+            "gemini-3-flash-preview"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-3-flash-preview"),
+            "gemini-3-flash-preview"
+        );
+        // Bare Gemini variant levels all collapse to the same base.
+        for variant in ["minimal", "low", "medium", "high"] {
+            assert_eq!(
+                translate_antigravity(&format!("antigravity-gemini-3-flash-{variant}")),
+                "gemini-3-flash-preview",
+                "gemini-3-flash variant `{variant}` must resolve to the base Model"
+            );
+        }
+        assert_eq!(
+            translate_antigravity("antigravity-claude-sonnet-4-5"),
+            "claude-sonnet-4-5"
+        );
+        // -thinking alone and -thinking-{level} all share one catalog row.
+        assert_eq!(
+            translate_antigravity("antigravity-claude-sonnet-4-5-thinking"),
+            "claude-sonnet-4-5"
+        );
+        for variant in ["low", "medium", "high", "max"] {
+            assert_eq!(
+                translate_antigravity(&format!(
+                    "antigravity-claude-sonnet-4-5-thinking-{variant}"
+                )),
+                "claude-sonnet-4-5",
+                "sonnet-4-5 thinking variant `{variant}` must resolve to base Model"
+            );
+        }
+        // Opus has no non-thinking surface; -thinking is the only form.
+        assert_eq!(
+            translate_antigravity("antigravity-claude-opus-4-5-thinking-low"),
+            "claude-opus-4-5"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-claude-opus-4-5-thinking-high"),
+            "claude-opus-4-5"
+        );
+    }
+
+    #[test]
+    fn translate_antigravity_passes_non_antigravity_models_through() {
+        // Real model ids without the alias prefix must not be rewritten —
+        // OpenCode also logs Anthropic / OpenAI / Z.ai model ids directly.
+        for raw in [
+            "claude-sonnet-4-5",
+            "gpt-5.2",
+            "zai/glm-4.7",
+            "glm-4.7-free",
+            "opencode/big-pickle",
+            "antigravity", // prefix with a trailing hyphen stripped below
+        ] {
+            assert_eq!(translate_antigravity(raw), raw, "must not rewrite `{raw}`");
+        }
+        // The prefix `antigravity-` requires the trailing `-`; a bare
+        // `antigravity` token is not an alias and stays untouched.
+        assert_eq!(
+            translate_antigravity("antigravity"),
+            "antigravity",
+            "bare `antigravity` is not an alias — leave it for catalog to resolve"
+        );
+    }
+
+    #[test]
+    fn translate_antigravity_leaves_unknown_aliases_raw_for_unpriced_signal() {
+        // A future Antigravity Model (e.g. `antigravity-gemini-4`) lands here
+        // until the mapping is updated; the Pricing tab then surfaces it as
+        // Unpriced, mirroring `adapters::antigravity::resolve_model`'s
+        // pass-through contract.
+        assert_eq!(
+            translate_antigravity("antigravity-gemini-4"),
+            "antigravity-gemini-4",
+            "unknown alias must pass through so the rename signal stays visible"
+        );
+        assert_eq!(
+            translate_antigravity("antigravity-claude-opus-5-thinking-max"),
+            "antigravity-claude-opus-5-thinking-max",
+            "an Opus-class future alias must not silently map to a wrong base"
+        );
+    }
+
+    #[test]
+    fn parse_message_translates_antigravity_alias_on_ingest() {
+        // The translator is invoked inside parse_message — confirm end to end
+        // that an Antigravity-shaped message produces a UsageEvent carrying the
+        // canonical catalog key, not the routing alias.
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{
+                "role": "assistant",
+                "modelID": "antigravity-gemini-3-pro-low",
+                "tokens": {"input": 10, "output": 4, "cache": {"read": 1, "write": 0}}
+            }"#,
+        )
+        .unwrap();
+        let parsed = parse_message(&value);
+        let snapshot = match parsed {
+            ParsedMessage::Usage(s) => s,
+            _ => panic!("expected Usage message, got a non-usage variant"),
+        };
+        assert_eq!(
+            snapshot.model.as_deref(),
+            Some("gemini-3-pro-preview"),
+            "parse_message must translate the alias before booking"
+        );
+        assert_eq!(snapshot.input, 10);
+        assert_eq!(snapshot.output, 4);
+        assert_eq!(snapshot.cache_read, 1);
+        assert_eq!(snapshot.cache_write, 0);
+
+        // A plain non-Antigravity model id is not rewritten.
+        let plain: serde_json::Value = serde_json::from_str(
+            r#"{
+                "role": "assistant",
+                "modelID": "claude-sonnet-4-5",
+                "tokens": {"input": 1, "output": 2, "cache": {"read": 0, "write": 0}}
+            }"#,
+        )
+        .unwrap();
+        let parsed_plain = match parse_message(&plain) {
+            ParsedMessage::Usage(s) => s,
+            _ => panic!("plain model must parse as Usage"),
+        };
+        assert_eq!(parsed_plain.model.as_deref(), Some("claude-sonnet-4-5"));
+    }
+
+    #[test]
+    fn single_model_session_supersession_clears_the_bare_dedup_key() {
+        // Regression test for the asymmetry fixed by adding
+        // `session_dedup_key(session_id)` to the single-model supersession
+        // list (see the comment on that branch in `events()`). A stale
+        // single-model Record — e.g. an Antigravity alias translation
+        // flipping the model column — must be deleted and re-inserted,
+        // never left in the Ledger under its old name.
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let db_path = data_root.join("opencode.db");
+        create_database(&db_path);
+        {
+            let db = Connection::open(&db_path).unwrap();
+            insert_session(&db, "alias-switch", "/private/alias", 1_780_000_400_000);
+            insert_message(
+                &db,
+                "m1",
+                "alias-switch",
+                r#"{"role":"assistant","modelID":"future-unknown-alias","tokens":{"input":12,"output":5,"cache":{"read":0,"write":0}}}"#,
+            );
+            insert_message(
+                &db,
+                "m2",
+                "alias-switch",
+                r#"{"role":"assistant","modelID":"future-unknown-alias","tokens":{"input":3,"output":1,"cache":{"read":0,"write":0}}}"#,
+            );
+        }
+
+        let ledger_path = tmp.path().join("ledger.db");
+        let mut ledger = crate::db::open_db(&ledger_path).unwrap();
+        // First scan — model id is unknown so it lands Unpriced in the
+        // catalog and the Ledger Record carries the raw alias name.
+        let first = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert_eq!(first.events_inserted, 1);
+        let first_row = ledger
+            .query_row(
+                "SELECT dedup_key, model FROM events WHERE session_id='alias-switch'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap();
+        let (first_key, first_model) = first_row;
+        assert_eq!(
+            first_key, "opencode:session:alias-switch",
+            "single-model Session lands at the bare dedup_key (no `:*`)"
+        );
+        assert_eq!(first_model.as_deref(), Some("future-unknown-alias"));
+
+        // A new catalog revision (or, in our real-world scenario, the
+        // translator's mapping being extended) renames the underlying
+        // model: simulate the user side rewriting the message JSON.
+        {
+            let db = Connection::open(&db_path).unwrap();
+            db.execute(
+                "UPDATE message SET data = ?1 WHERE id = 'm1'",
+                params![r#"{"role":"assistant","modelID":"proper-model-name","tokens":{"input":12,"output":5,"cache":{"read":0,"write":0}}}"#],
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE message SET data = ?1 WHERE id = 'm2'",
+                params![r#"{"role":"assistant","modelID":"proper-model-name","tokens":{"input":3,"output":1,"cache":{"read":0,"write":0}}}"#],
+            )
+            .unwrap();
+        }
+
+        let second = scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert!(
+            second.error.is_none(),
+            "re-scan must not report an error: {:?}",
+            second.error
+        );
+        // The bare key is still the right identity for this single-model
+        // Session — translate the model id and reuse the key. The Record's
+        // model column must move to the new name; nothing about the
+        // pre-fix bug (a stale Unpriced Record surviving because the GLOB
+        // missed the bare key) may remain.
+        let n: i64 = ledger
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE session_id='alias-switch'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "exactly one Record per single-model Session");
+        let second_row = ledger
+            .query_row(
+                "SELECT dedup_key, model FROM events WHERE session_id='alias-switch'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .unwrap();
+        let (second_key, second_model) = second_row;
+        assert_eq!(second_key, first_key, "single-Model key is stable");
+        assert_eq!(
+            second_model.as_deref(),
+            Some("proper-model-name"),
+            "the model column must be rewritten by the supersession \
+             re-scan — a stale Record would leave it Unpriced forever"
+        );
+    }
 
     fn create_database(path: &Path) {
         let db = Connection::open(path).unwrap();
