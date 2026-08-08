@@ -531,12 +531,13 @@ describe('Usage-trend Enlarge', () => {
     expect(models.querySelector('.head')!.textContent).toContain('By model');
     expect(models.querySelector('.head')!.textContent).toContain('All time');
     // Window-wide aggregation: m1 = 200 + 300 across both days, not one
-    // bucket's share; eight models fold to top-6 + "2 more models".
+    // bucket's share; eight models fold to top-5 + "3 more models" (tighter
+    // than the inspector's top-6, so the section stays short).
     const rows = models.querySelectorAll('.tt-trend-insp-row');
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(6);
     expect(rows[0].textContent).toContain('m1');
     expect(rows[0].textContent).toContain('500');
-    expect(models.querySelector('.tt-trend-insp-row.more')!.textContent).toContain('2 more models');
+    expect(models.querySelector('.tt-trend-insp-row.more')!.textContent).toContain('3 more models');
   });
 
   it('labels a window model produced by two Sources with both names', async () => {

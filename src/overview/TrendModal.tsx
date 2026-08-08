@@ -226,24 +226,26 @@ export default function TrendModal({
       : per === 'month'
         ? `${monthShortL(parseInt(b.key.slice(5, 7), 10) - 1, lang)} ${b.key.slice(0, 4)}`
         : fmtIsoDateL(b.key, lang);
-  // Top-6 models, largest first; the rest fold into one muted remainder row
-  // (color '' → grey). Shared by the bucket read-out in the inspector and the
-  // window-scoped breakdown under the footer stats.
+  // Top-N models, largest first; the rest fold into one muted remainder row
+  // (color '' → grey). Shared by the bucket read-out in the inspector (top-6)
+  // and the window-scoped breakdown under the footer stats (top-5, so the
+  // section stays short and the chart keeps its height on small windows).
   type InspRow = { key: string; name: string; source?: string; val: number; color: string; more: boolean };
   const buildRows = (
     byModel: Record<string, number>,
     modelSources: Record<string, string[]> | undefined,
     unattributedTokens: number,
+    top: number,
   ): InspRow[] => {
     const rows: InspRow[] = [];
     const ranked = rankedModels(byModel);
-    for (const [m, v] of ranked.slice(0, 6)) {
+    for (const [m, v] of ranked.slice(0, top)) {
       // Owner resolved from THIS record: a Model name shared by two Sources
       // would otherwise take whichever the window-wide map happened to pick.
       const owner = modelOwner(modelSources, modelTool, m);
       rows.push({ key: m, name: m, source: owner.label, val: v, color: owner.color, more: false });
     }
-    const rest = ranked.slice(6);
+    const rest = ranked.slice(top);
     if (rest.length) {
       rows.push({
         key: '__more__',
@@ -265,7 +267,7 @@ export default function TrendModal({
     return rows;
   };
   const selRows: InspRow[] = selBucket
-    ? buildRows(selBucket.byModel, selBucket.modelSources, selBucket.unattributedTokens)
+    ? buildRows(selBucket.byModel, selBucket.modelSources, selBucket.unattributedTokens, 6)
     : [];
   // The whole window's model split, aggregated across its buckets (byModel
   // summed; modelSources unioned so a Model name two Sources share reads
@@ -284,7 +286,7 @@ export default function TrendModal({
     }
     return { byModel, modelSources, unattributedTokens };
   }, [data]);
-  const winRows: InspRow[] = buildRows(win.byModel, win.modelSources, win.unattributedTokens);
+  const winRows: InspRow[] = buildRows(win.byModel, win.modelSources, win.unattributedTokens, 5);
   const selTotal = selBucket?.total ?? 0;
   // WebKit can't resolve var() in an SVG stroke; pick the outline per theme.
   const outline = colors === CHART_LIGHT ? '#12151b' : '#e8ecf4';
