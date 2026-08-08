@@ -10,6 +10,7 @@ import {
   toolTotalsOfPoints,
   seriesToDays,
   rangeToFilters,
+  hourlyDayOf,
   trendSlice,
   smallMultiples,
   catTotals,
@@ -305,26 +306,31 @@ class Store implements OverviewStore {
     const s = this.state;
     const d = this.derive(this.clock.now());
     // State can't change between schedule and fire without rescheduling, so
-    // capturing filters/isDay here is equivalent to computing them at fire.
+    // capturing filters/hourDay here is equivalent to computing them at fire.
     const filters = rangeToFilters(s.range, d.from, d.to);
-    const isDay = s.range === 'day';
+    const hourDay = hourlyDayOf(s.range, d.from, d.to, d.firstIso, d.lastIso, this.clock.now());
     const delay = s.range === 'custom' ? 250 : 0;
     this.reloadTimer = this.clock.setTimeout(() => {
       this.reloadTimer = null;
-      this.runReload(epoch, filters, isDay);
+      this.runReload(epoch, filters, hourDay);
     }, delay);
   }
 
   // All jobs land as ONE patch/publish: eight individual landings would
   // re-render the dashboard eight times per reload (visible as a long-task
   // burst every refresh tick).
-  private runReload(epoch: number, filters: Filters, isDay: boolean) {
+  private runReload(epoch: number, filters: Filters, hourDay: string | null) {
     const land = (fn: () => void) => {
       if (epoch === this.epoch) fn();
     };
     const L = this.ledger;
-    if (!isDay && this.state.hourPoints.length) {
-      this.patch({ hourPoints: [] }); // leaving Day: drop the hourly series
+    // hourPoints describe exactly one day. Drop them when the window stops being
+    // hourly OR moves to a different day: their keys would miss every bucket of
+    // the new window, painting 24 empty bars — permanently, if this reload then
+    // fails. A same-day refresh keeps them, so a background tick never blinks.
+    const held = this.state.hourPoints[0]?.bucket.slice(0, 10) ?? null;
+    if (this.state.hourPoints.length && held !== hourDay) {
+      this.patch({ hourPoints: [] });
     }
     Promise.all([
       L.summary(filters),
@@ -334,7 +340,7 @@ class Store implements OverviewStore {
       L.ctxBuckets(filters),
       L.ctxTools(filters),
       L.ctxExec(filters),
-      isDay ? L.series(filters, 'hour') : null,
+      hourDay ? L.series(filters, 'hour') : null,
     ])
       .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxExecRows, hour]) =>
         land(() =>

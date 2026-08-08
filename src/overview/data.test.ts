@@ -6,6 +6,8 @@ import {
   heatStats,
   heatFilters,
   windowOf,
+  granularityOf,
+  hourlyDayOf,
   pointsIn,
   bucketsFromPoints,
   smallMultiples,
@@ -237,6 +239,28 @@ describe('windowOf + pointsIn', () => {
   it('custom = inclusive bounds', () => {
     const win = windowOf('custom', '2026-05-01', '2026-07-04', TODAY);
     expect(pointsIn(pts, win)).toHaveLength(2);
+  });
+});
+
+describe('granularityOf', () => {
+  // The presets carry no case of their own, so their spans are pinned here:
+  // Day 1 -> hour, Week 7 and Month 30 -> day.
+  it('steps hour -> day -> week -> month at the span boundaries', () => {
+    expect([1, 2, 7, 30, 31].map(granularityOf)).toEqual(['hour', 'day', 'day', 'day', 'day']);
+    expect([32, 120].map(granularityOf)).toEqual(['week', 'week']);
+    expect(granularityOf(121)).toBe('month');
+  });
+});
+
+describe('hourlyDayOf', () => {
+  it('names the day for the Day preset and any one-day custom range, null once it widens', () => {
+    const now = new Date(2026, 6, 16);
+    const first = '2026-01-01';
+    const last = '2026-07-16';
+    expect(hourlyDayOf('day', '', '', first, last, now)).toBe('2026-07-16');
+    expect(hourlyDayOf('custom', '2026-07-10', '2026-07-10', first, last, now)).toBe('2026-07-10');
+    expect(hourlyDayOf('custom', '2026-07-09', '2026-07-10', first, last, now)).toBeNull();
+    expect(hourlyDayOf('week', '', '', first, last, now)).toBeNull();
   });
 });
 

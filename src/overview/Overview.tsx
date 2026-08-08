@@ -32,7 +32,7 @@ import type { ModelPricing, Summary } from '../types';
 // "App · Overview", rebuilt to the dashboard-v2 design and wired to the real
 // Ledger through useOverview(): one unbounded daily series powers
 // heatmap/trends/tables via client-side slicing; summary and breakdowns re-fetch
-// per range; an hourly series serves the Day view. All data derivation lives in
+// per range; an hourly series serves any single-day window. All data derivation lives in
 // the store/selectors — this shell only renders the model the hook hands back,
 // plus two on-open fetches it owns directly: the Pricing list for the Override
 // editor and the year-window Summary for the Activity enlarge.

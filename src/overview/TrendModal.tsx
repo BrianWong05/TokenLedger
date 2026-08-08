@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, Summary } from '../types';
-import { bucketCsv, bucketFilters, csvFilename, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
+import { bucketCsv, bucketFilters, csvFilename, hourlyDayOf, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
 import { orderedSourceKeys, sourceMeta, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
@@ -98,14 +98,15 @@ export default function TrendModal({
   const to = customTo || lastIso;
 
   // Per-window fetches the dialog owns: a Summary for the footer Cost, and the
-  // hourly series a Day window needs (the page only holds it while itself on
-  // Day). Epoch-guarded so a stale response from a superseded window can't land.
+  // hourly series a single-day window needs (the page only holds it while it is
+  // itself on one). Epoch-guarded so a stale response can't land on a new window.
   const [summary, setSummary] = useState<Summary | null>(null);
   const [hourPoints, setHourPoints] = useState<SeriesPoint[]>([]);
   const fetchEpoch = useRef(0);
   useEffect(() => {
     const epoch = ++fetchEpoch.current;
     setSummary(null);
+    setHourPoints([]); // the old window's hours key off its own day — never this one's
     const filters = rangeToFilters(range, from, to);
     ledger.summary(filters).then(
       (s) => {
@@ -113,7 +114,7 @@ export default function TrendModal({
       },
       () => {},
     );
-    if (range === 'day') {
+    if (hourlyDayOf(range, from, to, firstIso, lastIso)) {
       ledger.series(filters, 'hour').then(
         (pts) => {
           if (fetchEpoch.current === epoch) setHourPoints(pts);
@@ -121,7 +122,7 @@ export default function TrendModal({
         () => {},
       );
     }
-  }, [range, from, to, ledger]);
+  }, [range, from, to, firstIso, lastIso, ledger]);
 
   const override: Exclude<Granularity, 'hour'> | undefined = barInterval === 'auto' ? undefined : barInterval;
   const { trend: data, per, modelTool, total } = useMemo(

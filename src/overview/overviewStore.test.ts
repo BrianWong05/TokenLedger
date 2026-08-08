@@ -235,7 +235,10 @@ describe('overviewStore reload orchestration', () => {
 
   it('Day range fetches the hourly series; leaving Day clears hourPoints', async () => {
     const clock = fakeClock();
-    const ledger = makeFakeLedger({ hourPoints: [pt({ bucket: '2026-07-16 09:00' })] });
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+      hourPoints: [pt({ bucket: '2026-07-16 09:00' })],
+    });
     const store = await boot(ledger, clock);
     expect(store.getSnapshot().hourPoints).toHaveLength(0);
 
@@ -249,6 +252,73 @@ describe('overviewStore reload orchestration', () => {
     clock.advance(0);
     await flush();
     expect(store.getSnapshot().hourPoints).toHaveLength(0);
+  });
+
+  // A custom range covering one day buckets by hour, so it needs the same
+  // hourly series the Day preset does.
+  it('a single-day custom range fetches the hourly series; widening it drops them', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+      hourPoints: [pt({ bucket: '2026-07-16 09:00' })],
+    });
+    const store = await boot(ledger, clock);
+
+    store.setRange('custom');
+    store.setCustomRange('2026-07-16', '2026-07-16');
+    clock.advance(300);
+    await flush();
+    expect(store.getSnapshot().hourPoints).toHaveLength(1);
+
+    store.setCustomRange('2026-07-15', '2026-07-16');
+    clock.advance(300);
+    await flush();
+    expect(store.getSnapshot().hourPoints).toHaveLength(0);
+  });
+
+  // Both windows are hourly, so nothing "leaves hourly" — but the held series
+  // describes the old day, and its keys miss every bucket of the new one.
+  it('drops one day of hours when a single-day window moves to another day', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+      hourPoints: [pt({ bucket: '2026-07-16 09:00' })],
+    });
+    const store = await boot(ledger, clock);
+
+    store.setRange('custom');
+    store.setCustomRange('2026-07-16', '2026-07-16');
+    clock.advance(300);
+    await flush();
+    expect(store.getSnapshot().hourPoints).toHaveLength(1);
+
+    // The new day's fetch never lands: the stale day must still be gone, or a
+    // failed reload would leave the chart painting 24 empty bars for good.
+    ledger.failNext('series', 'kaboom');
+    store.setCustomRange('2026-07-15', '2026-07-15');
+    clock.advance(300);
+    await flush();
+    expect(store.getSnapshot().hourPoints).toHaveLength(0);
+  });
+
+  // A background scan tick re-reloads the same window; the bars must not blink.
+  it('keeps the held hours when the window has not moved', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+      hourPoints: [pt({ bucket: '2026-07-16 09:00' })],
+    });
+    const store = await boot(ledger, clock);
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    expect(store.getSnapshot().hourPoints).toHaveLength(1);
+
+    const held = store.getSnapshot().hourPoints;
+    ledger.emitPricesRebuilt();
+    clock.advance(0);
+    await flush();
+    expect(store.getSnapshot().hourPoints).toBe(held);
   });
 });
 

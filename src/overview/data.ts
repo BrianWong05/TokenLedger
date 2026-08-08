@@ -420,12 +420,41 @@ export function bucketCsv(bucket: Bucket, modelTool: Record<string, string>): st
 
 export type Granularity = 'hour' | 'day' | 'week' | 'month';
 
-// Adaptive granularity: hourly for a single day, daily up to a month,
-// weekly up to ~a quarter, monthly beyond.
-export function granularityOf(range: Range8b, spanDays: number): Granularity {
-  if (range === 'day') return 'hour';
-  if (range === 'week' || range === 'month') return 'day';
-  return spanDays <= 31 ? 'day' : spanDays <= 120 ? 'week' : 'month';
+// Adaptive granularity: hourly for a single day, daily up to a month, weekly up
+// to ~a quarter, monthly beyond. The span decides alone — the presets need no
+// case of their own, since Day spans 1, Week 7 and Month 30 land here anyway.
+export function granularityOf(spanDays: number): Granularity {
+  return spanDays === 1 ? 'hour' : spanDays <= 31 ? 'day' : spanDays <= 120 ? 'week' : 'month';
+}
+
+// A range resolved to what the trend actually draws: the slicing window, the
+// closed day bounds it zero-fills between (open ends fall back to the Ledger's
+// own extent), and the bucket size that fits them. THE one place the automatic
+// granularity rule runs — everything downstream reads the answer from here.
+interface WindowFit {
+  win: Window;      // for slicing points: open bounds stay open
+  fromIso: string;  // closed bounds, for zero-filling and hourly identity
+  toIso: string;
+  per: Granularity;
+}
+
+function windowFit(
+  range: Range8b, from: string, to: string, firstIso: string, lastIso: string, now: Date,
+): WindowFit {
+  const win = windowOf(range, from, to, now);
+  const fromIso = win.fromIso ?? firstIso;
+  const toIso = win.toIso ?? lastIso;
+  return { win, fromIso, toIso, per: granularityOf(calendarSpan(fromIso, toIso)) };
+}
+
+// The local day a window buckets by hour, or null when it buckets coarser, so
+// hourPoints get fetched exactly when the bars need them — and naming the day
+// lets a holder tell an hourly series describing THIS window from a leftover.
+export function hourlyDayOf(
+  range: Range8b, from: string, to: string, firstIso: string, lastIso: string, now: Date = new Date(),
+): string | null {
+  const { fromIso, per } = windowFit(range, from, to, firstIso, lastIso, now);
+  return per === 'hour' ? fromIso : null;
 }
 
 function weekKey(iso: string): string {
@@ -535,8 +564,8 @@ export interface TrendSlice {
 // only matter for a custom range (windowOf ignores them for presets).
 // `override` pins the bucket size in place of the automatic fit (the enlarge's
 // interval selector); callers wanting the automatic rule pass nothing. Hour is
-// excluded by type — hourly bucketing exists only via the automatic Day-window
-// rule, which is also the only path with hourly data.
+// excluded by type — hourly bucketing exists only via windowFit's single-day
+// rule, which hourlyDayOf reads too, so hourPoints are there when it fires.
 export function trendSlice(
   allPoints: SeriesPoint[],
   hourPoints: SeriesPoint[],
@@ -549,11 +578,9 @@ export function trendSlice(
   lang: Lang = 'en',
   override?: Exclude<Granularity, 'hour'>,
 ): TrendSlice {
-  const win = windowOf(range, from, to, now);
+  const { win, fromIso: winFrom, toIso: winTo, per: fit } = windowFit(range, from, to, firstIso, lastIso, now);
   const rpts = pointsIn(allPoints, win);
-  const winFrom = win.fromIso ?? firstIso;
-  const winTo = win.toIso ?? lastIso;
-  const per = override ?? granularityOf(range, calendarSpan(winFrom, winTo));
+  const per = override ?? fit;
   const trend =
     per === 'hour'
       ? bucketsFromPoints(hourPoints, 'hour', winFrom, winTo, lang)
