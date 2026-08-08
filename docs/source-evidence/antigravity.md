@@ -1,8 +1,8 @@
 # Antigravity Source evidence
 
 Status as of 2026-08-08: the Antigravity adapter reads the SQLite Session
-databases (`.db`) of both the IDE and the CLI, verified against this
-machine's real databases. The encrypted `.pb` Session files are
+databases (`.db`) of both the IDE and the CLI, verified against real
+databases from one genuine macOS installation (detailed below). The encrypted `.pb` Session files are
 evidence-blocked: they cannot be read passively, so their tokens never reach
 the Ledger. This is a missing-Artifact limitation, not a parser gap.
 
@@ -26,9 +26,11 @@ Model ids at parse time; see `resolve_model` in the adapter.
 
 ## Blocked shape: `<uuid>.pb`
 
-Investigated 2026-08-08 against this machine's genuine installation, where
-the IDE migrated every Session to encrypted `.pb` (2026-05-20) and the
-`conversations/` directory holds 100 `.pb` files against a single `.db`:
+Investigated 2026-08-08 against one genuine macOS installation, where the
+IDE migrated every Session to encrypted `.pb` (2026-05-20) and the
+`conversations/` directory holds 100 `.pb` files against a single `.db`.
+The `.db`/`.pb` mix varies by machine and migration date, so other installs
+may hold more readable `.db` Sessions:
 
 - Whole-file ciphertext: byte entropy ≈ 8.0 from offset zero, no common
   header across files, no plaintext protobuf anywhere.

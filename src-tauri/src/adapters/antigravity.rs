@@ -9,8 +9,8 @@
 //
 // Each `gen_metadata` row is one generation (one API call) encoded as a
 // protobuf blob. There is no published .proto; field numbers below follow
-// tokscale's reverse engineering (verified against this machine's real
-// databases: output #9 + thinking #10 = the API's total output):
+// tokscale's reverse engineering (verified against real databases from a
+// genuine install: output #9 + thinking #10 = the API's total output):
 //
 //   gen_metadata.#1 (chatModel)
 //     .#19 (string)             → model id (e.g. "gemini-3-flash-a")
