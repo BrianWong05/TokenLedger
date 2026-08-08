@@ -31,8 +31,9 @@ import { RangeSegments } from './RangePicker';
 // figures and Est. cost all describe the dialog's local window — buckets from
 // the shared trendSlice (its own hourly fetch for a Day window), Cost from a
 // per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
-// enlarge). Exactly one bucket is always selected — the window's peak until a
-// bar is hovered — and the right-hand inspector reads it out (rank, delta vs
+// enlarge). The window's own per-Model split sits under the footer stats it
+// belongs with. Exactly one bucket is always selected — the window's peak until
+// a bar is hovered — and the right-hand inspector reads it out (rank, delta vs
 // the window average, per-model split). The inspector's per-bucket Cost and CSV
 // export land in later slices.
 
@@ -62,7 +63,6 @@ export default function TrendModal({
   exporter,
   returnFocusRef,
   onClose,
-  prototypeVariant,
 }: {
   allPoints: SeriesPoint[]; // the full unbounded daily series
   firstIso: string;
@@ -77,14 +77,6 @@ export default function TrendModal({
   exporter: ExportPort;
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
-  // PROTOTYPE (throwaway) — window-scoped model-breakdown placement round.
-  // Only the demo-trend.html entry passes this; production never does, so the
-  // default renders exactly today's behaviour. Delete after the round:
-  //   A — second "By model · window" section below the bucket inspector
-  //   B — inspector reads the window at rest, the bucket while hovering
-  //   C — the by-model rows become window-scoped; the rest stays per-bucket
-  //   D — window top models under the chart's footer stats, main column
-  prototypeVariant?: 'A' | 'B' | 'C' | 'D';
 }) {
   const { t, lang } = useOverviewT();
   const { settings } = useSettings();
@@ -184,8 +176,6 @@ export default function TrendModal({
   // key if it survives.
   const winId = `${range}|${from}|${to}|${per}`;
   const [sel, setSel] = useState<{ win: string; key: string } | null>(null);
-  // PROTOTYPE: variant B tells "mouse on a bar" apart from the sticky selection.
-  const [hovering, setHovering] = useState(false);
   const peak = data.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
   const activeKey = sel && sel.win === winId ? sel.key : null;
   const selBucket = data.find((b) => b.key === activeKey) ?? peak;
@@ -237,8 +227,8 @@ export default function TrendModal({
         ? `${monthShortL(parseInt(b.key.slice(5, 7), 10) - 1, lang)} ${b.key.slice(0, 4)}`
         : fmtIsoDateL(b.key, lang);
   // Top-6 models, largest first; the rest fold into one muted remainder row
-  // (color '' → grey). Shared by the bucket read-out and — PROTOTYPE — the
-  // window-scoped breakdown the placement candidates show.
+  // (color '' → grey). Shared by the bucket read-out in the inspector and the
+  // window-scoped breakdown under the footer stats.
   type InspRow = { key: string; name: string; source?: string; val: number; color: string; more: boolean };
   const buildRows = (
     byModel: Record<string, number>,
@@ -277,8 +267,8 @@ export default function TrendModal({
   const selRows: InspRow[] = selBucket
     ? buildRows(selBucket.byModel, selBucket.modelSources, selBucket.unattributedTokens)
     : [];
-  // PROTOTYPE: the whole window's model split, aggregated across its buckets
-  // (byModel summed; modelSources unioned so a shared Model name reads
+  // The whole window's model split, aggregated across its buckets (byModel
+  // summed; modelSources unioned so a Model name two Sources share reads
   // 'Codex + pi' rather than claiming one Source).
   const win = useMemo(() => {
     const byModel: Record<string, number> = {};
@@ -294,15 +284,10 @@ export default function TrendModal({
     }
     return { byModel, modelSources, unattributedTokens };
   }, [data]);
-  const winRows: InspRow[] = prototypeVariant
-    ? buildRows(win.byModel, win.modelSources, win.unattributedTokens)
-    : [];
+  const winRows: InspRow[] = buildRows(win.byModel, win.modelSources, win.unattributedTokens);
   const selTotal = selBucket?.total ?? 0;
   // WebKit can't resolve var() in an SVG stroke; pick the outline per theme.
   const outline = colors === CHART_LIGHT ? '#12151b' : '#e8ecf4';
-  // PROTOTYPE: variant B at rest describes the window, so no single bar is
-  // emphasised until the mouse is actually on one.
-  const atRestB = prototypeVariant === 'B' && !hovering;
 
   const rowEl = (r: InspRow, base: number) => (
     <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
@@ -395,7 +380,7 @@ export default function TrendModal({
         <div className="tt-trend-modal-body">
           <div className="tt-trend-modal-main">
             <div className="tt-trend-modal-chart">
-              <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }} onMouseLeave={() => setHovering(false)}>
+              <svg viewBox={`0 0 ${VW} ${VH}`} preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', display: 'block' }}>
                 {grid.map((g, i) => (
                   <g key={i}>
                     <line x1={PL} y1={g.y} x2={VW - PR} y2={g.y} stroke={colors.grid} strokeWidth={1} />
@@ -408,7 +393,7 @@ export default function TrendModal({
                   const x = PL + i * slot + (slot - barW) / 2;
                   let y = BASE;
                   return (
-                    <g key={i} opacity={atRestB || selIndex === i ? 1 : 0.42} style={{ transition: 'opacity .15s' }}>
+                    <g key={i} opacity={selIndex === i ? 1 : 0.42} style={{ transition: 'opacity .15s' }}>
                       {segsOf(b).map((s) => {
                         const seg = h(s.val);
                         y -= seg;
@@ -417,7 +402,7 @@ export default function TrendModal({
                     </g>
                   );
                 })}
-                {selIndex >= 0 && !atRestB && (
+                {selIndex >= 0 && (
                   <rect
                     x={PL + selIndex * slot + (slot - barW) / 2 - 2.5}
                     y={BASE - h(selTotal) - 2.5}
@@ -441,7 +426,7 @@ export default function TrendModal({
                 {data.map((b, i) => {
                   const bh = h(b.total);
                   return (
-                    <rect key={'hit' + i} x={PL + i * slot + (slot - barW) / 2} y={BASE - bh} width={barW} height={bh} fill="transparent" onMouseOver={() => { setSel({ win: winId, key: b.key }); setHovering(true); }} />
+                    <rect key={'hit' + i} x={PL + i * slot + (slot - barW) / 2} y={BASE - bh} width={barW} height={bh} fill="transparent" onMouseOver={() => setSel({ win: winId, key: b.key })} />
                   );
                 })}
               </svg>
@@ -479,46 +464,18 @@ export default function TrendModal({
                 ))}
               </div>
             </div>
-            {prototypeVariant === 'D' && (
-              // PROTOTYPE variant D: the window's top models under the footer
-              // stats, spanning the main column as a grid. Inline styles stand
-              // in for the aside-scoped .eyebrow; real impl would add a class.
-              <div style={{ padding: '0 28px 20px' }}>
-                <div style={{ fontSize: 10, fontWeight: 650, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
-                  {t('overview.trend.byModel')} · {rangeLabel}
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '12px 28px', marginTop: 10 }}>
-                  {winRows.map((r) => rowEl(r, total))}
-                </div>
+            {winRows.length > 0 && (
+              // The window's own model split, under the footer stats it
+              // describes — the inspector on the right stays per-bucket.
+              <div className="tt-trend-models">
+                <div className="head">{t('overview.trend.byModel')} · {rangeLabel}</div>
+                <div className="grid">{winRows.map((r) => rowEl(r, total))}</div>
               </div>
             )}
           </div>
 
           <aside className="tt-trend-insp">
-            {atRestB && (
-              // PROTOTYPE variant B: at rest the inspector reads the whole
-              // window; hovering a bar swaps in that bucket, mouse-out reverts.
-              <>
-                <div className="tt-trend-insp-head">
-                  <div>
-                    <div className="eyebrow">Selected period</div>
-                    <div className="date">{rangeLabel}</div>
-                  </div>
-                </div>
-                <div className="tt-trend-insp-tok" title={windowUnreadableTitle || undefined}>
-                  <span className="val">{windowUnreadableTitle && '≥ '}{fmtTok(total)}</span>
-                  <span className="unit">{t('overview.tokens')}</span>
-                </div>
-                <div className="tt-trend-insp-div" />
-                <div className="eyebrow">{t('overview.trend.byModel')}</div>
-                {rowsList(winRows, total)}
-                <div className="tt-trend-insp-cost">
-                  <span>{t('overview.estCost')}</span>
-                  <span className="amt">{costLabel}</span>
-                </div>
-              </>
-            )}
-            {!atRestB && selBucket && (
+            {selBucket && (
               <>
                 <div className="tt-trend-insp-head">
                   <div>
@@ -535,14 +492,8 @@ export default function TrendModal({
                   {selDeltaPct >= 0 ? '+' : '−'}{Math.abs(selDeltaPct)}% {t('overview.trend.vsAvg')}
                 </div>
                 <div className="tt-trend-insp-div" />
-                {/* PROTOTYPE variant C: the rows describe the window, the rest
-                    of the inspector stays per-bucket. */}
-                <div className="eyebrow">
-                  {prototypeVariant === 'C'
-                    ? <>{t('overview.trend.byModel')} · {rangeLabel}</>
-                    : t('overview.trend.byModel')}
-                </div>
-                {prototypeVariant === 'C' ? rowsList(winRows, total) : rowsList(selRows, selTotal)}
+                <div className="eyebrow">{t('overview.trend.byModel')}</div>
+                {rowsList(selRows, selTotal)}
                 <div className="tt-trend-insp-cost">
                   <span>{t('overview.estCost')}</span>
                   <span className="amt">
@@ -575,15 +526,6 @@ export default function TrendModal({
                   </svg>
                   {t('overview.trend.exportCsv')}
                 </button>
-              </>
-            )}
-            {prototypeVariant === 'A' && (
-              // PROTOTYPE variant A: the window's breakdown as a second
-              // section below the untouched bucket inspector.
-              <>
-                <div className="tt-trend-insp-div" />
-                <div className="eyebrow">{t('overview.trend.byModel')} · {rangeLabel}</div>
-                {rowsList(winRows, total)}
               </>
             )}
           </aside>

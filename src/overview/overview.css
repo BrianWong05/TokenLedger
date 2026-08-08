@@ -1857,7 +1857,25 @@
   color: var(--text-tertiary);
 }
 
-/* pinned bucket inspector (design 1b) */
+/* window model breakdown under the footer stats (main column) */
+.tt-trend-models {
+  padding: 0 28px 22px;
+}
+.tt-trend-models .head {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.tt-trend-models .grid {
+  display: grid;
+  /* columns collapse as the dialog narrows, so rows keep room for full
+     model names instead of crowding three abreast */
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px 28px;
+  margin-top: 10px;
+}
 .tt-trend-insp {
   width: 320px;
   flex: none;
