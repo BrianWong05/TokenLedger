@@ -229,7 +229,7 @@
       "label": "Qoder",
       "source": "Qoder",
       "aliases": ["Qoder IDE", "Qoder CLI", "Qoder CN"],
-      "color": "#22d3ee",
+      "color": "#2ADB5C",
       "icon": "qoder",
       "artifacts": [
         { "id": "db-cn-macos", "kind": "file", "path": "Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
