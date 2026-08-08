@@ -13,12 +13,13 @@ import type { Filters, SeriesPoint, Summary } from './types';
 import './index.css';
 import './overview/overview.css';
 
-type Variant = 'A' | 'B' | 'C';
-const VARIANTS: Variant[] = ['A', 'B', 'C'];
+type Variant = 'A' | 'B' | 'C' | 'D';
+const VARIANTS: Variant[] = ['A', 'B', 'C', 'D'];
 const VARIANT_NAME: Record<Variant, string> = {
   A: 'Section below inspector',
   B: 'Window at rest, bucket on hover',
   C: 'Replace bucket by-model rows',
+  D: 'Under the chart footer',
 };
 
 // ---- seed data: ~30 days across two Sources, screenshot-like hourly today ----

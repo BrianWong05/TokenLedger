@@ -83,7 +83,8 @@ export default function TrendModal({
   //   A — second "By model · window" section below the bucket inspector
   //   B — inspector reads the window at rest, the bucket while hovering
   //   C — the by-model rows become window-scoped; the rest stays per-bucket
-  prototypeVariant?: 'A' | 'B' | 'C';
+  //   D — window top models under the chart's footer stats, main column
+  prototypeVariant?: 'A' | 'B' | 'C' | 'D';
 }) {
   const { t, lang } = useOverviewT();
   const { settings } = useSettings();
@@ -303,25 +304,26 @@ export default function TrendModal({
   // emphasised until the mouse is actually on one.
   const atRestB = prototypeVariant === 'B' && !hovering;
 
+  const rowEl = (r: InspRow, base: number) => (
+    <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
+      <div className="lab">
+        <span className="dot" style={r.more ? undefined : { background: r.color }} />
+        <span className="name">
+          {r.name}
+          {r.source && <em className="src">{r.source}</em>}
+        </span>
+        <span className="num">
+          {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (base || 1))}</span>
+        </span>
+      </div>
+      <div className="track">
+        <div className="fill" style={{ width: (r.val / (base || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
+      </div>
+    </div>
+  );
   const rowsList = (rows: InspRow[], base: number) => (
     <div className="tt-trend-insp-rows">
-      {rows.map((r) => (
-        <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
-          <div className="lab">
-            <span className="dot" style={r.more ? undefined : { background: r.color }} />
-            <span className="name">
-              {r.name}
-              {r.source && <em className="src">{r.source}</em>}
-            </span>
-            <span className="num">
-              {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (base || 1))}</span>
-            </span>
-          </div>
-          <div className="track">
-            <div className="fill" style={{ width: (r.val / (base || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
-          </div>
-        </div>
-      ))}
+      {rows.map((r) => rowEl(r, base))}
       {rows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
     </div>
   );
@@ -477,6 +479,19 @@ export default function TrendModal({
                 ))}
               </div>
             </div>
+            {prototypeVariant === 'D' && (
+              // PROTOTYPE variant D: the window's top models under the footer
+              // stats, spanning the main column as a grid. Inline styles stand
+              // in for the aside-scoped .eyebrow; real impl would add a class.
+              <div style={{ padding: '0 28px 20px' }}>
+                <div style={{ fontSize: 10, fontWeight: 650, letterSpacing: '0.09em', textTransform: 'uppercase', color: 'var(--text-tertiary)' }}>
+                  {t('overview.trend.byModel')} · {rangeLabel}
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '12px 28px', marginTop: 10 }}>
+                  {winRows.map((r) => rowEl(r, total))}
+                </div>
+              </div>
+            )}
           </div>
 
           <aside className="tt-trend-insp">
