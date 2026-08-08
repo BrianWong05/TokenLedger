@@ -41,13 +41,20 @@ function compactTokenUnit(n: number, rolloverFactor: number) {
   return TOKEN_UNITS.find(({ divisor }) => n >= divisor * rolloverFactor);
 }
 
-export function formatCompactTokenTotal(total: number): string {
+// The Overview asks for three decimals, the Menu Bar Extra keeps two — its rows
+// are too narrow to spend a character on. Trailing zeros are always dropped, so
+// the extra digit shows up only where it says something (2.174B, but still 11B).
+// The rollover has to track the precision: a unit holds until its value would
+// round to a full 1000 (999.995 at two decimals, 999.9995 at three). Pinning it
+// to the two-decimal threshold would roll 999.997M up to "1B" and spend the
+// third decimal on nothing.
+export function formatCompactTokenTotal(total: number, maxFractionDigits = 2): string {
   const rounded = Math.max(0, Math.round(total));
-  const unit = compactTokenUnit(rounded, 0.999995);
+  const unit = compactTokenUnit(rounded, (1000 - 0.5 * 10 ** -maxFractionDigits) / 1000);
   if (!unit) return String(rounded);
 
   return (
-    new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(
+    new Intl.NumberFormat('en-US', { maximumFractionDigits: maxFractionDigits }).format(
       rounded / unit.divisor,
     ) + unit.suffix
   );

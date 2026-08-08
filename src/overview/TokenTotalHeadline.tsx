@@ -179,7 +179,9 @@ export default function TokenTotalHeadline({
     setModeAnimation({ id: animationId.current, to });
   }, []);
   const exact = formatExactTokenTotal(total);
-  const display = mode === 'exact' ? exact : formatCompactTokenTotal(total);
+  // Three decimals here and on the source cards; the tray panel keeps two.
+  const compact = formatCompactTokenTotal(total, 3);
+  const display = mode === 'exact' ? exact : compact;
   const revealImmediately = summaryReady && prefersReducedMotion();
   const restingDisplay =
     awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
@@ -219,7 +221,7 @@ export default function TokenTotalHeadline({
   const toggleMode = () => {
     if (modeAnimation) return;
     const next = mode === 'compact' ? 'exact' : 'compact';
-    const nextDisplay = next === 'exact' ? exact : formatCompactTokenTotal(total);
+    const nextDisplay = next === 'exact' ? exact : compact;
     localStorage.setItem(STORAGE_KEY, next);
     if (
       display !== nextDisplay &&

@@ -240,7 +240,7 @@ describe('TokenTotalHeadline', () => {
       counter.querySelectorAll<HTMLElement>('[data-counter-token]'),
       (token) => token.dataset.counterToken,
     );
-    expect(tokens).toEqual(['digit', 'static', 'digit', 'digit', 'static']);
+    expect(tokens).toEqual(['digit', 'static', 'digit', 'digit', 'digit', 'static']);
     expect(
       Array.from(
         counter.querySelectorAll<HTMLElement>('[data-counter-token="static"]'),
@@ -265,8 +265,8 @@ describe('TokenTotalHeadline', () => {
       button.querySelectorAll<HTMLElement>('[data-counter-token="digit"]'),
       (digit) => Number(digit.dataset.counterGlyph),
     );
-    expect(targets).toEqual([5, 58, 584]);
-    expect(glyphs).toEqual([5, 8, 4]);
+    expect(targets).toEqual([5, 58, 584, 5841]);
+    expect(glyphs).toEqual([5, 8, 4, 1]);
   });
 
   it('anchors target punctuation and units while the digits roll', () => {
@@ -296,7 +296,7 @@ describe('TokenTotalHeadline', () => {
 
   it.each([
     { initialMode: 'compact', expectedWidth: 'calc(13ch - 0.39em)' },
-    { initialMode: 'exact', expectedWidth: 'calc(5ch - 0.15em)' },
+    { initialMode: 'exact', expectedWidth: 'calc(6ch - 0.18em)' },
   ])(
     'reserves the settled target width while rolling from $initialMode mode',
     ({ initialMode, expectedWidth }) => {
@@ -319,10 +319,10 @@ describe('TokenTotalHeadline', () => {
     const button = renderHeadline(5_841_112_112);
 
     act(() => button.click());
-    expect(button.getAttribute('style')).toContain('31.000cqi');
+    expect(button.getAttribute('style')).toContain('25.833cqi');
 
     act(() => vi.advanceTimersByTime(1_400));
-    expect(button.getAttribute('style')).toContain('31.000cqi');
+    expect(button.getAttribute('style')).toContain('25.833cqi');
   });
 
   it('forms the target token row before the digit springs settle', () => {
@@ -366,7 +366,7 @@ describe('TokenTotalHeadline', () => {
     const counter = button.firstElementChild as HTMLElement;
     expect(counter.dataset.counterRoot).toBe('true');
     expect(counter.childElementCount).toBe(1);
-    expect(counter.querySelectorAll('[data-counter-token]').length).toBe(5);
+    expect(counter.querySelectorAll('[data-counter-token]').length).toBe(6);
     expect(counter.textContent).not.toContain(',');
 
     act(() => vi.advanceTimersByTime(1_399));
@@ -374,7 +374,7 @@ describe('TokenTotalHeadline', () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(button.getAttribute('aria-busy')).toBeNull();
-    expect(button.textContent).toBe('5.84B');
+    expect(button.textContent).toBe('5.841B');
   });
 
   it('lets the user switch between compact and exact totals and remembers the choice', () => {
@@ -409,7 +409,10 @@ describe('TokenTotalHeadline', () => {
     [114_000_000, '114M'],
     [114_200_000, '114.2M'],
     [4_560_000_000, '4.56B'],
-    [999_995_000, '1B'],
+    // At three decimals this reads precisely, so it no longer needs rolling up
+    // to '1B' — but the guard still fires once a value would print a full 1000.
+    [999_995_000, '999.995M'],
+    [999_999_600, '1B'],
   ])('renders %i tokens compactly as %s', (total, expected) => {
     expect(renderHeadline(total).textContent).toBe(expected);
   });

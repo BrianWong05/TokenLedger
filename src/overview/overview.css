@@ -2148,11 +2148,17 @@
 }
 
 /* ---- narrow fallback (desktop Tauri window can be resized) ---- */
+/* Four Source cards stop fitting well before the window reaches its 900px
+   minimum (tauri.conf.json): a card needs ~168px to hold "855.262M 5.6%" at
+   three decimals, and gets 147px at 900px wide. Reflow to three rather than
+   clip the figure — the old 860px breakpoint could never fire. */
+@media (max-width: 1040px) {
+  .tt-toolcards {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
 @media (max-width: 860px) {
   .tt-b8-grid {
     grid-template-columns: 1fr;
-  }
-  .tt-toolcards {
-    grid-template-columns: repeat(3, 1fr);
   }
 }

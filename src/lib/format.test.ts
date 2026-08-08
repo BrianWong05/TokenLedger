@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatCost, fmtTok, fmtPct, fmtIsoDate } from './format';
+import { formatCost, fmtTok, fmtPct, fmtIsoDate, formatCompactTokenTotal } from './format';
 
 describe('formatCost', () => {
   it('null is unpriced', () => expect(formatCost(null, false)).toBe('unpriced'));
@@ -33,5 +33,17 @@ describe('overview formatters', () => {
   });
   it('fmtIsoDate renders a local date', () => {
     expect(fmtIsoDate('2026-07-04')).toBe('Jul 4');
+  });
+  it('formatCompactTokenTotal spends its extra decimal only where it says something', () => {
+    // The Overview asks for three decimals, the tray panel keeps the default two.
+    expect(formatCompactTokenTotal(2_174_300_000, 3)).toBe('2.174B');
+    expect(formatCompactTokenTotal(2_174_300_000)).toBe('2.17B');
+    // Trailing zeros stay dropped at either precision, so round totals stay short.
+    expect(formatCompactTokenTotal(11_000_000_000, 3)).toBe('11B');
+    expect(formatCompactTokenTotal(1_200_000, 3)).toBe('1.2M');
+  });
+  it('formatCompactTokenTotal rolls over before three decimals can print a full unit', () => {
+    expect(formatCompactTokenTotal(999_999_600, 3)).toBe('1B'); // not '1000M'
+    expect(formatCompactTokenTotal(999_999, 3)).toBe('999.999K');
   });
 });
