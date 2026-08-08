@@ -202,7 +202,8 @@ describe('Overview presentation', () => {
     });
 
     const nums = Array.from(c.querySelectorAll('.tt-toolcards button .num'));
-    expect(nums.map((n) => n.textContent)).toEqual(['30075%', '10025%']);
+    // Separated, so the pair never reads as the single number "30075%".
+    expect(nums.map((n) => n.textContent)).toEqual(['300 75%', '100 25%']);
     expect(nums.map((n) => n.querySelector('.pct')?.textContent)).toEqual(['75%', '25%']);
   });
 

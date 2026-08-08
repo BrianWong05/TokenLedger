@@ -223,8 +223,9 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                   {tl.label}
                 </div>
                 <div className="num">
-                  {formatCompactTokenTotal(toolTotals[tl.key] ?? 0)}
-                  <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
+                  {/* the space is load-bearing: flex trims it visually, but it keeps
+                      the two figures from reading as one number to a screen reader */}
+                  {formatCompactTokenTotal(toolTotals[tl.key])} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
                 </div>
                 {tl.nModels > 0 && (
                   <div className="sub">
