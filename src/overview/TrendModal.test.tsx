@@ -493,9 +493,11 @@ describe('Usage-trend Enlarge', () => {
     expect(dialog()!.querySelector('.tt-trend-insp-delta.up')).not.toBeNull();
 
     // Eight models → six rows plus one muted "2 more models" remainder row.
-    const rows = dialog()!.querySelectorAll('.tt-trend-insp-row');
+    // (Scoped to the inspector: the window breakdown under the chart renders
+    // the same row markup.)
+    const rows = dialog()!.querySelectorAll('.tt-trend-insp .tt-trend-insp-row');
     expect(rows).toHaveLength(7);
-    const more = dialog()!.querySelector('.tt-trend-insp-row.more')!;
+    const more = dialog()!.querySelector('.tt-trend-insp .tt-trend-insp-row.more')!;
     expect(more.textContent).toContain('2 more models');
     // Top-6 names shown; the folded pair is not.
     expect(insp).toContain('m4');
@@ -514,9 +516,50 @@ describe('Usage-trend Enlarge', () => {
     ]);
     await open(c);
 
-    const name = dialog()!.querySelector('.tt-trend-insp-row .lab .name')!.textContent ?? '';
+    const name = dialog()!.querySelector('.tt-trend-insp .tt-trend-insp-row .lab .name')!.textContent ?? '';
     expect(name).toContain('gpt-5.6-sol');
     expect(name).toContain('Codex');
+    expect(name).not.toContain('pi');
+  });
+
+  it("shows the whole window's model split under the footer stats", async () => {
+    const { container: c } = await mount({}, inspectorSeed());
+    await open(c);
+
+    const models = dialog()!.querySelector('.tt-trend-models')!;
+    // Heading names the window, not the selected bucket.
+    expect(models.querySelector('.head')!.textContent).toContain('By model');
+    expect(models.querySelector('.head')!.textContent).toContain('All time');
+    // Window-wide aggregation: m1 = 200 + 300 across both days, not one
+    // bucket's share; eight models fold to top-6 + "2 more models".
+    const rows = models.querySelectorAll('.tt-trend-insp-row');
+    expect(rows).toHaveLength(7);
+    expect(rows[0].textContent).toContain('m1');
+    expect(rows[0].textContent).toContain('500');
+    expect(models.querySelector('.tt-trend-insp-row.more')!.textContent).toContain('2 more models');
+  });
+
+  it('labels a window model produced by two Sources with both names', async () => {
+    // codex and pi each ran gpt-5.6-sol on different days: per bucket each row
+    // names its own Source, but the window's merged row belongs to both.
+    const { container: c } = await mount({}, [
+      pt({ bucket: daysAgo(2), source: 'codex', totalTokens: 300, byModel: { 'gpt-5.6-sol': 300 } }),
+      pt({ bucket: daysAgo(1), source: 'pi', totalTokens: 100, byModel: { 'gpt-5.6-sol': 100 } }),
+    ]);
+    await open(c);
+
+    const name = dialog()!.querySelector('.tt-trend-models .tt-trend-insp-row .lab .name')!.textContent!;
+    expect(name).toContain('gpt-5.6-sol');
+    expect(name).toContain('Codex + pi');
+  });
+
+  it('renders no window model section for a window without usage', async () => {
+    const { container: c } = await mount({}, [
+      pt({ bucket: daysAgo(1), source: 'claude', totalTokens: 0, byModel: {} }),
+    ]);
+    await open(c);
+
+    expect(dialog()!.querySelector('.tt-trend-models')).toBeNull();
   });
 
   it('moves the selection to a hovered bar, dimming the rest', async () => {

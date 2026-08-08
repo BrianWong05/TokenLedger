@@ -31,8 +31,9 @@ import { RangeSegments } from './RangePicker';
 // figures and Est. cost all describe the dialog's local window — buckets from
 // the shared trendSlice (its own hourly fetch for a Day window), Cost from a
 // per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
-// enlarge). Exactly one bucket is always selected — the window's peak until a
-// bar is hovered — and the right-hand inspector reads it out (rank, delta vs
+// enlarge). The window's own per-Model split sits under the footer stats it
+// belongs with. Exactly one bucket is always selected — the window's peak until
+// a bar is hovered — and the right-hand inspector reads it out (rank, delta vs
 // the window average, per-model split). The inspector's per-bucket Cost and CSV
 // export land in later slices.
 
@@ -225,29 +226,26 @@ export default function TrendModal({
       : per === 'month'
         ? `${monthShortL(parseInt(b.key.slice(5, 7), 10) - 1, lang)} ${b.key.slice(0, 4)}`
         : fmtIsoDateL(b.key, lang);
-  // Top-6 models in the selected bucket, largest first; the rest fold into one
-  // muted remainder row (color '' → grey).
-  const selRows: {
-    key: string;
-    name: string;
-    source?: string;
-    val: number;
-    color: string;
-    more: boolean;
-  }[] = [];
-  if (selBucket) {
-    const ranked = rankedModels(selBucket.byModel);
+  // Top-6 models, largest first; the rest fold into one muted remainder row
+  // (color '' → grey). Shared by the bucket read-out in the inspector and the
+  // window-scoped breakdown under the footer stats.
+  type InspRow = { key: string; name: string; source?: string; val: number; color: string; more: boolean };
+  const buildRows = (
+    byModel: Record<string, number>,
+    modelSources: Record<string, string[]> | undefined,
+    unattributedTokens: number,
+  ): InspRow[] => {
+    const rows: InspRow[] = [];
+    const ranked = rankedModels(byModel);
     for (const [m, v] of ranked.slice(0, 6)) {
-      // Owner resolved from THIS bucket: a Model name shared by two Sources
+      // Owner resolved from THIS record: a Model name shared by two Sources
       // would otherwise take whichever the window-wide map happened to pick.
-      const owner = modelOwner(selBucket.modelSources, modelTool, m);
-      selRows.push({
-        key: m, name: m, source: owner.label, val: v, color: owner.color, more: false,
-      });
+      const owner = modelOwner(modelSources, modelTool, m);
+      rows.push({ key: m, name: m, source: owner.label, val: v, color: owner.color, more: false });
     }
     const rest = ranked.slice(6);
     if (rest.length) {
-      selRows.push({
+      rows.push({
         key: '__more__',
         name: `${rest.length} ${t('overview.trend.moreModels')}`,
         val: rest.reduce((a, [, v]) => a + v, 0),
@@ -255,19 +253,65 @@ export default function TrendModal({
         more: true,
       });
     }
-    if (selBucket.unattributedTokens > 0) {
-      selRows.push({
+    if (unattributedTokens > 0) {
+      rows.push({
         key: 'unattributed-usage',
         name: t('overview.unattributedUsage'),
-        val: selBucket.unattributedTokens,
+        val: unattributedTokens,
         color: UNATTRIBUTED_COLOR,
         more: false,
       });
     }
-  }
+    return rows;
+  };
+  const selRows: InspRow[] = selBucket
+    ? buildRows(selBucket.byModel, selBucket.modelSources, selBucket.unattributedTokens)
+    : [];
+  // The whole window's model split, aggregated across its buckets (byModel
+  // summed; modelSources unioned so a Model name two Sources share reads
+  // 'Codex + pi' rather than claiming one Source).
+  const win = useMemo(() => {
+    const byModel: Record<string, number> = {};
+    const modelSources: Record<string, string[]> = {};
+    let unattributedTokens = 0;
+    for (const b of data) {
+      for (const [m, v] of Object.entries(b.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
+      for (const [m, srcs] of Object.entries(b.modelSources ?? {})) {
+        const owners = (modelSources[m] ??= []);
+        for (const s of srcs) if (!owners.includes(s)) owners.push(s);
+      }
+      unattributedTokens += b.unattributedTokens;
+    }
+    return { byModel, modelSources, unattributedTokens };
+  }, [data]);
+  const winRows: InspRow[] = buildRows(win.byModel, win.modelSources, win.unattributedTokens);
   const selTotal = selBucket?.total ?? 0;
   // WebKit can't resolve var() in an SVG stroke; pick the outline per theme.
   const outline = colors === CHART_LIGHT ? '#12151b' : '#e8ecf4';
+
+  const rowEl = (r: InspRow, base: number) => (
+    <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
+      <div className="lab">
+        <span className="dot" style={r.more ? undefined : { background: r.color }} />
+        <span className="name">
+          {r.name}
+          {r.source && <em className="src">{r.source}</em>}
+        </span>
+        <span className="num">
+          {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (base || 1))}</span>
+        </span>
+      </div>
+      <div className="track">
+        <div className="fill" style={{ width: (r.val / (base || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
+      </div>
+    </div>
+  );
+  const rowsList = (rows: InspRow[], base: number) => (
+    <div className="tt-trend-insp-rows">
+      {rows.map((r) => rowEl(r, base))}
+      {rows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
+    </div>
+  );
 
   return (
     <div
@@ -420,6 +464,14 @@ export default function TrendModal({
                 ))}
               </div>
             </div>
+            {winRows.length > 0 && (
+              // The window's own model split, under the footer stats it
+              // describes — the inspector on the right stays per-bucket.
+              <div className="tt-trend-models">
+                <div className="head">{t('overview.trend.byModel')} · {rangeLabel}</div>
+                <div className="grid">{winRows.map((r) => rowEl(r, total))}</div>
+              </div>
+            )}
           </div>
 
           <aside className="tt-trend-insp">
@@ -441,26 +493,7 @@ export default function TrendModal({
                 </div>
                 <div className="tt-trend-insp-div" />
                 <div className="eyebrow">{t('overview.trend.byModel')}</div>
-                <div className="tt-trend-insp-rows">
-                  {selRows.map((r) => (
-                    <div className={'tt-trend-insp-row' + (r.more ? ' more' : '')} key={r.key}>
-                      <div className="lab">
-                        <span className="dot" style={r.more ? undefined : { background: r.color }} />
-                        <span className="name">
-                          {r.name}
-                          {r.source && <em className="src">{r.source}</em>}
-                        </span>
-                        <span className="num">
-                          {fmtTok(r.val)} <span className="pct">{fmtPct(r.val / (selTotal || 1))}</span>
-                        </span>
-                      </div>
-                      <div className="track">
-                        <div className="fill" style={{ width: (r.val / (selTotal || 1)) * 100 + '%', background: r.more ? undefined : r.color }} />
-                      </div>
-                    </div>
-                  ))}
-                  {selRows.length === 0 && <div className="tt-trend-insp-empty">{t('overview.noActivity')}</div>}
-                </div>
+                {rowsList(selRows, selTotal)}
                 <div className="tt-trend-insp-cost">
                   <span>{t('overview.estCost')}</span>
                   <span className="amt">
