@@ -192,6 +192,20 @@ describe('Overview presentation', () => {
     expect(ctxTitle()).toContain('Codex');
   });
 
+  it('shows each source card\'s absolute tokens with its share beside them', async () => {
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ source: 'claude', totalTokens: 300 }),
+        pt({ source: 'codex', totalTokens: 100 }),
+      ],
+      summary,
+    });
+
+    const nums = Array.from(c.querySelectorAll('.tt-toolcards button .num'));
+    expect(nums.map((n) => n.textContent)).toEqual(['30075%', '10025%']);
+    expect(nums.map((n) => n.querySelector('.pct')?.textContent)).toEqual(['75%', '25%']);
+  });
+
   it('renders all-Unattributed Usage without exposing a Model Override action', async () => {
     const unattributed: BreakdownRow = {
       key: null, source: 'claude', inputTokens: 30, outputTokens: 20,

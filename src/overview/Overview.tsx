@@ -15,7 +15,7 @@ import SmallMultiples from './SmallMultiples';
 import { RangeSegments } from './RangePicker';
 import type { SourceMeta } from './meta';
 import { sourceIcon } from './icons';
-import { fmtPct } from '../lib/format';
+import { fmtPct, formatCompactTokenTotal } from '../lib/format';
 import { formatSummaryCost, useOverviewT } from './localize';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
@@ -222,7 +222,10 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                   <SourceIcon tool={tl} />
                   {tl.label}
                 </div>
-                <div className="num">{fmtPct(toolTotals[tl.key] / grand)}</div>
+                <div className="num">
+                  {formatCompactTokenTotal(toolTotals[tl.key] ?? 0)}
+                  <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
+                </div>
                 {tl.nModels > 0 && (
                   <div className="sub">
                     {tl.nModels} {t(tl.nModels === 1 ? 'overview.modelOne' : 'overview.modelMany')}

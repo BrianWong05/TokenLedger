@@ -651,6 +651,10 @@
   padding: 3px;
 }
 .tt-toolcard .num {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
   font-size: 19px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -658,6 +662,10 @@
   margin-top: 8px;
   font-variant-numeric: tabular-nums;
   font-family: var(--tt-mono);
+}
+/* Share rides the token count's row at full size; dimmer so tokens stay the anchor. */
+.tt-toolcard .num .pct {
+  color: var(--text-secondary);
 }
 .tt-toolcard .sub {
   font-size: 11px;
