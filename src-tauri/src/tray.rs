@@ -14,7 +14,9 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 #[cfg(not(target_os = "linux"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::{
+    AppHandle, Emitter, Manager, Runtime, WebviewWindow, WebviewWindowBuilder, Wry,
+};
 
 // Held so each scan can rewrite Today's figures in place.
 pub struct Tray {
@@ -104,7 +106,9 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
 #[cfg(target_os = "linux")]
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
-        "open" => show_main(app),
+        "open" => {
+            let _ = show_main(app);
+        }
         "scan" => {
             // Off the UI thread: a scan can take a moment. On completion, emit
             // the one event a visible Overview listens for so it re-reads the
@@ -183,12 +187,57 @@ fn px_rect(rect: tauri::Rect, scale: f64) -> PxRect {
 
 /// Show + focus the main window; the panel's Open action and open_settings
 /// both route here.
-pub fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.unminimize();
-        let _ = w.set_focus();
+pub fn show_main<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let window = if let Some(window) = app.get_webview_window("main") {
+        window
+    } else {
+        build_main(app, false)?
+    };
+
+    focus_main(&window)
+}
+
+/// Open Settings without racing the frontend listener on a newly-created
+/// webview. Existing windows receive the event immediately; new ones receive
+/// it after page load, once React has had a chance to mount its listener.
+pub fn open_settings<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("main") {
+        focus_main(&window)?;
+        window.emit("open-settings", ())?;
+    } else {
+        let window = build_main(app, true)?;
+        focus_main(&window)?;
     }
+    Ok(())
+}
+
+fn build_main<R: Runtime>(
+    app: &AppHandle<R>,
+    open_settings_on_load: bool,
+) -> tauri::Result<WebviewWindow<R>> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .expect("main window config");
+    let mut builder = WebviewWindowBuilder::from_config(app, config)?;
+    if open_settings_on_load {
+        builder = builder.on_page_load(|window, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let _ = window.emit("open-settings", ());
+            }
+        });
+    }
+    builder.build()
+}
+
+fn focus_main<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()?;
+    Ok(())
 }
 
 /// Recomputes Today's figures (Today's Summary + Settings → tray_title) and

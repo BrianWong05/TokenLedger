@@ -51,6 +51,20 @@ use types::ScanStatus;
 // (tray only); a normal Dock/Finder launch has no flag and shows the window.
 const HIDDEN_FLAG: &str = "--hidden";
 
+// A window-system close can request process exit after the final webview is
+// destroyed. TokenLedger is a resident capture app, so only a programmatic
+// exit (tray Quit or restart) may terminate it.
+fn should_prevent_exit(code: Option<i32>) -> bool {
+    code.is_none()
+}
+
+// Keep the generated macOS bundle metadata in one macro expansion. Besides
+// avoiding duplicate embedded Info.plist symbols in tests, the generic runtime
+// lets production use Wry while lifecycle tests use Tauri's mock runtime.
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
 pub struct AppState {
     pub db: Mutex<Connection>,
     pub roots: SourceRoots,
@@ -325,15 +339,13 @@ fn delete_model_override(
 // The traypanel's four actions (src/traypanel/TrayPanel.tsx). Rescan reuses
 // the `scan` command; these three are window/lifecycle glue.
 #[tauri::command]
-fn show_main(app: AppHandle) {
-    tray::show_main(&app);
+async fn show_main(app: AppHandle) -> Result<(), String> {
+    tray::show_main(&app).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn open_settings(app: AppHandle) -> Result<(), String> {
-    tray::show_main(&app);
-    // The shell's onOpenSettings listener lands on the Settings tab.
-    app.emit("open-settings", ()).map_err(|e| e.to_string())
+async fn open_settings(app: AppHandle) -> Result<(), String> {
+    tray::open_settings(&app).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -412,7 +424,7 @@ fn save_csv(app: AppHandle, filename: String, contents: String) -> Result<bool, 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         // Launch at login passing HIDDEN_FLAG, so an at-login start comes up
         // hidden (tray only) while a manual launch does not. Enrollment itself
@@ -429,16 +441,10 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        // Closing the window must not kill capture (ADR-0005): hide it instead,
-        // keeping the webview (and its auto-refresh scans) alive. Quit lives in
-        // the tray.
+        // Closing `main` uses Tauri's default lifecycle, destroying that
+        // webview and releasing its renderer memory. The run-event handler
+        // below keeps the Rust capture process resident; Quit lives in the tray.
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-            }
             // The traypanel behaves like a menu: clicking anywhere else
             // (focus loss) dismisses it.
             if let tauri::WindowEvent::Focused(false) = event {
@@ -472,14 +478,20 @@ pub fn run() {
                 let _ = w.destroy();
             }
 
-            // Hidden at-login start vs. normal launch: the window is created
-            // hidden (tauri.conf.json visible:false) so there is no flash; show
-            // it unless HIDDEN_FLAG is present. Either way the webview loads and
-            // runs its initial scan.
-            if !std::env::args().any(|a| a == HIDDEN_FLAG) {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                }
+            // Hidden at-login start has no main webview at all. A manual launch
+            // creates it from the lazy tauri.conf.json entry without a flash.
+            let hidden_startup = std::env::args().any(|argument| argument == HIDDEN_FLAG);
+            if hidden_startup {
+                // With no frontend mount to perform the start-up capture, do it
+                // in Rust so ADR-0005's "on start" guarantee still holds.
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    if scan_now(&handle).is_ok() {
+                        let _ = handle.emit("prices-rebuilt", ());
+                    }
+                });
+            } else {
+                tray::show_main(app.handle())?;
             }
 
             // Auto-check for updates on start (non-blocking), respecting the
@@ -505,7 +517,8 @@ pub fn run() {
             });
             // Resident capture cadence (ADR-0005): scan every few hours so a
             // hidden app keeps recording even when the machine stays up across
-            // days without a re-login. The on-mount frontend scan covers start;
+            // days without a re-login. The on-mount frontend scan covers a
+            // manual start; the hidden-start branch above covers login start;
             // this thread covers the long tail. Emits prices-rebuilt so a
             // visible Overview refreshes too.
             // ponytail: parked thread + 4h sleep, no timer framework needed.
@@ -554,8 +567,16 @@ pub fn run() {
             restart_app,
             save_csv
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(app_context())
+        .expect("error while building tauri application");
+
+    app.run(|_app, event| {
+        if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+            if should_prevent_exit(code) {
+                api.prevent_exit();
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -566,6 +587,46 @@ mod tests {
     use crate::{db, queries, scan};
     use std::sync::atomic::AtomicI64;
     use std::sync::Mutex;
+    use tauri::Manager;
+
+    #[test]
+    fn hidden_startup_does_not_create_the_main_webview() {
+        let app = tauri::test::mock_builder()
+            .build(super::app_context())
+            .unwrap();
+
+        let main = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == "main")
+            .expect("main window config");
+        assert!(!main.create, "main must be opted out of eager creation");
+        assert!(app.get_webview_window("main").is_none());
+    }
+
+    #[test]
+    fn show_main_creates_and_reuses_the_lazy_webview() {
+        let app = tauri::test::mock_builder()
+            .build(super::app_context())
+            .unwrap();
+
+        crate::tray::show_main(app.handle()).unwrap();
+        let first = app
+            .get_webview_window("main")
+            .expect("show_main should create the lazy webview");
+        assert!(first.is_visible().unwrap());
+
+        crate::tray::show_main(app.handle()).unwrap();
+        assert!(app.get_webview_window("main").is_some());
+    }
+
+    #[test]
+    fn resident_app_prevents_automatic_exit_but_allows_explicit_quit() {
+        assert!(super::should_prevent_exit(None));
+        assert!(!super::should_prevent_exit(Some(0)));
+    }
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
