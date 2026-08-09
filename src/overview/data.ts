@@ -2,7 +2,7 @@
 // (SeriesPoint/BreakdownRow) into the shapes the components consume. No fetching
 // here — overviewStore orchestrates the Ledger reads. Design meta (SOURCES,
 // CATEGORIES, themes, ranges, types) lives in ./meta.
-import type { BreakdownRow, Filters, SeriesPoint, CtxResource, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
+import type { BreakdownRow, Filters, SeriesPoint, CtxResource, CtxBuckets, CtxToolRow, CtxSkillRow, CtxExecRow } from '../types';
 import { parseLocalDate } from '../lib/dateRange';
 import { SOURCES, CATEGORIES, emptyBySource, orderedSourceKeys, sourceMeta, type SourceKey, type SourceMeta, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
@@ -904,6 +904,30 @@ export function allocateByWeight(
   for (let i = 0; i < total - allocated; i++) {
     const k = rems[i % rems.length].key;
     out.set(k, (out.get(k) ?? 0) + 1);
+  }
+  return out;
+}
+
+// One expanded Skills row. `rest` > 0 marks the folded remainder instead of a
+// skill, so the label stays the component's (and the translator's) business.
+export interface SkillBar { name: string; tokens: number; uses: number; rest: number }
+
+// The window's skills for one Source, heaviest first — the query already sorts,
+// so this only scopes and folds. Everything past `top` collapses into one
+// remainder row rather than running the panel off the card.
+export function skillBars(rows: CtxSkillRow[], source: string, top = 10): SkillBar[] {
+  const mine = rows.filter((r) => r.source === source);
+  const out: SkillBar[] = mine
+    .slice(0, top)
+    .map((r) => ({ name: r.name, tokens: r.estTokens, uses: r.uses, rest: 0 }));
+  const folded = mine.slice(top);
+  if (folded.length) {
+    out.push({
+      name: '',
+      tokens: folded.reduce((a, r) => a + r.estTokens, 0),
+      uses: folded.reduce((a, r) => a + r.uses, 0),
+      rest: folded.length,
+    });
   }
   return out;
 }

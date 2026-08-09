@@ -33,6 +33,8 @@ import {
   type TableRow,
   type BucketView,
   type ToolCategory,
+  skillBars,
+  type SkillBar,
 } from './data';
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
@@ -47,6 +49,7 @@ import type {
   Summary,
   BreakdownRow,
   CtxResource,
+  CtxSkillRow,
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
@@ -80,6 +83,7 @@ export interface OverviewSnapshot {
   modelRows: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResource[];
+  ctxSkillRows: CtxSkillRow[];
   ctxBuckets: CtxBuckets[];
   ctxToolRows: CtxToolRow[];
   ctxExecRows: CtxExecRow[];
@@ -117,7 +121,7 @@ type State = Omit<
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'projectRows',
-  'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxExecRows',
+  'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading',
 ];
@@ -130,7 +134,7 @@ class Store implements OverviewStore {
   private state: State = {
     allPoints: null, hourPoints: [], summary: null, profileSessions: null,
     modelRows: [], projectRows: [],
-    ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxExecRows: [],
+    ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxSkillRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
   };
@@ -341,13 +345,14 @@ class Store implements OverviewStore {
       L.ctxResources(filters),
       L.ctxBuckets(filters),
       L.ctxTools(filters),
+      L.ctxSkills(filters),
       L.ctxExec(filters),
       hourDay ? L.series(filters, 'hour') : null,
     ])
-      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxExecRows, hour]) =>
+      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour]) =>
         land(() =>
           this.patch({
-            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxExecRows,
+            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows,
             ...(hour ? { hourPoints: hour } : {}),
             fetchError: null,
           }),
@@ -384,7 +389,7 @@ export interface OverviewView {
   ctxTree: ToolCategory[];
   selExecRows: CtxExecRow[];
   selMeta: string;
-  selSkills: string[];
+  selSkills: SkillBar[];
   selModels: ModelBar[];
   tool: SourceMeta;
   headline: { total: number; summaryReady: boolean };
@@ -454,10 +459,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     ctxTree: toolTree(selToolRows, ctx.toolcalls),
     selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
     selMeta: ctxMeta(s.ctxResources, s.selected, lang),
-    selSkills: s.ctxResources
-      .filter((r) => r.source === s.selected && r.kind === 'skill')
-      .map((r) => r.name)
-      .sort((a, b) => a.localeCompare(b)),
+    selSkills: skillBars(s.ctxSkillRows, s.selected),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: sourceMeta(s.selected),
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },

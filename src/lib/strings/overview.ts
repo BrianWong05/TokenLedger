@@ -91,6 +91,8 @@ export const overview = {
     'overview.trend.vsAvg': 'vs avg',
     'overview.trend.byModel': 'By model',
     'overview.trend.moreModels': 'more models',
+    'overview.moreSkills': 'more skills',
+    'overview.skillUses': 'uses',
     'overview.trend.exportCsv': 'Export CSV',
     // interval selector — adjective forms, so the options can't be confused
     // with the window presets (Day/Week/Month) sitting beside them
@@ -273,6 +275,8 @@ export const overview = {
     'overview.trend.vsAvg': '對比平均',
     'overview.trend.byModel': '依模型',
     'overview.trend.moreModels': '個其他模型',
+    'overview.moreSkills': '個其他技能',
+    'overview.skillUses': '次載入',
     'overview.trend.exportCsv': '匯出 CSV',
     // interval selector — adjective forms, so the options can't be confused
     // with the window presets (Day/Week/Month) sitting beside them

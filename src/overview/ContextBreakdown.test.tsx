@@ -27,16 +27,19 @@ const execRows: CtxExecRow[] = [
   { source: 'claude', kind: 'vcs', exe: 'git', cmd: 'git status', estTokens: 400, calls: 3 },
   { source: 'claude', kind: 'build', exe: 'npm', cmd: 'npm test', estTokens: 600, calls: 2 },
 ];
-const skills = ['graphify', 'verify'];
+const skills = [
+  { name: 'graphify', tokens: 4800, uses: 2, rest: 0 },
+  { name: 'verify', tokens: 900, uses: 1, rest: 0 },
+];
 
-function render(view: BucketView | null = null) {
+function render(view: BucketView | null = null, skillRows = skills) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
   act(() =>
     root.render(
-      <ContextBreakdown tool={SOURCES[0]} ctx={ctx} view={view} tree={tree} meta="" execRows={execRows} skills={skills} />,
+      <ContextBreakdown tool={SOURCES[0]} ctx={ctx} view={view} tree={tree} meta="" execRows={execRows} skills={skillRows} />,
     ),
   );
   return container;
@@ -110,7 +113,7 @@ describe('ContextBreakdown drilldown', () => {
     expect(queryRow(c, 'System prompt')?.querySelector('.val')?.textContent).toBe('—');
   });
 
-  it('lists skill names without values when Skills is expanded', () => {
+  it('weighs each skill when Skills is expanded', () => {
     const c = render();
     expect(queryRow(c, 'graphify')).toBeUndefined();
 
@@ -118,8 +121,21 @@ describe('ContextBreakdown drilldown', () => {
     const leaf = queryRow(c, 'graphify');
     expect(leaf).toBeDefined();
     expect(queryRow(c, 'verify')).toBeDefined();
-    // A Resource is a name, not a measurement — no value cell, not even "—".
-    expect(leaf?.querySelector('.val')).toBeNull();
+    // The instructions a skill loads are its cost, and the use count is what
+    // explains the size — a skill re-invoked twice loaded its body twice.
+    expect(leaf?.querySelector('.val')?.textContent).toBe('4.8K');
+    expect(leaf?.getAttribute('title')).toBe('2 uses');
+  });
+
+  it('folds the skills past the cap into one remainder row', () => {
+    const c = render(null, [
+      { name: 'grilling', tokens: 5000, uses: 1, rest: 0 },
+      { name: '', tokens: 1200, uses: 4, rest: 3 },
+    ]);
+    clickRow(c, 'Skills');
+    expect(queryRow(c, 'grilling')).toBeDefined();
+    const more = queryRow(c, '3 more skills');
+    expect(more?.querySelector('.val')?.textContent).toBe('1.2K');
   });
 
   it('renders the exec facet table when the Bash leaf is expanded', () => {
