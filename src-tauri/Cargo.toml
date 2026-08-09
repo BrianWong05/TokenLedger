@@ -5,6 +5,7 @@ description = "TokenLedger — AI usage tracker"
 authors = ["Brian Wong"]
 license = "MIT"
 edition = "2021"
+default-run = "tokenledger"
 
 [lib]
 name = "tokenledger_lib"
