@@ -44,7 +44,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                     ..
                 } = event
                 {
-                    toggle_panel(tray.app_handle(), rect);
+                    let _ = toggle_panel(tray.app_handle(), rect);
                 }
             });
     }
@@ -125,20 +125,21 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-/// Show the panel beside the tray icon, or hide it if it's already up. Where
+/// Show the panel beside the tray icon, or destroy it if it's already up. Where
 /// the panel lands is panel_position's business; this gathers the icon rect,
 /// the panel size, and the work area of the monitor holding the icon. The
-/// panel refetches on every show via the panel-shown event; hide-on-blur lives
-/// in lib.rs's window-event handler. Absent on Linux, which never delivers the
-/// click that would call it.
+/// panel fetches on mount; destroy-on-blur lives in lib.rs's window-event
+/// handler. Absent on Linux, which never delivers the click that would call it.
 #[cfg(not(target_os = "linux"))]
-fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
-    let Some(w) = app.get_webview_window("traypanel") else {
-        return;
+fn toggle_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) -> tauri::Result<()> {
+    let w = if let Some(w) = app.get_webview_window("traypanel") {
+        w
+    } else {
+        build_panel(app)?
     };
     if w.is_visible().unwrap_or(false) {
-        let _ = w.hide();
-        return;
+        w.destroy()?;
+        return Ok(());
     }
     let scale = w.scale_factor().unwrap_or(2.0);
     let icon = px_rect(rect, scale);
@@ -164,10 +165,23 @@ fn toggle_panel(app: &AppHandle, rect: tauri::Rect) {
         })
         .unwrap_or(icon);
     let (x, y) = panel_position(icon, work, panel, 4.0 * scale);
-    let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-    let _ = w.show();
-    let _ = w.set_focus();
-    let _ = app.emit_to("traypanel", "panel-shown", ());
+    w.set_position(tauri::PhysicalPosition::new(x, y))?;
+    w.show()?;
+    w.set_focus()?;
+    app.emit_to("traypanel", "panel-shown", ())?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_panel<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "traypanel")
+        .expect("tray panel window config");
+    WebviewWindowBuilder::from_config(app, config)?.build()
 }
 
 /// The tray's icon rect in physical pixels — the one unit panel_position
@@ -503,6 +517,25 @@ mod tests {
     use super::*;
     use crate::queries::Summary;
     use crate::settings::Settings;
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn tray_click_creates_and_shows_the_lazy_panel() {
+        let app = tauri::test::mock_builder()
+            .build(crate::app_context())
+            .unwrap();
+        let icon = tauri::Rect {
+            position: tauri::Position::Physical(tauri::PhysicalPosition::new(100, 0)),
+            size: tauri::Size::Physical(tauri::PhysicalSize::new(24, 24)),
+        };
+
+        toggle_panel(app.handle(), icon).unwrap();
+
+        let panel = app
+            .get_webview_window("traypanel")
+            .expect("tray click should create the lazy panel");
+        assert!(panel.is_visible().unwrap());
+    }
 
     fn sum(total_tokens: i64, cost: Option<f64>, has_unpriced: bool) -> Summary {
         Summary {

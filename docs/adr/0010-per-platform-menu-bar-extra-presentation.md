@@ -33,9 +33,8 @@ to find it again).
 Consequence: the panel's window glue — toggling it, and the window itself —
 is compiled out on Linux, while the placement arithmetic stays compiled
 everywhere so its tests run on all three platforms of the CI matrix. The
-window is declared in tauri.conf.json, which has no per-platform window
-list, so Linux creates it at start-up and destroys it immediately rather
-than restating the whole panel window in Rust for the two platforms that
-keep it. The Linux menu is a second, small presentation path that must
-carry the same Cost rules (Partial "≥", Unpriced never $0, Display
-Currency) as every other surface.
+window is declared in tauri.conf.json with eager creation disabled; macOS and
+Windows build it lazily from that configuration on icon click and destroy it
+on dismissal, while Linux never creates it. The Linux menu is a second, small
+presentation path that must carry the same Cost rules (Partial "≥", Unpriced
+never $0, Display Currency) as every other surface.

@@ -448,8 +448,8 @@ pub fn run() {
             // The traypanel behaves like a menu: clicking anywhere else
             // (focus loss) dismisses it.
             if let tauri::WindowEvent::Focused(false) = event {
-                if window.label() == "traypanel" {
-                    let _ = window.hide();
+                if window.label() == "traypanel" && window.is_visible().unwrap_or(false) {
+                    let _ = window.destroy();
                 }
             }
         })
@@ -466,17 +466,6 @@ pub fn run() {
             });
 
             tray::build(app.handle())?;
-
-            // No panel on Linux (ADR-0010): its tray delivers no click to
-            // toggle one, so the window would be a webview nobody can open.
-            // ponytail: destroyed rather than never built — tauri.conf.json has
-            // no per-platform window list, and the cost is one hidden webview
-            // for the moments before setup runs. Declare the panel window in
-            // Rust under cfg(not(linux)) if that start-up cost ever shows.
-            #[cfg(target_os = "linux")]
-            if let Some(w) = app.get_webview_window("traypanel") {
-                let _ = w.destroy();
-            }
 
             // Hidden at-login start has no main webview at all. A manual launch
             // creates it from the lazy tauri.conf.json entry without a flash.
@@ -604,6 +593,26 @@ mod tests {
             .expect("main window config");
         assert!(!main.create, "main must be opted out of eager creation");
         assert!(app.get_webview_window("main").is_none());
+    }
+
+    #[test]
+    fn startup_does_not_create_the_tray_panel_webview() {
+        let app = tauri::test::mock_builder()
+            .build(super::app_context())
+            .unwrap();
+
+        let tray_panel = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == "traypanel")
+            .expect("tray panel window config");
+        assert!(
+            !tray_panel.create,
+            "tray panel must be opted out of eager creation"
+        );
+        assert!(app.get_webview_window("traypanel").is_none());
     }
 
     #[test]
