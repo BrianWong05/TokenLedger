@@ -247,12 +247,16 @@ A named participant observed in a Session's Context — a skill, MCP server,
 subagent, or memory file. Resources are recorded by name and counted. Context's
 categories say *how much*, Resources say *which ones*, so a Resource displays
 nothing rather than "—", the dash being reserved for a category a Source failed
-to attribute. One Resource is also weighed: a skill's instructions enter the
-Context as a block of their own, so each skill additionally carries the
-estimated tokens it loaded across the window and how many times it loaded them —
-every invocation re-loads the whole body. Nothing else is separable that way, so
-nothing else is weighed. A skill is named as it is invoked, which keeps a
-plugin's skill distinct from a local skill sharing its name.
+to attribute. Two Resources are also weighed, each by a different mechanism. A
+skill's instructions enter the Context as a block of their own, so each skill
+carries the estimated tokens it loaded across the window and how many times it
+loaded them — every invocation re-loads the whole body. An MCP server stamps its
+name on every tool call it serves, so each server carries the estimated tokens of
+that traffic and how many calls produced it; the tool definitions it publishes
+are excluded, because they reach the model inside the system prompt, where
+nothing marks whose they are. Nothing else carries such a mark, so nothing else
+is weighed. A skill is named as it is invoked, which keeps a plugin's skill
+distinct from a local skill sharing its name.
 _Avoid_: Context item, roster
 
 ### Money

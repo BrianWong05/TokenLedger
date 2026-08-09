@@ -148,6 +148,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
         execRows: view.selExecRows,
         meta: view.selMeta,
         skills: view.selSkills,
+        mcp: view.selMcp,
       },
       tokens: { cats: view.cats },
       models: { toolTokens: view.toolTotals[snap.selected], models: view.selModels },
