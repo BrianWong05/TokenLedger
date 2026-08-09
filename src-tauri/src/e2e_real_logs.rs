@@ -1,7 +1,7 @@
 // End-to-end verification against the REAL logs on this machine (Task 16).
 // Not run by default (touches ~1GB of real user data and can take several
 // seconds): `cargo test --release e2e_real_logs -- --ignored --nocapture`
-use crate::{db, pricing, queries, scan};
+use crate::{db, pricing, queries, scan, source_catalog};
 
 #[test]
 #[ignore]
@@ -62,11 +62,14 @@ fn e2e_real_logs() {
     println!("  unpriced_models     {:?}", summary.unpriced_models);
     println!("  cache_hit_rate      {:.4}", summary.cache_hit_rate);
 
-    assert_eq!(
-        status.sources.len(),
-        14,
-        "expected all 14 sources to report"
-    );
+    // Taken from the catalog rather than written down: the guard worth keeping
+    // is that no source is silently dropped from the scan, and a literal count
+    // only measures how long ago someone added one (this read 14 against 15).
+    // Comparing keys also names the offender instead of reporting arithmetic.
+    let expected: Vec<&str> =
+        source_catalog::catalog().sources.iter().map(|s| s.key.as_str()).collect();
+    let reported: Vec<&str> = status.sources.iter().map(|s| s.source.as_str()).collect();
+    assert_eq!(reported, expected, "every catalogued source must report a status");
     assert!(
         summary.total_tokens > 0,
         "expected non-zero tokens scanning real logs"
