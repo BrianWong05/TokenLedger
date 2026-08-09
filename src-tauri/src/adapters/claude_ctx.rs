@@ -8,11 +8,39 @@ use super::find_segment;
 use serde_json::Value;
 use std::collections::HashMap;
 
+// A skill's instructions are not returned by the Skill tool — its result is
+// only "Launching skill: …". They arrive as an injected user message opening
+// with this line, so the body is invisible to the tool-result path below.
+const SKILL_BODY_PREFIX: &str = "Base directory for this skill:";
+
+/// The skill a body injection belongs to, named exactly as it is invoked, so a
+/// slash-command injection (which has no Skill tool call to name it) and a
+/// tool invocation agree. Plugin skills live at
+/// `…/plugins/cache/<marketplace>/<plugin>/<version>/skills/**/<skill>` and are
+/// invoked `<plugin>:<skill>`; anything else (`~/.claude/skills/<skill>`) is
+/// invoked bare. The trailing `**` matters: some plugins group skills into
+/// category directories.
+pub fn skill_body_name(text: &str) -> Option<String> {
+    let first = text.strip_prefix(SKILL_BODY_PREFIX)?.lines().next()?;
+    let path = first.trim().trim_end_matches('/');
+    let skill = path.rsplit('/').next().filter(|s| !s.is_empty())?;
+    match find_segment(path, "/plugins/cache/") {
+        Some(i) => {
+            // marketplace, then the plugin whose name namespaces the skill.
+            let mut segs = path[i + "/plugins/cache/".len()..].split('/');
+            let plugin = segs.nth(1).filter(|s| !s.is_empty())?;
+            Some(format!("{plugin}:{skill}"))
+        }
+        None => Some(skill.to_string()),
+    }
+}
+
 pub fn apply_user_line(
     comp: &mut Composition,
     v: &Value,
     tool_names: &HashMap<String, String>,
     tool_sizes: &mut Vec<(String, i64, i64)>,
+    skill_sizes: &mut Vec<(String, i64, i64)>,
 ) {
     let content = &v["message"]["content"];
     if let Some(s) = content.as_str() {
@@ -40,8 +68,16 @@ pub fn apply_user_line(
                 }
             }
             Some("text") => {
-                comp.msg += est(content_bytes(&b["text"]));
+                let n = est(content_bytes(&b["text"]));
+                comp.msg += n;
                 comp.reas = 0;
+                // Every injection is a fresh copy in the context, so repeats
+                // sum rather than dedupe. Counted under skills as well as
+                // messages — the secondary categories are shares of msg.
+                if let Some(name) = b["text"].as_str().and_then(skill_body_name) {
+                    comp.skill += n;
+                    skill_sizes.push((name, n, 1));
+                }
             }
             _ => {}
         }
@@ -100,11 +136,69 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
 
+    // Body text long enough that est() is non-zero, prefixed with the path line.
+    fn body(path: &str) -> String {
+        format!("{SKILL_BODY_PREFIX} {path}\n\n# Skill\n{}", "x".repeat(400))
+    }
+
+    #[test]
+    fn skill_body_name_reconstructs_the_invoked_name() {
+        // Plugin skill: invoked `superpowers:brainstorming`.
+        assert_eq!(
+            skill_body_name(&body("/Users/b/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/brainstorming")),
+            Some("superpowers:brainstorming".to_string()),
+        );
+        // Plugin that groups skills into category directories.
+        assert_eq!(
+            skill_body_name(&body("/Users/b/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/1.2.0/skills/engineering/code-review")),
+            Some("mattpocock-skills:code-review".to_string()),
+        );
+        // Local skill: invoked bare, so a same-named plugin skill stays distinct.
+        assert_eq!(
+            skill_body_name(&body("/Users/b/.claude/skills/grilling")),
+            Some("grilling".to_string()),
+        );
+        assert_eq!(skill_body_name("just a normal user message"), None);
+    }
+
+    #[test]
+    fn skill_body_counts_under_skills_and_messages() {
+        let mut c = Composition::default();
+        let mut skills: Vec<(String, i64, i64)> = Vec::new();
+        let text = body("/Users/b/.claude/skills/grilling");
+        let n = est(text.len());
+        let line = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"text","text": text}
+        ]}});
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut Vec::new(), &mut skills);
+
+        assert_eq!(c.skill, n, "the loaded instructions are the skill's real cost");
+        assert_eq!(c.msg, n, "still conversation content: skills stay a share of messages");
+        assert_eq!(c.tool, 0, "an injected body is not a tool call");
+        assert_eq!(skills, vec![("grilling".to_string(), n, 1)]);
+    }
+
+    #[test]
+    fn repeat_injections_sum_rather_than_dedupe() {
+        // Each invocation re-injects the whole body, so the context pays twice.
+        let mut c = Composition::default();
+        let mut skills: Vec<(String, i64, i64)> = Vec::new();
+        let text = body("/Users/b/.claude/skills/implement");
+        let line = json!({"type":"user","message":{"role":"user","content":[
+            {"type":"text","text": text}
+        ]}});
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut Vec::new(), &mut skills);
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut Vec::new(), &mut skills);
+
+        assert_eq!(skills.len(), 2, "one row per injection; the query sums them");
+        assert_eq!(c.skill, est(text.len()) * 2);
+    }
+
     #[test]
     fn user_text_line_adds_messages_and_resets_reasoning() {
         let mut c = Composition { reas: 500, ..Default::default() };
         let line = json!({"type":"user","message":{"role":"user","content":"abcdefgh"}});
-        apply_user_line(&mut c, &line, &HashMap::new(), &mut Vec::new());
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut Vec::new(), &mut Vec::new());
         assert_eq!(c.msg, 2); // 8 bytes / 4
         assert_eq!(c.reas, 0, "genuine user turn strips prior thinking from context");
     }
@@ -117,7 +211,7 @@ mod tests {
         let line = json!({"type":"user","message":{"role":"user","content":[
             {"type":"tool_result","tool_use_id":"tu1","content":"xxxxxxxxxxxxxxxx"}
         ]}});
-        apply_user_line(&mut c, &line, &names, &mut Vec::new());
+        apply_user_line(&mut c, &line, &names, &mut Vec::new(), &mut Vec::new());
         assert_eq!(c.msg, 4);
         assert_eq!(c.tool, 4);
         assert_eq!(c.mcp, 4);
@@ -199,7 +293,7 @@ mod tests {
         let result = json!({"type":"user","message":{"role":"user","content":[
             {"type":"tool_result","tool_use_id":"t1","content":"xxxxxxxxxxxxxxxx"}
         ]}});
-        apply_user_line(&mut c, &result, &names, &mut sizes2);
+        apply_user_line(&mut c, &result, &names, &mut sizes2, &mut Vec::new());
         assert_eq!(sizes2, vec![("Bash".to_string(), 4, 0)], "result attributed via id map, calls 0");
     }
 
@@ -210,7 +304,7 @@ mod tests {
         let line = json!({"type":"user","message":{"role":"user","content":[
             {"type":"tool_result","tool_use_id":"missing","content":"yyyyyyyy"}
         ]}});
-        apply_user_line(&mut c, &line, &HashMap::new(), &mut sizes);
+        apply_user_line(&mut c, &line, &HashMap::new(), &mut sizes, &mut Vec::new());
         assert_eq!(sizes, vec![("unknown".to_string(), 2, 0)]);
     }
 }

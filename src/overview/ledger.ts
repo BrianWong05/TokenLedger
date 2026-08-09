@@ -12,6 +12,7 @@ import {
   fetchCtxResources,
   fetchCtxBuckets,
   fetchCtxTools,
+  fetchCtxSkills,
   fetchCtxExec,
 } from '../api';
 import type {
@@ -24,6 +25,7 @@ import type {
   CtxResource,
   CtxBuckets,
   CtxToolRow,
+  CtxSkillRow,
   CtxExecRow,
 } from '../types';
 
@@ -38,6 +40,7 @@ export interface LedgerPort {
   ctxResources(filters: Filters): Promise<CtxResource[]>;
   ctxBuckets(filters: Filters): Promise<CtxBuckets[]>;
   ctxTools(filters: Filters): Promise<CtxToolRow[]>;
+  ctxSkills(filters: Filters): Promise<CtxSkillRow[]>;
   ctxExec(filters: Filters): Promise<CtxExecRow[]>;
   onPricesRebuilt(cb: () => void): () => void; // subscribe, returns unsubscribe
 }
@@ -52,6 +55,7 @@ export const tauriLedger: LedgerPort = {
   ctxResources: fetchCtxResources,
   ctxBuckets: fetchCtxBuckets,
   ctxTools: fetchCtxTools,
+  ctxSkills: fetchCtxSkills,
   ctxExec: fetchCtxExec,
   onPricesRebuilt(cb) {
     // listen() is async; the unsubscribe resolves later, so teardown

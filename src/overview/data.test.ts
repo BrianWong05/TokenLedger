@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { SeriesPoint, BreakdownRow, CtxResource, CtxToolRow, CtxExecRow } from '../types';
+import type { SeriesPoint, BreakdownRow, CtxResource, CtxToolRow, CtxSkillRow, CtxExecRow } from '../types';
 import { emptyBySource } from './meta';
 import {
   seriesToDays,
@@ -30,6 +30,7 @@ import {
   categorizeTool,
   allocateByWeight,
   toolTree,
+  skillBars,
   bucketView,
   execFacets,
   profileView,
@@ -599,6 +600,32 @@ describe('bucketView', () => {
   });
   it('null in → null out', () => {
     expect(bucketView(null)).toBeNull();
+  });
+});
+
+describe('skillBars', () => {
+  const rows: CtxSkillRow[] = [
+    { source: 'claude', name: 'grilling', estTokens: 5000, uses: 3 },
+    { source: 'claude', name: 'superpowers:brainstorming', estTokens: 900, uses: 1 },
+    { source: 'claude', name: 'prototype', estTokens: 400, uses: 1 },
+    { source: 'codex', name: 'other', estTokens: 9999, uses: 9 },
+  ];
+
+  it('keeps only the selected Source, in the order the query returned', () => {
+    const bars = skillBars(rows, 'claude');
+    expect(bars.map((b) => b.name)).toEqual(['grilling', 'superpowers:brainstorming', 'prototype']);
+    expect(bars[0]).toEqual({ name: 'grilling', tokens: 5000, uses: 3, rest: 0 });
+  });
+
+  it('folds everything past the cap into one remainder carrying its totals', () => {
+    const bars = skillBars(rows, 'claude', 1);
+    expect(bars).toHaveLength(2);
+    // The remainder is unnamed on purpose: the label is the component's.
+    expect(bars[1]).toEqual({ name: '', tokens: 1300, uses: 2, rest: 2 });
+  });
+
+  it('is empty for a Source that establishes no skills', () => {
+    expect(skillBars(rows, 'gemini')).toEqual([]);
   });
 });
 

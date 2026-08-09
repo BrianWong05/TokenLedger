@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type ToolCategory } from './data';
+import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type SkillBar, type ToolCategory } from './data';
 import type { SourceMeta } from './meta';
 import type { CtxExecRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
@@ -24,7 +24,7 @@ function ContextBreakdown({
   tree: ToolCategory[];
   meta: string;
   execRows: CtxExecRow[];
-  skills: string[];
+  skills: SkillBar[];
 }) {
   const { t } = useOverviewT();
   const estShareTip = t('overview.estTip');
@@ -151,16 +151,17 @@ function ContextBreakdown({
         info: estShareTip,
       })}
       {open.has('skills') &&
-        skills.map((s) => (
-          // A skill name is a Resource, not a measurement: no token figure at
-          // all, so the vals column stays empty (never "—").
-          <div className="tt-ctx-row muted indent-1" key={`skill:${s}`}>
-            <span className="name">
-              <span className="dot" style={{ background: 'var(--border-strong)' }} />
-              {s}
-            </span>
-          </div>
-        ))}
+        skills.map((s) =>
+          // Heaviest first, everything past the cap folded into one row. A
+          // skill's weight is the instructions it loads, re-counted on every
+          // invocation — which is what `uses` explains.
+          row(
+            s.rest ? 'skill:__more__' : `skill:${s.name}`,
+            s.rest ? `${s.rest} ${t('overview.moreSkills')}` : s.name,
+            s.tokens,
+            { muted: true, indent: 1, info: `${s.uses} ${t('overview.skillUses')}` },
+          ),
+        )}
 
       {meta && <div className="tt-ctx-meta">{meta}</div>}
     </>

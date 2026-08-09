@@ -244,11 +244,15 @@ _Avoid_: Context window, breakdown, composition
 
 **Resource**:
 A named participant observed in a Session's Context — a skill, MCP server,
-subagent, or memory file. Resources are recorded by name and counted; they are
-never token-attributed. Context's categories say *how much*, Resources say
-*which ones*. A Resource therefore has no token figure at all: it displays
-nothing, not "—", because the dash is reserved for a category a Source failed
-to attribute.
+subagent, or memory file. Resources are recorded by name and counted. Context's
+categories say *how much*, Resources say *which ones*, so a Resource displays
+nothing rather than "—", the dash being reserved for a category a Source failed
+to attribute. One Resource is also weighed: a skill's instructions enter the
+Context as a block of their own, so each skill additionally carries the
+estimated tokens it loaded across the window and how many times it loaded them —
+every invocation re-loads the whole body. Nothing else is separable that way, so
+nothing else is weighed. A skill is named as it is invoked, which keeps a
+plugin's skill distinct from a local skill sharing its name.
 _Avoid_: Context item, roster
 
 ### Money

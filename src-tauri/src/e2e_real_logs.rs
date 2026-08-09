@@ -183,3 +183,40 @@ fn e2e_real_logs() {
         println!("  {:<16} est={:<12} calls={}", e, est, calls);
     }
 }
+
+// Per-skill weights against the real transcripts (#84). Separate from the
+// sweep above so it can be run alone:
+//   cargo test --no-default-features e2e_real_skills -- --ignored --nocapture
+#[test]
+#[ignore]
+fn e2e_real_skills() {
+    let roots = scan::SourceRoots::default_roots();
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
+    scan::run_scan(&mut conn, &roots);
+
+    let rows = queries::ctx_skills(&conn, &queries::Filters::default()).unwrap();
+    println!("\n=== heaviest skills across the real Ledger ===");
+    for r in rows.iter().take(10) {
+        println!("  {:<44} {:>9} est. tok  ({} uses)", r.name, r.est_tokens, r.uses);
+    }
+    assert!(!rows.is_empty(), "real transcripts invoke skills; none were weighed");
+    assert!(
+        rows.windows(2).all(|w| w[0].est_tokens >= w[1].est_tokens),
+        "heaviest first",
+    );
+    // The whole point of the change: a skill's body dwarfs its invocation
+    // overhead, so the top skill must be far above the ~24 tokens a Skill
+    // tool call costs on its own.
+    assert!(rows[0].est_tokens > 1_000, "bodies are not being attributed");
+
+    // A plugin skill keeps its namespace, so it never merges with a local
+    // skill of the same name.
+    if let Some(ns) = rows.iter().find(|r| r.name.contains(':')) {
+        println!("  namespaced example: {}", ns.name);
+    }
+
+    // Skills stay a subset of messages — the invariant the reclassification
+    // had to preserve.
+    crate::invariants::assert_secondary_subset(&conn);
+}

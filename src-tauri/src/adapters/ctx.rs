@@ -23,7 +23,9 @@ pub struct Composition {
     pub msg: i64,   // all conversation content (tool/mcp/skill are subsets)
     pub tool: i64,  // ⊆ msg
     pub mcp: i64,   // ⊆ tool
-    pub skill: i64, // ⊆ tool
+    // ⊆ msg, but NOT ⊆ tool: invoking a skill is a tool call, while the
+    // instructions it loads arrive as an injected user message.
+    pub skill: i64,
     pub reas: i64,  // thinking, current turn only (API strips it across turns)
     pub sys: i64,   // system-prompt baseline, estimated at the session's first call
     pub initialized: bool,

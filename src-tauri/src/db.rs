@@ -259,6 +259,26 @@ CREATE TABLE IF NOT EXISTS unreadable_artifacts (
 );
 PRAGMA user_version = 11;";
 
+// v12: per-skill weights. A skill's instructions are re-injected on every
+// invocation, so `uses` counts injections and est_tokens sums them — the same
+// scan-state-derived, rebuildable contract as ctx_tools (parse-from-byte-0
+// clears the file's rows; resumes append increments). Clearing scan state
+// forces the one-time full re-scan that populates history; without it the
+// panel would under-report every transcript scanned before this version.
+const SCHEMA_V12: &str = "\
+CREATE TABLE IF NOT EXISTS ctx_skills_usage (
+  source TEXT NOT NULL,
+  source_file TEXT NOT NULL,
+  name TEXT NOT NULL,
+  day TEXT NOT NULL,
+  est_tokens INTEGER NOT NULL DEFAULT 0,
+  uses INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (source_file, name, day)
+);
+DELETE FROM scanned_files;
+DELETE FROM session_ctx;
+PRAGMA user_version = 12;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -441,7 +461,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 11) and no-ops.
+    // the committed user_version (currently 12) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -477,6 +497,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 11 {
             conn.execute_batch(SCHEMA_V11)?;
+        }
+        if version < 12 {
+            conn.execute_batch(SCHEMA_V12)?;
         }
         Ok(())
     };
@@ -670,6 +693,39 @@ pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
 pub fn clear_ctx_tools_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM ctx_tools WHERE source_file = ?1", [source_file])?;
     Ok(())
+}
+
+pub fn clear_ctx_skills_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM ctx_skills_usage WHERE source_file = ?1", [source_file])?;
+    Ok(())
+}
+
+/// Additive per-(file, name, local-day) upsert of skill weights. Same
+/// idempotency contract as `add_ctx_tool_rows`: callers clear the file's rows
+/// before any parse from byte 0.
+pub fn add_ctx_skill_rows(
+    conn: &mut Connection,
+    source: &str,
+    source_file: &str,
+    rows: &[(String, i64, i64, i64)], // (name, est_tokens, uses, epoch_ts)
+) -> rusqlite::Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO ctx_skills_usage (source, source_file, name, day, est_tokens, uses) \
+             VALUES (?1, ?2, ?3, strftime('%Y-%m-%d', ?4, 'unixepoch', 'localtime'), ?5, ?6) \
+             ON CONFLICT(source_file, name, day) DO UPDATE SET \
+               est_tokens = est_tokens + excluded.est_tokens, \
+               uses = uses + excluded.uses",
+        )?;
+        for (name, est, uses, ts) in rows {
+            stmt.execute(params![source, source_file, name, ts, est, uses])?;
+        }
+    }
+    tx.commit()
 }
 
 /// Additive per-(file, name, local-day) upsert of tool weights.
@@ -968,7 +1024,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts"] {
             let count: i64 = conn
                 .query_row(
@@ -998,7 +1054,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
     }
 
     #[test]
@@ -1051,7 +1107,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, 12);
         let model_not_null: i64 = conn.query_row(
             "SELECT [notnull] FROM pragma_table_info('events') WHERE name = 'model'",
             [],
@@ -1127,7 +1183,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
         let has_catalog: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('prices') WHERE name = 'catalog'",
             [],
@@ -1156,15 +1212,14 @@ mod tests {
         ).unwrap();
         assert_eq!(override_rates, (Some(0.000009), Some(0.000010)));
 
-        // Scan state is NOT cleared: prices rebuild from the catalog on their own,
-        // so this migration has no reason to force a re-parse of the logs. Four
-        // sibling migrations DO clear it, so the seeded row must survive verbatim.
-        let scanned: (String, i64) = conn.query_row(
-            "SELECT path, byte_offset FROM scanned_files",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).unwrap();
-        assert_eq!(scanned, ("f".to_string(), 7), "scan state must survive the migration");
+        // Prices rebuild from the catalog on their own, so this migration has no
+        // reason to force a re-parse. Asserted on the batch itself: sibling
+        // migrations DO clear scan state, and the ladder to current now crosses
+        // v12, which clears it by design to populate per-skill weights.
+        assert!(
+            !SCHEMA_V9.contains("scanned_files"),
+            "the price-catalog migration must not clear scan state",
+        );
     }
 
     #[test]
@@ -1192,7 +1247,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -1351,7 +1406,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -1457,7 +1512,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
     }
 
     #[test]
@@ -1618,7 +1673,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1703,7 +1758,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1740,7 +1795,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
+        assert_eq!(v, 12);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
@@ -1749,11 +1804,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        // Scan state preserved: v6 is not a backfill migration.
-        let files: i64 = conn
-            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(files, 1, "settings migration must not clear scan state");
+        // v6 is not a backfill migration. Asserted on the batch itself, since
+        // the ladder to current now crosses v12, which clears scan state by
+        // design to force the per-skill re-parse.
+        assert!(
+            !SCHEMA_V6.contains("scanned_files"),
+            "settings migration must not clear scan state",
+        );
     }
 
     #[test]
@@ -1779,6 +1836,39 @@ mod tests {
         clear_ctx_exec_for_file(&conn, "f1.jsonl").unwrap();
         let left: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_exec", [], |r| r.get(0)).unwrap();
         assert_eq!(left, 1);
+    }
+
+    #[test]
+    fn ctx_skill_rows_accumulate_and_clear_per_file() {
+        let (_dir, mut conn) = temp_db();
+        let ts = 1_782_907_200i64;
+        // Re-invoking a skill re-injects the whole body, so same day + name
+        // accumulates both the tokens and the use count.
+        add_ctx_skill_rows(&mut conn, "claude", "f1.jsonl", &[
+            ("grilling".into(), 2400, 1, ts),
+            ("grilling".into(), 2400, 1, ts + 60),
+            ("superpowers:brainstorming".into(), 3900, 1, ts),
+        ]).unwrap();
+        add_ctx_skill_rows(&mut conn, "claude", "f2.jsonl", &[
+            ("grilling".into(), 100, 1, ts),
+        ]).unwrap();
+
+        let (est, uses): (i64, i64) = conn
+            .query_row(
+                "SELECT est_tokens, uses FROM ctx_skills_usage \
+                 WHERE source_file='f1.jsonl' AND name='grilling'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((est, uses), (4800, 2), "repeat injections sum, they do not dedupe");
+
+        // A parse from byte 0 rebuilds only this file's rows.
+        clear_ctx_skills_for_file(&conn, "f1.jsonl").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ctx_skills_usage", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "the other file's rows are untouched");
     }
 
     #[test]
