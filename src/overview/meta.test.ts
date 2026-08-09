@@ -12,7 +12,7 @@ describe('Source catalog', () => {
     expect(emptyBySource().kilo).toBe(0);
     expect(emptyBySource().omp).toBe(0);
     expect(sourceMeta('omp')).toMatchObject({
-      key: 'omp', label: 'Oh My Pi', source: 'Oh My Pi', icon: 'pi', aliases: ['Oh My Pi', 'omp'],
+      key: 'omp', label: 'Oh My Pi', source: 'Oh My Pi', icon: 'omp', aliases: ['Oh My Pi', 'omp'],
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: true },
       artifacts: expect.arrayContaining([
         expect.objectContaining({ id: 'sessions', path: '.omp/agent/sessions' }),
@@ -91,6 +91,7 @@ describe('Source catalog', () => {
     expect(SOURCE_ICONS.cline).toMatch(/^data:image\/svg\+xml/);
     expect(SOURCE_ICONS.pi).toMatch(/^data:image\/svg\+xml/);
     expect(SOURCE_ICONS.zed).toMatch(/^data:image\/svg\+xml/);
+    expect(SOURCE_ICONS.omp).toMatch(/^data:image\/svg\+xml/);
   });
 
   it('derives metadata from the catalog and gives historical keys neutral fallback metadata', () => {

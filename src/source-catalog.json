@@ -203,7 +203,7 @@
       "source": "Oh My Pi",
       "aliases": ["Oh My Pi", "omp"],
       "color": "#e06c75",
-      "icon": "pi",
+      "icon": "omp",
       "artifacts": [
         { "id": "sessions", "kind": "directory", "path": ".omp/agent/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
         { "id": "session-dir", "kind": "directory", "path": null, "environment": "OMP_SESSION_DIR", "suffix": null, "platforms": ["all"], "prerequisite": null },

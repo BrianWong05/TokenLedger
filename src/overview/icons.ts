@@ -14,6 +14,7 @@ import opencode from './icons/opencode.svg';
 import kilo from './icons/kilo.svg';
 import cline from './icons/cline.svg';
 import pi from './icons/pi.svg';
+import omp from './icons/omp.svg';
 import zed from './icons/zed.svg';
 import workbuddy from './icons/workbuddy.png';
 import qoder from './icons/qoder.svg';
@@ -36,6 +37,7 @@ export const SOURCE_ICONS: Record<string, string> = {
   kilo,
   cline,
   pi,
+  omp,
   zed,
   workbuddy,
   qoder,
