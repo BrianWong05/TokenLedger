@@ -5,11 +5,19 @@ import { SOURCES, emptyBySource, sourceMeta } from './meta';
 describe('Source catalog', () => {
   it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, WorkBuddy, CodeBuddy, and Qoder in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'workbuddy', 'codebuddy', 'qoder',
+      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'omp', 'workbuddy', 'codebuddy', 'qoder',
     ]);
     expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder' });
     expect(emptyBySource().pi).toBe(0);
     expect(emptyBySource().kilo).toBe(0);
+    expect(emptyBySource().omp).toBe(0);
+    expect(sourceMeta('omp')).toMatchObject({
+      key: 'omp', label: 'Oh My Pi', source: 'Oh My Pi', icon: 'pi', aliases: ['Oh My Pi', 'omp'],
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: true },
+      artifacts: expect.arrayContaining([
+        expect.objectContaining({ id: 'sessions', path: '.omp/agent/sessions' }),
+      ]),
+    });
     expect(sourceMeta('codebuddy')).toMatchObject({
       key: 'codebuddy', label: 'CodeBuddy', source: 'CodeBuddy', icon: 'codebuddy', aliases: ['CodeBuddy CLI', 'CodeBuddy IDE', 'CodeBuddy VS Code'],
       capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },

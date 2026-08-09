@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic fifteen-Source fixture — not
+// on every plain `cargo test` against a hermetic sixteen-Source fixture — not
 // only under the #[ignore] real-log e2e. The four assert_* helpers hold the
 // exact SQL + messages the e2e used to inline; both callers share them.
 //
@@ -79,7 +79,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic fifteen-Source fixture + the default-run test that proves the four
+// Hermetic sixteen-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -655,9 +655,22 @@ fn build_qoder(base: &Path) {
     )
     .unwrap();
 }
+fn build_omp(base: &Path) {
+    write(
+        &base.join("omp/session-omp.jsonl"),
+        concat!(
+            r#"{"type":"session","version":3,"id":"session-omp","timestamp":"2026-07-01T12:00:00.000Z","cwd":"/Users/dev/projects/alpha"}"#,
+            "\n",
+            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T12:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1782907201000}}"#,
+            "\n",
+            r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T12:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"provider":"anthropic","model":"claude-3-5-sonnet","usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5},"stopReason":"stop","timestamp":1782907202000}}"#,
+            "\n",
+        ),
+    );
+}
 
 #[test]
-fn hermetic_fifteen_source_partition_invariants() {
+fn hermetic_sixteen_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
@@ -676,6 +689,7 @@ fn hermetic_fifteen_source_partition_invariants() {
     build_workbuddy(base);
     build_codebuddy(base);
     build_qoder(base);
+    build_omp(base);
 
     let roots = SourceRoots {
         claude: base.join("claude"),
@@ -689,6 +703,7 @@ fn hermetic_fifteen_source_partition_invariants() {
         antigravity_cli_conversations: base.join("antigravity-cli"),
         goose_sessions: vec![base.join("goose")],
         pi_sessions: vec![base.join("pi")],
+        omp_sessions: vec![base.join("omp")],
         opencode_data: base.join("opencode"),
         opencode_legacy: base.join("opencode/storage"),
         opencode_db: None,
@@ -706,7 +721,7 @@ fn hermetic_fifteen_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the fifteen Sources ingested events and reported no error.
+    // Every one of the sixteen Sources ingested events and reported no error.
     for src in [
         "claude",
         "codex",
@@ -720,6 +735,7 @@ fn hermetic_fifteen_source_partition_invariants() {
         "zed",
         "cline",
         "pi",
+        "omp",
         "workbuddy",
         "codebuddy",
         "qoder",
@@ -779,11 +795,11 @@ fn hermetic_fifteen_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all fifteen here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all sixteen here).
     let buckets = crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 14,
-        "expected >=14 sources in ctx_buckets, got {}",
+        buckets.len() >= 15,
+        "expected >=15 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -822,7 +838,7 @@ fn hermetic_fifteen_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // Source's totals identical: ingestion is idempotent across all fifteen.
+    // ingestion is idempotent across all sixteen.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {

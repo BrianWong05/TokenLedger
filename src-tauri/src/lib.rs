@@ -551,6 +551,7 @@ mod tests {
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
             goose_sessions: vec![dir.path().join("goose")],
             pi_sessions: vec![dir.path().join("pi")],
+            omp_sessions: vec![dir.path().join("omp")],
             opencode_data: dir.path().join("opencode"),
             opencode_legacy: dir.path().join("opencode/storage"),
             opencode_db: None,
@@ -572,7 +573,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 15);
+        assert_eq!(status.sources.len(), 16);
 
         let sum = queries::summary(&db, &Filters::default()).unwrap();
         assert_eq!(sum.total_tokens, 0);

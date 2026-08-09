@@ -12,6 +12,7 @@ pub mod grok;
 pub mod hermes;
 pub mod kilo;
 pub mod opencode;
+pub mod omp;
 pub mod pi;
 pub mod qoder;
 pub mod workbuddy;

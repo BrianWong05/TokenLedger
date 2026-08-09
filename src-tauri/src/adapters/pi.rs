@@ -152,6 +152,14 @@ struct ParsedPiFile {
 }
 
 pub fn scan_pi(conn: &mut rusqlite::Connection, session_roots: &[PathBuf]) -> SourceScanResult {
+    scan_pi_sessions(conn, session_roots, "pi")
+}
+
+pub fn scan_pi_sessions(
+    conn: &mut rusqlite::Connection,
+    session_roots: &[PathBuf],
+    source: &str,
+) -> SourceScanResult {
     let mut roots_seen = HashSet::new();
     let mut files_seen = HashSet::new();
     let mut files = Vec::new();
@@ -183,7 +191,7 @@ pub fn scan_pi(conn: &mut rusqlite::Connection, session_roots: &[PathBuf]) -> So
 
     let mut result = SourceScanResult::default();
     for path in files {
-        match scan_file(conn, &path, &owner, &mut seen_tool_entries) {
+        match scan_file(conn, &path, &owner, &mut seen_tool_entries, source) {
             Ok((inserted, skipped)) => {
                 result.events_inserted += inserted;
                 result.lines_skipped += skipped;
@@ -205,6 +213,7 @@ fn scan_file(
     path: &Path,
     owner: &std::collections::HashMap<String, String>,
     seen_tool_entries: &mut HashSet<String>,
+    source: &str,
 ) -> Result<(u64, u64), String> {
     let state = FileState {
         byte_offset: PI_PARSER_VERSION,
@@ -216,20 +225,20 @@ fn scan_file(
 
     let source_file = path.to_string_lossy().to_string();
     let content = std::fs::read_to_string(path)
-        .map_err(|error| format!("pi: read {}: {error}", path.display()))?;
-    let parsed = parse_file(&content, &source_file, owner, seen_tool_entries);
+        .map_err(|error| format!("{source}: read {}: {error}", path.display()))?;
+    let parsed = parse_file(&content, &source_file, owner, seen_tool_entries, source);
     // A changed pi file is reparsed from the top (no byte-offset resume), so the
     // per-tool drill-down is rebuilt from scratch: clear this file's rows first,
     // then re-add only the entries this file owns (copies defer to their origin).
     clear_ctx_tools_for_file(conn, &source_file)
-        .map_err(|error| format!("pi: metadata {}: {error}", path.display()))?;
+        .map_err(|error| format!("{source}: metadata {}: {error}", path.display()))?;
     // keep_max_output preserves first-writer attribution on a copied conflict
     // (identical copies tie, so the original's Session/Project/Model stand) while
     // still backfilling newly added nullable fields.
     let inserted = insert_events_keep_max_output(conn, &parsed.events)
-        .map_err(|error| format!("pi: insert {}: {error}", path.display()))?;
-    add_ctx_tool_rows(conn, "pi", &source_file, &parsed.tool_rows)
-        .map_err(|error| format!("pi: metadata {}: {error}", path.display()))?;
+        .map_err(|error| format!("{source}: insert {}: {error}", path.display()))?;
+    add_ctx_tool_rows(conn, source, &source_file, &parsed.tool_rows)
+        .map_err(|error| format!("{source}: metadata {}: {error}", path.display()))?;
     // Persist which entries this file owns so a later fork/clone of them defers,
     // even if this file is skipped as unchanged when the copy is discovered.
     let owned: Vec<(String, String)> = parsed
@@ -238,9 +247,9 @@ fn scan_file(
         .map(|ident| (ident, source_file.clone()))
         .collect();
     record_pi_tool_owners(conn, &owned)
-        .map_err(|error| format!("pi: metadata {}: {error}", path.display()))?;
+        .map_err(|error| format!("{source}: metadata {}: {error}", path.display()))?;
     set_file_state(conn, &source_file, state)
-        .map_err(|error| format!("pi: metadata {}: {error}", path.display()))?;
+        .map_err(|error| format!("{source}: metadata {}: {error}", path.display()))?;
     Ok((inserted, parsed.lines_skipped))
 }
 
@@ -294,14 +303,14 @@ fn event_timestamp(message_ts_ms: Option<i64>, entry_ts_iso: Option<&str>) -> Op
 // The file/session-independent identity of a modern entry (one with an id + entry
 // timestamp), shared by every copy. It is the fork/clone owner-map key and the
 // tail of the entry's dedup_key.
-fn modern_ident(id: &str, entry_ts_iso: &str) -> String {
-    format!("{id}:{entry_ts_iso}")
+fn modern_ident(id: &str, entry_ts_iso: &str, source: &str) -> String {
+    format!("{source}:{id}:{entry_ts_iso}")
 }
 
 // The dedup_key of a modern entry: its source-independent identity, namespaced by
 // Source and entry kind so copies of one entry collapse to a single Usage Record.
-fn modern_key(kind: &str, id: &str, entry_ts_iso: &str) -> String {
-    format!("pi:{kind}:{}", modern_ident(id, entry_ts_iso))
+fn modern_key(kind: &str, id: &str, entry_ts_iso: &str, source: &str) -> String {
+    format!("{source}:{kind}:{id}:{entry_ts_iso}")
 }
 
 // A legacy pi Session (no entry ids) still deduplicates: identity is a hash of
@@ -313,6 +322,7 @@ fn legacy_dedup_key(
     entry_ts_iso: Option<&str>,
     model: Option<&str>,
     u: &PiUsage,
+    source: &str,
 ) -> String {
     let stable_fields = serde_json::to_vec(&(
         message_ts_ms.unwrap_or(fallback_ts * 1000),
@@ -327,7 +337,7 @@ fn legacy_dedup_key(
     ))
     .expect("legacy pi identity fields always serialize");
     let digest = Sha256::digest(stable_fields);
-    format!("pi:legacy:{kind}:{digest:x}")
+    format!("{source}:legacy:{kind}:{digest:x}")
 }
 
 fn parse_file(
@@ -335,6 +345,7 @@ fn parse_file(
     source_file: &str,
     owner: &std::collections::HashMap<String, String>,
     seen_tool_entries: &mut HashSet<String>,
+    source: &str,
 ) -> ParsedPiFile {
     let mut events = Vec::new();
     let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
@@ -398,7 +409,7 @@ fn parse_file(
         let entry_ts_iso = nonempty(v["timestamp"].as_str());
         // File/session-independent identity of this entry, shared by every copy.
         let ident = match (id.as_deref(), entry_ts_iso.as_deref()) {
-            (Some(id), Some(ts)) => Some(modern_ident(id, ts)),
+            (Some(id), Some(ts)) => Some(modern_ident(id, ts, source)),
             _ => None,
         };
         // Content active immediately before this entry: its parent's composition
@@ -455,6 +466,7 @@ fn parse_file(
                     &u,
                     &session_id,
                     &project,
+                    source,
                 );
             }
             // Descendants see the summary plus the retained tail in place of the
@@ -508,11 +520,12 @@ fn parse_file(
                             &id,
                             entry_ts_iso.as_deref(),
                             message["timestamp"].as_i64(),
-                            model,
+                            model.or_else(|| active_model(&parent_of, &established_model, parent_id.as_deref())),
                             base,
                             &u,
                             &session_id,
                             &project,
+                            source,
                         ),
                         // A usage block present but all-zero is a placeholder: skip
                         // and count it. An absent usage block is simply not a Request.
@@ -547,6 +560,7 @@ fn parse_file(
                             &u,
                             &session_id,
                             &project,
+                            source,
                         );
                     }
                 }
@@ -636,10 +650,11 @@ fn push_pi_event(
     session_id: &Option<String>,
     project: &Option<String>,
     ctx: CtxTokens,
+    source: &str,
 ) {
     events.push(UsageEvent {
         dedup_key,
-        source: "pi".to_string(),
+        source: source.to_string(),
         timestamp,
         model,
         project: project.clone(),
@@ -669,17 +684,18 @@ fn emit_assistant(
     u: &PiUsage,
     session_id: &Option<String>,
     project: &Option<String>,
+    source: &str,
 ) {
     let Some(timestamp) = event_timestamp(message_ts_ms, entry_ts_iso) else {
         *lines_skipped += 1; // usage with no usable time is dropped, not guessed
         return;
     };
     let dedup_key = match (id.as_deref(), entry_ts_iso) {
-        (Some(id), Some(ts)) => modern_key("message", id, ts),
-        _ => legacy_dedup_key("message", message_ts_ms, timestamp, entry_ts_iso, model.as_deref(), u),
+        (Some(id), Some(ts)) => modern_key("message", id, ts, source),
+        _ => legacy_dedup_key("message", message_ts_ms, timestamp, entry_ts_iso, model.as_deref(), u, source),
     };
     let ctx = attribute_pi(before, u.billed());
-    push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx);
+    push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx, source);
 }
 
 // Compaction / branch-summary usage. Its Request time is the Session entry time
@@ -697,17 +713,18 @@ fn emit_summary(
     u: &PiUsage,
     session_id: &Option<String>,
     project: &Option<String>,
+    source: &str,
 ) {
     let Some(timestamp) = entry_ts_iso.and_then(iso_to_epoch) else {
         *lines_skipped += 1;
         return;
     };
     let dedup_key = match (id.as_deref(), entry_ts_iso) {
-        (Some(id), Some(ts)) => modern_key("compaction", id, ts),
-        _ => legacy_dedup_key("compaction", None, timestamp, entry_ts_iso, model.as_deref(), u),
+        (Some(id), Some(ts)) => modern_key("compaction", id, ts, source),
+        _ => legacy_dedup_key("compaction", None, timestamp, entry_ts_iso, model.as_deref(), u, source),
     };
     let ctx = attribute_pi(before, u.billed());
-    push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx);
+    push_pi_event(events, source_file, dedup_key, timestamp, model, u, session_id, project, ctx, source);
 }
 
 // A usage-bearing tool result: nested model work with no trustworthy Model, left
@@ -726,16 +743,17 @@ fn emit_tool_result(
     u: &PiUsage,
     session_id: &Option<String>,
     project: &Option<String>,
+    source: &str,
 ) {
     let Some(timestamp) = event_timestamp(message_ts_ms, entry_ts_iso) else {
         *lines_skipped += 1;
         return;
     };
     let dedup_key = match (id.as_deref(), entry_ts_iso) {
-        (Some(id), Some(ts)) => modern_key("message", id, ts),
-        _ => legacy_dedup_key("toolresult", message_ts_ms, timestamp, entry_ts_iso, None, u),
+        (Some(id), Some(ts)) => modern_key("message", id, ts, source),
+        _ => legacy_dedup_key("toolresult", message_ts_ms, timestamp, entry_ts_iso, None, u, source),
     };
-    push_pi_event(events, source_file, dedup_key, timestamp, None, u, session_id, project, CtxTokens::default());
+    push_pi_event(events, source_file, dedup_key, timestamp, None, u, session_id, project, CtxTokens::default(), source);
 }
 
 #[cfg(test)]
@@ -760,7 +778,7 @@ mod tests {
 
     // Parse one file in isolation (no prior owners, fresh dedup set).
     fn parse(content: &str, source_file: &str) -> ParsedPiFile {
-        parse_file(content, source_file, &std::collections::HashMap::new(), &mut HashSet::new())
+        parse_file(content, source_file, &std::collections::HashMap::new(), &mut HashSet::new(), "pi")
     }
 
     fn write_session(root: &Path, name: &str, session_id: &str, model: &str, input: i64) {

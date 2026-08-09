@@ -197,6 +197,22 @@
       "prerequisite": null
     },
     {
+      "key": "omp",
+      "label": "Oh My Pi",
+      "source": "Oh My Pi",
+      "aliases": ["Oh My Pi", "omp"],
+      "color": "#e06c75",
+      "icon": "pi",
+      "artifacts": [
+        { "id": "sessions", "kind": "directory", "path": ".omp/agent/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "session-dir", "kind": "directory", "path": null, "environment": "OMP_SESSION_DIR", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "agent-dir", "kind": "directory", "path": null, "environment": "OMP_AGENT_DIR", "suffix": "sessions", "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
       "key": "workbuddy",
       "label": "WorkBuddy",
       "source": "WorkBuddy",
