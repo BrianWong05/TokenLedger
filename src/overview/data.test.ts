@@ -31,6 +31,7 @@ import {
   allocateByWeight,
   toolTree,
   skillBars,
+  mcpBars,
   bucketView,
   execFacets,
   profileView,
@@ -588,6 +589,52 @@ describe('toolTree', () => {
   it('null total or no rows → empty tree', () => {
     expect(toolTree(rows, null)).toEqual([]);
     expect(toolTree([], 1000)).toEqual([]);
+  });
+});
+
+describe('mcpBars', () => {
+  const rows: CtxToolRow[] = [
+    { source: 'claude', name: 'mcp__pencil__batch_get', estTokens: 300, calls: 3 },
+    { source: 'claude', name: 'mcp__pencil__get_screenshot', estTokens: 100, calls: 1 },
+    { source: 'claude', name: 'mcp__codebase-memory-mcp__search_graph', estTokens: 600, calls: 4 },
+    { source: 'claude', name: 'Bash', estTokens: 9999, calls: 50 },
+  ];
+
+  it('groups a server’s tools, ignores everything not MCP, heaviest first', () => {
+    const bars = mcpBars(rows, 1000);
+    expect(bars).toEqual([
+      { name: 'codebase-memory-mcp', tokens: 600, calls: 4 },
+      { name: 'pencil', tokens: 400, calls: 4 },
+    ]);
+  });
+
+  it('allocates the MCP total, so the servers sum to the row above them', () => {
+    // Weights 600/400 against a total that divides unevenly: largest-remainder
+    // keeps the children summing exactly, which is what makes the drill-down
+    // readable as a breakdown rather than a second, disagreeing estimate.
+    const bars = mcpBars(rows, 999);
+    expect(bars.reduce((a, b) => a + b.tokens, 0)).toBe(999);
+  });
+
+  it('is empty when the Source cannot attribute MCP, or served no calls', () => {
+    expect(mcpBars(rows, null)).toEqual([]);
+    expect(mcpBars([{ source: 'claude', name: 'Bash', estTokens: 10, calls: 1 }], 1000)).toEqual([]);
+    expect(mcpBars(rows, 0)).toEqual([]);
+  });
+
+  it('agrees with the same server under the tool tree', () => {
+    // The panel reaches a server two ways — Tool calls › MCP: pencil, and the
+    // MCP servers row — allocating from different parents. Both parents scale
+    // the same weights by the same billed/total factor, so a server must read
+    // the same on both paths or the card contradicts itself.
+    const both: CtxToolRow[] = [
+      { source: 'claude', name: 'Bash', estTokens: 400, calls: 9 },
+      { source: 'claude', name: 'mcp__pencil__batch_get', estTokens: 300, calls: 3 },
+      { source: 'claude', name: 'mcp__terminal__read', estTokens: 300, calls: 2 },
+    ];
+    const viaTree = toolTree(both, 1000).find((c) => c.label === 'MCP: pencil')!.tokens;
+    const viaRow = mcpBars(both, 600).find((b) => b.name === 'pencil')!.tokens;
+    expect(viaRow).toBe(viaTree);
   });
 });
 

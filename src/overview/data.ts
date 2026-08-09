@@ -863,6 +863,13 @@ export function ctxMeta(res: CtxResource[], tool: SourceKey, lang: Lang = 'en'):
 
 // ---- tool drill-down (spec 2026-07-10-context-drilldown) ----
 
+// An MCP tool is named `mcp__<server>__<tool>`, so every call it makes says
+// which server served it. Null for anything that is not an MCP tool.
+function mcpServer(name: string): string | null {
+  if (!name.startsWith('mcp__')) return null;
+  return name.split('__')[1] || 'unknown';
+}
+
 // Category map mirrors TokenTracker's, trimmed to names seen in our logs.
 export function categorizeTool(name: string): string {
   if (name === 'Task' || name === 'Agent') return 'Agent';
@@ -871,10 +878,8 @@ export function categorizeTool(name: string): string {
   if (name === 'Grep') return 'Search';
   if (name === 'Bash') return 'Execution';
   if (/^Web(Fetch|Search)$/.test(name)) return 'Web';
-  if (name.startsWith('mcp__')) {
-    const server = name.split('__')[1] ?? 'unknown';
-    return `MCP: ${server}`;
-  }
+  const server = mcpServer(name);
+  if (server) return `MCP: ${server}`;
   if (name === 'Skill') return 'Skill';
   return 'Other';
 }
@@ -930,6 +935,38 @@ export function skillBars(rows: CtxSkillRow[], source: string, top = 10): SkillB
     });
   }
   return out;
+}
+
+// One expanded MCP servers row. Traffic only: the tool definitions a server
+// publishes reach the model inside the system prompt, which names no owner,
+// so they are not in `tokens`.
+export interface McpBar { name: string; tokens: number; calls: number }
+
+// The window's MCP servers for the selected Source, heaviest first. Every
+// token the MCP category counts comes from an `mcp__*` tool row and nothing
+// else does, so allocating that total by the stored weights is exact — the
+// servers sum back to the row they hang under, like the tool tree's levels.
+export function mcpBars(rows: CtxToolRow[], mcpTotal: number | null): McpBar[] {
+  // Falsy covers both "the Source cannot attribute MCP" and "it attributed
+  // nothing", which would otherwise expand into a list of zeros.
+  if (!mcpTotal) return [];
+  const byServer = new Map<string, { weight: number; calls: number }>();
+  for (const r of rows) {
+    const server = mcpServer(r.name);
+    if (!server) continue;
+    const acc = byServer.get(server) ?? { weight: 0, calls: 0 };
+    acc.weight += r.estTokens;
+    acc.calls += r.calls;
+    byServer.set(server, acc);
+  }
+  if (byServer.size === 0) return [];
+  const tokens = allocateByWeight(
+    mcpTotal,
+    [...byServer].map(([key, a]) => ({ key, weight: a.weight })),
+  );
+  return [...byServer]
+    .map(([name, a]) => ({ name, tokens: tokens.get(name) ?? 0, calls: a.calls }))
+    .sort((a, b) => b.tokens - a.tokens || (a.name < b.name ? -1 : 1));
 }
 
 export interface ToolLeaf { name: string; tokens: number; calls: number }

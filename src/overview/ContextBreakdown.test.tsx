@@ -18,7 +18,7 @@ const mountedRoots: Root[] = [];
 const ctx: CtxTotals = {
   billed: 1000, reused: 500,
   messages: 100, system: 50, reasoning: null,
-  toolcalls: 1000, agents: null, mcp: null, skills: null,
+  toolcalls: 1000, agents: null, mcp: 600, skills: null,
 };
 const tree = [{ label: 'Execution', tokens: 1000, tools: [{ name: 'Bash', tokens: 1000, calls: 5 }] }];
 // kind/exe/cmd deliberately distinct per row so each exec tab renders a
@@ -32,14 +32,25 @@ const skills = [
   { name: 'verify', tokens: 900, uses: 1, rest: 0 },
 ];
 
-function render(view: BucketView | null = null, skillRows = skills, ctxOverride = ctx) {
+// Allocated shares of ctx.mcp, as mcpBars hands them over: they sum to 600.
+const mcp = [
+  { name: 'pencil', tokens: 400, calls: 4 },
+  { name: 'codebase-memory-mcp', tokens: 200, calls: 1 },
+];
+
+function render(
+  view: BucketView | null = null,
+  skillRows = skills,
+  ctxOverride = ctx,
+  mcpRows = mcp,
+) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
   act(() =>
     root.render(
-      <ContextBreakdown tool={SOURCES[0]} ctx={ctxOverride} view={view} tree={tree} meta="" execRows={execRows} skills={skillRows} />,
+      <ContextBreakdown tool={SOURCES[0]} ctx={ctxOverride} view={view} tree={tree} meta="" execRows={execRows} skills={skillRows} mcp={mcpRows} />,
     ),
   );
   return container;
@@ -156,6 +167,29 @@ describe('ContextBreakdown drilldown', () => {
     expect(queryRow(c, 'grilling')).toBeDefined();
     const more = queryRow(c, '3 more skills');
     expect(more?.querySelector('.val')?.textContent).toBe('1.2K');
+  });
+
+  it('lists every server when MCP servers is expanded', () => {
+    const c = render();
+    expect(queryRow(c, 'pencil')).toBeUndefined();
+
+    clickRow(c, 'MCP servers');
+    const leaf = queryRow(c, 'pencil');
+    expect(leaf).toBeDefined();
+    expect(queryRow(c, 'codebase-memory-mcp')).toBeDefined();
+    // The server's share of the MCP total, with the call count that explains
+    // whether it is chatty or each round trip is heavy.
+    expect(leaf?.querySelector('.val')?.textContent).toBe('400');
+    expect(leaf?.getAttribute('title')).toBe('4 calls');
+  });
+
+  it('offers no drill-down for a Source that names no servers', () => {
+    const c = render(null, skills, ctx, []);
+    // Reverts to the plain informational row rather than a chevron that
+    // expands to nothing.
+    expect(queryRow(c, 'MCP servers')?.querySelector('.aff')?.textContent).toBe('ⓘ');
+    clickRow(c, 'MCP servers');
+    expect(queryRow(c, 'pencil')).toBeUndefined();
   });
 
   it('renders the exec facet table when the Bash leaf is expanded', () => {
