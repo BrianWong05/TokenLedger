@@ -1,6 +1,8 @@
 mod adapters;
 mod db;
+pub mod export_artifact;
 mod pricing;
+pub mod proto;
 mod queries;
 mod scan;
 mod settings;
@@ -9,6 +11,7 @@ mod time;
 mod tray;
 mod types;
 mod updater;
+pub mod uri;
 
 // Task 16 end-to-end verification against the real logs on this machine.
 // ponytail: lives inside the crate (not src-tauri/tests/) because db, scan,
@@ -174,6 +177,35 @@ fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadab
         .lock()
         .map(|db| db::load_unreadable(&db))
         .unwrap_or_default()
+}
+
+/// Decrypt Antigravity's `.pb` Sessions by running the `antigravity-export`
+/// companion (ADR-0018), then report what it managed. This is the only place
+/// the app reaches a Source, and it stays honest about the boundary three ways:
+/// a person has to ask for it, it happens in a separate process, and the scan
+/// itself never calls it. The companion writes Artifacts; the next scan reads
+/// them like any other file.
+#[tauri::command]
+async fn export_antigravity(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_shell::ShellExt;
+
+    let output = app
+        .shell()
+        .sidecar("antigravity-export")
+        .map_err(|e| format!("the export companion is missing from this build: {e}"))?
+        .output()
+        .await
+        .map_err(|e| format!("could not run the export companion: {e}"))?;
+
+    // The companion narrates progress on stderr and its verdict on stdout, so a
+    // failure without stdout still has something to say.
+    let report = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let failure = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        Ok(if report.is_empty() { failure } else { report })
+    } else {
+        Err(if failure.is_empty() { report } else { failure })
+    }
 }
 
 #[tauri::command]
@@ -396,6 +428,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         // Closing the window must not kill capture (ADR-0005): hide it instead,
         // keeping the webview (and its auto-refresh scans) alive. Quit lives in
         // the tray.
@@ -496,6 +529,7 @@ pub fn run() {
             scan,
             last_scan,
             unreadable_artifacts,
+            export_antigravity,
             summary,
             trend,
             series,
@@ -548,6 +582,7 @@ mod tests {
             hermes_db: dir.path().join("state.db"),
             grok_sessions: dir.path().join("grok"),
             antigravity_conversations: dir.path().join("antigravity"),
+            antigravity_ide_conversations: dir.path().join("antigravity-ide"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
             goose_sessions: vec![dir.path().join("goose")],
             pi_sessions: vec![dir.path().join("pi")],

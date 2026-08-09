@@ -58,4 +58,12 @@ jobs:
 
       - run: npm test
 
+      # Like dist/ above: the export companion is a declared externalBin, and
+      # tauri-build refuses to compile the crate while one is missing. The
+      # binary is gitignored (it is a build artifact), so a fresh checkout has
+      # to produce it before any cargo command, not just before bundling.
+      # Release builds get this free — tauri-action runs `tauri build`, which
+      # runs beforeBuildCommand — but this workflow calls cargo directly.
+      - run: npm run sidecar
+
       - run: cargo test --manifest-path src-tauri/Cargo.toml

@@ -9,31 +9,38 @@
 // See docs/source-evidence/antigravity.md and ADR-0017.
 //
 // Each `gen_metadata` row is one generation (one API call) encoded as a
-// protobuf blob. There is no published .proto; field numbers below follow
-// tokscale's reverse engineering (verified against real databases from a
-// genuine install: output #9 + thinking #10 = the API's total output):
+// protobuf blob. Google publishes no .proto, but the language server embeds its
+// own descriptors, and the field numbers below were read straight out of them
+// (`ChatModelMetadata`, `ModelUsageStats`) rather than guessed. Cross-checked
+// against real databases: #3 == #9 + #10 on every row that carries all three.
 //
-//   gen_metadata.#1 (chatModel)
+//   gen_metadata.#1 (chatModel = ChatModelMetadata)
 //     .#19 (string)             → model id (e.g. "gemini-3-flash-a")
 //     .#9.#4 = {#1 sec, #2 ns}  → per-generation wall-clock timestamp
-//     .#4 (usage)
-//       .#1 (varint)            → fixed system-prompt input tokens
-//       .#2 (varint)            → newly-processed (non-cached) input tokens
+//     .#4 (usage = ModelUsageStats)
+//       .#1 (varint)            → Model enum — an identifier, NOT a token count
+//       .#2 (varint)            → input tokens
+//       .#3 (varint)            → total output tokens (== #9 + #10)
+//       .#4 (varint)            → cache-write tokens
 //       .#5 (varint)            → cache-read tokens
-//       .#9 (varint)            → output text tokens
-//       .#10 (varint)           → thinking/reasoning tokens
+//       .#9 (varint)            → thinking/reasoning tokens
+//       .#10 (varint)           → response text tokens
 //       .#11 (string)           → responseId (dedup key)
 //   trajectory_metadata_blob.#2 = {#1 sec}    → conversation created-at
 //   trajectory_metadata_blob.#1.#1 (string)   → workspace file:// URI
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OpenFlags};
 
-use super::{file_state_of, percent_decode, unchanged};
+use super::{file_state_of, unchanged};
 use crate::db::{replace_file_events, set_file_state};
+use crate::export_artifact::{self, ConversationExport};
+use crate::proto::{message_field, string_field, varint_field};
 use crate::types::{FileState, SourceScanResult, UsageEvent};
+use crate::uri::file_uri_to_path;
 
 /// Bump to force a full re-parse of every Antigravity DB on the next scan.
 /// Stored in the file-state's otherwise-unused `byte_offset` (this adapter
@@ -41,7 +48,10 @@ use crate::types::{FileState, SourceScanResult, UsageEvent};
 /// re-scan self-clearing: the mismatch fires once, then the new version is
 /// persisted. Beats a one-shot migration, which a dev run would consume.
 /// v1 = wire aliases resolved to real model ids (see `resolve_model`).
-const PARSER_VERSION: i64 = 1;
+/// v2 = usage read against the server's own descriptors: `#1` is the Model enum
+/// and no longer inflates input, and `#9`/`#10` are reasoning/response the right
+/// way round.
+const PARSER_VERSION: i64 = 2;
 
 /// Antigravity records an internal wire alias in `chatModel`, not a model id.
 /// `gemini-3-flash-a`/`-b` are the M132/M133 placeholders — both Gemini 3.5
@@ -66,22 +76,49 @@ fn resolve_model(raw: &str, ts: i64) -> String {
 
 pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanResult {
     let mut result = SourceScanResult::default();
+    let mut dirs: Vec<Vec<PathBuf>> = Vec::with_capacity(roots.len());
     for root in roots {
         if root.is_file() {
             process_db(conn, root, &mut result);
             continue;
         }
-        let entries = match fs::read_dir(root) {
-            Ok(rd) => rd,
+        match fs::read_dir(root) {
+            Ok(entries) => dirs.push(entries.flatten().map(|e| e.path()).collect()),
             Err(_) => continue, // missing dir → zero events, no error
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
+        }
+    }
+
+    // Every export across every app data dir first, because a `.pb` can only be
+    // judged once its export has been *read*, and the copy that vindicates it
+    // may live in a different directory. The set records Sessions whose export
+    // actually parsed, not merely those with a file of the right name: a
+    // malformed export would otherwise silence the ≥ while contributing
+    // nothing, and the total would drop with nothing left to say why.
+    let mut stood_in_for: HashSet<String> = HashSet::new();
+    for paths in &dirs {
+        for path in paths {
+            let Some(session) = export_artifact::session_id(path) else { continue };
+            // Antigravity mirrors a Session across its app data dirs. Read it
+            // once: the events carry the same dedup keys either way, so a second
+            // read changes no total but would report inserts that never happened.
+            if stood_in_for.contains(&session) {
+                continue;
+            }
+            if process_export(conn, path, &mut result) {
+                stood_in_for.insert(session);
+            }
+        }
+    }
+
+    for paths in &dirs {
+        for path in paths {
             match path.extension().and_then(|e| e.to_str()) {
-                Some("db") => process_db(conn, &path, &mut result),
-                Some("pb") => {
+                Some("db") => process_db(conn, path, &mut result),
+                // Encrypted, and still an Unreadable Artifact — but only while
+                // no readable export stands in for it (ADR-0017, ADR-0018).
+                Some("pb") if !pb_is_exported(path, &stood_in_for) => {
                     result.artifacts_unreadable += 1;
-                    let mtime = file_state_of(&path).mtime;
+                    let mtime = file_state_of(path).mtime;
                     result.unreadable_max_mtime =
                         Some(result.unreadable_max_mtime.unwrap_or(i64::MIN).max(mtime));
                 }
@@ -90,6 +127,12 @@ pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanRes
         }
     }
     result
+}
+
+fn pb_is_exported(pb: &Path, exported: &HashSet<String>) -> bool {
+    pb.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|id| exported.contains(id))
 }
 
 fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResult) {
@@ -157,6 +200,89 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
     let _ = set_file_state(conn, &path_str, state);
 }
 
+/// True when this export can stand in for its `.pb` — i.e. it parsed at a
+/// schema we know. An export naming no generations still counts: "this Session
+/// billed nothing" is an answer, and real installs do hold such Sessions, so
+/// treating empty as failure would pin the ≥ on them for good.
+fn process_export(conn: &mut Connection, path: &Path, result: &mut SourceScanResult) -> bool {
+    let state = FileState { byte_offset: PARSER_VERSION, ..file_state_of(path) };
+    if unchanged(conn, path, &state) {
+        // File state is only persisted after a successful parse, so an
+        // unchanged export is one this Ledger has already accepted.
+        return true;
+    }
+    let path_str = path.to_string_lossy().to_string();
+
+    let export: ConversationExport = match fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ConversationExport>(&raw).ok())
+    {
+        Some(export) if export.schema == export_artifact::SCHEMA => export,
+        // A malformed instance of a *supported* shape: warn, per ADR-0015.
+        _ => {
+            result.error = Some(format!("antigravity: unreadable export {path_str}"));
+            return false;
+        }
+    };
+
+    let mut events: Vec<UsageEvent> = Vec::new();
+    for (idx, generation) in export.generations.iter().enumerate() {
+        if generation.input == 0
+            && generation.output == 0
+            && generation.cache_read == 0
+            && generation.cache_write == 0
+        {
+            result.lines_skipped += 1;
+            continue;
+        }
+        // Same key shape as the `.db` path, so a Session present as both an
+        // export and a database can never be counted twice.
+        let dedup_key = match generation.response_id.as_deref().filter(|r| !r.trim().is_empty()) {
+            Some(rid) => format!("antigravity:{}:{rid}", export.conversation_id),
+            None => format!("antigravity:{}:{idx}", export.conversation_id),
+        };
+        if events.iter().any(|e| e.dedup_key == dedup_key) {
+            continue;
+        }
+
+        let model = export
+            .model
+            .as_deref()
+            .filter(|m| !m.trim().is_empty())
+            .map(|m| resolve_model(m, generation.ts))
+            // A placeholder enum has no published name; surface the raw id so it
+            // lands in the unpriced list instead of being guessed at.
+            .or_else(|| generation.model_enum.map(|e| format!("antigravity-model-{e}")));
+
+        events.push(UsageEvent {
+            dedup_key,
+            source: "antigravity".to_string(),
+            timestamp: generation.ts,
+            model,
+            project: export.project.clone(),
+            api_calls: 1,
+            input_tokens: generation.input,
+            output_tokens: generation.output,
+            cache_read_tokens: generation.cache_read,
+            cache_write_5m_tokens: generation.cache_write,
+            cache_write_1h_tokens: 0,
+            source_file: path_str.clone(),
+            session_id: Some(export.conversation_id.clone()),
+            reasoning_tokens: Some(generation.thinking),
+            ctx: Default::default(),
+        });
+    }
+
+    let n = events.len() as u64;
+    if replace_file_events(conn, &path_str, &events).is_err() {
+        result.error = Some(format!("failed to write events for {path_str}"));
+        return false;
+    }
+    result.events_inserted += n;
+    let _ = set_file_state(conn, &path_str, state);
+    true
+}
+
 fn decode_generation(
     blob: &[u8],
     idx: usize,
@@ -169,12 +295,17 @@ fn decode_generation(
     let usage = message_field(chat_model, 4)?;
 
     let to_i64 = |v: u64| i64::try_from(v).unwrap_or(i64::MAX);
-    let system = to_i64(varint_field(usage, 1).unwrap_or(0));
-    let input = system.saturating_add(to_i64(varint_field(usage, 2).unwrap_or(0)));
+    let input = to_i64(varint_field(usage, 2).unwrap_or(0));
     let cache_read = to_i64(varint_field(usage, 5).unwrap_or(0));
-    let output = to_i64(varint_field(usage, 9).unwrap_or(0));
-    let reasoning = to_i64(varint_field(usage, 10).unwrap_or(0));
-    if input == 0 && cache_read == 0 && output == 0 && reasoning == 0 {
+    let reasoning = to_i64(varint_field(usage, 9).unwrap_or(0));
+    let response = to_i64(varint_field(usage, 10).unwrap_or(0));
+    // #3 is the total output the API billed; #9 + #10 is that same number split.
+    // Prefer the total and fall back to the parts, never sum all three.
+    let output = match varint_field(usage, 3) {
+        Some(total) => to_i64(total),
+        None => reasoning.saturating_add(response),
+    };
+    if input == 0 && cache_read == 0 && output == 0 {
         return None;
     }
 
@@ -204,7 +335,7 @@ fn decode_generation(
         project: project.clone(),
         api_calls: 1,
         input_tokens: input,
-        output_tokens: output + reasoning, // reasoning folds into output
+        output_tokens: output, // already total; `reasoning` is a subset of it
         cache_read_tokens: cache_read,
         cache_write_5m_tokens: 0, // Antigravity reports no cache-write side
         cache_write_1h_tokens: 0,
@@ -227,13 +358,9 @@ fn read_trajectory_meta(ro: &Connection, state: &crate::types::FileState) -> (i6
         created = message_field(blob, 2)
             .and_then(proto_timestamp_secs)
             .unwrap_or(0);
-        // ponytail: macOS-shaped file:///abs/path URIs only; add Windows
-        // drive/UNC handling if this ever runs elsewhere.
         project = message_field(blob, 1)
             .and_then(|folder| string_field(folder, 1))
-            .and_then(|uri| uri.strip_prefix("file://"))
-            .map(percent_decode)
-            .filter(|p| p.starts_with('/'));
+            .and_then(file_uri_to_path);
     }
     if created <= 0 {
         created = state.mtime;
@@ -245,73 +372,6 @@ fn proto_timestamp_secs(ts: &[u8]) -> Option<i64> {
     i64::try_from(varint_field(ts, 1)?).ok()
 }
 
-// ---------------------------------------------------------------------------
-// Minimal protobuf wire-format reader (no schema dependency). Malformed data
-// degrades to None, never panics.
-// ---------------------------------------------------------------------------
-
-fn read_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
-    let mut result: u64 = 0;
-    let mut shift = 0u32;
-    while *pos < buf.len() {
-        let byte = buf[*pos];
-        *pos += 1;
-        if shift >= 64 {
-            return None;
-        }
-        result |= u64::from(byte & 0x7F) << shift;
-        if byte & 0x80 == 0 {
-            return Some(result);
-        }
-        shift += 7;
-    }
-    None
-}
-
-/// Iterate top-level fields of one message, returning the first match of
-/// `field_no` interpreted per `want_len` (LEN payload vs varint value).
-fn find_field(buf: &[u8], field_no: u64, want_len: bool) -> Option<(u64, &[u8])> {
-    let mut pos = 0usize;
-    while pos < buf.len() {
-        let key = read_varint(buf, &mut pos)?;
-        let (no, wire) = (key >> 3, key & 7);
-        match wire {
-            0 => {
-                let v = read_varint(buf, &mut pos)?;
-                if no == field_no && !want_len {
-                    return Some((v, &[]));
-                }
-            }
-            1 => pos = pos.checked_add(8)?,
-            2 => {
-                let len = usize::try_from(read_varint(buf, &mut pos)?).ok()?;
-                let end = pos.checked_add(len)?;
-                if end > buf.len() {
-                    return None;
-                }
-                if no == field_no && want_len {
-                    return Some((0, &buf[pos..end]));
-                }
-                pos = end;
-            }
-            5 => pos = pos.checked_add(4)?,
-            _ => return None, // groups/unknown wire types: bail
-        }
-    }
-    None
-}
-
-fn varint_field(buf: &[u8], field_no: u64) -> Option<u64> {
-    find_field(buf, field_no, false).map(|(v, _)| v)
-}
-
-fn message_field(buf: &[u8], field_no: u64) -> Option<&[u8]> {
-    find_field(buf, field_no, true).map(|(_, b)| b)
-}
-
-fn string_field(buf: &[u8], field_no: u64) -> Option<&str> {
-    message_field(buf, field_no).and_then(|b| std::str::from_utf8(b).ok())
-}
 
 #[cfg(test)]
 mod tests {
@@ -347,22 +407,26 @@ mod tests {
         out
     }
 
+    /// `model_enum` is `ModelUsageStats.#1` — an identifier Antigravity stores
+    /// beside the counts, deliberately included so a regression that mistakes it
+    /// for a token count shows up as inflated input.
+    #[allow(clippy::too_many_arguments)]
     fn gen_blob(
         model: &str,
         ts_secs: i64,
-        sys: u64,
+        model_enum: u64,
         input: u64,
         cache_read: u64,
-        output: u64,
-        thinking: u64,
+        reasoning: u64,
+        response: u64,
         response_id: &str,
     ) -> Vec<u8> {
         let mut usage = Vec::new();
-        usage.extend(f_varint(1, sys));
+        usage.extend(f_varint(1, model_enum));
         usage.extend(f_varint(2, input));
         usage.extend(f_varint(5, cache_read));
-        usage.extend(f_varint(9, output));
-        usage.extend(f_varint(10, thinking));
+        usage.extend(f_varint(9, reasoning));
+        usage.extend(f_varint(10, response));
         usage.extend(f_len(11, response_id.as_bytes()));
 
         let ts = f_varint(1, ts_secs as u64);
@@ -440,10 +504,10 @@ mod tests {
         assert_eq!(ts, 1780300000); // per-generation stamp, not created-at
         assert_eq!(model, "gemini-3.5-flash"); // wire alias resolved at parse time
         assert_eq!(project, Some("/Users/dev/my app".to_string())); // URI percent-decoded
-        assert_eq!(input, 1132 + 500); // system prompt + fresh input
-        assert_eq!(output, 300 + 150); // thinking folds into output
+        assert_eq!(input, 500); // #1 is the Model enum and must not reach input
+        assert_eq!(output, 300 + 150); // #9 + #10, the API's total output
         assert_eq!(cr, 20000);
-        assert_eq!(reasoning, Some(150));
+        assert_eq!(reasoning, Some(300)); // #9 is the thinking side, not #10
         assert_eq!(sid, Some("11111111-2222-3333-4444-555555555555".to_string()));
     }
 
@@ -577,6 +641,256 @@ mod tests {
             .mtime
             .max(file_state_of(&cli.path().join("new.pb")).mtime);
         assert_eq!(res.unreadable_max_mtime, Some(expected));
+    }
+
+    fn write_export(dir: &Path, id: &str, body: &str) {
+        std::fs::write(dir.join(export_artifact::file_name(id)), body).unwrap();
+    }
+
+    // The whole point of the export path: a Session nothing could read offline
+    // becomes ordinary events, and stops dragging the ≥ marker along with it.
+    #[test]
+    fn an_exported_pb_yields_events_and_stops_being_unreadable() {
+        let convs = tempdir().unwrap();
+        std::fs::write(convs.path().join("exported.pb"), b"\x99encrypted").unwrap();
+        std::fs::write(convs.path().join("still-sealed.pb"), b"\x99encrypted").unwrap();
+        write_export(
+            convs.path(),
+            "exported",
+            r#"{"schema":1,"conversation_id":"exported","model":"gemini-3-flash-a",
+                "project":"/Users/dev/app","generations":[
+                  {"response_id":"r1","ts":1780300000,"input":500,"output":450,
+                   "cache_read":20000,"cache_write":7,"thinking":300},
+                  {"response_id":"r1","ts":1780300001,"input":9,"output":9,
+                   "cache_read":0,"cache_write":0,"thinking":0},
+                  {"response_id":"z","ts":1780300002,"input":0,"output":0,
+                   "cache_read":0,"cache_write":0,"thinking":0}]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1); // repeat responseId collapses
+        assert_eq!(res.lines_skipped, 1); // the all-zero row
+        assert_eq!(res.artifacts_unreadable, 1); // only the Session without an export
+
+        let (ts, model, project, input, output, cr, cw, reasoning, sid): (
+            i64, Option<String>, Option<String>, i64, i64, i64, i64, Option<i64>, Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT timestamp, model, project, input_tokens, output_tokens,
+                        cache_read_tokens, cache_write_5m_tokens, reasoning_tokens, session_id
+                 FROM events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                        r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+            )
+            .unwrap();
+        assert_eq!(ts, 1780300000);
+        assert_eq!(model.as_deref(), Some("gemini-3.5-flash")); // alias resolved, as in the .db path
+        assert_eq!(project.as_deref(), Some("/Users/dev/app"));
+        assert_eq!((input, output, cr, cw), (500, 450, 20000, 7));
+        assert_eq!(reasoning, Some(300));
+        assert_eq!(sid.as_deref(), Some("exported"));
+    }
+
+    // Both paths key on the responseId, so a Session that somehow arrives as a
+    // database *and* an export contributes its generations exactly once.
+    #[test]
+    fn an_export_and_a_db_of_the_same_session_do_not_double_count() {
+        let convs = tempdir().unwrap();
+        build_db(
+            &convs.path().join("dup.db"),
+            &[gen_blob("m", 100, 1132, 10, 0, 3, 2, "shared")],
+            None,
+        );
+        write_export(
+            convs.path(),
+            "dup",
+            r#"{"schema":1,"conversation_id":"dup","generations":[
+                 {"response_id":"shared","ts":100,"input":10,"output":5,
+                  "cache_read":0,"cache_write":0,"thinking":3}]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        let events: i64 =
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(events, 1, "the shared responseId must collapse to one event");
+    }
+
+    // An export that cannot be read stands in for nothing. If the `.pb` stopped
+    // counting merely because a file of the right *name* existed, its tokens
+    // would leave the total with no ≥ to admit it — and the Decrypt button,
+    // which keys off the unreadable count, would vanish exactly when it is the
+    // remedy.
+    #[test]
+    fn an_unreadable_export_leaves_its_pb_unreadable() {
+        let convs = tempdir().unwrap();
+        std::fs::write(convs.path().join("s.pb"), b"\x99encrypted").unwrap();
+        std::fs::write(convs.path().join("t.pb"), b"\x99encrypted").unwrap();
+        write_export(convs.path(), "s", r#"{"schema":99,"conversation_id":"s","generations":[]}"#);
+        write_export(convs.path(), "t", "{ not json");
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(res.events_inserted, 0);
+        assert!(res.error.unwrap_or_default().contains("unreadable export"));
+        assert_eq!(res.artifacts_unreadable, 2, "neither export can stand in for its .pb");
+    }
+
+    // The opposite trap: a Session that genuinely billed nothing exports an
+    // empty list, and real installs hold such Sessions. Reading that as failure
+    // would pin the ≥ on them permanently, with Decrypt offered forever and
+    // never able to help.
+    #[test]
+    fn an_export_naming_no_generations_still_stands_in() {
+        let convs = tempdir().unwrap();
+        std::fs::write(convs.path().join("quiet.pb"), b"\x99encrypted").unwrap();
+        write_export(
+            convs.path(),
+            "quiet",
+            r#"{"schema":1,"conversation_id":"quiet","generations":[]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        assert_eq!(res.events_inserted, 0);
+        assert_eq!(res.artifacts_unreadable, 0);
+    }
+
+    // Antigravity keeps the same Session under several app data dirs, all of
+    // which are scanned. Reading each copy would report inserts the Ledger
+    // never made — the dedup key drops them — while the `.pb` in *either* dir
+    // must still stop counting as unreadable.
+    #[test]
+    fn a_session_mirrored_across_app_dirs_is_read_once() {
+        let ide = tempdir().unwrap();
+        let app = tempdir().unwrap();
+        let export = r#"{"schema":1,"conversation_id":"m","generations":[
+             {"response_id":"r","ts":1780300000,"input":5,"output":1,
+              "cache_read":0,"cache_write":0,"thinking":0}]}"#;
+        for dir in [ide.path(), app.path()] {
+            std::fs::write(dir.join("m.pb"), b"\x99encrypted").unwrap();
+            write_export(dir, "m", export);
+        }
+
+        let ledger = tempdir().unwrap();
+        let mut conn = open_db(&ledger.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[ide.path(), app.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1, "the mirrored copy is not read again");
+        assert_eq!(res.artifacts_unreadable, 0, "neither copy's .pb still counts");
+        let events: i64 =
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(events, 1);
+    }
+
+    // An export in one app data dir vindicates the `.pb` in another, so the
+    // verdict cannot be reached until every directory has been read.
+    #[test]
+    fn an_export_in_one_app_dir_covers_a_pb_in_another() {
+        let with_pb = tempdir().unwrap();
+        let with_export = tempdir().unwrap();
+        std::fs::write(with_pb.path().join("split.pb"), b"\x99encrypted").unwrap();
+        write_export(
+            with_export.path(),
+            "split",
+            r#"{"schema":1,"conversation_id":"split","generations":[
+                 {"response_id":"r","ts":1780300000,"input":5,"output":1,
+                  "cache_read":0,"cache_write":0,"thinking":0}]}"#,
+        );
+
+        let ledger = tempdir().unwrap();
+        let mut conn = open_db(&ledger.path().join("ledger.db")).unwrap();
+        // `.pb` dir first, so a per-directory verdict would call it unreadable.
+        let res = scan_antigravity(&mut conn, &[with_pb.path(), with_export.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        assert_eq!(res.artifacts_unreadable, 0);
+    }
+
+    // A re-scan reads nothing (the file is unchanged) but must not forget that
+    // the export was accepted, or the ≥ would flicker back on every scan.
+    #[test]
+    fn an_unchanged_export_still_stands_in_for_its_pb() {
+        let convs = tempdir().unwrap();
+        std::fs::write(convs.path().join("e.pb"), b"\x99encrypted").unwrap();
+        write_export(
+            convs.path(),
+            "e",
+            r#"{"schema":1,"conversation_id":"e","generations":[
+                 {"response_id":"r","ts":1780300000,"input":5,"output":1,
+                  "cache_read":0,"cache_write":0,"thinking":0}]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).artifacts_unreadable, 0);
+
+        let again = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(again.events_inserted, 0, "unchanged export is not re-read");
+        assert_eq!(again.artifacts_unreadable, 0, "but it still stands in");
+    }
+
+    // Antigravity names most models only by a placeholder enum. Surfacing the
+    // raw id keeps it unpriced and visible instead of silently mislabelled.
+    #[test]
+    fn a_nameless_model_surfaces_its_placeholder_id() {
+        let convs = tempdir().unwrap();
+        write_export(
+            convs.path(),
+            "n",
+            r#"{"schema":1,"conversation_id":"n","generations":[
+                 {"response_id":"r","ts":1780300000,"model_enum":1008,
+                  "input":5,"output":1,"cache_read":0,"cache_write":0,"thinking":0}]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        let model: Option<String> =
+            conn.query_row("SELECT model FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(model.as_deref(), Some("antigravity-model-1008"));
+    }
+
+    // `#3` is the total the API billed; trusting the parts as well would double
+    // the output of every generation that carries all three.
+    #[test]
+    fn a_total_output_field_wins_over_its_parts() {
+        let mut usage = Vec::new();
+        usage.extend(f_varint(1, 1132)); // Model enum
+        usage.extend(f_varint(2, 40));
+        usage.extend(f_varint(3, 90)); // total
+        usage.extend(f_varint(9, 60)); // thinking
+        usage.extend(f_varint(10, 30)); // response
+        usage.extend(f_len(11, b"total"));
+        let mut chat_model = Vec::new();
+        chat_model.extend(f_len(4, &usage));
+        chat_model.extend(f_len(9, &f_len(4, &f_varint(1, 1780300000))));
+        chat_model.extend(f_len(19, b"m"));
+        let blob = f_len(1, &chat_model);
+
+        let convs = tempdir().unwrap();
+        build_db(&convs.path().join("t.db"), &[blob], None);
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        let (input, output, reasoning): (i64, i64, Option<i64>) = conn
+            .query_row("SELECT input_tokens, output_tokens, reasoning_tokens FROM events", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(input, 40);
+        assert_eq!(output, 90, "#3, not #3 + #9 + #10");
+        assert_eq!(reasoning, Some(60));
     }
 
     #[test]

@@ -517,6 +517,58 @@ describe('Overview presentation', () => {
     );
   });
 
+  // ADR-0018: the ≥ has exactly one remedy, so Decrypt sits beside the reason
+  // rather than in the toolbar. Pressing it runs the companion and then
+  // rescans, because the Artifacts it writes are not usage until a Scan reads
+  // them — without that second step the button would look like it did nothing.
+  it('offers Decrypt beside the unreadable reason and rescans once it has run', async () => {
+    // Settled timers on purpose: useAutoRefresh coalesces calls for a full
+    // second after each scan, and only the fake companion returns fast enough
+    // to land inside that window — a real export takes far longer.
+    const { container: c, ledger } = await mountSettled({
+      dayPoints: [pt({ source: 'antigravity', totalTokens: 100 })],
+      summary,
+      scan: {
+        scannedAt: 0,
+        sources: [
+          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
+        ],
+      },
+      exportReport: 'exported 100 Session(s), 4466 generation(s)',
+    });
+
+    const button = c.querySelector<HTMLButtonElement>('.tt-decrypt')!;
+    expect(button).toBeTruthy();
+    expect(button.textContent).toBe('Decrypt');
+    expect(button.disabled).toBe(false);
+
+    const scansBefore = ledger.calls.scan.length;
+    await act(async () => button.click());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_200); // ride out the rescan's spin hold
+    });
+
+    expect(ledger.calls.exportAntigravity.length).toBe(1);
+    expect(ledger.calls.scan.length).toBeGreaterThan(scansBefore);
+    expect(c.querySelector('.tt-decrypt-note')?.textContent).toContain('exported 100 Session(s)');
+  });
+
+  // Offered only where it can act: the companion reads Antigravity and nothing
+  // else, so an unreadable-free scan must not advertise it.
+  it('offers no Decrypt when nothing is unreadable', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+      scan: {
+        scannedAt: 0,
+        sources: [
+          { source: 'claude', eventsInserted: 412, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        ],
+      },
+    });
+    expect(c.querySelector('.tt-decrypt')).toBeNull();
+  });
+
   // The same scan, viewed through a window that starts after every Unreadable
   // Artifact's last write, is definitely complete — no marker. Content is
   // never newer than its file, so only the window's start matters.

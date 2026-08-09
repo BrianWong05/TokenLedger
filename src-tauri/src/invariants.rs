@@ -685,6 +685,7 @@ fn hermetic_fifteen_source_partition_invariants() {
         hermes_db: base.join("hermes/state.db"),
         grok_sessions: base.join("grok"),
         antigravity_conversations: base.join("antigravity"),
+        antigravity_ide_conversations: base.join("antigravity-ide"),
         // No CLI fixture: a missing root is scanned quietly (zero events, no error).
         antigravity_cli_conversations: base.join("antigravity-cli"),
         goose_sessions: vec![base.join("goose")],

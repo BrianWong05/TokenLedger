@@ -38,6 +38,8 @@ interface Data {
   ctxTools: CtxToolRow[];
   ctxSkills: CtxSkillRow[];
   ctxExec: CtxExecRow[];
+  // What the export companion reports back; seeded per test.
+  exportReport?: string;
 }
 
 export interface FakeLedger extends LedgerPort {
@@ -67,7 +69,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
-    scan: [], lastScan: [], unreadableArtifacts: [], series: [], summary: [], breakdown: [],
+    scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], breakdown: [],
     ctxResources: [], ctxBuckets: [], ctxTools: [], ctxSkills: [], ctxExec: [],
   };
   const fails = new Map<string, unknown>();
@@ -80,6 +82,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
       case 'scan': return data.scan;
       case 'lastScan': return data.lastScan;
       case 'unreadableArtifacts': return data.scan.sources.filter((s) => s.artifactsUnreadable > 0);
+      case 'exportAntigravity': return data.exportReport ?? 'exported 0 Session(s), 0 generation(s)';
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
       case 'breakdown':
@@ -115,6 +118,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     scan: () => respond('scan', []) as Promise<ScanStatus>,
     lastScan: () => respond('lastScan', []) as Promise<number>,
     unreadableArtifacts: () => respond('unreadableArtifacts', []) as Promise<SourceUnreadable[]>,
+    exportAntigravity: () => respond('exportAntigravity', []) as Promise<string>,
     series: (filters: Filters, bucket: 'day' | 'hour') =>
       respond('series', [filters, bucket]) as Promise<SeriesPoint[]>,
     summary: (filters: Filters) => respond('summary', [filters]) as Promise<Summary>,

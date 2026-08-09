@@ -120,6 +120,26 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
     return u ? unreadableReasons([u], lang) : undefined;
   };
 
+  // The ≥ marker's only remedy: hand Antigravity's encrypted Sessions to its
+  // own running server (ADR-0018), then rescan so the Artifacts it wrote land.
+  // Offered beside the count because that is where the marker is explained, and
+  // only for the Source the companion knows how to read.
+  const [decrypting, setDecrypting] = useState(false);
+  const [decryptNote, setDecryptNote] = useState<string | null>(null);
+  const canDecrypt = unreadableKeys.has('antigravity');
+  const runDecrypt = async () => {
+    setDecrypting(true);
+    setDecryptNote(null);
+    try {
+      setDecryptNote(await ledger.exportAntigravity());
+      await refresh(); // the exports are only usage once a Scan has read them
+    } catch (err) {
+      setDecryptNote(String(err));
+    } finally {
+      setDecrypting(false);
+    }
+  };
+
   // Stable identity so the memoized ModelsList skips per-tick re-renders.
   const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
 
@@ -198,6 +218,22 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
                 {' · '}{countLabel(unreadableCount, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}
               </span>
             )}
+            {canDecrypt && (
+              <button
+                type="button"
+                className="tt-decrypt"
+                onClick={() => void runDecrypt()}
+                // Not gated on `refreshing`: that stays true for a full spinner
+                // rotation after every scan, which would leave this dead for a
+                // second at launch. Overlap is safe — exports land by rename.
+                disabled={decrypting}
+                aria-busy={decrypting}
+                title={t('overview.decryptHint')}
+              >
+                {decrypting ? t('overview.decrypting') : t('overview.decrypt')}
+              </button>
+            )}
+            {decryptNote && <span className="tt-decrypt-note">{decryptNote}</span>}
           </div>
           <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} incomplete={unreadableTitle || null} />
           {canOpenCostBreakdown ? (

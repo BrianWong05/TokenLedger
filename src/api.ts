@@ -33,6 +33,14 @@ export function fetchUnreadableArtifacts(): Promise<SourceUnreadable[]> {
   return invoke('unreadable_artifacts');
 }
 
+// Decrypt Antigravity's `.pb` Sessions by running the export companion
+// (ADR-0018): a separate process, started only because someone asked for it.
+// Resolves with the companion's own one-line report; the Artifacts it writes
+// are picked up by the next Scan like any other file.
+export function exportAntigravity(): Promise<string> {
+  return invoke('export_antigravity');
+}
+
 export function fetchSummary(filters: Filters): Promise<Summary> {
   return invoke('summary', { filters });
 }

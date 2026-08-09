@@ -6,6 +6,7 @@ import {
   scan,
   fetchLastScan,
   fetchUnreadableArtifacts,
+  exportAntigravity,
   fetchSeries,
   fetchSummary,
   fetchBreakdown,
@@ -33,6 +34,9 @@ export interface LedgerPort {
   scan(): Promise<ScanStatus>;
   lastScan(): Promise<number>; // epoch seconds, 0 before the first Scan
   unreadableArtifacts(): Promise<SourceUnreadable[]>; // persisted state, no rescan
+  // Runs the export companion (ADR-0018). Not part of any Scan: the caller
+  // is a person pressing a button, and the answer is its report.
+  exportAntigravity(): Promise<string>;
 
   series(filters: Filters, bucket: 'day' | 'hour'): Promise<SeriesPoint[]>;
   summary(filters: Filters): Promise<Summary>;
@@ -49,6 +53,7 @@ export const tauriLedger: LedgerPort = {
   scan,
   lastScan: fetchLastScan,
   unreadableArtifacts: fetchUnreadableArtifacts,
+  exportAntigravity,
   series: fetchSeries,
   summary: fetchSummary,
   breakdown: fetchBreakdown,
