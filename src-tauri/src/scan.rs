@@ -17,6 +17,7 @@ use crate::adapters::hermes::scan_hermes;
 use crate::adapters::kilo::scan_kilo;
 use crate::adapters::opencode::scan_opencode;
 use crate::adapters::pi::scan_pi;
+use crate::adapters::omp::scan_omp;
 use crate::adapters::qoder::scan_qoder;
 use crate::adapters::workbuddy::scan_workbuddy;
 use crate::adapters::zed::scan_zed;
@@ -40,6 +41,7 @@ pub struct SourceRoots {
     pub antigravity_cli_conversations: PathBuf,
     pub goose_sessions: Vec<PathBuf>,
     pub pi_sessions: Vec<PathBuf>,
+    pub omp_sessions: Vec<PathBuf>,
     pub opencode_data: PathBuf,
     pub opencode_legacy: PathBuf,
     pub opencode_db: Option<PathBuf>,
@@ -117,6 +119,9 @@ impl SourceRoots {
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
         append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
         append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
+        let mut omp_sessions = vec![catalog_root(home, "omp", "sessions")];
+        append_pi_override_for_source(&mut omp_sessions, home, "omp", "session-dir", environment_value("omp", "session-dir").as_deref());
+        append_pi_override_for_source(&mut omp_sessions, home, "omp", "agent-dir", environment_value("omp", "agent-dir").as_deref());
         let goose_sessions = goose_session_roots(
             home,
             environment_value("goose", "root").as_deref(),
@@ -151,6 +156,7 @@ impl SourceRoots {
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
             goose_sessions,
             pi_sessions,
+            omp_sessions,
             opencode_data,
             opencode_legacy,
             opencode_db,
@@ -425,21 +431,31 @@ fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
         })
 }
 
-fn append_pi_override(
-    pi_sessions: &mut Vec<PathBuf>,
+fn append_pi_override_for_source(
+    sessions: &mut Vec<PathBuf>,
     home: &Path,
+    source: &str,
     artifact_id: &str,
     value: Option<&OsStr>,
 ) {
     let Some(path) = value.and_then(|value| visible_pi_path(home, value)) else {
         return;
     };
-    let artifact = source_catalog::artifact("pi", artifact_id)
-        .unwrap_or_else(|| panic!("source catalog must define pi.{artifact_id}"));
-    pi_sessions.push(match artifact.suffix.as_deref() {
+    let artifact = source_catalog::artifact(source, artifact_id)
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact_id}"));
+    sessions.push(match artifact.suffix.as_deref() {
         Some(suffix) => path.join(suffix),
         None => path,
     });
+}
+
+fn append_pi_override(
+    pi_sessions: &mut Vec<PathBuf>,
+    home: &Path,
+    artifact_id: &str,
+    value: Option<&OsStr>,
+) {
+    append_pi_override_for_source(pi_sessions, home, "pi", artifact_id, value);
 }
 
 fn visible_pi_path(home: &Path, value: &OsStr) -> Option<PathBuf> {
@@ -521,6 +537,7 @@ fn run_scan_sources(
                 }),
                 "goose" => run_one(&source.key, || scan_goose(conn, &roots.goose_sessions)),
                 "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_sessions)),
+                "omp" => run_one(&source.key, || scan_omp(conn, &roots.omp_sessions)),
                 "opencode" => run_one(&source.key, || {
                     scan_opencode(
                         conn,
@@ -625,6 +642,7 @@ mod tests {
                 "zed",
                 "cline",
                 "pi",
+                "omp",
                 "workbuddy",
                 "codebuddy",
                 "qoder"
@@ -653,7 +671,7 @@ mod tests {
                 .filter(|source| source.capabilities.context)
                 .map(|source| source.key.as_str())
                 .collect::<Vec<_>>(),
-            ["claude", "codex", "grok", "pi", "qoder"],
+            ["claude", "codex", "grok", "pi", "omp", "qoder"],
         );
         assert_eq!(
             catalog.sources.iter().flat_map(|source| {
@@ -696,6 +714,7 @@ mod tests {
                 ("cline", "editor-server-insiders", ".vscode-server-insiders/data/User/globalStorage/saoudrizwan.claude-dev/tasks"),
                 ("cline", "cli-default-data", ".cline/data"),
                 ("pi", "sessions", ".pi/agent/sessions"),
+                ("omp", "sessions", ".omp/agent/sessions"),
                 ("workbuddy", "projects", ".workbuddy/projects"),
                 ("codebuddy", "projects", ".codebuddy/projects"),
                 ("qoder", "db-cn-macos", "Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db"),
@@ -1462,6 +1481,7 @@ mod tests {
             antigravity_ide_conversations: tmp.path().join("antigravity-ide"),
             antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
             goose_sessions: vec![tmp.path().join("goose")],
+            omp_sessions: vec![tmp.path().join("omp")],
             pi_sessions: vec![tmp.path().join("pi")],
             opencode_data: tmp.path().join("opencode"),
             opencode_legacy: tmp.path().join("opencode/storage"),
@@ -1524,6 +1544,7 @@ mod tests {
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
+            omp_sessions: vec![base.join("no-omp")],
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
@@ -1556,7 +1577,7 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 15);
+        assert_eq!(status.sources.len(), 16);
         assert_eq!(status.sources.last().unwrap().source, "qoder");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1902,6 +1923,7 @@ mod tests {
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
+            omp_sessions: vec![base.join("no-omp")],
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,
@@ -1917,7 +1939,7 @@ mod tests {
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 15);
+        assert_eq!(status.sources.len(), 16);
         assert_eq!(status.sources.last().unwrap().source, "qoder");
         assert!(status.scanned_at > 0);
 
@@ -2057,6 +2079,7 @@ mod tests {
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![base.join("no-pi")],
+            omp_sessions: vec![base.join("no-omp")],
             opencode_data: opencode_root.clone(),
             opencode_legacy: legacy,
             opencode_db: None,
@@ -2224,6 +2247,7 @@ mod tests {
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![base.join("no-pi")],
+            omp_sessions: vec![base.join("no-omp")],
             opencode_data: base.join("no-opencode"),
             opencode_legacy: base.join("no-opencode/storage"),
             opencode_db: None,

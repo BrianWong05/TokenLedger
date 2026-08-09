@@ -105,6 +105,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         antigravity_cli_conversations: missing.clone(),
         goose_sessions: vec![missing.clone()],
         pi_sessions: vec![missing.clone()],
+        omp_sessions: vec![missing.clone()],
         opencode_data: missing.clone(),
         opencode_legacy: missing.clone(),
         opencode_db: None,
@@ -129,6 +130,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         "antigravity" => roots.antigravity_conversations = artifact.to_path_buf(),
         "goose" => roots.goose_sessions = vec![artifact.to_path_buf()],
         "pi" => roots.pi_sessions = vec![artifact.to_path_buf()],
+        "omp" => roots.omp_sessions = vec![artifact.to_path_buf()],
         "opencode" => {
             if artifact.is_file() || artifact.extension().and_then(|ext| ext.to_str()) == Some("db")
             {
