@@ -37,7 +37,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
-    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxToolRow, Filters, SeriesPoint,
+    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, SeriesPoint,
     Summary, TrendPoint,
 };
 use scan::{run_scan, SourceRoots};
@@ -231,6 +231,12 @@ fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBu
 fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_tools(&db, &filters).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSkillRow>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::ctx_skills(&db, &filters).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -497,6 +503,7 @@ pub fn run() {
             ctx_resources,
             ctx_buckets,
             ctx_tools,
+            ctx_skills,
             ctx_exec,
             model_pricing,
             refresh_prices,

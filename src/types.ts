@@ -8,6 +8,7 @@ export type { BreakdownRow } from './bindings/BreakdownRow';
 export type { CtxResource } from './bindings/CtxResource';
 export type { CtxBuckets } from './bindings/CtxBuckets';
 export type { CtxToolRow } from './bindings/CtxToolRow';
+export type { CtxSkillRow } from './bindings/CtxSkillRow';
 export type { CtxExecRow } from './bindings/CtxExecRow';
 export type { SourceStatus } from './bindings/SourceStatus';
 export type { SourceUnreadable } from './bindings/SourceUnreadable';

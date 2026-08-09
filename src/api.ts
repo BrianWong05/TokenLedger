@@ -8,6 +8,7 @@ import type {
   CtxResource,
   CtxBuckets,
   CtxToolRow,
+  CtxSkillRow,
   CtxExecRow,
   Filters,
   ModelPricing,
@@ -60,6 +61,10 @@ export function fetchCtxBuckets(filters: Filters): Promise<CtxBuckets[]> {
 
 export function fetchCtxTools(filters: Filters): Promise<CtxToolRow[]> {
   return invoke('ctx_tools', { filters });
+}
+
+export function fetchCtxSkills(filters: Filters): Promise<CtxSkillRow[]> {
+  return invoke('ctx_skills', { filters });
 }
 
 export function fetchCtxExec(filters: Filters): Promise<CtxExecRow[]> {

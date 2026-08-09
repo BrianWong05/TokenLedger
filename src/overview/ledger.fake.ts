@@ -12,6 +12,7 @@ import type {
   CtxResource,
   CtxBuckets,
   CtxToolRow,
+  CtxSkillRow,
   CtxExecRow,
 } from '../types';
 
@@ -35,6 +36,7 @@ interface Data {
   ctxResources: CtxResource[];
   ctxBuckets: CtxBuckets[];
   ctxTools: CtxToolRow[];
+  ctxSkills: CtxSkillRow[];
   ctxExec: CtxExecRow[];
 }
 
@@ -61,12 +63,12 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     lastScan: 0,
     dayPoints: [], hourPoints: [], summary: EMPTY_SUMMARY,
     modelRows: [], projectRows: [], ctxResources: [], ctxBuckets: [],
-    ctxTools: [], ctxExec: [],
+    ctxTools: [], ctxSkills: [], ctxExec: [],
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
     scan: [], lastScan: [], unreadableArtifacts: [], series: [], summary: [], breakdown: [],
-    ctxResources: [], ctxBuckets: [], ctxTools: [], ctxExec: [],
+    ctxResources: [], ctxBuckets: [], ctxTools: [], ctxSkills: [], ctxExec: [],
   };
   const fails = new Map<string, unknown>();
   const holds = new Set<string>();
@@ -87,6 +89,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
       case 'ctxResources': return data.ctxResources;
       case 'ctxBuckets': return data.ctxBuckets;
       case 'ctxTools': return data.ctxTools;
+      case 'ctxSkills': return data.ctxSkills;
       default: return data.ctxExec;
     }
   };
@@ -122,6 +125,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     ctxBuckets: (filters: Filters) =>
       respond('ctxBuckets', [filters]) as Promise<CtxBuckets[]>,
     ctxTools: (filters: Filters) => respond('ctxTools', [filters]) as Promise<CtxToolRow[]>,
+    ctxSkills: (filters: Filters) => respond('ctxSkills', [filters]) as Promise<CtxSkillRow[]>,
     ctxExec: (filters: Filters) => respond('ctxExec', [filters]) as Promise<CtxExecRow[]>,
     onPricesRebuilt: (cb: () => void) => {
       priceCbs.add(cb);

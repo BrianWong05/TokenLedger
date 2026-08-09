@@ -735,6 +735,35 @@ pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxTool
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
+pub struct CtxSkillRow {
+    pub source: String,
+    pub name: String,
+    #[ts(type = "number")]
+    pub est_tokens: i64,
+    /// Injections, not distinct skills: a re-invoked skill re-loads its whole
+    /// body, so this is what makes est_tokens grow.
+    #[ts(type = "number")]
+    pub uses: i64,
+}
+
+// Per-skill weights in range, heaviest first. Ignores model/project, like
+// ctx_tools — these are context composition, not billed usage.
+pub fn ctx_skills(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSkillRow>> {
+    let (where_sql, params) = day_where(f);
+    let sql = format!(
+        "SELECT source, name, SUM(est_tokens), SUM(uses) FROM ctx_skills_usage {where_sql} \
+         GROUP BY source, name ORDER BY SUM(est_tokens) DESC, name"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxSkillRow { source: r.get(0)?, name: r.get(1)?, est_tokens: r.get(2)?, uses: r.get(3)? })
+    })?;
+    rows.collect()
+}
+
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub struct CtxExecRow {
     pub source: String,
     pub kind: String,
@@ -1445,6 +1474,30 @@ mod tests {
         let cx = ctx_tools(&conn, &f2).unwrap();
         assert_eq!(cx.len(), 1);
         assert_eq!(cx[0].name, "shell");
+    }
+
+    #[test]
+    fn ctx_skills_sums_by_name_heaviest_first() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::add_ctx_skill_rows(&mut conn, "claude", "f1", &[
+            ("grilling".to_string(), 2400, 1, DAY1_TS),
+            ("grilling".to_string(), 2400, 1, DAY2_TS),
+            ("superpowers:brainstorming".to_string(), 900, 1, DAY1_TS),
+        ]).unwrap();
+
+        // Summed across days and files, heaviest first — the ordering is what
+        // lets the panel answer "which skill is costing me".
+        let all = ctx_skills(&conn, &Filters::default()).unwrap();
+        assert_eq!(all[0].name, "grilling");
+        assert_eq!((all[0].est_tokens, all[0].uses), (4800, 2));
+        assert_eq!(all[1].name, "superpowers:brainstorming");
+
+        // Day window narrows it like every other ctx query.
+        let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
+        let d1 = ctx_skills(&conn, &f).unwrap();
+        assert_eq!(d1.iter().find(|r| r.name == "grilling").unwrap().est_tokens, 2400);
     }
 
     #[test]
