@@ -105,7 +105,13 @@ function ContextBreakdown({
         pct: true,
         info: t('overview.systemInfo'),
       })}
-      {row('reasoning', t('overview.reasoning'), v ? v.reasoning : null, { pct: true })}
+      {/* Anthropic usage never splits thinking out of output, so the exact
+          bucket is NULL for Claude — fall back to the v3 content-byte
+          estimate, est-styled (muted, ⓘ, no pct: percentages are for exact
+          primaries only). */}
+      {v?.reasoning != null
+        ? row('reasoning', t('overview.reasoning'), v.reasoning, { pct: true })
+        : row('reasoning', t('overview.reasoning'), ctx.reasoning, { muted: true, info: estShareTip })}
 
       <div style={{ height: 1, background: 'var(--border-subtle)', margin: '8px 4px' }} />
 

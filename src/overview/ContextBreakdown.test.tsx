@@ -32,14 +32,14 @@ const skills = [
   { name: 'verify', tokens: 900, uses: 1, rest: 0 },
 ];
 
-function render(view: BucketView | null = null, skillRows = skills) {
+function render(view: BucketView | null = null, skillRows = skills, ctxOverride = ctx) {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
   act(() =>
     root.render(
-      <ContextBreakdown tool={SOURCES[0]} ctx={ctx} view={view} tree={tree} meta="" execRows={execRows} skills={skillRows} />,
+      <ContextBreakdown tool={SOURCES[0]} ctx={ctxOverride} view={view} tree={tree} meta="" execRows={execRows} skills={skillRows} />,
     ),
   );
   return container;
@@ -111,6 +111,26 @@ describe('ContextBreakdown drilldown', () => {
 
     expect(queryRow(c, 'Messages')?.querySelector('.val')?.textContent).toBe('0');
     expect(queryRow(c, 'System prompt')?.querySelector('.val')?.textContent).toBe('—');
+  });
+
+  it('falls back to the estimated reasoning share when the exact bucket is null', () => {
+    const view: BucketView = {
+      total: 100, messages: 90, history: 60, newInput: 20, response: 10,
+      system: 5, reasoning: null,
+    };
+    // Claude: usage never reports reasoning → show the content-byte estimate.
+    const c = render(view, skills, { ...ctx, reasoning: 200 });
+    const row = queryRow(c, 'Reasoning');
+    expect(row?.querySelector('.val')?.textContent).toBe('200');
+    expect(row?.querySelector('.rpct')).toBeNull(); // pct is for exact primaries only
+
+    // Exact reported (Codex/Gemini): exact wins over the estimate.
+    const c2 = render({ ...view, reasoning: 40 }, skills, { ...ctx, reasoning: 200 });
+    expect(queryRow(c2, 'Reasoning')?.querySelector('.val')?.textContent).toBe('40');
+
+    // Neither observable: still an em dash, never 0.
+    const c3 = render(view);
+    expect(queryRow(c3, 'Reasoning')?.querySelector('.val')?.textContent).toBe('—');
   });
 
   it('weighs each skill when Skills is expanded', () => {
