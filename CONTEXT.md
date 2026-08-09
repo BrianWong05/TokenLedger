@@ -242,6 +242,15 @@ as zero, and a Session resumed with its running state lost is *tainted*: it
 attributes nothing thereafter rather than attributing a guess.
 _Avoid_: Context window, breakdown, composition
 
+**Resource**:
+A named participant observed in a Session's Context — a skill, MCP server,
+subagent, or memory file. Resources are recorded by name and counted; they are
+never token-attributed. Context's categories say *how much*, Resources say
+*which ones*. A Resource therefore has no token figure at all: it displays
+nothing, not "—", because the dash is reserved for a category a Source failed
+to attribute.
+_Avoid_: Context item, roster
+
 ### Money
 
 **Cost**:

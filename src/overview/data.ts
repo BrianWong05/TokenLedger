@@ -2,7 +2,7 @@
 // (SeriesPoint/BreakdownRow) into the shapes the components consume. No fetching
 // here — overviewStore orchestrates the Ledger reads. Design meta (SOURCES,
 // CATEGORIES, themes, ranges, types) lives in ./meta.
-import type { BreakdownRow, Filters, SeriesPoint, CtxResourceCount, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
+import type { BreakdownRow, Filters, SeriesPoint, CtxResource, CtxBuckets, CtxToolRow, CtxExecRow } from '../types';
 import { parseLocalDate } from '../lib/dateRange';
 import { SOURCES, CATEGORIES, emptyBySource, orderedSourceKeys, sourceMeta, type SourceKey, type SourceMeta, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
@@ -850,10 +850,11 @@ const CTX_KINDS: { kind: string; key: OverviewKey }[] = [
   { kind: 'memory_file', key: 'overview.kind.memoryFile' },
 ];
 
-export function ctxMeta(res: CtxResourceCount[], tool: SourceKey, lang: Lang = 'en'): string {
+export function ctxMeta(res: CtxResource[], tool: SourceKey, lang: Lang = 'en'): string {
   const bits: string[] = [];
   for (const { kind, key } of CTX_KINDS) {
-    const n = res.find((r) => r.source === tool && r.kind === kind)?.count ?? 0;
+    // Rows are distinct (source, kind, name), so the kind's count is its row count.
+    const n = res.filter((r) => r.source === tool && r.kind === kind).length;
     // English pluralises the kind word; Chinese has no plural.
     if (n > 0) bits.push(`${n} ${overviewT(lang, key)}${lang === 'zh-Hant' ? '' : n === 1 ? '' : 's'}`);
   }

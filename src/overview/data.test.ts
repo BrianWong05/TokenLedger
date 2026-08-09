@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { SeriesPoint, BreakdownRow, CtxResourceCount, CtxToolRow, CtxExecRow } from '../types';
+import type { SeriesPoint, BreakdownRow, CtxResource, CtxToolRow, CtxExecRow } from '../types';
 import { emptyBySource } from './meta';
 import {
   seriesToDays,
@@ -519,18 +519,20 @@ describe('ctxTotals', () => {
 });
 
 describe('ctxMeta', () => {
-  const res: CtxResourceCount[] = [
-    { source: 'claude', kind: 'skill', count: 32 },
-    { source: 'claude', kind: 'mcp_server', count: 2 },
-    { source: 'claude', kind: 'agent', count: 1 },
-    { source: 'claude', kind: 'memory_file', count: 1 },
-    { source: 'codex', kind: 'mcp_server', count: 5 },
+  const res: CtxResource[] = [
+    { source: 'claude', kind: 'skill', name: 'graphify' },
+    { source: 'claude', kind: 'skill', name: 'verify' },
+    { source: 'claude', kind: 'mcp_server', name: 'pencil' },
+    { source: 'claude', kind: 'mcp_server', name: 'chrome' },
+    { source: 'claude', kind: 'agent', name: 'Explore' },
+    { source: 'claude', kind: 'memory_file', name: 'MEMORY.md' },
+    { source: 'codex', kind: 'mcp_server', name: 'pencil' },
   ];
   it('renders counts in canonical order with pluralization', () => {
-    expect(ctxMeta(res, 'claude')).toBe('32 skills · 2 MCP servers · 1 agent · 1 memory file');
+    expect(ctxMeta(res, 'claude')).toBe('2 skills · 2 MCP servers · 1 agent · 1 memory file');
   });
   it('omits zero kinds and scopes to the tool', () => {
-    expect(ctxMeta(res, 'codex')).toBe('5 MCP servers');
+    expect(ctxMeta(res, 'codex')).toBe('1 MCP server');
     expect(ctxMeta(res, 'hermes')).toBe('');
   });
 });

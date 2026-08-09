@@ -5,7 +5,7 @@ import type {
   Summary,
   SeriesPoint,
   BreakdownRow,
-  CtxResourceCount,
+  CtxResource,
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
@@ -50,7 +50,7 @@ export function fetchBreakdown(
   return invoke('breakdown', { by, filters });
 }
 
-export function fetchCtxResources(filters: Filters): Promise<CtxResourceCount[]> {
+export function fetchCtxResources(filters: Filters): Promise<CtxResource[]> {
   return invoke('ctx_resources', { filters });
 }
 

@@ -16,6 +16,7 @@ function ContextBreakdown({
   tree,
   meta,
   execRows,
+  skills,
 }: {
   tool: SourceMeta;
   ctx: CtxTotals;
@@ -23,6 +24,7 @@ function ContextBreakdown({
   tree: ToolCategory[];
   meta: string;
   execRows: CtxExecRow[];
+  skills: string[];
 }) {
   const { t } = useOverviewT();
   const estShareTip = t('overview.estTip');
@@ -143,7 +145,22 @@ function ContextBreakdown({
         ))}
       {row('agents', t('overview.customAgents'), ctx.agents, { muted: true, info: estShareTip })}
       {row('mcp', t('overview.mcpServers'), ctx.mcp, { muted: true, info: estShareTip })}
-      {row('skills', t('overview.skills'), ctx.skills, { muted: true, info: estShareTip })}
+      {row('skills', t('overview.skills'), ctx.skills, {
+        muted: true,
+        expandable: skills.length > 0,
+        info: estShareTip,
+      })}
+      {open.has('skills') &&
+        skills.map((s) => (
+          // A skill name is a Resource, not a measurement: no token figure at
+          // all, so the vals column stays empty (never "—").
+          <div className="tt-ctx-row muted indent-1" key={`skill:${s}`}>
+            <span className="name">
+              <span className="dot" style={{ background: 'var(--border-strong)' }} />
+              {s}
+            </span>
+          </div>
+        ))}
 
       {meta && <div className="tt-ctx-meta">{meta}</div>}
     </>

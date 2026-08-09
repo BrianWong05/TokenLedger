@@ -46,7 +46,7 @@ import type {
   SeriesPoint,
   Summary,
   BreakdownRow,
-  CtxResourceCount,
+  CtxResource,
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
@@ -79,7 +79,7 @@ export interface OverviewSnapshot {
   profileSessions: number | null;
   modelRows: BreakdownRow[];
   projectRows: BreakdownRow[];
-  ctxResources: CtxResourceCount[];
+  ctxResources: CtxResource[];
   ctxBuckets: CtxBuckets[];
   ctxToolRows: CtxToolRow[];
   ctxExecRows: CtxExecRow[];
@@ -384,6 +384,7 @@ export interface OverviewView {
   ctxTree: ToolCategory[];
   selExecRows: CtxExecRow[];
   selMeta: string;
+  selSkills: string[];
   selModels: ModelBar[];
   tool: SourceMeta;
   headline: { total: number; summaryReady: boolean };
@@ -453,6 +454,10 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     ctxTree: toolTree(selToolRows, ctx.toolcalls),
     selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
     selMeta: ctxMeta(s.ctxResources, s.selected, lang),
+    selSkills: s.ctxResources
+      .filter((r) => r.source === s.selected && r.kind === 'skill')
+      .map((r) => r.name)
+      .sort((a, b) => a.localeCompare(b)),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: sourceMeta(s.selected),
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },

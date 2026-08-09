@@ -587,11 +587,10 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
-pub struct CtxResourceCount {
+pub struct CtxResource {
     pub source: String,
     pub kind: String,
-    #[ts(type = "number")]
-    pub count: i64,
+    pub name: String,
 }
 
 // Day-granular WHERE for the ctx_* tables (deduped/aggregated per local day):
@@ -623,17 +622,17 @@ fn day_where(f: &Filters) -> (String, Vec<Value>) {
     (where_sql, params)
 }
 
-// Distinct resources (skills / MCP servers / agents / memory files) seen in
-// range, per source — the Context Breakdown meta line.
-pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResourceCount>> {
+// Distinct resource names (skills / MCP servers / agents / memory files) seen
+// in range, per source — the Context Breakdown meta line and skill drill-down.
+pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResource>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
-        "SELECT source, kind, COUNT(DISTINCT name) FROM ctx_resources {where_sql} \
-         GROUP BY source, kind"
+        "SELECT DISTINCT source, kind, name FROM ctx_resources {where_sql} \
+         ORDER BY source, kind, name"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
-        Ok(CtxResourceCount { source: r.get(0)?, kind: r.get(1)?, count: r.get(2)? })
+        Ok(CtxResource { source: r.get(0)?, kind: r.get(1)?, name: r.get(2)? })
     })?;
     rows.collect()
 }
@@ -1344,27 +1343,31 @@ mod tests {
     }
 
     #[test]
-    fn ctx_resources_counts_distinct_in_range() {
+    fn ctx_resources_distinct_names_in_range() {
         std::env::set_var("TZ", "UTC");
         let dir = tempdir().unwrap();
         let conn = db::open_db(&dir.path().join("t.db")).unwrap();
         crate::db::record_resources(&conn, "claude", &[
-            ("skill", "graphify".to_string(), DAY1_TS),
-            ("skill", "graphify".to_string(), DAY2_TS), // same name, new day: still 1 distinct
             ("skill", "verify".to_string(), DAY2_TS),
+            ("skill", "graphify".to_string(), DAY1_TS),
+            ("skill", "graphify".to_string(), DAY2_TS), // same name, new day: still 1 row
             ("mcp_server", "pencil".to_string(), DAY1_TS),
         ]).unwrap();
 
         let all = ctx_resources(&conn, &Filters::default()).unwrap();
-        let skill = all.iter().find(|r| r.kind == "skill").unwrap();
-        assert_eq!(skill.count, 2);
-        let mcp = all.iter().find(|r| r.kind == "mcp_server").unwrap();
-        assert_eq!(mcp.count, 1);
+        let skills: Vec<&str> =
+            all.iter().filter(|r| r.kind == "skill").map(|r| r.name.as_str()).collect();
+        assert_eq!(skills, ["graphify", "verify"], "deduped across days, name-ordered");
+        let mcps: Vec<&str> =
+            all.iter().filter(|r| r.kind == "mcp_server").map(|r| r.name.as_str()).collect();
+        assert_eq!(mcps, ["pencil"]);
 
         // Day-1-only window excludes the day-2 'verify'.
         let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
         let d1 = ctx_resources(&conn, &f).unwrap();
-        assert_eq!(d1.iter().find(|r| r.kind == "skill").unwrap().count, 1);
+        let d1_skills: Vec<&str> =
+            d1.iter().filter(|r| r.kind == "skill").map(|r| r.name.as_str()).collect();
+        assert_eq!(d1_skills, ["graphify"]);
 
         // Tool filter scopes by source.
         let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };

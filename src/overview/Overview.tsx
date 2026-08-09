@@ -274,6 +274,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
               tree={panels.context.tree}
               execRows={panels.context.execRows}
               meta={panels.context.meta}
+              skills={panels.context.skills}
             />
           </div>
           <div className="tt-card">
