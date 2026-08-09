@@ -67,7 +67,7 @@
       "artifacts": [
         { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
       "platforms": ["all"],
       "prerequisite": null
     },
@@ -242,7 +242,7 @@
         { "id": "qoder-cli-projects", "kind": "directory", "path": ".qoder-cli/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
         { "id": "qoder-cn-projects", "kind": "directory", "path": ".qoder-cn/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
       "platforms": ["all"],
       "prerequisite": null
     }

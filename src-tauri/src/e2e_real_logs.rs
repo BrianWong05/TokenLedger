@@ -64,8 +64,8 @@ fn e2e_real_logs() {
 
     assert_eq!(
         status.sources.len(),
-        14,
-        "expected all 14 sources to report"
+        15,
+        "expected all 15 sources to report"
     );
     assert!(
         summary.total_tokens > 0,
