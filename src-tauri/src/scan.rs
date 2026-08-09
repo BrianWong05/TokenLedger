@@ -647,7 +647,7 @@ mod tests {
                 .filter(|source| source.capabilities.context)
                 .map(|source| source.key.as_str())
                 .collect::<Vec<_>>(),
-            ["claude", "codex", "pi"],
+            ["claude", "codex", "grok", "pi", "qoder"],
         );
         assert_eq!(
             catalog.sources.iter().flat_map(|source| {

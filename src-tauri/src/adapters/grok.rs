@@ -10,16 +10,27 @@
 // positive delta is recorded as input tokens (output/cache buckets stay 0).
 // After compaction the counter rewinds; the deltas lost to that rewind are
 // reconciled from `signals.json` as one extra event per session.
+//
+// Context attribution: chunk content (message text, thought text, tool-call
+// payloads) is sized transiently (est bytes/4, never stored) and each turn's
+// delta splits across messages + reasoning by those weights — system stays
+// NULL (unobservable), matching the pi convention.
 use std::fs;
 use std::path::Path;
 
 use rusqlite::Connection;
 use serde_json::Value;
 
+use super::claude_ctx::{content_bytes, est};
 use super::{file_state_of, percent_decode, unchanged};
 use crate::db::{replace_file_events, set_file_state};
 use crate::time::iso_to_epoch;
-use crate::types::{SourceScanResult, UsageEvent};
+use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
+
+// Bump to force a full re-parse of every session when the parser changes (the
+// byte-offset slot carries it through `unchanged`).
+// 1: attribute each turn's delta across messages/reasoning by chunk weights.
+const PARSER_VERSION: i64 = 1;
 
 const MALFORMED_ARTIFACT_WARNING: &str = "grok: malformed or unsupported Source Artifact";
 const SUPPORTED_UPDATE_KINDS: &[&str] = &[
@@ -89,7 +100,7 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
 
     // Tokens come from updates.jsonl + signals.json; if neither changed the
     // session's events are already correct.
-    let updates_state = file_state_of(updates_path);
+    let updates_state = FileState { byte_offset: PARSER_VERSION, ..file_state_of(updates_path) };
     let signals_state = file_state_of(&signals_path);
     let summary_state = file_state_of(&summary_path);
     if unchanged(conn, updates_path, &updates_state)
@@ -205,12 +216,59 @@ fn read_session_meta(
 }
 
 // One in-flight user turn: the cumulative counter's value when the turn
-// started, and the highest value seen while it ran.
+// started, the highest value seen while it ran, and the est-weights (bytes/4)
+// of the chunk content observed during it — sized transiently, never stored.
 struct Turn {
     baseline: i64,
     max_total: i64,
     ts: i64,
     index: usize,
+    msg: i64,
+    reas: i64,
+}
+
+impl Turn {
+    fn start(baseline: i64, ts: i64, index: usize) -> Self {
+        Turn { baseline, max_total: baseline, ts, index, msg: 0, reas: 0 }
+    }
+}
+
+// The (messages, reasoning) est-weight of one update's chunk content.
+fn update_weights(u: &Value) -> (i64, i64) {
+    let text = u
+        .pointer("/content/text")
+        .map(|t| est(content_bytes(t)))
+        .unwrap_or(0);
+    match u.get("sessionUpdate").and_then(Value::as_str) {
+        Some("agent_thought_chunk") => (0, text),
+        Some("user_message_chunk") | Some("agent_message_chunk") => (text, 0),
+        Some("tool_call") | Some("tool_call_update") => {
+            let payloads = ["rawInput", "rawOutput", "content"]
+                .iter()
+                .filter_map(|k| u.get(*k))
+                .map(|v| est(content_bytes(v)))
+                .sum();
+            (payloads, 0)
+        }
+        _ => (0, 0),
+    }
+}
+
+// Split a turn's counter delta by the observed chunk weights (pi convention:
+// system is unobservable for grok, and a zero reasoning share stays NULL —
+// never a fabricated 0). Messages takes the remainder, so the partition over
+// the two observable categories is exact.
+fn attribute_turn(msg: i64, reas: i64, delta: i64) -> CtxTokens {
+    let total = msg + reas;
+    if total <= 0 || delta <= 0 {
+        return CtxTokens::default();
+    }
+    let reasoning = delta * reas / total;
+    CtxTokens {
+        messages: Some(delta - reasoning),
+        reasoning: (reasoning > 0).then_some(reasoning),
+        ..Default::default()
+    }
 }
 
 fn supported_update(v: &Value) -> bool {
@@ -252,7 +310,8 @@ fn parse_updates(
         let delta = turn.max_total.saturating_sub(turn.baseline);
         if delta > 0 {
             if turn.ts > 0 {
-                events.push(make_event(meta, updates_path, turn.index, delta, turn.ts));
+                let ctx = attribute_turn(turn.msg, turn.reas, delta);
+                events.push(make_event(meta, updates_path, turn.index, delta, turn.ts, ctx));
             } else {
                 *missing_timestamp = true;
             }
@@ -312,13 +371,16 @@ fn parse_updates(
             if let Some(t) = turn.take() {
                 flush(t, &mut events, &mut missing_timestamp);
             }
-            turn = Some(Turn {
-                baseline: last_total.unwrap_or(0),
-                max_total: last_total.unwrap_or(0),
-                ts,
-                index: turn_index,
-            });
+            turn = Some(Turn::start(last_total.unwrap_or(0), ts, turn_index));
             turn_index += 1;
+        }
+
+        // Chunk content weighs into the running turn; pre-turn chunks (resumed
+        // session) have no turn to belong to and stay unattributed.
+        if let (Some(t), Some(u)) = (turn.as_mut(), v.pointer("/params/update")) {
+            let (msg, reas) = update_weights(u);
+            t.msg += msg;
+            t.reas += reas;
         }
 
         let total = match v.pointer("/params/_meta/totalTokens").and_then(Value::as_i64) {
@@ -333,12 +395,7 @@ fn parse_updates(
         if turn.is_none() && last_total.is_some_and(|prev| total > prev) {
             // Counter grew outside any observed turn (e.g. resumed session
             // whose user message predates this file's first line).
-            turn = Some(Turn {
-                baseline: last_total.unwrap_or(0),
-                max_total: last_total.unwrap_or(0),
-                ts,
-                index: turn_index,
-            });
+            turn = Some(Turn::start(last_total.unwrap_or(0), ts, turn_index));
             turn_index += 1;
         }
         if let Some(t) = turn.as_mut() {
@@ -356,11 +413,12 @@ fn parse_updates(
     }
 
     // No turns detected but a counter exists (very old/truncated logs):
-    // record the whole session as one event.
+    // record the whole session as one event, unattributed (no turn observed
+    // means no chunk weights to split it by).
     if events.is_empty() {
         if let Some(total) = last_total.filter(|&t| t > 0) {
             if last_ts > 0 {
-                events.push(make_event(meta, updates_path, 0, total, last_ts));
+                events.push(make_event(meta, updates_path, 0, total, last_ts, CtxTokens::default()));
             } else {
                 missing_timestamp = true;
             }
@@ -441,7 +499,9 @@ fn append_signals_reconciliation(
         return false;
     }
     let updates_path = signals_path.with_file_name("updates.jsonl");
-    let mut event = make_event(meta, &updates_path, 0, extra, ts);
+    // Unattributed: the rollup delta stands for content lost to compaction,
+    // which the update chunks never showed us.
+    let mut event = make_event(meta, &updates_path, 0, extra, ts, CtxTokens::default());
     event.dedup_key = format!("grok:{}:signals", meta.session_id);
     events.push(event);
     true
@@ -453,6 +513,7 @@ fn make_event(
     turn_index: usize,
     input_tokens: i64,
     timestamp: i64,
+    ctx: CtxTokens,
 ) -> UsageEvent {
     UsageEvent {
         dedup_key: format!("grok:{}:{}", meta.session_id, turn_index),
@@ -469,7 +530,7 @@ fn make_event(
         source_file: updates_path.to_string_lossy().to_string(),
         session_id: Some(meta.session_id.clone()),
         reasoning_tokens: None,
-        ctx: Default::default(),
+        ctx,
     }
 }
 
@@ -484,12 +545,16 @@ mod tests {
     // params._meta.totalTokens, turn starts are user_message_chunk updates,
     // top-level timestamp is epoch seconds.
     fn update_line(ts: i64, kind: &str, total: Option<i64>) -> String {
+        update_line_text(ts, kind, total, "x")
+    }
+
+    fn update_line_text(ts: i64, kind: &str, total: Option<i64>, text: &str) -> String {
         let meta = match total {
             Some(t) => format!(r#","_meta":{{"totalTokens":{t},"eventId":"e"}}"#),
             None => String::new(),
         };
         format!(
-            r#"{{"timestamp":{ts},"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"x"}}}}{meta}}}}}"#
+            r#"{{"timestamp":{ts},"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}{meta}}}}}"#
         )
     }
 
@@ -559,6 +624,44 @@ mod tests {
         assert_eq!(rows[0].4, Some("/Users/dev/alpha".to_string()));
         assert_eq!(rows[1].0, "grok:sess-1:1");
         assert_eq!(rows[1].2, 5000); // 4000 → 9000
+    }
+
+    #[test]
+    fn turn_delta_splits_across_messages_and_reasoning_by_chunk_weights() {
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Falpha",
+            "sess-r",
+            &[
+                // weights: user 8/4=2 msg, thought 32/4=8 reas, agent 24/4=6 msg
+                update_line_text(100, "user_message_chunk", None, "uuuuuuuu"),
+                update_line_text(101, "agent_thought_chunk", Some(2500), &"t".repeat(32)),
+                update_line_text(102, "agent_message_chunk", Some(4000), &"m".repeat(24)),
+                // second turn: no thinking observed → reasoning stays NULL
+                update_line_text(200, "user_message_chunk", None, "uuuuuuuu"),
+                update_line_text(201, "agent_message_chunk", Some(9000), &"m".repeat(24)),
+            ],
+            Some(r#"{"info":{"id":"sess-r","cwd":"/Users/dev/alpha"},"current_model_id":"grok-4.5","updated_at":"2026-07-10T20:49:57Z"}"#),
+            None,
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert!(res.error.is_none());
+
+        let rows: Vec<(Option<i64>, Option<i64>, Option<i64>)> = conn
+            .prepare("SELECT ctx_messages, ctx_reasoning, ctx_system FROM events ORDER BY timestamp")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        // Turn 1: delta 4000, weights msg 8 / reas 8 → reasoning 2000,
+        // messages take the remainder so the partition equals the delta.
+        assert_eq!(rows[0], (Some(2_000), Some(2_000), None));
+        // Turn 2: delta 5000, no thought chunks → zero share stays NULL.
+        assert_eq!(rows[1], (Some(5_000), None, None));
     }
 
     #[test]
