@@ -26,6 +26,7 @@ struct ParsedClaudeFile {
     comps: HashMap<String, Composition>,
     resources: Vec<(&'static str, String, i64)>,
     tool_rows: Vec<(String, i64, i64, i64)>,
+    skill_rows: Vec<(String, i64, i64, i64)>,
     exec_rows: Vec<(String, String, String, i64, i64, i64)>,
     consumed: usize,
     lines_skipped: u64,
@@ -69,6 +70,7 @@ fn parse_file(
     let mut resources: Vec<(&'static str, String, i64)> = Vec::new();
     let mut comp_by_key: HashMap<String, Composition> = HashMap::new();
     let mut tool_rows: Vec<(String, i64, i64, i64)> = Vec::new();
+    let mut skill_rows: Vec<(String, i64, i64, i64)> = Vec::new();
     let mut exec_by_id: HashMap<String, (String, String, String)> = HashMap::new();
     let mut exec_rows: Vec<(String, String, String, i64, i64, i64)> = Vec::new();
     let mut lines_skipped: u64 = 0;
@@ -116,8 +118,10 @@ fn parse_file(
         match v.get("type").and_then(|t| t.as_str()) {
             Some("user") => {
                 let mut sizes: Vec<(String, i64, i64)> = Vec::new();
-                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut sizes);
+                let mut skills: Vec<(String, i64, i64)> = Vec::new();
+                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut sizes, &mut skills);
                 tool_rows.extend(sizes.into_iter().map(|(n, e, c)| (n, e, c, line_ts)));
+                skill_rows.extend(skills.into_iter().map(|(n, e, u)| (n, e, u, line_ts)));
                 collect_exec(&v, &mut exec_by_id, &mut exec_rows, line_ts);
             }
             Some("system") => {
@@ -163,7 +167,7 @@ fn parse_file(
         }
     }
 
-    ParsedClaudeFile { events, comps, resources, tool_rows, exec_rows, consumed, lines_skipped }
+    ParsedClaudeFile { events, comps, resources, tool_rows, skill_rows, exec_rows, consumed, lines_skipped }
 }
 
 fn scan_file(
