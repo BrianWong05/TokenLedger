@@ -27,6 +27,7 @@ const execRows: CtxExecRow[] = [
   { source: 'claude', kind: 'vcs', exe: 'git', cmd: 'git status', estTokens: 400, calls: 3 },
   { source: 'claude', kind: 'build', exe: 'npm', cmd: 'npm test', estTokens: 600, calls: 2 },
 ];
+const skills = ['graphify', 'verify'];
 
 function render(view: BucketView | null = null) {
   const container = document.createElement('div');
@@ -35,7 +36,7 @@ function render(view: BucketView | null = null) {
   mountedRoots.push(root);
   act(() =>
     root.render(
-      <ContextBreakdown tool={SOURCES[0]} ctx={ctx} view={view} tree={tree} meta="" execRows={execRows} />,
+      <ContextBreakdown tool={SOURCES[0]} ctx={ctx} view={view} tree={tree} meta="" execRows={execRows} skills={skills} />,
     ),
   );
   return container;
@@ -107,6 +108,18 @@ describe('ContextBreakdown drilldown', () => {
 
     expect(queryRow(c, 'Messages')?.querySelector('.val')?.textContent).toBe('0');
     expect(queryRow(c, 'System prompt')?.querySelector('.val')?.textContent).toBe('—');
+  });
+
+  it('lists skill names without values when Skills is expanded', () => {
+    const c = render();
+    expect(queryRow(c, 'graphify')).toBeUndefined();
+
+    clickRow(c, 'Skills');
+    const leaf = queryRow(c, 'graphify');
+    expect(leaf).toBeDefined();
+    expect(queryRow(c, 'verify')).toBeDefined();
+    // A Resource is a name, not a measurement — no value cell, not even "—".
+    expect(leaf?.querySelector('.val')).toBeNull();
   });
 
   it('renders the exec facet table when the Bash leaf is expanded', () => {

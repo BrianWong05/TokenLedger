@@ -37,7 +37,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
-    BreakdownRow, CtxBuckets, CtxExecRow, CtxResourceCount, CtxToolRow, Filters, SeriesPoint,
+    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxToolRow, Filters, SeriesPoint,
     Summary, TrendPoint,
 };
 use scan::{run_scan, SourceRoots};
@@ -216,7 +216,7 @@ fn breakdown(
 fn ctx_resources(
     state: State<'_, AppState>,
     filters: Filters,
-) -> Result<Vec<CtxResourceCount>, String> {
+) -> Result<Vec<CtxResource>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_resources(&db, &filters).map_err(|e| e.to_string())
 }

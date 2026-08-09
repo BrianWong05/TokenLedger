@@ -9,7 +9,7 @@ import type {
   SeriesPoint,
   Summary,
   BreakdownRow,
-  CtxResourceCount,
+  CtxResource,
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
@@ -32,7 +32,7 @@ interface Data {
   // that only care about one list stay a one-field seed.
   toolRows?: BreakdownRow[];
   projectRows: BreakdownRow[];
-  ctxResources: CtxResourceCount[];
+  ctxResources: CtxResource[];
   ctxBuckets: CtxBuckets[];
   ctxTools: CtxToolRow[];
   ctxExec: CtxExecRow[];
@@ -118,7 +118,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     breakdown: (by: 'model' | 'project' | 'tool', filters: Filters) =>
       respond('breakdown', [by, filters]) as Promise<BreakdownRow[]>,
     ctxResources: (filters: Filters) =>
-      respond('ctxResources', [filters]) as Promise<CtxResourceCount[]>,
+      respond('ctxResources', [filters]) as Promise<CtxResource[]>,
     ctxBuckets: (filters: Filters) =>
       respond('ctxBuckets', [filters]) as Promise<CtxBuckets[]>,
     ctxTools: (filters: Filters) => respond('ctxTools', [filters]) as Promise<CtxToolRow[]>,

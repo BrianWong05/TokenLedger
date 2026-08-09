@@ -21,7 +21,7 @@ import type {
   SeriesPoint,
   Summary,
   BreakdownRow,
-  CtxResourceCount,
+  CtxResource,
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
@@ -35,7 +35,7 @@ export interface LedgerPort {
   series(filters: Filters, bucket: 'day' | 'hour'): Promise<SeriesPoint[]>;
   summary(filters: Filters): Promise<Summary>;
   breakdown(by: 'model' | 'project' | 'tool', filters: Filters): Promise<BreakdownRow[]>;
-  ctxResources(filters: Filters): Promise<CtxResourceCount[]>;
+  ctxResources(filters: Filters): Promise<CtxResource[]>;
   ctxBuckets(filters: Filters): Promise<CtxBuckets[]>;
   ctxTools(filters: Filters): Promise<CtxToolRow[]>;
   ctxExec(filters: Filters): Promise<CtxExecRow[]>;

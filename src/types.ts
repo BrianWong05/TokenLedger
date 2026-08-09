@@ -5,7 +5,7 @@ export type { Summary } from './bindings/Summary';
 export type { TrendPoint } from './bindings/TrendPoint';
 export type { SeriesPoint } from './bindings/SeriesPoint';
 export type { BreakdownRow } from './bindings/BreakdownRow';
-export type { CtxResourceCount } from './bindings/CtxResourceCount';
+export type { CtxResource } from './bindings/CtxResource';
 export type { CtxBuckets } from './bindings/CtxBuckets';
 export type { CtxToolRow } from './bindings/CtxToolRow';
 export type { CtxExecRow } from './bindings/CtxExecRow';
