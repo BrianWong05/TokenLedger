@@ -1,5 +1,10 @@
 # Source acquisition is local and passive
 
+**Amended by ADR-0018**: this rule binds the *scan*, which still only reads
+what is already on disk. A Companion — a separate executable, run because a
+person asked — may talk to a Source to write an Export Artifact the scan can
+then read. Nothing here loosens for the scan itself.
+
 TokenLedger only reads Source Artifacts already present on the machine. An
 already-populated third-party cache is acceptable, but TokenLedger never runs
 the synchronising program, signs into the Source, handles account cookies or

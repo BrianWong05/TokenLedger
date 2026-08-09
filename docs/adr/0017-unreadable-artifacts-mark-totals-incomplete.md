@@ -1,5 +1,11 @@
 # Unreadable Artifacts mark totals incomplete instead of warning
 
+**Amended by ADR-0018**: "can never be parsed" is now "cannot be parsed by the
+scan". An Artifact stops being unreadable, and stops marking totals, once a
+Companion has written an Export Artifact the scan can read for it — but only
+when that export actually parses, never merely because a file of the right
+name sits beside it.
+
 A present Source Artifact that can never be parsed passively — encrypted with
 no published scheme, readable only by running the Source's own programs, which
 ADR-0013 forbids — is an Unreadable Artifact: a third class beside ADR-0015's

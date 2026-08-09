@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
-    "bindings": "cd src-tauri && cargo test export_bindings"
+    "bindings": "cd src-tauri && cargo test export_bindings",
+    "sidecar": "node scripts/build-sidecar.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

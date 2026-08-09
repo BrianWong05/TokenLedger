@@ -166,6 +166,11 @@ export const overview = {
     'overview.unreadableSessionOne': 'session unreadable',
     'overview.unreadableSessionMany': 'sessions unreadable',
     'overview.atLeast': 'at least',
+    // The export companion (ADR-0018): offered only where the ≥ is explained,
+    // because it is the one action that removes it.
+    'overview.decrypt': 'Decrypt',
+    'overview.decrypting': 'Decrypting…',
+    'overview.decryptHint': 'Read the encrypted Sessions using Antigravity, which must be running',
 
     // models list
     'overview.modelsHead': 'Models',
@@ -346,6 +351,9 @@ export const overview = {
     'overview.unreadableSessionOne': '個工作階段無法讀取',
     'overview.unreadableSessionMany': '個工作階段無法讀取',
     'overview.atLeast': '至少',
+    'overview.decrypt': '解密',
+    'overview.decrypting': '解密中…',
+    'overview.decryptHint': '透過 Antigravity 讀取加密的工作階段，需先開啟 Antigravity',
 
     'overview.modelsHead': '模型',
 

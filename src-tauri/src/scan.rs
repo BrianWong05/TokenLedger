@@ -31,8 +31,12 @@ pub struct SourceRoots {
     pub gemini_projects_json: PathBuf,
     pub hermes_db: PathBuf,
     pub grok_sessions: PathBuf,
-    // IDE and CLI conversation dirs share one SQLite schema; both scanned.
+    // The IDE writes under either `antigravity/` or `antigravity-ide/` depending
+    // on its `--app_data_dir`, and the CLI under `antigravity-cli/`. All three
+    // share one SQLite schema, and all three are scanned — a dir left out is a
+    // dir whose exports nothing would ever read.
     pub antigravity_conversations: PathBuf,
+    pub antigravity_ide_conversations: PathBuf,
     pub antigravity_cli_conversations: PathBuf,
     pub goose_sessions: Vec<PathBuf>,
     pub pi_sessions: Vec<PathBuf>,
@@ -143,6 +147,7 @@ impl SourceRoots {
             grok_sessions: grok_home_for(home, grok_home)
                 .join(source_catalog::artifact_filename("grok", "sessions")),
             antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
+            antigravity_ide_conversations: catalog_root(home, "antigravity", "ide-conversations"),
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
             goose_sessions,
             pi_sessions,
@@ -509,6 +514,7 @@ fn run_scan_sources(
                         conn,
                         &[
                             roots.antigravity_conversations.as_path(),
+                            roots.antigravity_ide_conversations.as_path(),
                             roots.antigravity_cli_conversations.as_path(),
                         ],
                     )
@@ -662,6 +668,7 @@ mod tests {
                 ("hermes", "state", ".hermes/state.db"),
                 ("grok", "sessions", ".grok/sessions"),
                 ("antigravity", "conversations", ".gemini/antigravity/conversations"),
+                ("antigravity", "ide-conversations", ".gemini/antigravity-ide/conversations"),
                 ("antigravity", "cli-conversations", ".gemini/antigravity-cli/conversations"),
                 ("goose", "sessions", ".local/share/goose/sessions"),
                 ("goose", "sessions-macos", "Library/Application Support/Block/goose/data/sessions"),
@@ -1452,6 +1459,7 @@ mod tests {
             hermes_db: tmp.path().join("hermes/state.db"),
             grok_sessions: tmp.path().join("grok"),
             antigravity_conversations: tmp.path().join("antigravity"),
+            antigravity_ide_conversations: tmp.path().join("antigravity-ide"),
             antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
             goose_sessions: vec![tmp.path().join("goose")],
             pi_sessions: vec![tmp.path().join("pi")],
@@ -1512,6 +1520,7 @@ mod tests {
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
+            antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
@@ -1889,6 +1898,7 @@ mod tests {
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
+            antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![pi_root],
@@ -2043,6 +2053,7 @@ mod tests {
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
+            antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![base.join("no-pi")],
@@ -2209,6 +2220,7 @@ mod tests {
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
             antigravity_conversations: base.join("no-antigravity"),
+            antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
             goose_sessions: vec![base.join("no-goose")],
             pi_sessions: vec![base.join("no-pi")],

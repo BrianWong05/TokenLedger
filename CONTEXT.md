@@ -124,17 +124,37 @@ passively, and rejecting one Artifact never rejects the Source itself.
 _Avoid_: Data source, import file
 
 **Unreadable Artifact**:
-A Source Artifact that is present on every scan yet can never be parsed
-without running the Source's own programs, which ADR-0013 forbids — an
-encrypted Session with no published scheme. Not a malformed instance of a
-supported shape, so it emits no warning (there is no action to request); it
-is counted instead, and every token total whose window its content could fall
-in is shown as a floor with the same "≥" marker as Partial Cost (ADR-0017),
-so a Source with unreadable Sessions and a Source read in full never look
-alike. Content is never newer than its file, so only a window starting after
-the Artifact's last write is definitely complete.
+A Source Artifact that is present on every scan yet cannot be parsed by the
+scan, because reading it would mean running the Source's own programs, which
+ADR-0013 forbids — an encrypted Session with no published scheme. Not a
+malformed instance of a supported shape, so it emits no warning (there is no
+action to request); it is counted instead, and every token total whose window
+its content could fall in is shown as a floor with the same "≥" marker as
+Partial Cost (ADR-0017), so a Source with unreadable Sessions and a Source
+read in full never look alike. Content is never newer than its file, so only a
+window starting after the Artifact's last write is definitely complete. It
+stops being unreadable once an Export Artifact the scan can read stands in for
+it (ADR-0018) — one whose export file fails to parse is still unreadable, or
+its tokens would leave the total with no "≥" left to admit it.
 _Avoid_: Blocked artifact, encrypted artifact, unsupported artifact, skipped
 file
+
+**Export Artifact**:
+A passive Artifact a Companion writes so the scan can read usage a Source
+keeps encrypted — for Antigravity, `<session>.tokenledger.json` beside the
+`.pb` it stands in for. It carries a schema version, and one the Ledger does
+not recognise is a malformed instance of a supported shape (a warning), not a
+new Artifact class. The scan only ever reads it, so acquisition stays passive
+(ADR-0018).
+_Avoid_: Dump, cache, sync file, decrypted artifact
+
+**Companion**:
+A program shipped beside the Ledger but deliberately outside it, run because a
+person asked, which may do the one thing the scan must not: talk to a Source.
+It writes Export Artifacts and never writes the Ledger's database, so the
+passive boundary (ADR-0013) stays something you can check rather than
+something the code promises.
+_Avoid_: Plugin, integration, sync agent, importer
 
 **Source Capability**:
 A kind of attribution a Source can truthfully expose, independent of whether a

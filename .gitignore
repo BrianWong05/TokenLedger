@@ -31,3 +31,6 @@ graphify-out/
 .workbuddy/
 # Per-machine tool permissions (.claude/, .qoder/): absolute paths, never shared.
 **/settings.local.json
+
+# sidecar built by scripts/build-sidecar.mjs
+src-tauri/binaries/

@@ -101,6 +101,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         hermes_db: missing.clone(),
         grok_sessions: missing.clone(),
         antigravity_conversations: missing.clone(),
+        antigravity_ide_conversations: missing.clone(),
         antigravity_cli_conversations: missing.clone(),
         goose_sessions: vec![missing.clone()],
         pi_sessions: vec![missing.clone()],
