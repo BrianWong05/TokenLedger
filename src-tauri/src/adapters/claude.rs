@@ -231,6 +231,7 @@ fn scan_file(
     // weights from scratch (same rule as the fresh composition).
     if start == 0 {
         crate::db::clear_ctx_tools_for_file(conn, &path_str)?;
+        crate::db::clear_ctx_skills_for_file(conn, &path_str)?;
         crate::db::clear_ctx_exec_for_file(conn, &path_str)?;
     }
 
@@ -253,6 +254,7 @@ fn scan_file(
     }
     crate::db::record_resources(conn, "claude", &parsed.resources)?;
     crate::db::add_ctx_tool_rows(conn, "claude", &path_str, &parsed.tool_rows)?;
+    crate::db::add_ctx_skill_rows(conn, "claude", &path_str, &parsed.skill_rows)?;
     crate::db::add_ctx_exec_rows(conn, "claude", &path_str, &parsed.exec_rows)?;
 
     let new_offset = start + parsed.consumed as i64;
