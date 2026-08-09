@@ -42,7 +42,7 @@ Per source over the selected range, from existing token columns:
 | — New input | fresh `input_tokens` | exact (label "New input", tooltip: "uncached input for the newest turn — user text and fresh tool results") |
 | — Assistant response | `output − COALESCE(reasoning, 0)`, floored at 0 | exact |
 | System prompt ⓘ | each session's FIRST cache-writing event's cache-write amount | exact usage-field version of the v3 heuristic; tooltip "first cache write of each session" |
-| Reasoning | `reasoning_tokens` column | exact, REPORTED — real for Codex/Gemini/Hermes; NULL → "—" for Claude (thinking text absent from logs; we do not fabricate via TokenTracker's `\|\|1` trick) |
+| Reasoning | `reasoning_tokens` column | exact, REPORTED — real for Codex/Gemini/Hermes; NULL for Claude (usage never splits thinking out of output; we do not fabricate via TokenTracker's `\|\|1` trick). 2026-08-09: when NULL, the row falls back to the v3 estimated share (`ctx_reasoning`, content bytes ÷ 4 — transcripts now log thinking text), est-styled with no pct |
 
 - **Partition invariant (exact):** history + newInput + system +
   response + reasoning == `input + cache_read + cache_write_5m +

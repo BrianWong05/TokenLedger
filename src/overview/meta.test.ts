@@ -19,7 +19,8 @@ describe('Source catalog', () => {
     });
     expect(sourceMeta('qoder')).toMatchObject({
       key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder', aliases: ['Qoder IDE', 'Qoder CLI', 'Qoder CN'],
-      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: false },
+      // CLI transcripts attribute context (reasoning) since parser v4.
+      capabilities: { model: true, project: true, session: true, tokenCategories: true, context: true },
       artifacts: expect.arrayContaining([
         expect.objectContaining({ id: 'db-cn-macos', path: 'Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db' }),
         expect.objectContaining({ id: 'db-cn-linux', path: '.config/QoderCN/SharedClientCache/cache/db/local.db' }),

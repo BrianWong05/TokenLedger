@@ -38,10 +38,20 @@
 //!    request, where merging is correct. `~/.qoder-cli` carries no token
 //!    usage today; a missing root is scanned quietly (ADR-0015).
 //!
-//! Message content is never read in either family — only numeric usage and
-//! identity fields.
+//!    Being Claude-Code-shaped, CLI transcripts also log thinking text, so
+//!    the claude composition engine attributes each Record's billed context
+//!    across messages/system/reasoning. Content is sized transiently
+//!    (est bytes/4) and never stored (ADR-0011).
+//!
+//! The IDE database family never reads message content — only numeric usage
+//! and identity fields. Its context attribution instead crosses artifacts
+//! (ADR-0014): the plain-Qoder edition mirrors each session's content into a
+//! transcript file whose stem IS the database `session_id`, so a row's billed
+//! context splits across messages/reasoning by the content logged strictly
+//! before the row's second. QoderCN writes no transcripts — its rows stay
+//! NULL, the source cannot say.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -49,7 +59,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use crate::adapters::{
-    absolute_project, claude_shaped_usage, file_state_of, find_jsonl, normalize_epoch,
+    absolute_project, claude_ctx, claude_shaped_usage, file_state_of, find_jsonl, normalize_epoch,
     rollup_worktree, unchanged, upsert_events_count,
 };
 use crate::db::{insert_events_keep_max_output, set_file_state};
@@ -88,7 +98,8 @@ fn translate_model(model: Option<String>) -> Option<String> {
 // changes (the byte-offset slot carries it through `unchanged`).
 // 2: translate routing aliases (qmodel_38max -> qwen3.8-max).
 // 3: re-parse so the keep-max Latest policy rewrites already-booked models.
-const TRANSCRIPT_PARSER_VERSION: i64 = 3;
+// 4: estimate context attribution (messages/system/reasoning) from content.
+const TRANSCRIPT_PARSER_VERSION: i64 = 4;
 
 #[derive(Default)]
 struct DatabaseScan {
@@ -105,11 +116,34 @@ pub fn scan_qoder(
     cli_projects: &[PathBuf],
 ) -> SourceScanResult {
     let mut result = SourceScanResult::default();
+    // Session-id → transcript file, shared by both IDE editions: the db rows
+    // carry the usage, the transcript carries the content (ADR-0014 —
+    // Source-native identity crosses artifacts).
+    let transcripts = transcript_index(cli_projects);
     for database in databases {
-        merge_result(&mut result, scan_qoder_database(conn, database));
+        merge_result(&mut result, scan_qoder_database(conn, database, &transcripts));
     }
     merge_result(&mut result, scan_qoder_cli(conn, cli_projects));
     result
+}
+
+/// Every transcript under the CLI roots, keyed by file stem — which is exactly
+/// the IDE database's `session_id` (both plain `<uuid>.jsonl` and
+/// `task-*.session.execution.jsonl` names). First (sorted) path wins on a
+/// duplicate stem.
+fn transcript_index(roots: &[PathBuf]) -> HashMap<String, PathBuf> {
+    let mut files = Vec::new();
+    for root in roots {
+        find_jsonl(root, &mut files);
+    }
+    files.sort();
+    let mut map = HashMap::new();
+    for f in files {
+        if let Some(stem) = f.file_stem().and_then(|s| s.to_str()) {
+            map.entry(stem.to_string()).or_insert(f);
+        }
+    }
+    map
 }
 
 fn merge_result(into: &mut SourceScanResult, other: SourceScanResult) {
@@ -130,7 +164,11 @@ fn merge_result(into: &mut SourceScanResult, other: SourceScanResult) {
 /// is one Usage Record; rows without `token_info` or with all-zero tokens
 /// produce no Record. Idempotent: re-scanning a stable database books nothing
 /// new (dedup on `qoder:<row id>`).
-fn scan_qoder_database(conn: &mut Connection, database: &Path) -> SourceScanResult {
+fn scan_qoder_database(
+    conn: &mut Connection,
+    database: &Path,
+    transcripts: &HashMap<String, PathBuf>,
+) -> SourceScanResult {
     if !database.exists() {
         return SourceScanResult::default();
     }
@@ -141,7 +179,7 @@ fn scan_qoder_database(conn: &mut Connection, database: &Path) -> SourceScanResu
         };
     }
 
-    let scan = match scan_database(database) {
+    let scan = match scan_database(database, transcripts) {
         Ok(scan) => scan,
         Err(error) => {
             return SourceScanResult {
@@ -241,6 +279,14 @@ fn parse_file(content: &str, path: &Path, source_file: &str) -> ParsedTranscript
 
     let mut events = Vec::new();
     let mut lines_skipped: u64 = 0;
+    // The transcripts are Claude-Code-shaped, so the claude composition engine
+    // applies verbatim: content is sized transiently (est bytes/4) into a
+    // running composition per session and each usage line's billed context is
+    // attributed across messages/system/reasoning. No persistence needed —
+    // a changed file always reparses from the top (parser-version slot).
+    let mut comps: HashMap<String, claude_ctx::Composition> = HashMap::new();
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut comp_by_key: HashMap<String, claude_ctx::Composition> = HashMap::new();
     for line in content[..consumed].lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -253,8 +299,52 @@ fn parse_file(content: &str, path: &Path, source_file: &str) -> ParsedTranscript
                 continue;
             }
         };
-        if let Some(ev) = parse_line_event(&v, source_file, &encoded_dir, &file_stem) {
-            events.push(ev);
+        let sid = v
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&file_stem)
+            .to_string();
+        let comp = comps.entry(sid).or_default();
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user") => {
+                claude_ctx::apply_user_line(comp, &v, &tool_names, &mut Vec::new(), &mut Vec::new());
+            }
+            Some("system") => {
+                if v.get("subtype").and_then(|s| s.as_str()) == Some("compact_boundary") {
+                    comp.reset_compact();
+                }
+            }
+            Some("assistant") => {
+                if let Some(mut ev) = parse_line_event(&v, source_file, &encoded_dir, &file_stem) {
+                    let billed = ev.input_tokens
+                        + ev.cache_read_tokens
+                        + ev.cache_write_5m_tokens
+                        + ev.cache_write_1h_tokens;
+                    comp.init_system(billed);
+                    // All lines of one message attribute from the same snapshot
+                    // (claude precedent: usage repeats per content-block line).
+                    let snap = *comp_by_key.entry(ev.dedup_key.clone()).or_insert(*comp);
+                    let mut ctx = snap.attribute(billed);
+                    // A zero reasoning share is unobservable at this billed
+                    // scale: NULL, never a fabricated 0 (pi/claude convention).
+                    if ctx.reasoning == Some(0) {
+                        ctx.reasoning = None;
+                    }
+                    ev.ctx = ctx;
+                    events.push(ev);
+                }
+                // Attribution first, THEN book this line's own content: what a
+                // call produces is its output, not its input.
+                claude_ctx::apply_assistant_content(
+                    comp,
+                    &v,
+                    &mut tool_names,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                );
+            }
+            _ => {}
         }
     }
 
@@ -321,12 +411,94 @@ fn parse_line_event(
         source_file: source_file.to_string(),
         session_id,
         reasoning_tokens: None,
-        // No Context attribution: the catalog reports `context: false`.
+        // Context attribution is assigned by parse_file's running composition.
         ctx: CtxTokens::default(),
     })
 }
 
-fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
+// Split an IDE row's billed context by the composition folded from its
+// session's transcript (pi convention: the transcript never shows the opening
+// prompt, so system stays NULL and the partition runs over messages +
+// reasoning only; a zero reasoning share stays NULL, never a fabricated 0).
+fn attribute_row(comp: &claude_ctx::Composition, billed: i64) -> CtxTokens {
+    let total = comp.msg + comp.reas;
+    if total <= 0 || billed <= 0 {
+        return CtxTokens::default();
+    }
+    let reasoning = billed * comp.reas / total;
+    let messages = billed - reasoning;
+    CtxTokens {
+        messages: Some(messages),
+        reasoning: (reasoning > 0).then_some(reasoning),
+        toolcalls: Some((billed * comp.tool / total).min(messages)),
+        ..Default::default()
+    }
+}
+
+/// Attribute one session's IDE usage rows from its transcript. A row's context
+/// is the content logged strictly BEFORE its own second: measured against real
+/// artifacts, a row's `gmt_create` lands the same second as its own response's
+/// transcript lines, while prior turns are seconds earlier — so attributing
+/// each row before folding any line at (or past) its second excludes the
+/// row's own output, the claude attribute-then-book order.
+fn attribute_session(transcript: &Path, events: &mut [UsageEvent], order: &[usize]) {
+    let Ok(content) = fs::read_to_string(transcript) else { return };
+    let mut comp = claude_ctx::Composition::default();
+    let mut tool_names: HashMap<String, String> = HashMap::new();
+    let mut next = 0;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(line_ts) = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(crate::time::iso_to_epoch)
+        else {
+            continue;
+        };
+        while next < order.len() && events[order[next]].timestamp <= line_ts {
+            let ev = &mut events[order[next]];
+            let billed = ev.input_tokens
+                + ev.cache_read_tokens
+                + ev.cache_write_5m_tokens
+                + ev.cache_write_1h_tokens;
+            ev.ctx = attribute_row(&comp, billed);
+            next += 1;
+        }
+        match v.get("type").and_then(|t| t.as_str()) {
+            Some("user") => {
+                claude_ctx::apply_user_line(&mut comp, &v, &tool_names, &mut Vec::new(), &mut Vec::new());
+            }
+            Some("assistant") => {
+                claude_ctx::apply_assistant_content(
+                    &mut comp,
+                    &v,
+                    &mut tool_names,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                );
+            }
+            _ => {}
+        }
+    }
+    while next < order.len() {
+        let ev = &mut events[order[next]];
+        let billed = ev.input_tokens
+            + ev.cache_read_tokens
+            + ev.cache_write_5m_tokens
+            + ev.cache_write_1h_tokens;
+        ev.ctx = attribute_row(&comp, billed);
+        next += 1;
+    }
+}
+
+fn scan_database(
+    path: &Path,
+    transcripts: &HashMap<String, PathBuf>,
+) -> Result<DatabaseScan, String> {
     let source_file = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let database = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("{SOURCE}: database open failed: {error}"))?;
@@ -412,6 +584,21 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
             reasoning_tokens: None,
             ctx: Default::default(),
         });
+    }
+
+    // Cross-artifact attribution: rows whose session has a transcript get
+    // their billed context split from its content. Sessions without one
+    // (QoderCN writes no transcripts) stay NULL — the source cannot say.
+    let mut by_session: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, ev) in scan.events.iter().enumerate() {
+        if let Some(sid) = ev.session_id.clone() {
+            by_session.entry(sid).or_default().push(i);
+        }
+    }
+    for (sid, mut order) in by_session {
+        let Some(transcript) = transcripts.get(&sid) else { continue };
+        order.sort_by_key(|&i| scan.events[i].timestamp);
+        attribute_session(transcript, &mut scan.events, &order);
     }
 
     Ok(scan)
@@ -932,6 +1119,115 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ts, 1786121601); // 2026-08-07T16:53:21Z
+    }
+
+    #[test]
+    fn ide_rows_attribute_context_from_their_session_transcript() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("local.db");
+        create_database(&db_path);
+        let db = Connection::open(&db_path).unwrap();
+        // Row A lands the SAME second as its own response's transcript line —
+        // the fold must exclude that line (attribute-then-book order).
+        insert_message(&db, "a", Some("ide-ctx"), "assistant",
+            Some(r#"{"prompt_tokens":50,"completion_tokens":9,"cached_tokens":0}"#),
+            Some(r#"{"model_key":"qmodel_38max"}"#), 1786121605000);
+        insert_message(&db, "b", Some("ide-ctx"), "assistant",
+            Some(r#"{"prompt_tokens":220,"completion_tokens":9,"cached_tokens":0}"#),
+            Some(r#"{"model_key":"qmodel_38max"}"#), 1786121700000);
+        // A session with no transcript anywhere: attribution stays NULL.
+        insert_message(&db, "c", Some("orphan"), "assistant",
+            Some(r#"{"prompt_tokens":70,"completion_tokens":9,"cached_tokens":0}"#),
+            Some(r#"{"model_key":"qmodel_38max"}"#), 1786121800000);
+        drop(db);
+
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/transcript/ide-ctx.jsonl",
+            &format!(
+                "{}\n{}\n",
+                format!(
+                    r#"{{"type":"user","timestamp":"2026-08-07T16:53:20.000Z","message":{{"role":"user","content":"{}"}}}}"#,
+                    "u".repeat(40) // est 10
+                ),
+                format!(
+                    r#"{{"type":"assistant","timestamp":"2026-08-07T16:53:25.000Z","message":{{"role":"assistant","content":[{{"type":"thinking","thinking":"{}"}}]}}}}"#,
+                    "t".repeat(400) // est 100
+                ),
+            ),
+        );
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, std::slice::from_ref(&db_path), std::slice::from_ref(&root));
+        assert!(result.error.is_none());
+
+        let row = |key: &str| -> (Option<i64>, Option<i64>, Option<i64>) {
+            ledger
+                .query_row(
+                    "SELECT ctx_messages, ctx_reasoning, ctx_system FROM events WHERE dedup_key = ?1",
+                    [format!("qoder:{key}")],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        // A: only the user text (est 10) precedes its second; its own thinking
+        // line shares the second and must not count. Zero share → NULL.
+        assert_eq!(row("a"), (Some(50), None, None));
+        // B: msg 10 + reas 100 known → billed 220 splits 220·100/110 = 200
+        // reasoning; messages take the remainder; system stays unobservable.
+        assert_eq!(row("b"), (Some(20), Some(200), None));
+        assert_eq!(row("c"), (None, None, None));
+    }
+
+    /// An assistant line whose content is a single thinking block, for the
+    /// composition tests. Usage carries fresh input only.
+    fn cli_thinking_line(id: &str, input: i64, thinking: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","uuid":"u-{id}","timestamp":"2026-08-07T16:53:21.465Z","message":{{"id":"{id}","model":"qmodel_38max","role":"assistant","content":[{{"type":"thinking","thinking":"{thinking}"}}],"usage":{{"input_tokens":{input},"output_tokens":9}}}},"cwd":"/Users/dev/projects/alpha","sessionId":"qcli-ctx"}}"#,
+        )
+    }
+
+    #[test]
+    fn cli_transcripts_attribute_context_from_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        let user = format!(
+            r#"{{"type":"user","uuid":"u1","timestamp":"2026-08-07T16:53:20.000Z","message":{{"role":"user","content":"{}"}},"sessionId":"qcli-ctx"}}"#,
+            "u".repeat(40) // est 10
+        );
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-ctx.jsonl",
+            &format!(
+                "{user}\n{}\n{}\n",
+                cli_thinking_line("chatcmpl-c1", 90, &"t".repeat(400)), // est 100
+                cli_thinking_line("chatcmpl-c2", 420, ""),
+            ),
+        );
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert!(result.error.is_none());
+
+        let row = |key: &str| -> (Option<i64>, Option<i64>, Option<i64>) {
+            ledger
+                .query_row(
+                    "SELECT ctx_messages, ctx_system, ctx_reasoning FROM events WHERE dedup_key = ?1",
+                    [format!("qoder:{key}")],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        // c1 is the session's first call: system is the billed remainder over
+        // the user text (90 − 10 = 80); its own thinking is not yet context,
+        // so the zero reasoning share stays NULL (never a fabricated 0).
+        assert_eq!(row("chatcmpl-c1"), (Some(10), Some(80), None));
+        // c2 sees c1's thinking as context: msg 10 + reas 100 + sys 80 = 190
+        // known, so billed 420 splits 420·80/190 = 176 system and
+        // 420·100/190 = 221 reasoning; messages take the exact remainder.
+        assert_eq!(row("chatcmpl-c2"), (Some(23), Some(176), Some(221)));
     }
 
     #[test]

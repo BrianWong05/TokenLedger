@@ -1,5 +1,5 @@
 import { memo, useState } from 'react';
-import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type SkillBar, type ToolCategory } from './data';
+import { execFacets, type CtxTotals, type ExecFacets, type BucketView, type McpBar, type SkillBar, type ToolCategory } from './data';
 import type { SourceMeta } from './meta';
 import type { CtxExecRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
@@ -17,6 +17,7 @@ function ContextBreakdown({
   meta,
   execRows,
   skills,
+  mcp,
 }: {
   tool: SourceMeta;
   ctx: CtxTotals;
@@ -25,6 +26,7 @@ function ContextBreakdown({
   meta: string;
   execRows: CtxExecRow[];
   skills: SkillBar[];
+  mcp: McpBar[];
 }) {
   const { t } = useOverviewT();
   const estShareTip = t('overview.estTip');
@@ -63,8 +65,10 @@ function ContextBreakdown({
       <span className="name">
         <span className="dot" style={{ background: opts.muted ? 'var(--border-strong)' : tool.color }} />
         {label}
+        {/* A row can both explain itself and open: the ⓘ marks the tooltip,
+            the chevron marks the drill-down, and neither hides the other. */}
+        {opts.info && <span className="aff">ⓘ</span>}
         {opts.expandable && <span className="aff">{open.has(key) ? '▾' : '›'}</span>}
-        {opts.info && !opts.expandable && <span className="aff">ⓘ</span>}
       </span>
       <span className="vals">
         {tokens == null ? (
@@ -105,7 +109,13 @@ function ContextBreakdown({
         pct: true,
         info: t('overview.systemInfo'),
       })}
-      {row('reasoning', t('overview.reasoning'), v ? v.reasoning : null, { pct: true })}
+      {/* Anthropic usage never splits thinking out of output, so the exact
+          bucket is NULL for Claude — fall back to the v3 content-byte
+          estimate, est-styled (muted, ⓘ, no pct: percentages are for exact
+          primaries only). */}
+      {v?.reasoning != null
+        ? row('reasoning', t('overview.reasoning'), v.reasoning, { pct: true })
+        : row('reasoning', t('overview.reasoning'), ctx.reasoning, { muted: true, info: estShareTip })}
 
       <div style={{ height: 1, background: 'var(--border-subtle)', margin: '8px 4px' }} />
 
@@ -144,7 +154,23 @@ function ContextBreakdown({
           </div>
         ))}
       {row('agents', t('overview.customAgents'), ctx.agents, { muted: true, info: estShareTip })}
-      {row('mcp', t('overview.mcpServers'), ctx.mcp, { muted: true, info: estShareTip })}
+      {row('mcp', t('overview.mcpServers'), ctx.mcp, {
+        muted: true,
+        expandable: mcp.length > 0,
+        info: t('overview.mcpTip'),
+      })}
+      {open.has('mcp') &&
+        mcp.map((m) =>
+          // Heaviest first, no cap: a server list is bounded by what the user
+          // configured. The weight is the traffic its tools moved, which is
+          // what `calls` explains — the definitions it publishes are counted
+          // under the system prompt, which names no owner.
+          row(`mcp:${m.name}`, m.name, m.tokens, {
+            muted: true,
+            indent: 1,
+            info: `${m.calls} ${t('overview.calls')}`,
+          }),
+        )}
       {row('skills', t('overview.skills'), ctx.skills, {
         muted: true,
         expandable: skills.length > 0,

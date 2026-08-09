@@ -64,8 +64,9 @@ fn e2e_real_logs() {
 
     // Taken from the catalog rather than written down: the guard worth keeping
     // is that no source is silently dropped from the scan, and a literal count
-    // only measures how long ago someone added one (this read 14 against 15).
-    // Comparing keys also names the offender instead of reporting arithmetic.
+    // only measures how long ago someone added one — this said 14 against a
+    // catalog of 15, and `main` had to bump it by hand to say 15. Comparing
+    // keys also names the offender instead of reporting arithmetic.
     let expected: Vec<&str> =
         source_catalog::catalog().sources.iter().map(|s| s.key.as_str()).collect();
     let reported: Vec<&str> = status.sources.iter().map(|s| s.source.as_str()).collect();

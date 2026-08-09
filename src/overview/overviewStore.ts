@@ -35,6 +35,8 @@ import {
   type ToolCategory,
   skillBars,
   type SkillBar,
+  mcpBars,
+  type McpBar,
 } from './data';
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
@@ -390,6 +392,7 @@ export interface OverviewView {
   selExecRows: CtxExecRow[];
   selMeta: string;
   selSkills: SkillBar[];
+  selMcp: McpBar[];
   selModels: ModelBar[];
   tool: SourceMeta;
   headline: { total: number; summaryReady: boolean };
@@ -460,6 +463,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
     selMeta: ctxMeta(s.ctxResources, s.selected, lang),
     selSkills: skillBars(s.ctxSkillRows, s.selected),
+    selMcp: mcpBars(selToolRows, ctx.mcp),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: sourceMeta(s.selected),
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },

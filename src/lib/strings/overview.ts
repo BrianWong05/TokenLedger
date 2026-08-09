@@ -114,6 +114,8 @@ export const overview = {
     'overview.contextBreakdown': 'Context Breakdown',
     'overview.ctxInputWord': 'input',
     'overview.estTip': 'estimated share of billed context (content bytes ÷ 4)',
+    'overview.mcpTip':
+      'estimated share of billed context (content bytes ÷ 4) — call traffic only; tool definitions in the system prompt are not counted',
     'overview.estComposition': 'est. content composition:',
     'overview.messagesWord': 'messages',
     'overview.systemWord': 'system',
@@ -301,6 +303,8 @@ export const overview = {
     'overview.contextBreakdown': '內容明細',
     'overview.ctxInputWord': '輸入',
     'overview.estTip': '已計費內容的估算佔比（內容位元組 ÷ 4）',
+    'overview.mcpTip':
+      '已計費內容的估算佔比（內容位元組 ÷ 4）—— 僅計呼叫往返，不含系統提示中的工具定義',
     'overview.estComposition': '預估內容組成：',
     'overview.messagesWord': '訊息',
     'overview.systemWord': '系統',
