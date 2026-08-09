@@ -431,7 +431,8 @@ fn parse_file(
             // propagates the parent's composition unchanged (delta stays default):
             // a descendant must keep its FULL ancestor context across the change.
             if let Some(id) = &id {
-                established_model.insert(id.clone(), nonempty(v["modelId"].as_str()));
+                let m = nonempty(v["modelId"].as_str()).or_else(|| nonempty(v["model"].as_str()));
+                established_model.insert(id.clone(), m);
             }
         }
 
