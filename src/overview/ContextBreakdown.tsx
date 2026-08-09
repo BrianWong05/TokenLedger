@@ -65,8 +65,10 @@ function ContextBreakdown({
       <span className="name">
         <span className="dot" style={{ background: opts.muted ? 'var(--border-strong)' : tool.color }} />
         {label}
+        {/* A row can both explain itself and open: the ⓘ marks the tooltip,
+            the chevron marks the drill-down, and neither hides the other. */}
+        {opts.info && <span className="aff">ⓘ</span>}
         {opts.expandable && <span className="aff">{open.has(key) ? '▾' : '›'}</span>}
-        {opts.info && !opts.expandable && <span className="aff">ⓘ</span>}
       </span>
       <span className="vals">
         {tokens == null ? (

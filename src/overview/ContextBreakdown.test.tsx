@@ -62,6 +62,13 @@ function queryRow(container: HTMLElement, label: string): HTMLElement | undefine
   );
 }
 
+function affs(container: HTMLElement, label: string): string[] {
+  return Array.from(
+    queryRow(container, label)?.querySelectorAll<HTMLElement>('.aff') ?? [],
+    (a) => a.textContent ?? '',
+  );
+}
+
 function clickRow(container: HTMLElement, label: string) {
   const row = queryRow(container, label);
   if (!row) throw new Error(`row not found: ${label}`);
@@ -172,8 +179,12 @@ describe('ContextBreakdown drilldown', () => {
   it('lists every server when MCP servers is expanded', () => {
     const c = render();
     expect(queryRow(c, 'pencil')).toBeUndefined();
+    // Both affordances: the traffic-only caveat is a tooltip worth advertising
+    // even though the chevron is what the row does.
+    expect(affs(c, 'MCP servers')).toEqual(['ⓘ', '›']);
 
     clickRow(c, 'MCP servers');
+    expect(affs(c, 'MCP servers')).toEqual(['ⓘ', '▾']);
     const leaf = queryRow(c, 'pencil');
     expect(leaf).toBeDefined();
     expect(queryRow(c, 'codebase-memory-mcp')).toBeDefined();
@@ -185,9 +196,9 @@ describe('ContextBreakdown drilldown', () => {
 
   it('offers no drill-down for a Source that names no servers', () => {
     const c = render(null, skills, ctx, []);
-    // Reverts to the plain informational row rather than a chevron that
-    // expands to nothing.
-    expect(queryRow(c, 'MCP servers')?.querySelector('.aff')?.textContent).toBe('ⓘ');
+    // Keeps the tooltip, loses the chevron: no drill-down that expands to
+    // nothing.
+    expect(affs(c, 'MCP servers')).toEqual(['ⓘ']);
     clickRow(c, 'MCP servers');
     expect(queryRow(c, 'pencil')).toBeUndefined();
   });
