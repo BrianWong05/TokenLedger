@@ -110,11 +110,32 @@ export function createRefreshGate(onRefresh: () => Promise<void>): {
   };
 }
 
+// Auto-refresh exists to keep the visible Overview current. The resident Rust
+// loop owns background capture, so scanning while this window is unfocused
+// spends CPU without changing anything the person can see.
+function useWindowFocused(): boolean {
+  const [focused, setFocused] = useState(() =>
+    typeof document === 'undefined' || document.hasFocus(),
+  );
+  useEffect(() => {
+    const onFocus = () => setFocused(true);
+    const onBlur = () => setFocused(false);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+  return focused;
+}
+
 export function useAutoRefresh(onRefresh: () => Promise<void>): {
   refresh: () => Promise<void>;
   refreshing: boolean;
 } {
   const [refreshSec] = useRefreshSec();
+  const focused = useWindowFocused();
   const [refreshing, setRefreshing] = useState(false);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -143,11 +164,16 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
     }
   }, []);
 
+  const previouslyFocused = useRef(focused);
   useEffect(() => {
+    const returnedToWindow = focused && !previouslyFocused.current;
+    previouslyFocused.current = focused;
+    if (!focused) return;
+    if (returnedToWindow) void refresh();
     return scheduleAutoRefresh(refreshSec, () => {
       void refresh();
     });
-  }, [refreshSec, refresh]);
+  }, [focused, refreshSec, refresh]);
 
   return { refresh, refreshing };
 }
