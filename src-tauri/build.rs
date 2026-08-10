@@ -1,5 +1,13 @@
 fn main() {
-    if std::env::var("CARGO_CFG_TEST").is_err() {
-        tauri_build::build();
+    for (key, value) in std::env::vars() {
+        if key.starts_with("CARGO") {
+            println!("cargo:warning={}={}", key, value);
+        }
     }
+
+    if std::env::var("CARGO_CFG_TEST").is_ok() {
+        return;
+    }
+
+    tauri_build::build();
 }
