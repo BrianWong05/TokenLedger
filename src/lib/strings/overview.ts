@@ -37,6 +37,13 @@ export const overview = {
     'overview.preset.thisMonth': 'This month',
     'overview.preset.last90': 'Last 90 days',
     'overview.preset.thisYear': 'This year',
+    // configured shortcuts (Settings -> Custom range). The rolling one has no
+    // static label — an arbitrary N is composed from this prefix and the day
+    // count, which is how the picker's own span hint already reads.
+    'overview.preset.lastMonth': 'Last month',
+    'overview.preset.lastQuarter': 'Last quarter',
+    'overview.preset.lastYear': 'Last year',
+    'overview.preset.lastN': 'Last',
     'overview.pickStart': 'Pick the start date',
     'overview.pickEnd': 'Pick the end date',
     'overview.prevMonth': 'Previous month',
@@ -234,6 +241,10 @@ export const overview = {
     'overview.preset.thisMonth': '本月',
     'overview.preset.last90': '過去 90 天',
     'overview.preset.thisYear': '今年',
+    'overview.preset.lastMonth': '上個月',
+    'overview.preset.lastQuarter': '上一季',
+    'overview.preset.lastYear': '去年',
+    'overview.preset.lastN': '過去',
     'overview.pickStart': '選擇開始日期',
     'overview.pickEnd': '選擇結束日期',
     'overview.prevMonth': '上個月',

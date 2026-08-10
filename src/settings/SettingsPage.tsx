@@ -2,7 +2,7 @@
 // persisted immediately through the context (no Save button — the design has
 // none). Reads the live Settings from context; keeps only view-local state
 // (the rate text field, the app version, the update-check result).
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
@@ -13,6 +13,15 @@ import {
   REFRESH_PRESETS,
   useRefreshSec,
 } from '../overview/useAutoRefresh';
+import {
+  MAX_CUSTOM_PRESETS,
+  SHIPPED_DAYS,
+  useCustomPresets,
+  validDays,
+} from '../overview/customPresets';
+import { CALENDAR_PRESETS } from '../overview/data';
+import { PRESET_LABEL_KEY, useOverviewT } from '../overview/localize';
+import type { CalendarPresetKey, PresetSlot } from '../overview/data';
 import type { SettingsPort, UpdateStatus } from './settings';
 import type { Settings } from '../types';
 import './settings.css';
@@ -54,6 +63,80 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
   );
 }
 
+// A <select> hands its option list to the OS, which draws it in system chrome —
+// no app styling reaches it. So the list is ours, the same button + menu shape as
+// the range picker's JumpMenu, on the settings surface.
+const MENU_MAX_H = 264; // keep in step with .set-menu max-height
+
+function Select({ label, value, options, onPick }: {
+  label: string;
+  value: string;
+  options: { v: string; text: string; disabled?: boolean }[];
+  onPick(v: string): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [up, setUp] = useState(false);
+  const box = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="set-select-wrap" ref={box}>
+      <button
+        type="button"
+        className={'set-select' + (open ? ' open' : '')}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        // the chosen value, which a closed menu otherwise only shows as its label
+        data-value={value}
+        onClick={(e) => {
+          // a row near the window bottom opens its list upwards instead, the way
+          // the OS list this replaced did
+          const r = e.currentTarget.getBoundingClientRect();
+          setUp(window.innerHeight - r.bottom < MENU_MAX_H + 16);
+          setOpen((v) => !v);
+        }}
+      >
+        {options.find((o) => o.v === value)?.text ?? ''}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+      {open && (
+        <div className={'set-menu' + (up ? ' up' : '')} role="menu" aria-label={label}>
+          {options.map((o) => (
+            <button
+              key={o.v}
+              type="button"
+              role="menuitemradio"
+              aria-checked={o.v === value}
+              disabled={o.disabled}
+              data-value={o.v}
+              className={'set-menu-item' + (o.v === value ? ' on' : '')}
+              onClick={() => { onPick(o.v); setOpen(false); }}
+            >
+              {o.text}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // The exchange-rate row is only mounted when currency isn't USD, so its text
 // state re-seeds from the stored rate each time it appears. Invalid input stays
 // editable but is never persisted.
@@ -86,6 +169,120 @@ function RateRow({ code }: { code: string }) {
         <span className="set-rate-side">{code}</span>
       </div>
     </div>
+  );
+}
+
+// Mounted only while its slot holds a rolling shortcut, so the text re-seeds
+// from the stored count each time it appears (RateRow's contract). Invalid or
+// already-taken input stays editable but is never persisted.
+function PresetDaysInput({ index, days, takenDays, onCommit }: {
+  index: number;
+  days: number;
+  takenDays: ReadonlySet<number>;
+  onCommit: (n: number) => void;
+}) {
+  const { t } = useT();
+  const [text, setText] = useState(String(days));
+
+  const onChange = (v: string) => {
+    setText(v);
+    const n = Number(v);
+    if (v.trim() !== '' && validDays(n) && !takenDays.has(n)) onCommit(n);
+  };
+
+  return (
+    <>
+      <input
+        className="set-rate-input"
+        inputMode="numeric"
+        aria-label={`${t('settings.preset.dayCount')} ${index + 1}`}
+        value={text}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <span className="set-rate-side">{t('settings.preset.daysUnit')}</span>
+    </>
+  );
+}
+
+// Up to four extra shortcuts for the Overview's Custom-range picker. Slots are
+// positional: the next empty one appears once the previous is set, and clearing
+// one in the middle leaves a hole rather than renumbering those after it — so a
+// shortcut never moves out from under the reader who put it there.
+function CustomRangeGroup() {
+  const { t } = useT();
+  // The calendar periods are named once, in the overview catalog: this dropdown
+  // shows the reader the same words the picker will.
+  const { t: overviewT } = useOverviewT();
+  const [slots, setSlots] = useCustomPresets();
+
+  // Reveal one slot past the last filled one, so nobody who configures none
+  // faces four empty dropdowns.
+  const filled = slots.reduce((last, s, i) => (s ? i : last), -1);
+  const visible = Math.min(MAX_CUSTOM_PRESETS, filled + 2);
+
+  const put = (i: number, slot: PresetSlot | null) => {
+    const next = slots.slice();
+    next[i] = slot;
+    setSlots(next);
+  };
+  // Duplicates are blocked by definition rather than by resolved window: two
+  // slots cannot hold the same period, and none can restate a shipped one.
+  const otherSlots = (i: number) => slots.filter((_, j) => j !== i);
+  const takenDays = (i: number) => new Set([
+    ...SHIPPED_DAYS,
+    ...otherSlots(i).flatMap((s) => (s?.key === 'rolling' ? [s.days] : [])),
+  ]);
+  const takenCalendar = (i: number) =>
+    new Set(otherSlots(i).flatMap((s) => (s && s.key !== 'rolling' ? [s.key] : [])));
+
+  return (
+    <section className="set-group">
+      <div className="set-group-label">{t('settings.customRange')}</div>
+      {Array.from({ length: visible }, (_, i) => {
+        const slot = slots[i];
+        const taken = takenDays(i);
+        return (
+          <div className="set-row" key={i}>
+            <div className="set-row-text">
+              <div className="set-row-title">{t('settings.preset')} {i + 1}</div>
+              {i === 0 && <div className="set-row-caption">{t('settings.preset.caption')}</div>}
+            </div>
+            <div className="set-rate">
+              <Select
+                label={`${t('settings.preset')} ${i + 1}`}
+                value={slot?.key ?? ''}
+                options={[
+                  { v: '', text: t('settings.preset.off') },
+                  { v: 'rolling', text: t('settings.preset.rolling') },
+                  ...CALENDAR_PRESETS.map((key) => ({
+                    v: key,
+                    text: overviewT(PRESET_LABEL_KEY[key]),
+                    disabled: takenCalendar(i).has(key),
+                  })),
+                ]}
+                onPick={(key) => {
+                  if (!key) return put(i, null);
+                  if (key !== 'rolling') return put(i, { key: key as CalendarPresetKey });
+                  // Seed the first count nothing else has claimed, so choosing
+                  // the option always lands on a usable shortcut.
+                  let n = 14;
+                  while (taken.has(n)) n++;
+                  put(i, { key: 'rolling', days: n });
+                }}
+              />
+              {slot?.key === 'rolling' && (
+                <PresetDaysInput
+                  index={i}
+                  days={slot.days}
+                  takenDays={taken}
+                  onCommit={(n) => put(i, { key: 'rolling', days: n })}
+                />
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -285,17 +482,19 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-title">{t('settings.language')}</div>
               <div className="set-row-caption">{t('settings.language.caption')}</div>
             </div>
-            <select
-              className="set-select"
-              aria-label={t('settings.language')}
+            <Select
+              label={t('settings.language')}
               value={settings.language}
-              onChange={(e) => update({ language: e.target.value as Settings['language'] })}
-            >
-              <option value="en">English</option>
-              <option value="zh-Hant">繁體中文</option>
-            </select>
+              options={[
+                { v: 'en', text: 'English' },
+                { v: 'zh-Hant', text: '繁體中文' },
+              ]}
+              onPick={(v) => update({ language: v as Settings['language'] })}
+            />
           </div>
         </section>
+
+        <CustomRangeGroup />
 
         <section className="set-group">
           <div className="set-group-label">{t('settings.currencySection')}</div>
@@ -304,18 +503,12 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-title">{t('settings.currency')}</div>
               <div className="set-row-caption">{t('settings.currency.caption')}</div>
             </div>
-            <select
-              className="set-select"
-              aria-label={t('settings.currency')}
+            <Select
+              label={t('settings.currency')}
               value={settings.currency}
-              onChange={(e) => update({ currency: e.target.value })}
-            >
-              {CURRENCIES.map(([code, name]) => (
-                <option key={code} value={code}>
-                  {code} — {name}
-                </option>
-              ))}
-            </select>
+              options={CURRENCIES.map(([code, name]) => ({ v: code, text: `${code} — ${name}` }))}
+              onPick={(v) => update({ currency: v })}
+            />
           </div>
           {settings.currency !== 'USD' && <RateRow code={settings.currency} />}
         </section>
