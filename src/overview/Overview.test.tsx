@@ -110,6 +110,32 @@ afterEach(() => {
 });
 
 describe('Overview presentation', () => {
+  it('rolls the headline total when a period switch lands a different window', async () => {
+    // The entrance already played this session, so the headline starts at rest
+    // and any roll below is the in-place period-switch motion.
+    sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
+    const { container: c, ledger } = await mount({ dayPoints: [pt({})], summary });
+    const headline = c.querySelector<HTMLElement>('.tt-b8-total')!;
+    // The first authoritative landing rolls from the client-side fallback;
+    // let that settle so the roll below is unambiguously the period switch's.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1_500));
+    });
+    expect(headline.getAttribute('aria-busy')).toBeNull();
+
+    // The Week window holds a different total; its landing rolls the wheels.
+    ledger.data.summary = { ...summary, totalTokens: 987_654_321 };
+    const week = Array.from(c.querySelectorAll('button')).find((b) =>
+      /week/i.test(b.textContent ?? ''),
+    )!;
+    await act(async () => {
+      week.click();
+    });
+    await settle();
+    expect(headline.getAttribute('aria-busy')).toBe('true');
+    sessionStorage.clear();
+  });
+
   it('sizes the hero proportion bar by each source token share', async () => {
     // claude 300 + codex 100 = 400 → 75% / 25%; the other five Sources are 0.
     const { container: c } = await mount({

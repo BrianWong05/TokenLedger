@@ -144,18 +144,39 @@ describe('TokenTotalHeadline', () => {
     expect(button.textContent).toBe('4.5B');
   });
 
-  it('does not replay the entrance for later totals or another headline mount', () => {
+  it('rolls a later total in place instead of replaying the zero-shaped entrance', () => {
     vi.useFakeTimers();
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    // A period switch lands a different window total: the wheels roll to it —
+    // never through the zero-shaped resting value the entrance starts from.
+    rerender(5_000_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.textContent).not.toContain('0.0B');
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('5B');
+
+    // An unchanged total stays at rest.
+    rerender(5_000_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBeNull();
+
+    // Another mount (the entrance already played this session) starts at rest.
+    const revisited = mountHeadline(6_000_000_000, true).button;
+    expect(revisited.getAttribute('aria-busy')).toBeNull();
+    expect(revisited.textContent).toBe('6B');
+  });
+
+  it('swaps a later total silently under Reduce Motion', () => {
+    vi.useFakeTimers();
+    setReducedMotion(true);
     const { button, rerender } = mountHeadline(4_500_000_000, true);
     act(() => vi.advanceTimersByTime(1_400));
 
     rerender(5_000_000_000, true);
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('5B');
-
-    const revisited = mountHeadline(6_000_000_000, true).button;
-    expect(revisited.getAttribute('aria-busy')).toBeNull();
-    expect(revisited.textContent).toBe('6B');
   });
 
   it('reveals the first authoritative total immediately with Reduce Motion', () => {

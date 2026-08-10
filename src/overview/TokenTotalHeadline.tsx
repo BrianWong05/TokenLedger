@@ -224,6 +224,22 @@ export default function TokenTotalHeadline({
     }
   }, [awaitingInitialLoad, display, startAnimation, summaryReady, total]);
 
+  // Post-entrance total changes — a period switch's summary landing, a scan
+  // ingesting usage — roll the wheels in place to the new figure: the same
+  // motion as a mode change, never the zero-shaped entrance. The ref holds
+  // what the wheels last settled on, so a mode toggle's own display change
+  // (which already started its roll) doesn't start a second one.
+  const settledDisplay = useRef<string | null>(null);
+  useEffect(() => {
+    if (awaitingInitialLoad) return;
+    if (settledDisplay.current === display) return;
+    const firstSettle = settledDisplay.current === null;
+    settledDisplay.current = display;
+    if (firstSettle) return; // the entrance (or its reduced-motion reveal) showed this value
+    if (modeAnimation?.to === display) return;
+    if (!prefersReducedMotion()) startAnimation(display);
+  }, [awaitingInitialLoad, display, modeAnimation, startAnimation]);
+
   const toggleMode = () => {
     if (modeAnimation) return;
     const next = mode === 'compact' ? 'exact' : 'compact';
