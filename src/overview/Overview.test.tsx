@@ -106,6 +106,9 @@ async function mountSettled(
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  // The headline's entrance gate lives in sessionStorage; leaving a test's key
+  // behind would silently suppress the entrance for every later test.
+  sessionStorage.clear();
   vi.useRealTimers();
 });
 
@@ -114,13 +117,8 @@ describe('Overview presentation', () => {
     // The entrance already played this session, so the headline starts at rest
     // and any roll below is the in-place period-switch motion.
     sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
-    const { container: c, ledger } = await mount({ dayPoints: [pt({})], summary });
+    const { container: c, ledger } = await mountSettled({ dayPoints: [pt({})], summary });
     const headline = c.querySelector<HTMLElement>('.tt-b8-total')!;
-    // The first authoritative landing rolls from the client-side fallback;
-    // let that settle so the roll below is unambiguously the period switch's.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 1_500));
-    });
     expect(headline.getAttribute('aria-busy')).toBeNull();
 
     // The Week window holds a different total; its landing rolls the wheels.
@@ -131,9 +129,10 @@ describe('Overview presentation', () => {
     await act(async () => {
       week.click();
     });
-    await settle();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
     expect(headline.getAttribute('aria-busy')).toBe('true');
-    sessionStorage.clear();
   });
 
   it('sizes the hero proportion bar by each source token share', async () => {

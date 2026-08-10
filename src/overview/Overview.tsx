@@ -235,7 +235,15 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
             )}
             {decryptNote && <span className="tt-decrypt-note">{decryptNote}</span>}
           </div>
-          <TokenTotalHeadline total={headline.total} summaryReady={headline.summaryReady} incomplete={unreadableTitle || null} />
+          {/* windowKey is the same (range, from, to) triple rangeToFilters queries
+              by, so the headline rolls for a period switch and holds still for a
+              background scan. */}
+          <TokenTotalHeadline
+            total={headline.total}
+            summaryReady={headline.summaryReady}
+            windowKey={`${range}:${from}:${to}`}
+            incomplete={unreadableTitle || null}
+          />
           {canOpenCostBreakdown ? (
             <button
               ref={setCostBreakdownFocusTarget}

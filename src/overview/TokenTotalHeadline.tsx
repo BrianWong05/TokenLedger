@@ -24,11 +24,18 @@ const HEADLINE_TRACKING_EM = 0.03;
 interface ModeAnimation {
   id: number;
   to: string;
+  // A click's reel locks the button until it settles (#12 story 20); a reel the
+  // data started must not, or every period switch would deaden the headline.
+  fromClick: boolean;
 }
 
 interface TokenTotalHeadlineProps {
   total: number;
   summaryReady: boolean;
+  // Identifies the window the total describes (range + bounds). A change here is
+  // what earns a roll: the same window reporting a new figure is a background
+  // scan landing, which #12 story 9 keeps still.
+  windowKey: string;
   // Non-null makes the total a floor (ADR-0017): rendered as a ≥ prefix whose
   // hover text is this string — the per-Source unreadable-session reasons.
   incomplete?: string | null;
@@ -169,6 +176,7 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
 export default function TokenTotalHeadline({
   total,
   summaryReady,
+  windowKey,
   incomplete = null,
 }: TokenTotalHeadlineProps) {
   const { t } = useOverviewT();
@@ -178,9 +186,9 @@ export default function TokenTotalHeadline({
     () => sessionStorage.getItem(ENTRANCE_PLAYED_KEY) !== 'true',
   );
   const animationId = useRef(0);
-  const startAnimation = useCallback((to: string) => {
+  const startAnimation = useCallback((to: string, fromClick = false) => {
     animationId.current += 1;
-    setModeAnimation({ id: animationId.current, to });
+    setModeAnimation({ id: animationId.current, to, fromClick });
   }, []);
   const exact = formatExactTokenTotal(total);
   // Three decimals here and on the source cards; the tray panel keeps two.
@@ -224,24 +232,35 @@ export default function TokenTotalHeadline({
     }
   }, [awaitingInitialLoad, display, startAnimation, summaryReady, total]);
 
-  // Post-entrance total changes — a period switch's summary landing, a scan
-  // ingesting usage — roll the wheels in place to the new figure: the same
-  // motion as a mode change, never the zero-shaped entrance. The ref holds
-  // what the wheels last settled on, so a mode toggle's own display change
-  // (which already started its roll) doesn't start a second one.
-  const settledDisplay = useRef<string | null>(null);
+  // A period switch rolls the wheels in place to the new window's figure — the
+  // same motion as a mode change, never the zero-shaped entrance. The roll is
+  // owed to the WINDOW moving, not merely to the figure changing: the switch's
+  // Summary lands a beat after the click, so what marks it is that the figure
+  // settled under a different windowKey than the one now selected. A background
+  // scan reports a new figure for the SAME window and stays still (#12 story 9),
+  // as does a window whose total is unchanged — there is nothing to roll.
+  // ponytail: a switch between two windows with identical totals leaves the
+  // recorded key stale, so a later scan on the new window rolls once. Needs the
+  // store to say "this Summary is for that window" to close; not worth it.
+  const settled = useRef<{ display: string; windowKey: string } | null>(null);
   useEffect(() => {
-    if (awaitingInitialLoad) return;
-    if (settledDisplay.current === display) return;
-    const firstSettle = settledDisplay.current === null;
-    settledDisplay.current = display;
-    if (firstSettle) return; // the entrance (or its reduced-motion reveal) showed this value
+    if (awaitingInitialLoad || !summaryReady) return;
+    const previous = settled.current;
+    if (previous?.display === display) return;
+    settled.current = { display, windowKey };
+    if (!previous) return; // the entrance (or its reduced-motion reveal) showed this value
+    if (previous.windowKey === windowKey) return; // same window: a scan, not a switch
     if (modeAnimation?.to === display) return;
-    if (!prefersReducedMotion()) startAnimation(display);
-  }, [awaitingInitialLoad, display, modeAnimation, startAnimation]);
+    // A zero window reads out immediately: rolling to it would imply usage
+    // settling into place where there is none.
+    if (total <= 0) return;
+    if (!prefersReducedMotion() && !usesCompactLayout()) startAnimation(display);
+  }, [awaitingInitialLoad, display, modeAnimation, startAnimation, summaryReady, total, windowKey]);
 
   const toggleMode = () => {
-    if (modeAnimation) return;
+    // Only a click's own reel swallows further clicks; a data-driven roll must
+    // stay interruptible, or a period switch would deaden the button for 1.4s.
+    if (modeAnimation?.fromClick) return;
     const next = mode === 'compact' ? 'exact' : 'compact';
     const nextDisplay = next === 'exact' ? exact : compact;
     localStorage.setItem(STORAGE_KEY, next);
@@ -250,7 +269,7 @@ export default function TokenTotalHeadline({
       !prefersReducedMotion() &&
       !usesCompactLayout()
     ) {
-      startAnimation(nextDisplay);
+      startAnimation(nextDisplay, true);
     } else {
       setModeAnimation(null);
     }

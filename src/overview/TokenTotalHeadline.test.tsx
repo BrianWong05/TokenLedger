@@ -17,12 +17,15 @@ function mountHeadline(total: number, summaryReady: boolean) {
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
-  const rerender = (nextTotal: number, nextSummaryReady: boolean) => {
+  // windowKey defaults to one fixed window, so a rerender that only moves the
+  // total reads as a background scan; pass a new key to mean a period switch.
+  const rerender = (nextTotal: number, nextSummaryReady: boolean, windowKey = 'day::') => {
     act(() =>
       root.render(
         <TokenTotalHeadline
           total={nextTotal}
           summaryReady={nextSummaryReady}
+          windowKey={windowKey}
         />,
       ),
     );
@@ -144,23 +147,24 @@ describe('TokenTotalHeadline', () => {
     expect(button.textContent).toBe('4.5B');
   });
 
-  it('rolls a later total in place instead of replaying the zero-shaped entrance', () => {
+  it('rolls a period switch in place instead of replaying the zero-shaped entrance', () => {
     vi.useFakeTimers();
     const { button, rerender } = mountHeadline(4_500_000_000, true);
     act(() => vi.advanceTimersByTime(1_400));
 
-    // A period switch lands a different window total: the wheels roll to it —
-    // never through the zero-shaped resting value the entrance starts from.
-    rerender(5_000_000_000, true);
+    // The switch's Summary lands a beat after the click, so the new window's
+    // key arrives while the old figure is still on screen.
+    rerender(4_500_000_000, true, 'week::');
+    expect(button.getAttribute('aria-busy')).toBeNull();
+
+    // Now the figure lands: the wheels roll to it — never through the
+    // zero-shaped resting value the entrance starts from.
+    rerender(5_000_000_000, true, 'week::');
     expect(button.getAttribute('aria-busy')).toBe('true');
     expect(button.textContent).not.toContain('0.0B');
     act(() => vi.advanceTimersByTime(1_400));
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('5B');
-
-    // An unchanged total stays at rest.
-    rerender(5_000_000_000, true);
-    expect(button.getAttribute('aria-busy')).toBeNull();
 
     // Another mount (the entrance already played this session) starts at rest.
     const revisited = mountHeadline(6_000_000_000, true).button;
@@ -168,13 +172,49 @@ describe('TokenTotalHeadline', () => {
     expect(revisited.textContent).toBe('6B');
   });
 
-  it('swaps a later total silently under Reduce Motion', () => {
+  it('holds still when a background scan changes the same window figure', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    // Same windowKey: a 30s scan tick ingesting usage. Routine updates must not
+    // animate (#12 story 9) — the figure just updates.
+    rerender(5_000_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('5B');
+  });
+
+  it('leaves the headline clickable while a period-switch roll runs', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+    rerender(5_000_000_000, true, 'week::');
+    expect(button.getAttribute('aria-busy')).toBe('true');
+
+    // Only a click's own reel swallows clicks; this one must reach the toggle.
+    act(() => button.click());
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toBe('5,000,000,000');
+  });
+
+  it('swaps a period switch silently under Reduce Motion', () => {
     vi.useFakeTimers();
     setReducedMotion(true);
     const { button, rerender } = mountHeadline(4_500_000_000, true);
     act(() => vi.advanceTimersByTime(1_400));
 
-    rerender(5_000_000_000, true);
+    rerender(5_000_000_000, true, 'week::');
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('5B');
+  });
+
+  it('swaps a period switch in without rolling in a compact layout', () => {
+    vi.useFakeTimers();
+    setMediaPreferences({ compactLayout: true });
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    rerender(5_000_000_000, true, 'week::');
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('5B');
   });
@@ -199,6 +239,29 @@ describe('TokenTotalHeadline', () => {
     expect(button.getAttribute('aria-busy')).toBe('true');
     act(() => vi.advanceTimersByTime(1_400));
     expect(button.textContent).toBe('4.5B');
+  });
+
+  it('swaps a zero-usage window in without rolling', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    // A window with no usage reads 0 immediately: rolling to it would imply
+    // activity settling into place where there is none.
+    rerender(0, true, 'week::');
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('0');
+  });
+
+  it('swaps modes immediately in a compact layout', () => {
+    vi.useFakeTimers();
+    setMediaPreferences({ compactLayout: true });
+    const button = renderHeadline(4_500_000_000);
+
+    act(() => button.click());
+
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('4,500,000,000');
   });
 
   it('swaps modes immediately when Reduce Motion is enabled', () => {

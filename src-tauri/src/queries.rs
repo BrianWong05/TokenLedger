@@ -670,11 +670,12 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
     //
     // The session's first cache write is found over the WHOLE Ledger, never the
     // filtered window: a session that started before the window has its System
-    // write outside it, so its in-window writes are all history. first_ts/firsts
-    // walk idx_events_first_cw (a few hundred sessions) instead of ranking every
-    // events row per call, which made each range switch pay a full-table sort.
-    // firsts is (timestamp, dedup_key)-minimal per session: MIN(timestamp) per
-    // session first, then MIN(dedup_key) among that timestamp's rows.
+    // write outside it, so its in-window writes are all history. first_ts and
+    // session_first_cw walk idx_events_first_cw (a few hundred sessions) instead
+    // of ranking the whole events table per call, which made each range switch
+    // pay a full-table sort. session_first_cw picks the (timestamp, dedup_key)
+    // minimum per session: MIN(timestamp) first, then MIN(dedup_key) among the
+    // Usage Records sharing that timestamp.
     let (where_sql, params) = build_where(f);
     let sql = format!(
         "WITH first_ts AS ( \
@@ -682,23 +683,23 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
            WHERE cache_write_5m_tokens + cache_write_1h_tokens > 0 \
              AND session_id IS NOT NULL AND source != 'hermes' \
            GROUP BY source, session_id), \
-         firsts AS ( \
-           SELECT e.source AS fs_source, e.session_id AS fs_session, \
-                  e.timestamp AS fs_ts, MIN(e.dedup_key) AS fs_dk \
+         session_first_cw AS ( \
+           SELECT e.source AS sfc_source, e.session_id AS sfc_session, \
+                  e.timestamp AS sfc_ts, MIN(e.dedup_key) AS sfc_dedup_key \
            FROM events e JOIN first_ts m \
              ON e.source = m.source AND e.session_id = m.session_id AND e.timestamp = m.ts \
            WHERE e.cache_write_5m_tokens + e.cache_write_1h_tokens > 0 \
              AND e.session_id IS NOT NULL \
            GROUP BY e.source, e.session_id, e.timestamp) \
          SELECT source, \
-           SUM(cache_read_tokens) + SUM(CASE WHEN cache_write_5m_tokens + cache_write_1h_tokens > 0 AND fs_dk IS NULL THEN cache_write_5m_tokens + cache_write_1h_tokens ELSE 0 END), \
+           SUM(cache_read_tokens) + SUM(CASE WHEN cache_write_5m_tokens + cache_write_1h_tokens > 0 AND sfc_dedup_key IS NULL THEN cache_write_5m_tokens + cache_write_1h_tokens ELSE 0 END), \
            SUM(input_tokens), \
-           SUM(CASE WHEN fs_dk IS NOT NULL THEN cache_write_5m_tokens + cache_write_1h_tokens END), \
+           SUM(CASE WHEN sfc_dedup_key IS NOT NULL THEN cache_write_5m_tokens + cache_write_1h_tokens END), \
            SUM(output_tokens), \
            SUM(reasoning_tokens) \
-         FROM events LEFT JOIN firsts \
-           ON fs_source = source AND fs_session = session_id \
-           AND fs_ts = timestamp AND fs_dk = dedup_key \
+         FROM events LEFT JOIN session_first_cw \
+           ON sfc_source = source AND sfc_session = session_id \
+           AND sfc_ts = timestamp AND sfc_dedup_key = dedup_key \
          {where_sql} GROUP BY source ORDER BY source"
     );
     let mut stmt = conn.prepare(&sql)?;
