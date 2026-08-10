@@ -52,16 +52,20 @@ use crate::uri::file_uri_to_path;
 /// and no longer inflates input, and `#9`/`#10` are reasoning/response the right
 /// way round.
 /// v3 = picker-label aliases from the `.pb` exports resolved (see `resolve_model`).
-const PARSER_VERSION: i64 = 3;
+/// v4 = Model enums the server paired one-to-one with an alias resolved too
+/// (see `resolve_model_enum`), so alias-less generations of those enums price.
+/// v5 = enums identified by explicit single-enum Sessions (1008, 1012).
+const PARSER_VERSION: i64 = 5;
 
 /// Antigravity records internal wire aliases and picker labels, not Model ids.
-/// `gemini-3-flash-a`/`-b` are the M132/M133 placeholders — both Gemini 3.5
-/// Flash (High), despite the "3-flash" spelling; mapping them to the
-/// `gemini-3-flash-preview` family would be wrong. The `.pb` exports write a
-/// second vocabulary — the picker labels — where the same line appears as
-/// `gemini-3-flash` (with `-agent` for its agent mode), so those join it;
-/// the pro picker labels are the preview catalog rows with a thinking-tier
-/// suffix, and the Claude thinking labels are the base Opus Models.
+/// `gemini-3-flash-a`/`-b` are the server's MODEL_PLACEHOLDER_M132/_M20 enum
+/// values — both Gemini 3.5 Flash (High), despite the "3-flash" spelling;
+/// mapping them to the `gemini-3-flash-preview` family would be wrong. The
+/// `.pb` exports write a second vocabulary — the picker labels — where the
+/// same line appears as `gemini-3-flash` (with `-agent` for its agent mode),
+/// so those join it; the pro picker labels are the preview catalog rows with
+/// a thinking-tier suffix, and the Claude thinking labels are the base Opus
+/// Models.
 /// `gemini-default` names whichever Gemini was the default when the row was
 /// written, so it resolves against the event's own timestamp. Anything
 /// unrecognized passes through untouched and simply lands in the unpriced
@@ -72,8 +76,9 @@ fn resolve_model(raw: &str, ts: i64) -> String {
         "gemini-3-flash-a" | "gemini-3-flash-b" | "gemini-3-flash" | "gemini-3-flash-agent" => {
             "gemini-3.5-flash".to_string()
         }
+        "gemini-3-flash-c" => "gemini-3.5-flash".to_string(),
         "gemini-3-pro-high" | "gemini-3-pro-low" => "gemini-3-pro-preview".to_string(),
-        "gemini-3.1-pro-high" => "gemini-3.1-pro-preview".to_string(),
+        "gemini-3.1-pro-high" | "gemini-3.1-pro-low" => "gemini-3.1-pro-preview".to_string(),
         "claude-opus-4-5-thinking" => "claude-opus-4-5".to_string(),
         "claude-opus-4-6-thinking" => "claude-opus-4-6".to_string(),
         // Exclusive upper bounds; a row exactly on a boundary is the later era.
@@ -84,6 +89,33 @@ fn resolve_model(raw: &str, ts: i64) -> String {
         },
         _ => raw.to_string(),
     }
+}
+
+/// Model enums that real exports paired one-to-one with a wire alias
+/// (2026-08-10, one genuine install): the server named those generations
+/// twice, and the pairing names the alias-less ones too. 1084 is the
+/// "default" enum — era-based, exactly like `gemini-default`. 1008 and 1012
+/// were never aliased but are identified by explicit single-enum Sessions
+/// (32 picker sessions on gemini-3-pro-high, 3 on claude-opus-4-5-thinking;
+/// the method cross-validates on every enum that has both signals). 1007
+/// returns None and stays raw: the server never said what it is.
+/// Each identified enum delegates to the canonical alias it was paired
+/// with, so the alias table in `resolve_model` stays the single source of
+/// truth.
+fn resolve_model_enum(model_enum: u64, ts: i64) -> Option<String> {
+    let alias = match model_enum {
+        1008 => "gemini-3-pro-high", // explicit-picker Sessions
+        1012 => "claude-opus-4-5-thinking", // explicit-picker Sessions
+        1018 => "gemini-3-flash",
+        1047 => "gemini-3-flash-c",
+        1026 => "claude-opus-4-6-thinking",
+        1035 => "claude-sonnet-4-6",
+        1036 => "gemini-3.1-pro-low",
+        1037 => "gemini-3.1-pro-high",
+        1084 => "gemini-default",
+        _ => return None,
+    };
+    Some(resolve_model(alias, ts))
 }
 
 pub fn scan_antigravity(conn: &mut Connection, roots: &[&Path]) -> SourceScanResult {
@@ -257,14 +289,25 @@ fn process_export(conn: &mut Connection, path: &Path, result: &mut SourceScanRes
             continue;
         }
 
-        let model = export
-            .model
-            .as_deref()
-            .filter(|m| !m.trim().is_empty())
-            .map(|m| resolve_model(m, generation.ts))
-            // A placeholder enum has no published name; surface the raw id so it
-            // lands in the unpriced list instead of being guessed at.
-            .or_else(|| generation.model_enum.map(|e| format!("antigravity-model-{e}")));
+        // The true Model of the request wins, then the Session-level picker
+        // label (a fallback for exports that predate the per-generation
+        // alias), then the enum.
+        let resolved = |m: &Option<String>| {
+            m.as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| resolve_model(s, generation.ts))
+        };
+        let model = resolved(&generation.model_alias)
+            .or_else(|| resolved(&export.model))
+            // A placeholder enum the server never paired with a name has no
+            // published identity; surface the raw id so it lands in the
+            // unpriced list instead of being guessed at.
+            .or_else(|| {
+                generation
+                    .model_enum
+                    .map(|e| resolve_model_enum(e, generation.ts)
+                        .unwrap_or_else(|| format!("antigravity-model-{e}")))
+            });
 
         events.push(UsageEvent {
             dedup_key,
@@ -593,9 +636,11 @@ mod tests {
         // Claude thinking labels are the base Opus Models.
         assert_eq!(resolve_model("gemini-3-flash", 1780300000), "gemini-3.5-flash");
         assert_eq!(resolve_model("gemini-3-flash-agent", 1780300000), "gemini-3.5-flash");
+        assert_eq!(resolve_model("gemini-3-flash-c", 1780300000), "gemini-3.5-flash");
         assert_eq!(resolve_model("gemini-3-pro-high", 1780300000), "gemini-3-pro-preview");
         assert_eq!(resolve_model("gemini-3-pro-low", 1780300000), "gemini-3-pro-preview");
         assert_eq!(resolve_model("gemini-3.1-pro-high", 1780300000), "gemini-3.1-pro-preview");
+        assert_eq!(resolve_model("gemini-3.1-pro-low", 1780300000), "gemini-3.1-pro-preview");
         assert_eq!(resolve_model("claude-opus-4-5-thinking", 1780300000), "claude-opus-4-5");
         assert_eq!(resolve_model("claude-opus-4-6-thinking", 1780300000), "claude-opus-4-6");
         // gemini-default follows the era it was written in; boundaries are
@@ -608,6 +653,27 @@ mod tests {
         assert_eq!(resolve_model("gemini-3.5-flash", 100), "gemini-3.5-flash");
         assert_eq!(resolve_model("gemini-3-flash-z", 100), "gemini-3-flash-z");
         assert_eq!(resolve_model("unknown", 100), "unknown");
+    }
+
+    // Enums the server paired one-to-one with an alias resolve even for
+    // generations that carry no alias of their own; the default enum follows
+    // its era; unpaired enums stay raw (the rename signal).
+    #[test]
+    fn paired_enums_resolve_and_unpaired_enums_stay_raw() {
+        assert_eq!(resolve_model_enum(1037, 0).as_deref(), Some("gemini-3.1-pro-preview"));
+        assert_eq!(resolve_model_enum(1036, 0).as_deref(), Some("gemini-3.1-pro-preview"));
+        assert_eq!(resolve_model_enum(1018, 0).as_deref(), Some("gemini-3.5-flash"));
+        assert_eq!(resolve_model_enum(1047, 0).as_deref(), Some("gemini-3.5-flash"));
+        assert_eq!(resolve_model_enum(1026, 0).as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(resolve_model_enum(1035, 0).as_deref(), Some("claude-sonnet-4-6"));
+        // Identified by explicit single-enum picker Sessions.
+        assert_eq!(resolve_model_enum(1008, 0).as_deref(), Some("gemini-3-pro-preview"));
+        assert_eq!(resolve_model_enum(1012, 0).as_deref(), Some("claude-opus-4-5"));
+        // The default enum is era-based, exactly like the gemini-default alias.
+        assert_eq!(resolve_model_enum(1084, 1742860799).as_deref(), Some("gemini-2.0-flash"));
+        assert_eq!(resolve_model_enum(1084, 1780300000).as_deref(), Some("gemini-3.5-flash"));
+        // Never paired, never explicit: no published identity, no guess.
+        assert_eq!(resolve_model_enum(1007, 0), None);
     }
 
     #[test]
@@ -638,6 +704,45 @@ mod tests {
         assert_eq!(n, 1);
         assert_eq!(model, "gemini-3.5-flash");
         // And the bump is self-clearing: the next scan is quiet again.
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 0);
+    }
+
+    // Same contract on the export side: an export parsed by the previous
+    // parser re-parses once the version mismatches, picking up new
+    // resolutions without duplicating events.
+    #[test]
+    fn a_parser_version_bump_reparses_an_otherwise_unchanged_export() {
+        let convs = tempdir().unwrap();
+        std::fs::write(convs.path().join("s.pb"), b"\x99encrypted").unwrap();
+        write_export(
+            convs.path(),
+            "s",
+            r#"{"schema":1,"conversation_id":"s","generations":[
+                 {"response_id":"r","ts":1780300000,"model_enum":1037,
+                  "input":5,"output":1,"cache_read":0,"cache_write":0,"thinking":0}]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 1);
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 0);
+
+        conn.execute(
+            "UPDATE scanned_files SET byte_offset = 0 WHERE path = ?1",
+            rusqlite::params![convs
+                .path()
+                .join(export_artifact::file_name("s"))
+                .to_string_lossy()],
+        )
+        .unwrap();
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 1);
+        let (n, model): (i64, String) = conn
+            .query_row("SELECT COUNT(*), MAX(model) FROM events", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(model, "gemini-3.1-pro-preview");
         assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 0);
     }
 
@@ -869,7 +974,7 @@ mod tests {
             convs.path(),
             "n",
             r#"{"schema":1,"conversation_id":"n","generations":[
-                 {"response_id":"r","ts":1780300000,"model_enum":1008,
+                 {"response_id":"r","ts":1780300000,"model_enum":1007,
                   "input":5,"output":1,"cache_read":0,"cache_write":0,"thinking":0}]}"#,
         );
 
@@ -879,7 +984,32 @@ mod tests {
         assert!(res.error.is_none(), "{:?}", res.error);
         let model: Option<String> =
             conn.query_row("SELECT model FROM events", [], |r| r.get(0)).unwrap();
-        assert_eq!(model.as_deref(), Some("antigravity-model-1008"));
+        assert_eq!(model.as_deref(), Some("antigravity-model-1007"));
+    }
+
+    // The per-generation wire alias is the true Model; the Session-level
+    // picker label is only the default. An export carrying both must book the
+    // resolved alias, not the label.
+    #[test]
+    fn a_per_generation_alias_beats_the_session_label() {
+        let convs = tempdir().unwrap();
+        write_export(
+            convs.path(),
+            "a",
+            r#"{"schema":1,"conversation_id":"a","model":"gemini-3-pro-high",
+                "generations":[
+                 {"response_id":"r","ts":1780300000,"model_enum":1020,
+                  "model_alias":"gemini-3-flash-b",
+                  "input":5,"output":1,"cache_read":0,"cache_write":0,"thinking":0}]}"#,
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert!(res.error.is_none(), "{:?}", res.error);
+        let model: Option<String> =
+            conn.query_row("SELECT model FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(model.as_deref(), Some("gemini-3.5-flash"));
     }
 
     // `#3` is the total the API billed; trusting the parts as well would double

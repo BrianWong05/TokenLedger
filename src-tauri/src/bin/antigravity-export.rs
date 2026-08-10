@@ -47,6 +47,10 @@ fn main() {
 }
 
 fn run() -> Result<String, String> {
+    // `--force` re-exports Sessions that already have a fresh export — the
+    // escape hatch when the Artifact shape gains a field (e.g. `model_alias`)
+    // and old exports must be regenerated to carry it.
+    let force = std::env::args().skip(1).any(|a| a == "--force" || a == "-f");
     let gemini = gemini_dir()?;
     let dirs = conversation_dirs(&gemini);
     if dirs.is_empty() {
@@ -56,9 +60,13 @@ fn run() -> Result<String, String> {
         ));
     }
 
-    let pending = pending_sessions(&dirs);
+    let pending = pending_sessions(&dirs, force);
     if pending.is_empty() {
-        return Ok("nothing to do: every encrypted Session already has an export".to_string());
+        return Ok(
+            "nothing to do: every encrypted Session already has an export \
+             (pass --force to regenerate existing exports)"
+                .to_string(),
+        );
     }
 
     // Probing needs a Session the server will actually recognise, so the first
@@ -149,7 +157,8 @@ fn conversation_dirs(gemini: &Path) -> Vec<PathBuf> {
 }
 
 /// Encrypted Sessions with no export, or whose export predates the `.pb`.
-fn pending_sessions(dirs: &[PathBuf]) -> Vec<Session> {
+/// With `force`, every encrypted Session is pending again.
+fn pending_sessions(dirs: &[PathBuf], force: bool) -> Vec<Session> {
     let mut by_id: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for dir in dirs {
         let Ok(entries) = fs::read_dir(dir) else { continue };
@@ -159,7 +168,7 @@ fn pending_sessions(dirs: &[PathBuf]) -> Vec<Session> {
             }
             let Some(id) = path.file_stem().and_then(|s| s.to_str()) else { continue };
             let export = path.with_file_name(export_artifact::file_name(id));
-            if is_fresh(&export, &path) {
+            if !force && is_fresh(&export, &path) {
                 continue;
             }
             // Decrypted once below, then written to every location that wants it.
@@ -424,6 +433,13 @@ fn export_session(server: &Server, session: &Session) -> Result<usize, String> {
             response_id: string_field(usage, 11).map(str::to_string),
             ts: as_i64(timestamp),
             model_enum: varint_field(chat_model, 3),
+            // The per-generation wire alias: the true Model of the request,
+            // where the Session-level label is only the picker default. Old
+            // exports predate it and the reader falls back, so recording it
+            // is what finally names the MODEL_PLACEHOLDER enums.
+            model_alias: string_field(chat_model, 19)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string),
             input: as_i64(input),
             output: as_i64(output),
             cache_read: as_i64(cache_read),
@@ -498,7 +514,7 @@ mod tests {
         fs::write(app.join("dup.pb"), b"sealed").unwrap();
         fs::write(app.join("solo.pb"), b"sealed").unwrap();
 
-        let pending = pending_sessions(&[app.clone(), ide.clone()]);
+        let pending = pending_sessions(&[app.clone(), ide.clone()], false);
         assert_eq!(pending.len(), 2, "one entry per Session id, not per file");
         let dup = pending.iter().find(|s| s.id == "dup").unwrap();
         assert_eq!(dup.exports.len(), 2, "both copies get an export");
@@ -515,8 +531,12 @@ mod tests {
         fs::write(dir.path().join("todo.pb"), b"sealed").unwrap();
 
         let ids: Vec<String> =
-            pending_sessions(&[dir.path().to_path_buf()]).into_iter().map(|s| s.id).collect();
+            pending_sessions(&[dir.path().to_path_buf()], false).into_iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["todo".to_string()]);
+        // --force regenerates even Sessions with a fresh export.
+        let forced: Vec<String> =
+            pending_sessions(&[dir.path().to_path_buf()], true).into_iter().map(|s| s.id).collect();
+        assert_eq!(forced, vec!["done".to_string(), "todo".to_string()]);
     }
 
     #[test]
