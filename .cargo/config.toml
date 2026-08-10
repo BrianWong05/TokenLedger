@@ -1,3 +1,0 @@
-[env]
-# Embed the Windows application manifest in Tauri test executables.
-__TAURI_WORKSPACE__ = "true"
