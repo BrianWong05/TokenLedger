@@ -66,14 +66,8 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
 // Keep the generated macOS bundle metadata in one macro expansion. Besides
 // avoiding duplicate embedded Info.plist symbols in tests, the generic runtime
 // lets production use Wry while lifecycle tests use Tauri's mock runtime.
-#[cfg(not(test))]
 fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
-}
-
-#[cfg(test)]
-fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
-    tauri::ContextBuilder::default().build().unwrap()
 }
 
 pub struct AppState {

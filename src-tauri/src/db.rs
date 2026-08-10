@@ -1,5 +1,7 @@
 use crate::adapters::ctx::Composition;
 use crate::types::{FileState, UsageEvent};
+use chrono::{Local, TimeZone};
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::LazyLock;
 
@@ -520,7 +522,32 @@ pub fn open_db(path: &std::path::Path) -> rusqlite::Result<Connection> {
     conn.busy_timeout(std::time::Duration::from_millis(5000))?;
     set_wal(&conn)?;
     migrate(&conn)?;
+    register_query_functions(&conn)?;
     Ok(conn)
+}
+
+/// SQLite's built-in `strftime(..., 'localtime')` crosses into the operating
+/// system for every input row on macOS. Overview series run it twice, turning
+/// an 80k-record Ledger into seconds of blocking work. Chrono loads the local
+/// IANA zone once per thread, then resolves offsets in memory. Keeping the
+/// function inside SQLite preserves the existing GROUP BY and NULL semantics.
+pub(crate) fn register_query_functions(conn: &Connection) -> rusqlite::Result<()> {
+    conn.create_scalar_function(
+        "tokenledger_local_bucket",
+        2,
+        FunctionFlags::SQLITE_UTF8,
+        |ctx| {
+            let timestamp = ctx.get::<i64>(0)?;
+            let hourly = ctx.get::<bool>(1)?;
+            Ok(Local.timestamp_opt(timestamp, 0).single().map(|local| {
+                if hourly {
+                    local.format("%Y-%m-%d %H:00").to_string()
+                } else {
+                    local.format("%Y-%m-%d").to_string()
+                }
+            }))
+        },
+    )
 }
 
 /// Switches the journal to WAL, retrying while another opener is converting.
