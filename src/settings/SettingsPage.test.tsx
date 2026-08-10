@@ -76,11 +76,10 @@ async function mount(port: FakeSettings): Promise<HTMLElement> {
   return container;
 }
 
-// Set a controlled input/select value through the native setter so React's
-// value tracking sees the change, then fire the events React listens for.
-async function setValue(el: HTMLInputElement | HTMLSelectElement, value: string) {
-  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
-  const setter = Object.getOwnPropertyDescriptor(proto, 'value')!.set!;
+// Set a controlled input value through the native setter so React's value
+// tracking sees the change, then fire the events React listens for.
+async function setValue(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   await act(async () => {
     setter.call(el, value);
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -105,19 +104,33 @@ const refreshSeg = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('.set-seg-mono button')) as HTMLButtonElement[];
 const q = <T extends Element>(c: ParentNode, s: string) => c.querySelector(s) as T | null;
 
+// The dropdowns are the page's own button + menu, not a <select> (a native
+// option list is drawn by the OS and takes no app styling): the button carries
+// the chosen value, and choosing means open it, then click the option.
+const dropdown = (c: ParentNode, label: string) =>
+  q<HTMLButtonElement>(c, `button[aria-label="${label}"]`)!;
+const chosen = (btn: HTMLButtonElement) => btn.dataset.value;
+const option = (btn: HTMLButtonElement, v: string) =>
+  btn.parentElement!.querySelector(`.set-menu-item[data-value="${v}"]`) as HTMLButtonElement | null;
+
+async function pick(btn: HTMLButtonElement, value: string) {
+  await click(btn);
+  await click(option(btn, value)!);
+}
+
 describe('SettingsPage', () => {
   it('renders all five items from the fake settings', async () => {
     const port = makeFakeSettings({ firstRunDone: true, currency: 'HKD', usdRate: 7.8 });
     const c = await mount(port);
     const text = c.textContent ?? '';
 
-    // Appearance: theme segment + language select.
+    // Appearance: theme segment + language dropdown.
     expect(seg(c).map((b) => b.textContent)).toEqual(['System', 'Light', 'Dark']);
     expect(seg(c).find((b) => b.classList.contains('active'))?.textContent).toBe('System');
-    expect(q<HTMLSelectElement>(c, 'select[aria-label="Language"]')?.value).toBe('en');
+    expect(chosen(dropdown(c, 'Language'))).toBe('en');
 
     // Display currency + exchange rate (non-USD shows the rate row).
-    expect(q<HTMLSelectElement>(c, 'select[aria-label="Currency"]')?.value).toBe('HKD');
+    expect(chosen(dropdown(c, 'Currency'))).toBe('HKD');
     expect(q<HTMLInputElement>(c, '.set-rate-input')?.value).toBe('7.8');
 
     // Startup + updates.
@@ -193,7 +206,7 @@ describe('SettingsPage', () => {
     const c = await mount(port);
 
     expect(c.textContent).toContain('Appearance');
-    await setValue(q<HTMLSelectElement>(c, 'select[aria-label="Language"]')!, 'zh-Hant');
+    await pick(dropdown(c, 'Language'), 'zh-Hant');
 
     expect(c.textContent).toContain('外觀'); // Appearance
     expect(c.textContent).toContain('主題'); // Theme
@@ -207,7 +220,7 @@ describe('SettingsPage', () => {
 
     expect(q<HTMLInputElement>(c, '.set-rate-input')).toBeNull();
 
-    await setValue(q<HTMLSelectElement>(c, 'select[aria-label="Currency"]')!, 'HKD');
+    await pick(dropdown(c, 'Currency'), 'HKD');
     expect(q<HTMLInputElement>(c, '.set-rate-input')).not.toBeNull();
 
     await setValue(q<HTMLInputElement>(c, '.set-rate-input')!, '7.85');
@@ -221,7 +234,7 @@ describe('SettingsPage', () => {
   describe('custom range presets', () => {
     const stored = () => JSON.parse(localStorage.getItem(CUSTOM_PRESETS_KEY) ?? 'null');
     const slots = (c: HTMLElement) =>
-      Array.from(c.querySelectorAll('select[aria-label^="Preset"]')) as HTMLSelectElement[];
+      Array.from(c.querySelectorAll('button[aria-label^="Preset"]')) as HTMLButtonElement[];
     const dayInput = (c: HTMLElement, n: number) =>
       q<HTMLInputElement>(c, `input[aria-label="Day count ${n}"]`);
 
@@ -231,9 +244,9 @@ describe('SettingsPage', () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
 
       expect(slots(c)).toHaveLength(1);
-      expect(slots(c)[0].value).toBe('');
+      expect(chosen(slots(c)[0])).toBe('');
 
-      await setValue(slots(c)[0], 'lastMonth');
+      await pick(slots(c)[0], 'lastMonth');
 
       expect(stored()).toEqual([{ key: 'lastMonth' }, null, null, null]);
       expect(slots(c)).toHaveLength(2);
@@ -242,7 +255,7 @@ describe('SettingsPage', () => {
     it('stops revealing slots at four', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
       for (const key of ['lastMonth', 'lastQuarter', 'lastYear', 'rolling']) {
-        await setValue(slots(c)[slots(c).length - 1], key);
+        await pick(slots(c)[slots(c).length - 1], key);
       }
       expect(slots(c)).toHaveLength(4);
     });
@@ -251,7 +264,7 @@ describe('SettingsPage', () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
 
       expect(dayInput(c, 1)).toBeNull(); // no day field until rolling is chosen
-      await setValue(slots(c)[0], 'rolling');
+      await pick(slots(c)[0], 'rolling');
 
       expect(dayInput(c, 1)?.value).toBe('14');
       expect(stored()[0]).toEqual({ key: 'rolling', days: 14 });
@@ -262,7 +275,7 @@ describe('SettingsPage', () => {
 
     it('keeps an out-of-bounds or duplicate day count editable without persisting it', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await setValue(slots(c)[0], 'rolling');
+      await pick(slots(c)[0], 'rolling');
       await setValue(dayInput(c, 1)!, '21');
 
       // 1 is today alone (Yesterday means something else), 1826 is past the
@@ -284,34 +297,39 @@ describe('SettingsPage', () => {
 
     it('reads a configured shortcut back after a remount', async () => {
       const first = await mount(makeFakeSettings({ firstRunDone: true }));
-      await setValue(slots(first)[0], 'rolling');
+      await pick(slots(first)[0], 'rolling');
       await setValue(dayInput(first, 1)!, '45');
-      await setValue(slots(first)[1], 'lastYear');
+      await pick(slots(first)[1], 'lastYear');
 
       for (const root of mountedRoots.splice(0)) act(() => root.unmount());
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
 
-      expect(slots(c).map((s) => s.value)).toEqual(['rolling', 'lastYear', '']);
+      expect(slots(c).map(chosen)).toEqual(['rolling', 'lastYear', '']);
       expect(dayInput(c, 1)?.value).toBe('45');
     });
 
     it('marks a calendar period taken by another slot as unavailable', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await setValue(slots(c)[0], 'lastQuarter');
+      await pick(slots(c)[0], 'lastQuarter');
 
-      const taken = (s: HTMLSelectElement, v: string) =>
-        Array.from(s.options).find((o) => o.value === v)!.disabled;
-      expect(taken(slots(c)[1], 'lastQuarter')).toBe(true);
-      expect(taken(slots(c)[1], 'lastMonth')).toBe(false);
+      // The options only exist while the menu is open, so read each one there.
+      const taken = async (btn: HTMLButtonElement, v: string) => {
+        await click(btn);
+        const off = option(btn, v)!.disabled;
+        await click(btn);
+        return off;
+      };
+      expect(await taken(slots(c)[1], 'lastQuarter')).toBe(true);
+      expect(await taken(slots(c)[1], 'lastMonth')).toBe(false);
       // The slot holding it still shows it, or it could not stay selected.
-      expect(taken(slots(c)[0], 'lastQuarter')).toBe(false);
+      expect(await taken(slots(c)[0], 'lastQuarter')).toBe(false);
     });
 
     it('refuses a day count already held by another slot', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await setValue(slots(c)[0], 'rolling');
+      await pick(slots(c)[0], 'rolling');
       await setValue(dayInput(c, 1)!, '30');
-      await setValue(slots(c)[1], 'rolling');
+      await pick(slots(c)[1], 'rolling');
       await setValue(dayInput(c, 2)!, '30');
 
       expect(stored()[1]).not.toEqual({ key: 'rolling', days: 30 });
@@ -319,22 +337,22 @@ describe('SettingsPage', () => {
 
     it('leaves a cleared slot empty instead of pulling the later ones up', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await setValue(slots(c)[0], 'lastMonth');
-      await setValue(slots(c)[1], 'lastYear');
+      await pick(slots(c)[0], 'lastMonth');
+      await pick(slots(c)[1], 'lastYear');
 
-      await setValue(slots(c)[0], '');
+      await pick(slots(c)[0], '');
 
       expect(stored()).toEqual([null, { key: 'lastYear' }, null, null]);
       expect(slots(c)).toHaveLength(3); // the hole and the filled slot both stay
-      expect(slots(c)[0].value).toBe('');
-      expect(slots(c)[1].value).toBe('lastYear');
+      expect(chosen(slots(c)[0])).toBe('');
+      expect(chosen(slots(c)[1])).toBe('lastYear');
     });
 
     it('reads malformed stored shortcuts as none configured', async () => {
       localStorage.setItem(CUSTOM_PRESETS_KEY, '{"not":"an array"}');
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
       expect(slots(c)).toHaveLength(1);
-      expect(slots(c)[0].value).toBe('');
+      expect(chosen(slots(c)[0])).toBe('');
     });
 
     it('drops stored entries that are not usable shortcuts', async () => {
@@ -343,7 +361,7 @@ describe('SettingsPage', () => {
         JSON.stringify([{ key: 'rolling', days: 9999 }, { key: 'nonsense' }, { key: 'lastYear' }]),
       );
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      expect(slots(c).map((s) => s.value)).toEqual(['', '', 'lastYear', '']);
+      expect(slots(c).map(chosen)).toEqual(['', '', 'lastYear', '']);
     });
   });
 

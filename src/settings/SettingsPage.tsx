@@ -2,7 +2,7 @@
 // persisted immediately through the context (no Save button — the design has
 // none). Reads the live Settings from context; keeps only view-local state
 // (the rate text field, the app version, the update-check result).
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
@@ -60,6 +60,80 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
     >
       <span className="set-toggle-knob" aria-hidden="true" />
     </button>
+  );
+}
+
+// A <select> hands its option list to the OS, which draws it in system chrome —
+// no app styling reaches it. So the list is ours, the same button + menu shape as
+// the range picker's JumpMenu, on the settings surface.
+const MENU_MAX_H = 264; // keep in step with .set-menu max-height
+
+function Select({ label, value, options, onPick }: {
+  label: string;
+  value: string;
+  options: { v: string; text: string; disabled?: boolean }[];
+  onPick(v: string): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [up, setUp] = useState(false);
+  const box = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="set-select-wrap" ref={box}>
+      <button
+        type="button"
+        className={'set-select' + (open ? ' open' : '')}
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        // the chosen value, which a closed menu otherwise only shows as its label
+        data-value={value}
+        onClick={(e) => {
+          // a row near the window bottom opens its list upwards instead, the way
+          // the OS list this replaced did
+          const r = e.currentTarget.getBoundingClientRect();
+          setUp(window.innerHeight - r.bottom < MENU_MAX_H + 16);
+          setOpen((v) => !v);
+        }}
+      >
+        {options.find((o) => o.v === value)?.text ?? ''}
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+      {open && (
+        <div className={'set-menu' + (up ? ' up' : '')} role="menu" aria-label={label}>
+          {options.map((o) => (
+            <button
+              key={o.v}
+              type="button"
+              role="menuitemradio"
+              aria-checked={o.v === value}
+              disabled={o.disabled}
+              data-value={o.v}
+              className={'set-menu-item' + (o.v === value ? ' on' : '')}
+              onClick={() => { onPick(o.v); setOpen(false); }}
+            >
+              {o.text}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -174,12 +248,19 @@ function CustomRangeGroup() {
               {i === 0 && <div className="set-row-caption">{t('settings.preset.caption')}</div>}
             </div>
             <div className="set-rate">
-              <select
-                className="set-select"
-                aria-label={`${t('settings.preset')} ${i + 1}`}
+              <Select
+                label={`${t('settings.preset')} ${i + 1}`}
                 value={slot?.key ?? ''}
-                onChange={(e) => {
-                  const key = e.target.value;
+                options={[
+                  { v: '', text: t('settings.preset.off') },
+                  { v: 'rolling', text: t('settings.preset.rolling') },
+                  ...CALENDAR_PRESETS.map((key) => ({
+                    v: key,
+                    text: overviewT(PRESET_LABEL_KEY[key]),
+                    disabled: takenCalendar(i).has(key),
+                  })),
+                ]}
+                onPick={(key) => {
                   if (!key) return put(i, null);
                   if (key !== 'rolling') return put(i, { key: key as CalendarPresetKey });
                   // Seed the first count nothing else has claimed, so choosing
@@ -188,15 +269,7 @@ function CustomRangeGroup() {
                   while (taken.has(n)) n++;
                   put(i, { key: 'rolling', days: n });
                 }}
-              >
-                <option value="">{t('settings.preset.off')}</option>
-                <option value="rolling">{t('settings.preset.rolling')}</option>
-                {CALENDAR_PRESETS.map((key) => (
-                  <option key={key} value={key} disabled={takenCalendar(i).has(key)}>
-                    {overviewT(PRESET_LABEL_KEY[key])}
-                  </option>
-                ))}
-              </select>
+              />
               {slot?.key === 'rolling' && (
                 <PresetDaysInput
                   index={i}
@@ -409,15 +482,15 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-title">{t('settings.language')}</div>
               <div className="set-row-caption">{t('settings.language.caption')}</div>
             </div>
-            <select
-              className="set-select"
-              aria-label={t('settings.language')}
+            <Select
+              label={t('settings.language')}
               value={settings.language}
-              onChange={(e) => update({ language: e.target.value as Settings['language'] })}
-            >
-              <option value="en">English</option>
-              <option value="zh-Hant">繁體中文</option>
-            </select>
+              options={[
+                { v: 'en', text: 'English' },
+                { v: 'zh-Hant', text: '繁體中文' },
+              ]}
+              onPick={(v) => update({ language: v as Settings['language'] })}
+            />
           </div>
         </section>
 
@@ -430,18 +503,12 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-title">{t('settings.currency')}</div>
               <div className="set-row-caption">{t('settings.currency.caption')}</div>
             </div>
-            <select
-              className="set-select"
-              aria-label={t('settings.currency')}
+            <Select
+              label={t('settings.currency')}
               value={settings.currency}
-              onChange={(e) => update({ currency: e.target.value })}
-            >
-              {CURRENCIES.map(([code, name]) => (
-                <option key={code} value={code}>
-                  {code} — {name}
-                </option>
-              ))}
-            </select>
+              options={CURRENCIES.map(([code, name]) => ({ v: code, text: `${code} — ${name}` }))}
+              onPick={(v) => update({ currency: v })}
+            />
           </div>
           {settings.currency !== 'USD' && <RateRow code={settings.currency} />}
         </section>

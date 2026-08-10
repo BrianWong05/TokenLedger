@@ -56,11 +56,11 @@
 
 /* ---- card group ---- */
 
+/* not clipped: a row's dropdown menu has to hang past the group's bottom edge */
 .set-group {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  overflow: hidden;
 }
 
 .set-group-label {
@@ -134,16 +134,24 @@
 
 .set-seg button:focus-visible,
 .set-select:focus-visible,
+.set-menu-item:focus-visible,
 .set-btn:focus-visible,
 .set-toggle:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--nav-focus-ring);
 }
 
-/* ---- selects (language, currency) ---- */
+/* ---- selects (language, currency, custom-range presets) ---- */
+
+.set-select-wrap {
+  position: relative;
+  flex: none;
+}
 
 .set-select {
-  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   background: var(--set-inset-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -152,6 +160,68 @@
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+}
+
+.set-select svg {
+  color: var(--muted);
+}
+
+.set-select:hover,
+.set-select.open {
+  border-color: var(--rescan-hover-border);
+}
+
+/* the option list, matching the range picker's menu (.tt-dp-menu) */
+.set-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 100%;
+  max-height: 264px; /* MENU_MAX_H in SettingsPage.tsx */
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px;
+  background: var(--set-dialog-bg);
+  border: 1px solid var(--set-dialog-border);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.set-menu.up {
+  top: auto;
+  bottom: calc(100% + 4px);
+}
+
+.set-menu-item {
+  border: none;
+  background: none;
+  color: var(--muted);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.set-menu-item:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.set-menu-item:disabled {
+  color: var(--text-disabled);
+  cursor: default;
+}
+
+.set-menu-item.on {
+  background: var(--accent);
+  color: var(--text-on-accent);
 }
 
 /* ---- exchange rate ---- */
