@@ -62,8 +62,11 @@ export interface ReportInput {
   ctxExec: ReportCtxExec[];
 }
 
-// Same quoting rule as data.ts bucketCsv — Project paths carry commas.
-const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+// Quoting follows src-tauri/src/report.rs esc, not data.ts bucketCsv: it covers
+// \r too. A lone CR emitted unquoted is a record terminator to many parsers, so
+// one row silently arrives as two. Quoting is here for Task 2's Project block —
+// a path carries commas, and a name copied from a log can carry a stray CR.
+const esc = (s: string) => (/[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
 
 // How much of a row's Cost the Ledger could compute, in one word, so a Partial
 // Cost is never read as a total.

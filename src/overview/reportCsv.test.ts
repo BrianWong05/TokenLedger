@@ -136,6 +136,61 @@ describe('summary block', () => {
     )[1];
     expect(row).toContain(',0.0000,');
   });
+
+  it('marks a window whose cache figures were reconstructed rather than logged', () => {
+    const csv = windowReportCsv(
+      reportInput({
+        summary: usageRow({ cacheEstimated: true }),
+        cacheEstimatedModels: ['gpt-5-codex'],
+      }),
+    );
+    const row = block(csv, 'window')[1];
+    expect(row).toContain(',exact,0,true,');
+    expect(row.endsWith(',gpt-5-codex')).toBe(true);
+  });
+});
+
+// esc is the file's only branching helper, and every other fixture is
+// comma-free, so without these its quoting is asserted nowhere.
+describe('field quoting', () => {
+  const keyRow = (key: string) => block(windowReportCsv(reportInput({ summary: usageRow({ key }) })), 'window')[1];
+
+  it('quotes a key carrying a comma so the row keeps its column count', () => {
+    expect(keyRow('/Users/me/src/app,v2')).toBe(
+      '"/Users/me/src/app,v2",100,50,800,50,1000,7,2,0.8421,1.500000,exact,0,false,,',
+    );
+  });
+
+  it('doubles an embedded quote rather than ending the field early', () => {
+    expect(keyRow('say "hi"')).toContain('"say ""hi"""');
+  });
+
+  it('quotes a bare carriage return, which a parser would otherwise read as a new record', () => {
+    expect(keyRow('jul\raug')).toContain('"jul\raug"');
+  });
+
+  it('leaves an ordinary key unquoted', () => {
+    expect(keyRow('2026-07-12').split(',')[0]).toBe('2026-07-12');
+  });
+});
+
+// block() above reads the file by these two invariants. Asserting them by name
+// means a layout change fails here rather than as a puzzling miss elsewhere.
+describe('file structure', () => {
+  it('separates every block by a single blank line', () => {
+    const csv = windowReportCsv(reportInput());
+    expect(csv).toContain('\n\n');
+    for (const b of csv.split('\n\n')) {
+      expect(b.startsWith('\n')).toBe(false);
+      expect(b.trimEnd().length).toBeGreaterThan(0);
+    }
+  });
+
+  it('ends with exactly one trailing newline', () => {
+    const csv = windowReportCsv(reportInput());
+    expect(csv.endsWith('\n')).toBe(true);
+    expect(csv.endsWith('\n\n')).toBe(false);
+  });
 });
 
 describe('reportFilename', () => {
