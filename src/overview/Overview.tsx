@@ -129,7 +129,10 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
     setExporting(true);
     setExportError(null);
     try {
-      const input = reportInput(settings);
+      // The click is the file's `generated` stamp. The window and its grain
+      // still come from the render being exported (useOverview's viewNow), so
+      // an idle tab exports the window it is showing, dated when you asked.
+      const input = reportInput(settings, new Date());
       // A cancelled save resolves false and says nothing: backing out of the
       // sheet is a decision, not a fault.
       await exporter.saveCsv(reportFilename(input.fromIso, input.toIso), windowReportCsv(input));

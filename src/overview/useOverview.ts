@@ -103,12 +103,16 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   );
   /* eslint-enable react-hooks/exhaustive-deps */
 
-  // The report's input, built from the same snapshot, view and instant this
-  // hook renders from — which is what keeps the exported file from disagreeing
-  // with the screen. `settings` arrives from the component: Display Currency
-  // lives in SettingsContext, which the shell consumes and this hook does not.
+  // The report's input, built from the same snapshot and view this hook renders
+  // from — which is what keeps the exported file from disagreeing with the
+  // screen. `viewNow` fixes the window and the grain; `generatedAt` is passed
+  // separately by the caller and is the instant the file was asked for, which
+  // on a tab left open all afternoon is nowhere near `viewNow`. `settings`
+  // arrives from the component too: Display Currency lives in SettingsContext,
+  // which the shell consumes and this hook does not.
   const reportInput = useCallback(
-    (settings: Settings) => selectReportInput(snap, view, settings, viewNow),
+    (settings: Settings, generatedAt: Date) =>
+      selectReportInput(snap, view, settings, viewNow, generatedAt),
     [snap, view, viewNow],
   );
 

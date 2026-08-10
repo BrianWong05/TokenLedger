@@ -762,10 +762,57 @@ describe('Export', () => {
   // A window whose Summary has not landed cannot be serialized honestly: the
   // selector's token fields are non-nullable, so an absent Summary becomes 0 —
   // a figure meaning "unknown". Only the caller can refuse, and it does.
+  //
+  // Reaching that state takes two steps, because the fake's hold() is scoped to
+  // the METHOD, not the call: holding 'summary' also holds the Profile-sessions
+  // count that rides with the initial series load. Resolving that first held
+  // call lets allPoints land — which is what ends `loading` and fires the
+  // per-range reload, whose own Summary is then the held call that matters.
+  // Skipping the first resolve leaves the button disabled by `loading` and
+  // tests nothing.
   it('withholds Export until the window\'s Summary has landed', async () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
     ledger.hold('summary');
     const { container } = await mountOverview({ ledger });
-    expect(container.querySelector<HTMLButtonElement>('.tt-export')!.disabled).toBe(true);
+    const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
+
+    ledger.resolveHeld('summary', 0); // Profile sessions — lets the first load land
+    await settle();
+    expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
+    expect(ledger.held('summary').length).toBe(2); // [0] profile, [1] the window's
+    expect(exportBtn().disabled).toBe(true);
+
+    ledger.resolveHeld('summary', 1); // the window's own Summary
+    await settle();
+    expect(exportBtn().disabled).toBe(false);
+  });
+
+  // Two instants, deliberately different. The window and its grain describe the
+  // render being exported; `generated` describes the save. A tab rendered on
+  // the 20th and exported on the 25th must write the 20th's trailing-30-day
+  // window under the 25th's timestamp — swapping either instant for the other
+  // breaks exactly one of these two assertions.
+  it('stamps the save instant while the window stays the render\'s', async () => {
+    vi.setSystemTime(new Date(2026, 6, 20, 12));
+    const { container, exporter } = await mountOverview();
+    // Month, so the bounds are computed from an instant rather than from the
+    // Ledger's extent as an unbounded Total window would be.
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.tt-toolbar .tt-seg button'))
+      .find((b) => b.textContent === 'Month')!);
+
+    // Five days pass with the tab open. No view dependency moves, so the render
+    // — and the window it is showing — stays where it was.
+    vi.setSystemTime(new Date(2026, 6, 25, 9, 30));
+    await click(container.querySelector('.tt-export')!);
+
+    const [filename, contents] = exporter.calls[0];
+    // The first block is the header; the summary block's own header also starts
+    // "window,", so scope the lookup rather than scanning the whole file.
+    const headerBlock = contents.split('\n\n')[0].split('\n');
+    const line = (prefix: string) => headerBlock.find((l) => l.startsWith(prefix))!;
+    expect(line('generated,')).toBe(`generated,${new Date(2026, 6, 25, 9, 30).toISOString()}`);
+    // 30 trailing days ending on the render's day, not the save's.
+    expect(line('window,')).toBe('window,2026-06-21,2026-07-20');
+    expect(filename).toBe('usage-2026-06-21_2026-07-20.csv');
   });
 });

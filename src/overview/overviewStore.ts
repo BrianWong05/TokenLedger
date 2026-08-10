@@ -539,11 +539,20 @@ function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
 const CTX_EXACT = ['messages', 'system', 'reasoning'] as const;
 const CTX_ESTIMATED = ['toolcalls', 'agents', 'mcp', 'skills'] as const;
 
+// `now` and `generatedAt` are two different instants and must stay that way.
+// `now` is the instant the view being exported was built from: it fixes the
+// window bounds and, through hourlyDayOf, the time block's grain, so a file
+// taken from a render describes that render. `generatedAt` is when the file
+// was asked for, which is the only honest thing to stamp on it — a tab left
+// open all afternoon still renders the window it rendered, but the save is
+// happening now. Both are parameters because this selector is pure: it reads
+// no clock of its own, exactly like every other selector in this file.
 export function selectReportInput(
   s: OverviewSnapshot,
   view: OverviewView,
   settings: Settings,
   now: Date = new Date(),
+  generatedAt: Date = now,
 ): ReportInput {
   const win = windowOf(s.range, s.from, s.to, now);
   const summary = s.summary;
@@ -604,7 +613,7 @@ export function selectReportInput(
   }
 
   return {
-    generatedIso: now.toISOString(),
+    generatedIso: generatedAt.toISOString(),
     fromIso,
     toIso,
     grain,
