@@ -108,6 +108,17 @@ export function reportFilename(fromIso: string, toIso: string): string {
   return `usage-${fromIso}_${toIso}.csv`;
 }
 
+// A usage block, or nothing. An empty block is omitted rather than written as a
+// lone header: a reader should not have to tell "no rows" from "no data".
+function usageBlock(first: string, rows: ReportUsageRow[], withSource = false): string | null {
+  if (rows.length === 0) return null;
+  const header = withSource ? `${first},source,${USAGE_COLS}` : `${first},${USAGE_COLS}`;
+  const lines = rows.map((row) =>
+    [esc(row.key), ...(withSource ? [esc(row.source ?? '')] : []), ...usageCells(row)].join(','),
+  );
+  return [header, ...lines].join('\n');
+}
+
 export function windowReportCsv(input: ReportInput): string {
   const header = [
     'tokenledger_report,1',
@@ -131,5 +142,13 @@ export function windowReportCsv(input: ReportInput): string {
     ].join(','),
   ];
 
-  return [header.join('\n'), summary.join('\n')].join('\n\n') + '\n';
+  const blocks = [
+    header.join('\n'),
+    summary.join('\n'),
+    usageBlock(input.grain, input.time),
+    usageBlock('source', input.sources),
+    usageBlock('model', input.models, true),
+    usageBlock('project', input.projects),
+  ];
+  return blocks.filter((b): b is string => b !== null).join('\n\n') + '\n';
 }

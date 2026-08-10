@@ -198,3 +198,57 @@ describe('reportFilename', () => {
     expect(reportFilename('2026-07-12', '2026-08-10')).toBe('usage-2026-07-12_2026-08-10.csv');
   });
 });
+
+describe('usage blocks', () => {
+  it('names the time block after the window grain', () => {
+    for (const grain of ['hour', 'day', 'week', 'month'] as const) {
+      const csv = windowReportCsv(reportInput({ grain, time: [usageRow({ key: '2026-07-12' })] }));
+      expect(block(csv, grain)[0]).toBe(`${grain},${USAGE_COLS_FOR_TEST}`);
+      expect(block(csv, grain)[1]).toContain('2026-07-12,100,50,800,50,1000');
+    }
+  });
+
+  it('scopes a Model row to the tool that ran it', () => {
+    const csv = windowReportCsv(reportInput({ models: [usageRow({ key: 'claude-opus-5', source: 'claude' })] }));
+    expect(block(csv, 'model')[0]).toBe(`model,source,${USAGE_COLS_FOR_TEST}`);
+    expect(block(csv, 'model')[1].startsWith('claude-opus-5,claude,')).toBe(true);
+  });
+
+  it('writes Source and Project blocks without a source column', () => {
+    const csv = windowReportCsv(
+      reportInput({ sources: [usageRow({ key: 'claude' })], projects: [usageRow({ key: '/Users/me/dev' })] }),
+    );
+    expect(block(csv, 'source')[0]).toBe(`source,${USAGE_COLS_FOR_TEST}`);
+    expect(block(csv, 'project')[0]).toBe(`project,${USAGE_COLS_FOR_TEST}`);
+  });
+
+  it('quotes a Project path holding a comma or a quote', () => {
+    const csv = windowReportCsv(
+      reportInput({ projects: [usageRow({ key: '/Users/me/a,b' }), usageRow({ key: '/Users/me/say "hi"' })] }),
+    );
+    const rows = block(csv, 'project');
+    expect(rows[1].startsWith('"/Users/me/a,b",')).toBe(true);
+    expect(rows[2].startsWith('"/Users/me/say ""hi""",')).toBe(true);
+  });
+
+  it('omits a block entirely when the window has no rows for it', () => {
+    const csv = windowReportCsv(reportInput());
+    expect(block(csv, 'source')).toEqual([]);
+    expect(block(csv, 'model')).toEqual([]);
+    expect(block(csv, 'project')).toEqual([]);
+    expect(block(csv, 'day')).toEqual([]);
+  });
+
+  // SeriesPoint carries `cost: number` with a separate hasUnpriced flag, so a
+  // fully-Unpriced bucket cannot say "unavailable" from the data alone. The
+  // caller (Task 4) resolves it to cost: null before serializing; this pins the
+  // file's side of that contract — a 0 that means "unknown" never appears.
+  it('writes an empty cost for a bucket the caller marked unavailable', () => {
+    const csv = windowReportCsv(
+      reportInput({ time: [usageRow({ key: '2026-07-12', cost: null, hasUnpriced: true })] }),
+    );
+    const row = block(csv, 'day')[1];
+    expect(row).toContain(',,unavailable,');
+    expect(row).not.toContain(',0.000000,');
+  });
+});
