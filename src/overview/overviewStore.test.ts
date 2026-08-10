@@ -562,6 +562,22 @@ async function mountStoreOnHourlyDay() {
   return { store, ledger };
 }
 
+// A bounded window sitting inside a wider Ledger, with usage outside it on
+// both sides: neither reported bound can be the Ledger's own extent.
+async function mountStoreOnCustomWindow() {
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [pt({ bucket: '2026-07-10' }), pt({ bucket: '2026-07-13' }), pt({ bucket: '2026-07-16' })],
+    toolRows: [sourceRow('claude')],
+  });
+  const store = await boot(ledger, clock);
+  store.setRange('custom');
+  store.setCustomRange('2026-07-12', '2026-07-14');
+  clock.advance(300); // custom debounces at 250ms
+  await flush();
+  return { store, ledger };
+}
+
 // A window long enough that the Trend aggregates it to months (>120 days).
 async function mountStoreOverManyMonths() {
   const clock = fakeClock();
@@ -640,6 +656,8 @@ describe('selectReportInput', () => {
     const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
     expect(input.grain).toBe('hour');
     expect(input.time.map((r) => r.key)).toEqual(['2026-07-16 09:00', '2026-07-16 14:00']);
+    // Day is a bounded range: today, not the Ledger's first record.
+    expect(input.fromIso).toBe('2026-07-16');
 
     // Hours that have not landed fall back to the day beneath them rather than
     // naming a grain the block has no rows for: this window is also one day,
@@ -676,6 +694,23 @@ describe('selectReportInput', () => {
     expect(usd.displayCurrency).toBe(null);
     expect(usd.usdRate).toBe(null);
     expect(usd.summary.cost).toBe(aud.summary.cost);
+  });
+
+  it('takes a bounded window from the range, not the Ledger extent around it', async () => {
+    const { store } = await mountStoreOnCustomWindow();
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    // The Ledger runs wider on both sides, so neither reported bound can be
+    // the extent falling through: this is the file's primary claim about what
+    // it covers, and Total alone would only ever exercise the fallback.
+    expect([s.firstIso, s.lastIso]).toEqual(['2026-07-10', '2026-07-16']);
+    expect(input.fromIso).toBe('2026-07-12');
+    expect(input.toIso).toBe('2026-07-14');
+    // The Summary row is labelled from the same pair, so the headline can
+    // never name a window other than the one the header states.
+    expect(input.summary.key).toBe('2026-07-12 .. 2026-07-14');
+    // And the rows sit inside it: the day either side is excluded.
+    expect(input.time.map((r) => r.key)).toEqual(['2026-07-13']);
   });
 
   it("takes a Total window's dates from the Ledger's own extent", async () => {
