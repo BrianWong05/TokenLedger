@@ -9,7 +9,7 @@ default-run = "tokenledger"
 
 [lib]
 name = "tokenledger_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["lib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
