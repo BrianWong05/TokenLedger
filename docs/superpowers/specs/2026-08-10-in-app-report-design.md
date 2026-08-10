@@ -114,8 +114,11 @@ display_rate,1.52
 than restates. `display_currency` and `display_rate` appear only when a Display
 Currency is set; every figure below stays USD regardless, because a file outlives
 the user-editable rate that would otherwise define it. `window_grain` names the
-adaptive granularity from `granularityOf`, so the time block states its meaning
-rather than leaving it inferred. For a `Total` window the dates come from the
+grain of the file's own rows — the same value as the time block's first column,
+by construction — not the Trend's display bucket. A report carries the finest
+honest grain it holds and lets the spreadsheet roll it up, so the chart's
+aggregation to weeks or months is never exported: pre-rolling here would destroy
+detail the file otherwise keeps. For a `Total` window the dates come from the
 Ledger's own extent (`firstIso`, `lastIso`).
 
 ### Usage blocks
@@ -123,7 +126,7 @@ Ledger's own extent (`firstIso`, `lastIso`).
 | Block | First column | Notes |
 |---|---|---|
 | summary | `window` | plus `unpriced_models`, `cache_estimated_models`, space-joined |
-| time | `hour` \| `day` \| `week` \| `month` | ascending |
+| time | `hour` \| `day` | ascending; `hour` only for a single-day window whose hours have landed, `day` otherwise |
 | by Source | `source` | total tokens descending |
 | by Model | `model` | plus a `source` column: a Model is scoped to the tool that ran it |
 | by Project | `project` | quoted; paths contain commas |
@@ -172,11 +175,11 @@ does not depend on which Source card happened to be selected.
 
 | Block | First column | Columns |
 |---|---|---|
-| categories | `context` | `source, category, est_tokens, basis` |
+| categories | `context` | `source, est_tokens, basis` — the first column holds the category |
 | tools | `tool` | `source, category, est_tokens, calls` |
 | MCP | `mcp_server` | `source, est_tokens, calls` |
 | skills | `skill` | `source, est_tokens, uses` |
-| Bash | `bash` | `source, exe, cmd, est_tokens, calls` |
+| Bash | `bash` | `source, exe, est_tokens, calls` — the first column holds `cmd`, already the two-word signature |
 
 `category` takes one of seven values, from `ctxTotals`: `messages`, `system` and
 `reasoning`, then `toolcalls`, `agents`, `mcp` and `skills`. `basis` is `exact`
@@ -239,7 +242,8 @@ change touches.
   stays USD either way
 - `tokens_basis` is `floor` when an unreadable Artifact's mtime is at or after
   the window start
-- the grain line reads `hour`, `day`, `week` or `month` to match the window
+- the grain line reads `hour` or `day` — `hour` only for a single-day window
+  whose hours have landed, `day` for every other window, however long
 - a `Total` window takes its filename dates from the Ledger's extent
 - a time-block bucket with `hasUnpriced` and `cost === 0` writes an empty
   `cost_usd` with `cost_basis` `unavailable`, not `0`

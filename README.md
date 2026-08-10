@@ -45,7 +45,7 @@ an invoice.
 
 | Tab | What's on it |
 |---|---|
-| **Overview** | Everything above, over a date window and source selection you choose — plus **Trend** (enlarges into its own window, bucket size, and per-bucket CSV export), **Activity** (a 12-month heatmap that enlarges into a rotatable 3D landscape), and **Profile** (a portrait of the whole ledger). Activity and Profile deliberately ignore the date window and source selection. |
+| **Overview** | Everything above, over a date window and source selection you choose — plus **Export** (the whole selected window written to one sectioned CSV), **Trend** (enlarges into its own window, bucket size, and per-bucket CSV export), **Activity** (a 12-month heatmap that enlarges into a rotatable 3D landscape), and **Profile** (a portrait of the whole ledger). Activity and Profile deliberately ignore the date window and source selection. |
 | **Pricing** | Every model seen in the ledger with its resolved list price, the catalog it came from, and any override you've set |
 | **Settings** | Theme (system / light / dark), language (English / 繁體中文), display currency at a fixed exchange rate, launch at login, auto-update checks, and the scan interval |
 
