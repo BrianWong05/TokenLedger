@@ -348,6 +348,33 @@ genuine Artifact to be corroborated by an upstream schema or writer, or by
 several independent genuine samples; this local report does not replace that
 gate.
 
+### Reporting a window of the Ledger
+
+The app presents the Ledger but exports only one Trend bucket at a time. For
+the numbers outside it — a month's usage in a spreadsheet — an ignored
+workflow writes a window of the Ledger to CSV. It runs the same queries the
+Overview does, so Cost, Partial Cost, Unpriced and Unattributed Usage, and the
+Unreadable Artifact floor all carry their usual meaning; the Ledger is opened
+read-only and never written.
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml \
+  report::tests::ledger_report -- --ignored --nocapture
+```
+
+It prints a summary and writes `tokenledger-report-<from>_<to>/` with
+`summary.csv`, `by-day.csv`, `by-source.csv`, `by-model.csv`, and
+`by-project.csv`. Because a figure must never be mistaken for a total,
+`cost_usd` is blank rather than `0` where Cost is unavailable, and a
+`cost_basis` column says `exact`, `partial`, or `unavailable` beside it —
+with `tokens_basis` doing the same for the "≥" floor.
+
+| Variable | Default |
+|---|---|
+| `TOKENLEDGER_REPORT_DAYS` | `30` — trailing local days, today included |
+| `TOKENLEDGER_REPORT_DB` | the installed app's Ledger for this platform |
+| `TOKENLEDGER_REPORT_OUT` | `tokenledger-report-<from>_<to>/` in the repository root |
+
 ## Contributing
 
 The domain vocabulary lives in [CONTEXT.md](CONTEXT.md) and the decisions
