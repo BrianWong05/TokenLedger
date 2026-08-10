@@ -359,7 +359,7 @@ read-only and never written.
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml \
-  report::ledger_report -- --ignored --nocapture
+  report::tests::ledger_report -- --ignored --nocapture
 ```
 
 It prints a summary and writes `tokenledger-report-<from>_<to>/` with

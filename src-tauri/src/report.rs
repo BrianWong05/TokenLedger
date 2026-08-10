@@ -11,7 +11,7 @@
 //! connection is opened read-only.
 //!
 //! ```text
-//! cargo test --manifest-path src-tauri/Cargo.toml report::ledger_report -- --ignored --nocapture
+//! cargo test --manifest-path src-tauri/Cargo.toml report::tests::ledger_report -- --ignored --nocapture
 //! ```
 //!
 //! | Variable | Default |
