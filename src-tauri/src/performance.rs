@@ -7,6 +7,8 @@ use rusqlite::OpenFlags;
 
 const EVENT_COUNT: usize = 100_000;
 const DAY_SECONDS: i64 = 86_400;
+// 2025-01-01T00:00:00Z — the fixed anchor every synthetic timestamp hangs off.
+const BASE_EPOCH: i64 = 1_735_689_600;
 const SERIES_BUDGET: Duration = Duration::from_millis(1_000);
 const RANGE_RELOAD_BUDGET: Duration = Duration::from_millis(1_000);
 
@@ -14,7 +16,7 @@ fn synthetic_event(i: usize) -> UsageEvent {
     // Spread writes deterministically across two years and insert them out of
     // timestamp order. This resembles an all-history backfill without relying
     // on private Source Artifacts or the machine's real Ledger.
-    let second = ((i as i64 * 7_919) % (730 * DAY_SECONDS)) + 1_735_689_600;
+    let second = ((i as i64 * 7_919) % (730 * DAY_SECONDS)) + BASE_EPOCH;
     let source = format!("source-{}", i % 16);
     UsageEvent {
         dedup_key: format!("perf-{i}"),
@@ -73,8 +75,8 @@ fn performance_standard_large_ledger() {
     // protects this same connection with one mutex, so serial execution here is
     // the user-visible backend latency even though the frontend uses Promise.all.
     let filters = Filters {
-        start_ts: Some(1_735_689_600 + 700 * DAY_SECONDS),
-        end_ts: Some(1_735_689_600 + 731 * DAY_SECONDS),
+        start_ts: Some(BASE_EPOCH + 700 * DAY_SECONDS),
+        end_ts: Some(BASE_EPOCH + 731 * DAY_SECONDS),
         ..Filters::default()
     };
     let started = Instant::now();

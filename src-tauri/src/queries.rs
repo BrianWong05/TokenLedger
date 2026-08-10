@@ -264,7 +264,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
 }
 
 pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<TrendPoint>> {
-    let hourly = i32::from(bucket == "hour");
+    let hourly = hourly_flag(bucket);
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
     let sql = format!(
@@ -368,9 +368,13 @@ fn add_opt(acc: &mut Option<i64>, v: Option<i64>) {
     }
 }
 
+fn hourly_flag(bucket: &str) -> i32 {
+    i32::from(bucket == "hour")
+}
+
 // Per-(bucket, source) series — the real-data twin of the frontend mock's DAYS.
 pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<SeriesPoint>> {
-    let hourly = i32::from(bucket == "hour");
+    let hourly = hourly_flag(bucket);
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
 

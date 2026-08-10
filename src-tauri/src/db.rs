@@ -1,6 +1,6 @@
 use crate::adapters::ctx::Composition;
 use crate::types::{FileState, UsageEvent};
-use chrono::{Local, TimeZone};
+use chrono::{DateTime, Local, LocalResult, TimeZone, Utc};
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::LazyLock;
@@ -530,7 +530,8 @@ pub fn open_db(path: &std::path::Path) -> rusqlite::Result<Connection> {
 /// system for every input row on macOS. Overview series run it twice, turning
 /// an 80k-record Ledger into seconds of blocking work. Chrono loads the local
 /// IANA zone once per thread, then resolves offsets in memory. Keeping the
-/// function inside SQLite preserves the existing GROUP BY and NULL semantics.
+/// function inside SQLite preserves the existing GROUP BY semantics, and the
+/// fallbacks below preserve strftime's guarantee of never yielding NULL.
 pub(crate) fn register_query_functions(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function(
         "tokenledger_local_bucket",
@@ -539,13 +540,25 @@ pub(crate) fn register_query_functions(conn: &Connection) -> rusqlite::Result<()
         |ctx| {
             let timestamp = ctx.get::<i64>(0)?;
             let hourly = ctx.get::<bool>(1)?;
-            Ok(Local.timestamp_opt(timestamp, 0).single().map(|local| {
-                if hourly {
-                    local.format("%Y-%m-%d %H:00").to_string()
-                } else {
-                    local.format("%Y-%m-%d").to_string()
+            // Instant -> local wall clock is total for real zones, but degrade
+            // rather than drop the row: take the earlier reading when the zone
+            // is ambiguous, and fall back to UTC when it cannot map the instant
+            // at all.
+            let local = match Local.timestamp_opt(timestamp, 0) {
+                LocalResult::Single(dt) => dt,
+                LocalResult::Ambiguous(dt, _) => dt,
+                // Rendering an instant in UTC equals any zone's rendering when
+                // that zone cannot map it; equivalence is all we owe here.
+                LocalResult::None => {
+                    let utc = Utc
+                        .timestamp_opt(timestamp, 0)
+                        .single()
+                        .expect("UTC maps every instant");
+                    DateTime::from(utc)
                 }
-            }))
+            };
+            let fmt = if hourly { "%Y-%m-%d %H:00" } else { "%Y-%m-%d" };
+            Ok(local.format(fmt).to_string())
         },
     )
 }
