@@ -547,6 +547,31 @@ async function mountStoreWithUnpricedDay() {
   return { store: await boot(ledger, clock), ledger, unpricedDay };
 }
 
+// A single-day window, where the store holds the very hours on screen.
+async function mountStoreOnHourlyDay() {
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+    hourPoints: [pt({ bucket: '2026-07-16 14:00' }), pt({ bucket: '2026-07-16 09:00' })],
+    toolRows: [sourceRow('claude')],
+  });
+  const store = await boot(ledger, clock);
+  store.setRange('day');
+  clock.advance(0);
+  await flush();
+  return { store, ledger };
+}
+
+// A window long enough that the Trend aggregates it to months (>120 days).
+async function mountStoreOverManyMonths() {
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [pt({ bucket: '2026-01-05' }), pt({ bucket: '2026-07-16' })],
+    toolRows: [sourceRow('claude')],
+  });
+  return { store: await boot(ledger, clock), ledger };
+}
+
 // A Source holding Unreadable Artifacts of unknown age: nothing bounds their
 // content downward, so they could hold usage in any window (ADR-0017).
 async function mountStoreWithUnreadableArtifact() {
@@ -604,6 +629,39 @@ describe('selectReportInput', () => {
     expect(input.time.find((r) => r.key === unpricedDay)?.cost).toBe(null);
     // Not a blanket null: the priced day keeps its figure.
     expect(input.time.find((r) => r.key === '2026-07-16')?.cost).toBe(2.5);
+  });
+
+  // The block's first column and the header's window_grain are the same value,
+  // so a test that only read the name would pass against rows of another size:
+  // both of these pin the grain AGAINST the keys of the rows beneath it.
+  it('reports a single-day window by the hour, the grain the screen is showing', async () => {
+    const { store } = await mountStoreOnHourlyDay();
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.grain).toBe('hour');
+    expect(input.time.map((r) => r.key)).toEqual(['2026-07-16 09:00', '2026-07-16 14:00']);
+
+    // Hours that have not landed fall back to the day beneath them rather than
+    // naming a grain the block has no rows for: this window is also one day,
+    // and its hourly series is still empty.
+    const { store: noHours } = await mountStoreWithCtxFor(['claude']);
+    const n = noHours.getSnapshot();
+    const fallback = selectReportInput(n, selectView(n, NOW), SETTINGS, NOW);
+    expect(fallback.grain).toBe('day');
+    expect(fallback.time.map((r) => r.key)).toEqual(['2026-07-16']);
+  });
+
+  it('never names the time block week or month: the rows are the days the file keeps', async () => {
+    const { store } = await mountStoreOverManyMonths();
+    const s = store.getSnapshot();
+    const view = selectView(s, NOW);
+    // The chart aggregates a window this long into months...
+    expect(view.per).toBe('month');
+    // ...the file does not: it keeps the finest grain it holds and says so, so
+    // a spreadsheet can roll the days up and nothing is destroyed on the way out.
+    const input = selectReportInput(s, view, SETTINGS, NOW);
+    expect(input.grain).toBe('day');
+    expect(input.time.map((r) => r.key)).toEqual(['2026-01-05', '2026-07-16']);
   });
 
   it('carries the Display Currency without moving figures off USD', async () => {

@@ -551,6 +551,22 @@ export function selectReportInput(
   const fromIso = win.fromIso ?? s.firstIso;
   const toIso = win.toIso ?? s.lastIso;
 
+  // The time block's first column names the grain of the rows beneath it,
+  // which is NOT the Trend's display bucket (view.per): the chart aggregates a
+  // long window to weeks or months, the file never does. A report carries the
+  // finest honest grain it holds and lets the spreadsheet roll it up, so
+  // pre-rolling into months here would destroy detail the file otherwise
+  // keeps. That leaves two cases — a single-day window, where the store
+  // already holds the very hours the screen is showing, and everything else,
+  // which is daily. hourlyDayOf is the one place that rule runs, so the report
+  // and the store's hourly fetch can never disagree about which window is
+  // hourly; hours that have not landed fall back to the daily row rather than
+  // writing an empty block. window_grain and this column read the same value
+  // by construction.
+  const hourly =
+    hourlyDayOf(s.range, s.from, s.to, s.firstIso, s.lastIso, now) !== null && s.hourPoints.length > 0;
+  const grain: Granularity = hourly ? 'hour' : 'day';
+
   const ctxCategories: ReportCtxCategory[] = [];
   const ctxTools: ReportInput['ctxTools'] = [];
   const ctxMcp: ReportInput['ctxMcp'] = [];
@@ -591,7 +607,7 @@ export function selectReportInput(
     generatedIso: now.toISOString(),
     fromIso,
     toIso,
-    grain: view.per,
+    grain,
     tokensBasis: view.unreadable.length > 0 ? 'floor' : 'exact',
     // USD needs no conversion note; anything else does, and the figures below
     // stay USD either way (CONTEXT.md Display Currency).
@@ -613,7 +629,7 @@ export function selectReportInput(
     },
     unpricedModels: summary?.unpricedModels ?? [],
     cacheEstimatedModels: summary?.cacheEstimatedModels ?? [],
-    time: reportTimeRows(view.rpts),
+    time: reportTimeRows(hourly ? s.hourPoints : view.rpts),
     sources: s.sourceRows.map((r) => reportRow(r, false)),
     models: s.modelRows.map((r) => reportRow(r, true)),
     projects: s.projectRows.map((r) => reportRow(r, false)),
