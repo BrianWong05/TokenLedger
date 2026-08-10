@@ -119,6 +119,13 @@ function usageBlock(first: string, rows: ReportUsageRow[], withSource = false): 
   return [header, ...lines].join('\n');
 }
 
+// Context blocks carry no total row, deliberately: tool calls, subagents, MCP
+// and skills are overlapping subsets of messages and do not sum to a whole, so
+// a total would invite exactly the reading the app declines to offer.
+function ctxBlock(header: string, rows: string[]): string | null {
+  return rows.length === 0 ? null : [header, ...rows].join('\n');
+}
+
 export function windowReportCsv(input: ReportInput): string {
   const header = [
     'tokenledger_report,1',
@@ -149,6 +156,33 @@ export function windowReportCsv(input: ReportInput): string {
     usageBlock('source', input.sources),
     usageBlock('model', input.models, true),
     usageBlock('project', input.projects),
+    ctxBlock(
+      'context,source,est_tokens,basis',
+      input.ctxCategories.map((c) => [esc(c.category), esc(c.source), String(c.estTokens), c.basis].join(',')),
+    ),
+    ctxBlock(
+      'tool,source,category,est_tokens,calls',
+      input.ctxTools.map((t) =>
+        [esc(t.name), esc(t.source), esc(t.category), String(t.estTokens), String(t.calls)].join(','),
+      ),
+    ),
+    ctxBlock(
+      'mcp_server,source,est_tokens,calls',
+      input.ctxMcp.map((m) => [esc(m.name), esc(m.source), String(m.estTokens), String(m.calls)].join(',')),
+    ),
+    ctxBlock(
+      'skill,source,est_tokens,uses',
+      input.ctxSkills.map((s) => [esc(s.name), esc(s.source), String(s.estTokens), String(s.uses)].join(',')),
+    ),
+    ctxBlock(
+      'bash,source,exe,est_tokens,calls',
+      // The first column is the signature as displayed — the executable plus
+      // its first non-flag argument (ADR-0011) — with exe repeated so rows can
+      // be grouped by executable.
+      input.ctxExec.map((e) =>
+        [esc(`${e.exe} ${e.cmd}`.trim()), esc(e.source), esc(e.exe), String(e.estTokens), String(e.calls)].join(','),
+      ),
+    ),
   ];
   return blocks.filter((b): b is string => b !== null).join('\n\n') + '\n';
 }

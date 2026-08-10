@@ -252,3 +252,69 @@ describe('usage blocks', () => {
     expect(row).not.toContain(',0.000000,');
   });
 });
+
+describe('context blocks', () => {
+  const ctx = () =>
+    reportInput({
+      ctxCategories: [
+        { source: 'claude', category: 'messages', estTokens: 900, basis: 'exact' },
+        { source: 'claude', category: 'system', estTokens: 60, basis: 'exact' },
+        { source: 'claude', category: 'reasoning', estTokens: 40, basis: 'exact' },
+        { source: 'claude', category: 'toolcalls', estTokens: 500, basis: 'estimated' },
+        { source: 'claude', category: 'agents', estTokens: 120, basis: 'estimated' },
+        { source: 'claude', category: 'mcp', estTokens: 80, basis: 'estimated' },
+        { source: 'claude', category: 'skills', estTokens: 30, basis: 'estimated' },
+        { source: 'codex', category: 'messages', estTokens: 300, basis: 'exact' },
+      ],
+      ctxTools: [{ source: 'claude', category: 'File', name: 'Read', estTokens: 200, calls: 40 }],
+      ctxMcp: [{ source: 'claude', name: 'chrome-devtools', estTokens: 80, calls: 12 }],
+      ctxSkills: [{ source: 'claude', name: 'superpowers:brainstorming', estTokens: 30, uses: 3 }],
+      ctxExec: [{ source: 'claude', exe: 'git', cmd: 'commit', estTokens: 90, calls: 25 }],
+    });
+
+  it('stacks every reporting Source rather than only the selected one', () => {
+    const rows = block(windowReportCsv(ctx()), 'context');
+    expect(rows[0]).toBe('context,source,est_tokens,basis');
+    expect(rows).toContain('messages,claude,900,exact');
+    expect(rows).toContain('messages,codex,300,exact');
+  });
+
+  it('marks the exact partition apart from the overlapping estimates', () => {
+    const rows = block(windowReportCsv(ctx()), 'context');
+    expect(rows).toContain('system,claude,60,exact');
+    expect(rows).toContain('reasoning,claude,40,exact');
+    for (const category of ['toolcalls', 'agents', 'mcp', 'skills']) {
+      expect(rows.some((r) => r.startsWith(`${category},claude,`) && r.endsWith(',estimated'))).toBe(true);
+    }
+  });
+
+  it('emits no total row in any Context block', () => {
+    const csv = windowReportCsv(ctx());
+    for (const first of ['context', 'tool', 'mcp_server', 'skill', 'bash']) {
+      expect(block(csv, first).some((r) => r.toLowerCase().startsWith('total,'))).toBe(false);
+    }
+  });
+
+  it('writes tools with their category, MCP servers with calls, skills with uses', () => {
+    const csv = windowReportCsv(ctx());
+    expect(block(csv, 'tool')[0]).toBe('tool,source,category,est_tokens,calls');
+    expect(block(csv, 'tool')[1]).toBe('Read,claude,File,200,40');
+    expect(block(csv, 'mcp_server')[0]).toBe('mcp_server,source,est_tokens,calls');
+    expect(block(csv, 'mcp_server')[1]).toBe('chrome-devtools,claude,80,12');
+    expect(block(csv, 'skill')[0]).toBe('skill,source,est_tokens,uses');
+    expect(block(csv, 'skill')[1]).toBe('superpowers:brainstorming,claude,30,3');
+  });
+
+  it('writes a Bash row as the displayed signature plus its executable', () => {
+    const rows = block(windowReportCsv(ctx()), 'bash');
+    expect(rows[0]).toBe('bash,source,exe,est_tokens,calls');
+    expect(rows[1]).toBe('git commit,claude,git,90,25');
+  });
+
+  it('yields no rows at all for a Source that cannot attribute Context', () => {
+    const csv = windowReportCsv(reportInput());
+    for (const first of ['context', 'tool', 'mcp_server', 'skill', 'bash']) {
+      expect(block(csv, first)).toEqual([]);
+    }
+  });
+});
