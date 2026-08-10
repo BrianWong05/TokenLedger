@@ -176,11 +176,13 @@ export function windowReportCsv(input: ReportInput): string {
     ),
     ctxBlock(
       'bash,source,exe,est_tokens,calls',
-      // The first column is the signature as displayed — the executable plus
-      // its first non-flag argument (ADR-0011) — with exe repeated so rows can
-      // be grouped by executable.
+      // cmd is already the whole bounded signature — the executable plus its
+      // first non-flag argument, reduced to two words at scan time by
+      // exec_class (ADR-0011) — so it is written as displayed, not rebuilt
+      // here. exe is repeated as its own column so rows can be grouped by
+      // executable.
       input.ctxExec.map((e) =>
-        [esc(`${e.exe} ${e.cmd}`.trim()), esc(e.source), esc(e.exe), String(e.estTokens), String(e.calls)].join(','),
+        [esc(e.cmd), esc(e.source), esc(e.exe), String(e.estTokens), String(e.calls)].join(','),
       ),
     ),
   ];

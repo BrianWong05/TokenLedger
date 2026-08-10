@@ -269,7 +269,9 @@ describe('context blocks', () => {
       ctxTools: [{ source: 'claude', category: 'File', name: 'Read', estTokens: 200, calls: 40 }],
       ctxMcp: [{ source: 'claude', name: 'chrome-devtools', estTokens: 80, calls: 12 }],
       ctxSkills: [{ source: 'claude', name: 'superpowers:brainstorming', estTokens: 30, uses: 3 }],
-      ctxExec: [{ source: 'claude', exe: 'git', cmd: 'commit', estTokens: 90, calls: 25 }],
+      // cmd carries the whole two-word signature, exactly as exec_class emits
+      // it and as the Bash drill-down displays it — not the argument alone.
+      ctxExec: [{ source: 'claude', exe: 'git', cmd: 'git commit', estTokens: 90, calls: 25 }],
     });
 
   it('stacks every reporting Source rather than only the selected one', () => {
