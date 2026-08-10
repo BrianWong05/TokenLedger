@@ -238,6 +238,15 @@ export default function TokenTotalHeadline({
     }
   }, [awaitingInitialLoad, display, startAnimation, summaryReady, total]);
 
+  // What every data-driven roll requires, wherever it is triggered from: an
+  // authoritative figure, usage to show (a zero window reads out immediately —
+  // rolling to it would imply usage settling into place where there is none),
+  // and an environment that wants motion at all. A click's roll answers to
+  // toggleMode's own conditions instead, because it may cross modes when the
+  // figure itself has not moved.
+  const rollAllowed = () =>
+    summaryReady && total > 0 && !prefersReducedMotion() && !usesCompactLayout();
+
   // A period switch rolls the wheels in place to the new window's figure — the
   // same motion as a mode change, never the zero-shaped entrance. The roll is
   // owed to the WINDOW moving, not merely to the figure changing: the switch's
@@ -248,15 +257,6 @@ export default function TokenTotalHeadline({
   // ponytail: a switch between two windows with identical totals leaves the
   // recorded key stale, so a later scan on the new window rolls once. Needs the
   // store to say "this Summary is for that window" to close; not worth it.
-  // What every data-driven roll requires, wherever it is triggered from: an
-  // authoritative figure, usage to show (a zero window reads out immediately —
-  // rolling to it would imply usage settling into place where there is none),
-  // and an environment that wants motion at all. A click's roll answers to
-  // toggleMode's own conditions instead, because it may cross modes when the
-  // figure itself has not moved.
-  const rollAllowed = () =>
-    summaryReady && total > 0 && !prefersReducedMotion() && !usesCompactLayout();
-
   const settled = useRef<{ display: string; windowKey: string } | null>(null);
   useEffect(() => {
     if (awaitingInitialLoad || !summaryReady) return;
