@@ -1,6 +1,6 @@
 # Antigravity Source evidence
 
-Status as of 2026-08-09: the Antigravity adapter reads the SQLite Session
+Status as of 2026-08-10: the Antigravity adapter reads the SQLite Session
 databases (`.db`) of both the IDE and the CLI, verified against real
 databases from one genuine macOS installation (detailed below). The encrypted
 `.pb` Session files still cannot be read passively, so on their own they remain
@@ -33,7 +33,46 @@ Each Session is one SQLite database under
   `file://` URI (#1.#1).
 
 Wire aliases (`gemini-3-flash-a`/`-b`, `gemini-default`) are resolved to real
-Model ids at parse time; see `resolve_model` in the adapter.
+Model ids at parse time; see `resolve_model` in the adapter. The exports write
+a second vocabulary — the picker labels — resolved since 2026-08-10 (parser
+v3, user-approved): `gemini-3-flash`/`-agent`/`-c` join the `-a`/`-b`
+placeholders on `gemini-3.5-flash` (the IDE's 3-flash line), `gemini-3-pro-high`/
+`-low` → `gemini-3-pro-preview`, `gemini-3.1-pro-high`/`-low` →
+`gemini-3.1-pro-preview`, and `claude-opus-4-5/-6-thinking` → `claude-opus-4-5`/`-6`. The Model-enum
+fallback (`antigravity-model-NNNN`) initially stayed unresolved: on this
+install an enum co-occurred with several picker labels (1008 with
+`gemini-3-flash`, `gemini-3-pro-high` and both Opus labels), which looked
+like model confusion. It was not — see the next paragraph.
+
+What the enums are (2026-08-10, read from the shipped language-server
+descriptors): values of the server's internal Model enum, named
+`MODEL_PLACEHOLDER_M{nn}` — 1008 = M8, 1018 = M18, 1037 = M37, and the
+`.db`-era 1132 = M132, 1020 = M20. The `.db` files prove the enum is the
+true per-generation Model: 1132 pairs only with `gemini-3-flash-a`, 1020
+with `-b`, while a picker label is just the Session default — which is why
+one enum spans many labels under auto-routing (the co-occurrence above is
+label-vs-default, not model confusion). The export-era placeholders carried
+no alias string in their exports, which is why they stayed Unpriced; since
+2026-08-10 the companion records `chatModel.#19` per generation
+(`model_alias`, additive schema-1 field; `--force` regenerates existing
+exports) and the adapter prefers it over the Session label and the enum.
+The re-export also paired enums one-to-one with aliases — 1018 =
+`gemini-3-flash`, 1047 = `gemini-3-flash-c`, 1026 = `claude-opus-4-6-thinking`,
+1035 = `claude-sonnet-4-6`, 1036/1037 = `gemini-3.1-pro-low/-high`, 1084 =
+`gemini-default` — so since parser v4 those enums resolve even for
+alias-less generations (`resolve_model_enum`, 1084 era-based like the
+alias). 1008 and 1012 were never aliased but are identified by explicit
+single-enum Sessions — 32 picker Sessions on `gemini-3-pro-high` for 1008,
+3 on `claude-opus-4-5-thinking` for 1012, zero counter-examples, and the
+method cross-validates on every enum that also has a server pairing — so
+they resolve to `gemini-3-pro-preview` and `claude-opus-4-5` (parser v5).
+The auto-routing objection does not apply to that signal: auto Sessions
+empirically carry several enums at once, so a Session whose generations all
+ran one enum under a specific picker label is an explicit pick, not a
+default. v4 rests on the server's own double-naming, v5 on this argument;
+both accepted with the user's pricing request (2026-08-10).
+Only 1007 stays raw and Unpriced: 18 generations, never aliased, never
+explicit.
 
 ## Blocked shape: `<uuid>.pb`
 
@@ -125,8 +164,9 @@ generation timestamps, wire-alias resolution and era-based `gemini-default`
 mapping, responseId deduplication, zero-row skipping, unchanged-rescan and
 growth-rescan idempotency, parser-version bump re-parsing, multi-root IDE +
 CLI scanning, the Model enum staying out of input and #3 winning over its
-parts, export ingestion (events, project, alias resolution, placeholder model
-ids, unknown-schema warning) with an exported `.pb` no longer counted as
+parts, export ingestion (events, project, alias resolution, the per-generation
+`model_alias` beating the Session label, placeholder model ids,
+unknown-schema warning) with an exported `.pb` no longer counted as
 unreadable and an export sharing a responseId with a database collapsing to one
 event, `.pb` files counted as Unreadable Artifacts (count and latest
 mtime, no warning), and missing roots staying quiet.

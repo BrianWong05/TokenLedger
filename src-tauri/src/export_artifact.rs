@@ -21,8 +21,9 @@ pub const SCHEMA: u32 = 1;
 pub struct ConversationExport {
     pub schema: u32,
     pub conversation_id: String,
-    /// Antigravity records a placeholder enum per generation, so the readable
-    /// model name is a Session-level fact when it is recorded at all.
+    /// The Session-level picker label: the default Model, not necessarily the
+    /// one each generation ran (auto-routing picks per request). A fallback
+    /// for generations that carry no `model_alias` of their own.
     #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
@@ -38,6 +39,12 @@ pub struct GenerationExport {
     pub ts: i64,
     #[serde(default)]
     pub model_enum: Option<u64>,
+    /// The per-generation wire alias (`chatModel.#19`) — the true Model of the
+    /// request, where the Session-level `model` is only the picker default.
+    /// Absent (None) in exports written before the alias was recorded; the
+    /// reader falls back to `model`, then `model_enum`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_alias: Option<String>,
     #[serde(default)]
     pub input: i64,
     /// Total output. `thinking` is a subset of it, never an addend.
@@ -93,6 +100,7 @@ mod tests {
                 response_id: Some("r".into()),
                 ts: 1_780_300_000,
                 model_enum: Some(1008),
+                model_alias: Some("gemini-3-flash-b".into()),
                 input: 5,
                 output: 3,
                 cache_read: 2,
@@ -106,5 +114,13 @@ mod tests {
         assert_eq!(read.generations[0].output, 3);
         assert_eq!(read.generations[0].thinking, 1);
         assert_eq!(read.model.as_deref(), Some("gemini-3-pro-high"));
+        assert_eq!(read.generations[0].model_alias.as_deref(), Some("gemini-3-flash-b"));
+        // An export written before the alias existed still reads: the field is
+        // additive, so the schema number stays.
+        let legacy: ConversationExport = serde_json::from_str(
+            r#"{"schema":1,"conversation_id":"s","generations":[{"ts":1,"model_enum":7}]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.generations[0].model_alias, None);
     }
 }
