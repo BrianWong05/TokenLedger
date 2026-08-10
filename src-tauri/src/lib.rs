@@ -37,6 +37,12 @@ mod invariants;
 #[cfg(test)]
 mod performance;
 
+// Opt-in CSV report over a window of this machine's Ledger, for the numbers
+// outside the app. Test-only for the same reason as e2e above — it runs the
+// private `queries` so its figures are the Overview's, not a reimplementation.
+#[cfg(test)]
+mod report;
+
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
