@@ -33,7 +33,16 @@ Each Session is one SQLite database under
   `file://` URI (#1.#1).
 
 Wire aliases (`gemini-3-flash-a`/`-b`, `gemini-default`) are resolved to real
-Model ids at parse time; see `resolve_model` in the adapter.
+Model ids at parse time; see `resolve_model` in the adapter. The exports write
+a second vocabulary — the picker labels — resolved since 2026-08-10 (parser
+v3, user-approved): `gemini-3-flash`/`gemini-3-flash-agent` join the `-a`/`-b`
+placeholders on `gemini-3.5-flash` (the IDE's 3-flash line), `gemini-3-pro-high`/
+`-low` → `gemini-3-pro-preview`, `gemini-3.1-pro-high` → `gemini-3.1-pro-preview`,
+and `claude-opus-4-5/-6-thinking` → `claude-opus-4-5`/`-6`. The Model-enum
+fallback (`antigravity-model-NNNN`) stays unresolved on purpose: on this
+install the enums are not one-to-one with Models (1008 co-occurs with
+`gemini-3-flash`, `gemini-3-pro-high` and both Opus picker labels), so any
+guess would misprice.
 
 ## Blocked shape: `<uuid>.pb`
 

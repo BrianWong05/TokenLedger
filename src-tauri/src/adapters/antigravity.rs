@@ -51,19 +51,31 @@ use crate::uri::file_uri_to_path;
 /// v2 = usage read against the server's own descriptors: `#1` is the Model enum
 /// and no longer inflates input, and `#9`/`#10` are reasoning/response the right
 /// way round.
-const PARSER_VERSION: i64 = 2;
+/// v3 = picker-label aliases from the `.pb` exports resolved (see `resolve_model`).
+const PARSER_VERSION: i64 = 3;
 
-/// Antigravity records an internal wire alias in `chatModel`, not a model id.
+/// Antigravity records internal wire aliases and picker labels, not Model ids.
 /// `gemini-3-flash-a`/`-b` are the M132/M133 placeholders — both Gemini 3.5
 /// Flash (High), despite the "3-flash" spelling; mapping them to the
-/// `gemini-3-flash-preview` family would be wrong. `gemini-default` names
-/// whichever Gemini was the default when the row was written, so it resolves
-/// against the event's own timestamp. Anything unrecognized passes through
-/// untouched and simply lands in the unpriced list under its raw name — which
-/// is the signal that Antigravity has renamed a placeholder again.
+/// `gemini-3-flash-preview` family would be wrong. The `.pb` exports write a
+/// second vocabulary — the picker labels — where the same line appears as
+/// `gemini-3-flash` (with `-agent` for its agent mode), so those join it;
+/// the pro picker labels are the preview catalog rows with a thinking-tier
+/// suffix, and the Claude thinking labels are the base Opus Models.
+/// `gemini-default` names whichever Gemini was the default when the row was
+/// written, so it resolves against the event's own timestamp. Anything
+/// unrecognized passes through untouched and simply lands in the unpriced
+/// list under its raw name — which is the signal that Antigravity has
+/// renamed a placeholder again.
 fn resolve_model(raw: &str, ts: i64) -> String {
     match raw.to_lowercase().as_str() {
-        "gemini-3-flash-a" | "gemini-3-flash-b" => "gemini-3.5-flash".to_string(),
+        "gemini-3-flash-a" | "gemini-3-flash-b" | "gemini-3-flash" | "gemini-3-flash-agent" => {
+            "gemini-3.5-flash".to_string()
+        }
+        "gemini-3-pro-high" | "gemini-3-pro-low" => "gemini-3-pro-preview".to_string(),
+        "gemini-3.1-pro-high" => "gemini-3.1-pro-preview".to_string(),
+        "claude-opus-4-5-thinking" => "claude-opus-4-5".to_string(),
+        "claude-opus-4-6-thinking" => "claude-opus-4-6".to_string(),
         // Exclusive upper bounds; a row exactly on a boundary is the later era.
         "gemini-default" => match ts {
             _ if ts < 1742860800 => "gemini-2.0-flash".to_string(), // < 2025-03-25
@@ -576,6 +588,16 @@ mod tests {
         assert_eq!(resolve_model("gemini-3-flash-a", 1780300000), "gemini-3.5-flash");
         assert_eq!(resolve_model("gemini-3-flash-b", 1780300000), "gemini-3.5-flash");
         assert_eq!(resolve_model("GEMINI-3-Flash-A", 1780300000), "gemini-3.5-flash");
+        // The export picker labels: the IDE's 3-flash line is the 3.5 Flash
+        // line, agent mode included; pro labels drop their thinking tier;
+        // Claude thinking labels are the base Opus Models.
+        assert_eq!(resolve_model("gemini-3-flash", 1780300000), "gemini-3.5-flash");
+        assert_eq!(resolve_model("gemini-3-flash-agent", 1780300000), "gemini-3.5-flash");
+        assert_eq!(resolve_model("gemini-3-pro-high", 1780300000), "gemini-3-pro-preview");
+        assert_eq!(resolve_model("gemini-3-pro-low", 1780300000), "gemini-3-pro-preview");
+        assert_eq!(resolve_model("gemini-3.1-pro-high", 1780300000), "gemini-3.1-pro-preview");
+        assert_eq!(resolve_model("claude-opus-4-5-thinking", 1780300000), "claude-opus-4-5");
+        assert_eq!(resolve_model("claude-opus-4-6-thinking", 1780300000), "claude-opus-4-6");
         // gemini-default follows the era it was written in; boundaries are
         // exclusive upper bounds, so a row exactly on one is the later era.
         assert_eq!(resolve_model("gemini-default", 1742860799), "gemini-2.0-flash");
