@@ -32,6 +32,11 @@ mod source_artifact_validation;
 #[cfg(test)]
 mod invariants;
 
+// Opt-in, release-mode performance standard over a deterministic synthetic
+// Ledger. Kept out of normal tests because it deliberately seeds 100k records.
+#[cfg(test)]
+mod performance;
+
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
@@ -61,8 +66,14 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
 // Keep the generated macOS bundle metadata in one macro expansion. Besides
 // avoiding duplicate embedded Info.plist symbols in tests, the generic runtime
 // lets production use Wry while lifecycle tests use Tauri's mock runtime.
+#[cfg(not(test))]
 fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
     tauri::generate_context!()
+}
+
+#[cfg(test)]
+fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::ContextBuilder::default().build().unwrap()
 }
 
 pub struct AppState {
