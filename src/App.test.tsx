@@ -148,14 +148,20 @@ describe('App shell', () => {
     expect(ledger.calls.scan.length).toBe(1);
 
     // Switch to Pricing: its page renders; Overview stays mounted but hidden.
-    await act(async () => nav()[1].click());
+    await act(async () => {
+      nav()[1].click();
+      await import('./pricing/PricingPage');
+    });
     expect(nav()[1].classList.contains('active')).toBe(true);
     expect(container.querySelector('.tl-page-pricing')).not.toBeNull();
     expect(overviewTab.hidden).toBe(true);
     expect(container.querySelector('.tt-toolcards')).not.toBeNull(); // still in the DOM
 
     // Switch to Settings.
-    await act(async () => nav()[2].click());
+    await act(async () => {
+      nav()[2].click();
+      await import('./settings/SettingsPage');
+    });
     expect(container.querySelector('.tl-page-settings')).not.toBeNull();
     expect(container.querySelector('.tl-page-pricing')).toBeNull();
 

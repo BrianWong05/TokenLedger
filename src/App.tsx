@@ -6,10 +6,8 @@
 // across tab switches so its data survives; the Pricing and Settings pages mount on
 // demand. Settings state is owned by SettingsProvider so theme + language changes
 // take effect live app-wide.
-import { useEffect, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import Overview from './overview/Overview';
-import PricingPage from './pricing/PricingPage';
-import SettingsPage from './settings/SettingsPage';
 import FirstRunDialog from './settings/FirstRunDialog';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
 import { I18nProvider, useT } from './lib/i18n';
@@ -20,6 +18,9 @@ import type { ClockPort } from './overview/overviewStore';
 import { tauriSettings, type SettingsPort } from './settings/settings';
 import type { PricingPort } from './pricing/pricing';
 import './App.css';
+
+const PricingPage = lazy(() => import('./pricing/PricingPage'));
+const SettingsPage = lazy(() => import('./settings/SettingsPage'));
 
 export interface AppPorts {
   ledger?: LedgerPort;
@@ -142,10 +143,12 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
         <div className="tl-tab" hidden={tab !== 'overview'}>
           <Overview ports={ports} />
         </div>
-        {tab === 'pricing' && (
-          <PricingPage ports={{ pricing: ports?.pricing, ledger, settings: settingsPort }} />
-        )}
-        {tab === 'settings' && <SettingsPage port={settingsPort} />}
+        <Suspense fallback={null}>
+          {tab === 'pricing' && (
+            <PricingPage ports={{ pricing: ports?.pricing, ledger, settings: settingsPort }} />
+          )}
+          {tab === 'settings' && <SettingsPage port={settingsPort} />}
+        </Suspense>
       </main>
     </div>
   );
