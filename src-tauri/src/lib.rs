@@ -189,7 +189,7 @@ fn last_scan(state: State<'_, AppState>) -> i64 {
 /// persisted per-scan state — no rescan, and honest from launch because the
 /// answer survives restarts. The traypanel reads this to put the ≥ floor
 /// marker on its own window's token figure.
-#[tauri::command]
+#[tauri::command(async)]
 fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadable> {
     state
         .db
@@ -227,13 +227,18 @@ async fn export_antigravity(app: tauri::AppHandle) -> Result<String, String> {
     }
 }
 
-#[tauri::command]
+// The DB read commands are `(async)`: sync commands execute on the main
+// thread, so a range switch's eight serialized queries (plus anything queued
+// behind the connection mutex) would stall the event loop for their combined
+// duration. Writes stay sync — rare, cheap, and set_settings drives the tray,
+// which is main-thread territory.
+#[tauri::command(async)]
 fn summary(state: State<'_, AppState>, filters: Filters) -> Result<Summary, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::summary(&db, &filters).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn trend(
     state: State<'_, AppState>,
     filters: Filters,
@@ -243,7 +248,7 @@ fn trend(
     queries::trend(&db, &filters, &bucket).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn series(
     state: State<'_, AppState>,
     filters: Filters,
@@ -253,7 +258,7 @@ fn series(
     queries::series(&db, &filters, &bucket).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn breakdown(
     state: State<'_, AppState>,
     by: String,
@@ -263,7 +268,7 @@ fn breakdown(
     queries::breakdown(&db, &by, &filters).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ctx_resources(
     state: State<'_, AppState>,
     filters: Filters,
@@ -272,25 +277,25 @@ fn ctx_resources(
     queries::ctx_resources(&db, &filters).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBuckets>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_buckets(&db, &filters).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_tools(&db, &filters).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSkillRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_skills(&db, &filters).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
@@ -306,7 +311,7 @@ async fn refresh_prices(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricing>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     pricing::model_pricing(&db).map_err(|e| e.to_string())
@@ -367,7 +372,7 @@ fn resize_panel(app: AppHandle, height: f64) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     settings::get_settings(&db).map_err(|e| e.to_string())

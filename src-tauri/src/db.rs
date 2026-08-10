@@ -281,6 +281,17 @@ DELETE FROM scanned_files;
 DELETE FROM session_ctx;
 PRAGMA user_version = 12;";
 
+// v13: ctx_buckets finds each session's first cache write via this partial
+// index instead of ROW_NUMBER-ranking the whole events table on every call —
+// that full-table sort was the dominant cost of an Overview range switch.
+// The query's WHERE repeats the predicate verbatim so the planner can prove
+// the index applies.
+const SCHEMA_V13: &str = "\
+CREATE INDEX IF NOT EXISTS idx_events_first_cw
+  ON events(source, session_id, timestamp, dedup_key)
+  WHERE cache_write_5m_tokens + cache_write_1h_tokens > 0 AND session_id IS NOT NULL;
+PRAGMA user_version = 13;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -463,7 +474,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // connections opening a v1 DB at once must not both run the ALTERs (the
     // loser would die on "duplicate column"). BEGIN IMMEDIATE takes the write
     // lock up front (waiting via busy_timeout), so the second migrator sees
-    // the committed user_version (currently 12) and no-ops.
+    // the committed user_version (currently 13) and no-ops.
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let apply = || -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -502,6 +513,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 12 {
             conn.execute_batch(SCHEMA_V12)?;
+        }
+        if version < 13 {
+            conn.execute_batch(SCHEMA_V13)?;
         }
         Ok(())
     };
@@ -1064,7 +1078,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts"] {
             let count: i64 = conn
                 .query_row(
@@ -1094,7 +1108,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -1147,7 +1161,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
         let model_not_null: i64 = conn.query_row(
             "SELECT [notnull] FROM pragma_table_info('events') WHERE name = 'model'",
             [],
@@ -1223,7 +1237,7 @@ mod tests {
 
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
         let has_catalog: i64 = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('prices') WHERE name = 'catalog'",
             [],
@@ -1287,7 +1301,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
         // Old row intact, new columns NULL.
         let (input, sid, rt): (i64, Option<String>, Option<i64>) = conn
             .query_row(
@@ -1446,7 +1460,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
         // Old row intact, ctx columns NULL.
         let (input, cm): (i64, Option<i64>) = conn
             .query_row(
@@ -1552,7 +1566,7 @@ mod tests {
         let v: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
     }
 
     #[test]
@@ -1713,7 +1727,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_tools'",
@@ -1798,7 +1812,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ctx_exec'",
@@ -1835,7 +1849,7 @@ mod tests {
         }
         let conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, 13);
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",

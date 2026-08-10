@@ -667,26 +667,39 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
     // A Hermes Usage Record is Session-granularity — one Record stands for a
     // whole Session of calls — so "first cache-write per session = System
     // prompt" cannot apply to it; its writes count as history, not System.
-    const FIRST_CW_IS_SYSTEM: &str =
-        "cw_rank = 1 AND session_id IS NOT NULL AND source != 'hermes'";
+    //
+    // The session's first cache write is found over the WHOLE Ledger, never the
+    // filtered window: a session that started before the window has its System
+    // write outside it, so its in-window writes are all history. first_ts/firsts
+    // walk idx_events_first_cw (a few hundred sessions) instead of ranking every
+    // events row per call, which made each range switch pay a full-table sort.
+    // firsts is (timestamp, dedup_key)-minimal per session: MIN(timestamp) per
+    // session first, then MIN(dedup_key) among that timestamp's rows.
     let (where_sql, params) = build_where(f);
     let sql = format!(
-        "WITH ranked AS ( \
-           SELECT source, model, project, timestamp, session_id, \
-                  input_tokens, output_tokens, cache_read_tokens, reasoning_tokens, \
-                  cache_write_5m_tokens + cache_write_1h_tokens AS cw, \
-                  ROW_NUMBER() OVER ( \
-                    PARTITION BY source, session_id, \
-                      CASE WHEN cache_write_5m_tokens + cache_write_1h_tokens > 0 THEN 1 ELSE 0 END \
-                    ORDER BY timestamp, dedup_key) AS cw_rank \
-           FROM events) \
+        "WITH first_ts AS ( \
+           SELECT source, session_id, MIN(timestamp) AS ts FROM events \
+           WHERE cache_write_5m_tokens + cache_write_1h_tokens > 0 \
+             AND session_id IS NOT NULL AND source != 'hermes' \
+           GROUP BY source, session_id), \
+         firsts AS ( \
+           SELECT e.source AS fs_source, e.session_id AS fs_session, \
+                  e.timestamp AS fs_ts, MIN(e.dedup_key) AS fs_dk \
+           FROM events e JOIN first_ts m \
+             ON e.source = m.source AND e.session_id = m.session_id AND e.timestamp = m.ts \
+           WHERE e.cache_write_5m_tokens + e.cache_write_1h_tokens > 0 \
+             AND e.session_id IS NOT NULL \
+           GROUP BY e.source, e.session_id, e.timestamp) \
          SELECT source, \
-           SUM(cache_read_tokens) + SUM(CASE WHEN cw > 0 AND NOT ({FIRST_CW_IS_SYSTEM}) THEN cw ELSE 0 END), \
+           SUM(cache_read_tokens) + SUM(CASE WHEN cache_write_5m_tokens + cache_write_1h_tokens > 0 AND fs_dk IS NULL THEN cache_write_5m_tokens + cache_write_1h_tokens ELSE 0 END), \
            SUM(input_tokens), \
-           SUM(CASE WHEN cw > 0 AND {FIRST_CW_IS_SYSTEM} THEN cw END), \
+           SUM(CASE WHEN fs_dk IS NOT NULL THEN cache_write_5m_tokens + cache_write_1h_tokens END), \
            SUM(output_tokens), \
            SUM(reasoning_tokens) \
-         FROM ranked {where_sql} GROUP BY source ORDER BY source"
+         FROM events LEFT JOIN firsts \
+           ON fs_source = source AND fs_session = session_id \
+           AND fs_ts = timestamp AND fs_dk = dedup_key \
+         {where_sql} GROUP BY source ORDER BY source"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
@@ -1423,7 +1436,13 @@ mod tests {
         let mut h = ev("h", "hermes", DAY1_TS, "hermes-local", None, 1, 300, 100, 20, 60, 0);
         h.session_id = Some("hs".to_string());
         h.reasoning_tokens = Some(25);
-        db::insert_events(&mut conn, &[a, b, c, h]).unwrap();
+        // Tie-break: two cw events share session sb's first timestamp — the
+        // smaller dedup_key is the session's first cache write (System).
+        let mut t1 = ev("t1", "codex", DAY1_TS, "m", None, 1, 0, 0, 0, 70, 0);
+        t1.session_id = Some("sb".to_string());
+        let mut t2 = ev("t2", "codex", DAY1_TS, "m", None, 1, 0, 0, 0, 500, 0);
+        t2.session_id = Some("sb".to_string());
+        db::insert_events(&mut conn, &[a, b, c, h, t1, t2]).unwrap();
 
         let all = ctx_buckets(&conn, &Filters::default()).unwrap();
         let cl = all.iter().find(|x| x.source == "claude").unwrap();
@@ -1436,6 +1455,10 @@ mod tests {
         let total = 100 + 50 + 900 + 200 + 30 + 1500 + 250 + 10 + 5 + 40;
         assert_eq!(cl.history + cl.new_input + cl.system.unwrap_or(0) + cl.response
             + cl.reasoning.unwrap_or(0), total);
+
+        let cx = all.iter().find(|x| x.source == "codex").unwrap();
+        assert_eq!(cx.system, Some(70), "same-timestamp tie breaks on dedup_key");
+        assert_eq!(cx.history, 500);
 
         let hm = all.iter().find(|x| x.source == "hermes").unwrap();
         assert_eq!(hm.system, None, "hermes aggregates: first-vs-rest unknowable");

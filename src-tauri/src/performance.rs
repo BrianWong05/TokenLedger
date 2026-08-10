@@ -10,7 +10,10 @@ const DAY_SECONDS: i64 = 86_400;
 // 2025-01-01T00:00:00Z — the fixed anchor every synthetic timestamp hangs off.
 const BASE_EPOCH: i64 = 1_735_689_600;
 const SERIES_BUDGET: Duration = Duration::from_millis(1_000);
-const RANGE_RELOAD_BUDGET: Duration = Duration::from_millis(1_000);
+// Tight enough to catch a per-query full-table scan sneaking back into the
+// range-switch path (ctx_buckets' old whole-Ledger ROW_NUMBER ran this reload
+// at ~150ms); the fixed path measures ~25ms here.
+const RANGE_RELOAD_BUDGET: Duration = Duration::from_millis(100);
 
 fn synthetic_event(i: usize) -> UsageEvent {
     // Spread writes deterministically across two years and insert them out of

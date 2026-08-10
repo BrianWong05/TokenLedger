@@ -40,3 +40,8 @@ ts-rs = "10"
 [dev-dependencies]
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
+
+# Dev builds otherwise compile the bundled SQLite at opt-level 0, multiplying
+# every Overview query's cost under `tauri dev`.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 2
