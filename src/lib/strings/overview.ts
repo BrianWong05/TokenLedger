@@ -94,6 +94,10 @@ export const overview = {
     'overview.moreSkills': 'more skills',
     'overview.skillUses': 'uses',
     'overview.trend.exportCsv': 'Export CSV',
+    // the toolbar's window report: one CSV of whatever the Overview is showing
+    'overview.export': 'Export',
+    'overview.exporting': 'Exporting…',
+    'overview.exportFailed': 'Export failed',
     // interval selector — adjective forms, so the options can't be confused
     // with the window presets (Day/Week/Month) sitting beside them
     'overview.trend.int.auto': 'Auto',
@@ -285,6 +289,10 @@ export const overview = {
     'overview.moreSkills': '個其他技能',
     'overview.skillUses': '次載入',
     'overview.trend.exportCsv': '匯出 CSV',
+    // the toolbar's window report: one CSV of whatever the Overview is showing
+    'overview.export': '匯出',
+    'overview.exporting': '匯出中…',
+    'overview.exportFailed': '匯出失敗',
     // interval selector — adjective forms, so the options can't be confused
     // with the window presets (Day/Week/Month) sitting beside them
     'overview.trend.int.auto': '自動',

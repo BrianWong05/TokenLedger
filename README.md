@@ -350,12 +350,12 @@ gate.
 
 ### Reporting a window of the Ledger
 
-The app presents the Ledger but exports only one Trend bucket at a time. For
-the numbers outside it — a month's usage in a spreadsheet — an ignored
-workflow writes a window of the Ledger to CSV. It runs the same queries the
-Overview does, so Cost, Partial Cost, Unpriced and Unattributed Usage, and the
-Unreadable Artifact floor all carry their usual meaning; the Ledger is opened
-read-only and never written.
+In the app, the Overview's **Export** writes the selected window to one CSV —
+the Month preset plus Export is a 30-day report. For the same figures without a
+GUI (cron, CI, a script), an ignored workflow writes them to a folder of CSVs.
+It runs the same queries the Overview does, so Cost, Partial Cost, Unpriced and
+Unattributed Usage, and the Unreadable Artifact floor all carry their usual
+meaning; the Ledger is opened read-only and never written.
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml \
