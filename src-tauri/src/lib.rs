@@ -421,7 +421,14 @@ fn restart_app(app: AppHandle) {
 // suggested name, and writes `contents` verbatim to the chosen path. The
 // frontend assembles the CSV; this owns only the dialog + write. Returns whether
 // a file was written (false = the user cancelled — a no-op).
-#[tauri::command]
+//
+// `(async)` for the same reason the DB reads carry it, except here a sync
+// command does not merely stall the event loop — it deadlocks. A sync command
+// runs on the main thread, inside wry's URL-scheme handler, and
+// `blocking_save_file` then waits for a panel only the main thread can present.
+// The thread waits on itself: no dialog ever appears and the app stops
+// answering the window server.
+#[tauri::command(async)]
 fn save_csv(app: AppHandle, filename: String, contents: String) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
     let Some(file) = app
