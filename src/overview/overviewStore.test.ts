@@ -532,6 +532,24 @@ async function mountStoreWithCtxFor(
   return { store: await boot(ledger, clock), ledger };
 }
 
+// One Source with more skills than any card would show. The Skills panel folds
+// everything past ten into a single "N more" row; the report must not, so the
+// count has to cross that boundary or the difference is invisible.
+async function mountStoreWithManySkills(count: number) {
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [pt({ source: 'claude', ctxSkills: 150 })],
+    toolRows: [sourceRow('claude')],
+    ctxSkills: Array.from({ length: count }, (_, i) => ({
+      source: 'claude',
+      name: `skill-${String(i).padStart(2, '0')}`,
+      estTokens: 1000 - i,
+      uses: count - i,
+    })),
+  });
+  return { store: await boot(ledger, clock), ledger };
+}
+
 // One day of Unpriced usage — cost 0 with hasUnpriced, the only shape a
 // SeriesPoint has for "no priced tokens" — beside a day that really is priced.
 async function mountStoreWithUnpricedDay() {
@@ -638,6 +656,22 @@ describe('selectReportInput', () => {
       .not.toContain('reasoning');
   });
 
+  // The Skills card keeps ten and folds the rest into one nameless row. A
+  // report is the one place that fold is wrong: it would drop skills 11..N and
+  // write their sum as a row whose first cell is empty, which everywhere else
+  // in this file means "unknown".
+  it('carries every skill a Source used, past the point the card folds them', async () => {
+    const { store } = await mountStoreWithManySkills(12);
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    const mine = input.ctxSkills.filter((sk) => sk.source === 'claude');
+    expect(mine).toHaveLength(12);
+    expect(mine.map((sk) => sk.name)).toContain('skill-11');
+    expect(mine.some((sk) => sk.name === '')).toBe(false);
+    // Rows pass through as stored, not summed into a remainder.
+    expect(mine).toContainEqual({ source: 'claude', name: 'skill-11', estTokens: 989, uses: 1 });
+  });
+
   it('resolves a fully-Unpriced bucket to an unavailable cost rather than zero', async () => {
     const { store, unpricedDay } = await mountStoreWithUnpricedDay();
     const s = store.getSnapshot();
@@ -645,6 +679,17 @@ describe('selectReportInput', () => {
     expect(input.time.find((r) => r.key === unpricedDay)?.cost).toBe(null);
     // Not a blanket null: the priced day keeps its figure.
     expect(input.time.find((r) => r.key === '2026-07-16')?.cost).toBe(2.5);
+  });
+
+  // SeriesPoint carries no cache-estimated flag, so a time row cannot know and
+  // says so with null, which the file writes as an empty cell. A Source row
+  // reads BreakdownRow, which does carry it, and keeps the boolean.
+  it('leaves a time row\'s cache_estimated unknown while a Source row states it', async () => {
+    const { store } = await mountStoreWithUsage();
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.time.every((r) => r.cacheEstimated === null)).toBe(true);
+    expect(input.sources.map((r) => r.cacheEstimated)).toEqual([false]);
   });
 
   // The block's first column and the header's window_grain are the same value,
@@ -667,6 +712,36 @@ describe('selectReportInput', () => {
     const fallback = selectReportInput(n, selectView(n, NOW), SETTINGS, NOW);
     expect(fallback.grain).toBe('day');
     expect(fallback.time.map((r) => r.key)).toEqual(['2026-07-16']);
+  });
+
+  // runReload drops hourPoints that belong to another day, but that runs after
+  // the debounce — 250ms for a custom range. In the gap the snapshot carries
+  // the new bounds beside the old day's hours, and a report taken then would
+  // have named a window of one day over rows keyed to another.
+  it('will not report the previous day\'s hours under a window that has moved', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-13' }), pt({ bucket: '2026-07-16' })],
+      hourPoints: [pt({ bucket: '2026-07-16 09:00' })],
+      toolRows: [sourceRow('claude')],
+    });
+    const store = await boot(ledger, clock);
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    expect(store.getSnapshot().hourPoints.map((p) => p.bucket)).toEqual(['2026-07-16 09:00']);
+
+    // Move to a different single day and read the snapshot mid-debounce: the
+    // hours held are still the 16th's.
+    store.setRange('custom');
+    store.setCustomRange('2026-07-13', '2026-07-13');
+    const s = store.getSnapshot();
+    expect(s.hourPoints[0].bucket.slice(0, 10)).toBe('2026-07-16');
+
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.fromIso).toBe('2026-07-13');
+    expect(input.grain).toBe('day');
+    expect(input.time.map((r) => r.key)).toEqual(['2026-07-13']);
   });
 
   it('never names the time block week or month: the rows are the days the file keeps', async () => {

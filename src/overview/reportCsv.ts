@@ -23,7 +23,11 @@ export interface ReportUsageRow {
   cost: number | null;
   hasUnpriced: boolean;
   unattributedTokens: number;
-  cacheEstimated: boolean;
+  // null is "this block cannot know" — the time block reads SeriesPoint, which
+  // carries no such flag — and writes an empty cell. Every other block passes a
+  // real boolean. Writing `false` there would claim knowledge the row does not
+  // have, the inverse of the rule this file exists to hold.
+  cacheEstimated: boolean | null;
 }
 
 export interface ReportCtxCategory {
@@ -100,7 +104,7 @@ function usageCells(row: ReportUsageRow): string[] {
     row.cost === null ? '' : row.cost.toFixed(6),
     costBasis(row),
     String(row.unattributedTokens),
-    String(row.cacheEstimated),
+    row.cacheEstimated === null ? '' : String(row.cacheEstimated),
   ];
 }
 

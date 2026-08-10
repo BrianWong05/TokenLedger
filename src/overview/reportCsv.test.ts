@@ -251,6 +251,24 @@ describe('usage blocks', () => {
     expect(row).toContain(',,unavailable,');
     expect(row).not.toContain(',0.000000,');
   });
+
+  // Same rule one column over. SeriesPoint carries no cache-estimated flag, so
+  // the time block cannot know; the caller passes null and the cell goes empty.
+  // A `false` there would be a definite claim sitting beneath a summary row
+  // saying true — an unknown written as a value, the one thing this file must
+  // never do. Every other block knows, and still writes the boolean.
+  it('leaves cache_estimated empty where the block cannot know, and writes it where it can', () => {
+    const csv = windowReportCsv(
+      reportInput({
+        time: [usageRow({ key: '2026-07-12', cacheEstimated: null })],
+        sources: [usageRow({ key: 'claude', cacheEstimated: false })],
+      }),
+    );
+    // cache_estimated is the last column of a usage row.
+    const lastCell = (row: string) => row.slice(row.lastIndexOf(',') + 1);
+    expect(lastCell(block(csv, 'day')[1])).toBe('');
+    expect(lastCell(block(csv, 'source')[1])).toBe('false');
+  });
 });
 
 describe('context blocks', () => {
@@ -295,6 +313,34 @@ describe('context blocks', () => {
     for (const first of ['context', 'tool', 'mcp_server', 'skill', 'bash']) {
       expect(block(csv, first).some((r) => r.toLowerCase().startsWith('total,'))).toBe(false);
     }
+    // Counting is the assertion that holds: a total row appended under any
+    // other label — or with the empty first cell a fold row carries — would
+    // pass the check above. Header plus exactly the rows handed in, no more.
+    const input = ctx();
+    for (const [first, rows] of [
+      ['context', input.ctxCategories],
+      ['tool', input.ctxTools],
+      ['mcp_server', input.ctxMcp],
+      ['skill', input.ctxSkills],
+      ['bash', input.ctxExec],
+    ] as const) {
+      expect(block(csv, first)).toHaveLength(rows.length + 1);
+    }
+  });
+
+  // esc guards twelve text cells across these five blocks, and every other
+  // fixture here is comma-free, so without this its removal from any of them
+  // passes the suite. `sed -i 's/a,b/c/' f` reduces to the cmd below, which is
+  // an ordinary command that carries a comma into the first column.
+  it("quotes a comma in a Context first column, and in the Model block's source", () => {
+    const csv = windowReportCsv(
+      reportInput({
+        ctxExec: [{ source: 'claude', exe: 'sed', cmd: 'sed s/a,b/c/', estTokens: 12, calls: 1 }],
+        models: [{ ...usageRow({ key: 'gpt-5-codex' }), source: 'codex,cli' }],
+      }),
+    );
+    expect(block(csv, 'bash')[1]).toBe('"sed s/a,b/c/",claude,sed,12,1');
+    expect(block(csv, 'model')[1].startsWith('gpt-5-codex,"codex,cli",')).toBe(true);
   });
 
   it('writes tools with their category, MCP servers with calls, skills with uses', () => {

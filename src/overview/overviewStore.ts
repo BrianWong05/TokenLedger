@@ -517,7 +517,11 @@ function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
       key: p.bucket,
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
       totalTokens: 0, requests: 0, sessions: 0, cost: 0,
-      hasUnpriced: false, unattributedTokens: 0, cacheEstimated: false,
+      // SeriesPoint carries no cache-estimated flag, so this block cannot know
+      // whether a bucket's cache figures were logged or reconstructed. null
+      // writes an empty cell, which is how the file says "unknown" — a `false`
+      // here would read as a definite claim beneath a summary row saying true.
+      hasUnpriced: false, unattributedTokens: 0, cacheEstimated: null,
     };
     row.inputTokens += p.inputTokens;
     row.outputTokens += p.outputTokens;
@@ -572,8 +576,13 @@ export function selectReportInput(
   // hourly; hours that have not landed fall back to the daily row rather than
   // writing an empty block. window_grain and this column read the same value
   // by construction.
-  const hourly =
-    hourlyDayOf(s.range, s.from, s.to, s.firstIso, s.lastIso, now) !== null && s.hourPoints.length > 0;
+  // The held hours must be the SAME day, not merely present: runReload clears
+  // stale hourPoints, but that runs after the debounce (250ms for a custom
+  // range), so a snapshot in that gap carries the new bounds beside the
+  // previous day's hours with loading already false. Comparing days is the
+  // idiom runReload itself uses.
+  const hourDay = hourlyDayOf(s.range, s.from, s.to, s.firstIso, s.lastIso, now);
+  const hourly = hourDay !== null && s.hourPoints[0]?.bucket.slice(0, 10) === hourDay;
   const grain: Granularity = hourly ? 'hour' : 'day';
 
   const ctxCategories: ReportCtxCategory[] = [];
@@ -582,9 +591,12 @@ export function selectReportInput(
   const ctxSkills: ReportInput['ctxSkills'] = [];
   const ctxExec: ReportInput['ctxExec'] = [];
 
-  // Every Source present in the window, so the file does not depend on which
-  // card happened to be selected. A Source with usage but no Context capability
-  // yields no rows rather than a row of zeros.
+  // Every Source in the catalog — toolTotalsOfPoints seeds them all, so a
+  // Source absent from the window is walked too and simply contributes nothing:
+  // ctxTotals reports null for every category and each helper below returns []
+  // for a Source it has no rows for. The file therefore does not depend on which
+  // card happened to be selected, and a Source with usage but no Context
+  // capability yields no rows rather than a row of zeros.
   for (const key of Object.keys(view.toolTotals).sort()) {
     const ctx = ctxTotals(view.rpts, key);
     for (const category of CTX_EXACT) {
@@ -604,8 +616,12 @@ export function selectReportInput(
     for (const m of mcpBars(toolRows, ctx.mcp)) {
       ctxMcp.push({ source: key, name: m.name, estTokens: m.tokens, calls: m.calls });
     }
-    for (const sk of skillBars(s.ctxSkillRows, key)) {
-      ctxSkills.push({ source: key, name: sk.name, estTokens: sk.tokens, uses: sk.uses });
+    // The raw rows, not skillBars: that helper is card layout — it keeps the
+    // top ten and folds the rest into one nameless row, which here would drop
+    // skills 11..N from a report whose whole point is completeness and write a
+    // total row into a Context block with an empty first cell meaning "unknown".
+    for (const sk of s.ctxSkillRows.filter((r) => r.source === key)) {
+      ctxSkills.push({ source: key, name: sk.name, estTokens: sk.estTokens, uses: sk.uses });
     }
     for (const e of s.ctxExecRows.filter((r) => r.source === key)) {
       ctxExec.push({ source: key, exe: e.exe, cmd: e.cmd, estTokens: e.estTokens, calls: e.calls });
