@@ -40,7 +40,11 @@ import type { ModelPricing, Summary } from '../types';
 // The window chrome (sidebar wordmark, tab nav) is owned by the app shell; the
 // last-scan status + Rescan live in this tab's toolbar (dashboard-v2). This tab
 // renders the design's <main> content, flush on --bg-app.
-export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort; export?: ExportPort } } = {}) {
+// `visible` is false while another tab shows: the Overview stays mounted so its
+// data survives, so it is told rather than able to observe it. Only the headline
+// reads it (a tab return rolls the total, #94); default true keeps every other
+// mount — tests, prototypes — behaving as if nothing hides it.
+export default function Overview({ ports, visible = true }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort; export?: ExportPort }; visible?: boolean } = {}) {
   const { settings } = useSettings();
   const { t, lang } = useOverviewT();
   // header.* strings (Rescan, last-scan status) live in the shared shell dictionary.
@@ -242,6 +246,7 @@ export default function Overview({ ports }: { ports?: { ledger?: LedgerPort; clo
             total={headline.total}
             summaryReady={headline.summaryReady}
             windowKey={`${range}:${from}:${to}`}
+            visible={visible}
             incomplete={unreadableTitle || null}
           />
           {canOpenCostBreakdown ? (

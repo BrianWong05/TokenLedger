@@ -141,7 +141,9 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
 
       <main className="tl-main">
         <div className="tl-tab" hidden={tab !== 'overview'}>
-          <Overview ports={ports} />
+          {/* Hidden, not unmounted — so the Overview cannot see for itself that
+              it is back on screen, and the same condition is handed to it. */}
+          <Overview ports={ports} visible={tab === 'overview'} />
         </div>
         <Suspense fallback={null}>
           {tab === 'pricing' && (

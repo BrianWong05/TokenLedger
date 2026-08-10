@@ -56,6 +56,9 @@ async function settle(times = 4) {
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  // The headline's entrance gate lives in sessionStorage; a key left behind
+  // would silently suppress the entrance for every later test.
+  sessionStorage.clear();
 });
 
 describe('App shell', () => {
@@ -170,6 +173,34 @@ describe('App shell', () => {
     expect(overviewTab.hidden).toBe(false);
     expect(container.querySelector('.tt-toolcards')).not.toBeNull();
     expect(ledger.calls.scan.length).toBe(1);
+  });
+
+  it('rolls the token total when the Overview tab comes back into view', async () => {
+    // The entrance is spent, so the roll below can only be the tab return's.
+    sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 100 })], summary });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<App ports={{ ledger, clock: systemClock, settings: makeFakeSettings() }} />);
+    });
+    await settle();
+
+    const nav = () => Array.from(container.querySelectorAll('.tl-nav button')) as HTMLButtonElement[];
+    const headline = () => container.querySelector('.tt-b8-total')!;
+    expect(headline().getAttribute('aria-busy')).toBeNull();
+
+    await act(async () => {
+      nav()[1].click();
+      await import('./pricing/PricingPage');
+    });
+    // Hidden, not unmounted: still at rest, nothing about the total moved.
+    expect(headline().getAttribute('aria-busy')).toBeNull();
+
+    await act(async () => nav()[0].click());
+    expect(headline().getAttribute('aria-busy')).toBe('true');
   });
 
   it('opens the Settings tab when the Menu Bar Extra asks for it', async () => {

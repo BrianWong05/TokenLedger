@@ -19,13 +19,20 @@ function mountHeadline(total: number, summaryReady: boolean) {
   mountedRoots.push(root);
   // windowKey defaults to one fixed window, so a rerender that only moves the
   // total reads as a background scan; pass a new key to mean a period switch.
-  const rerender = (nextTotal: number, nextSummaryReady: boolean, windowKey = 'day::') => {
+  // visible false is another tab showing over a still-mounted Overview.
+  const rerender = (
+    nextTotal: number,
+    nextSummaryReady: boolean,
+    windowKey = 'day::',
+    visible = true,
+  ) => {
     act(() =>
       root.render(
         <TokenTotalHeadline
           total={nextTotal}
           summaryReady={nextSummaryReady}
           windowKey={windowKey}
+          visible={visible}
         />,
       ),
     );
@@ -170,6 +177,61 @@ describe('TokenTotalHeadline', () => {
     const revisited = mountHeadline(6_000_000_000, true).button;
     expect(revisited.getAttribute('aria-busy')).toBeNull();
     expect(revisited.textContent).toBe('6B');
+  });
+
+  it('rolls the figure already on screen when the Overview tab comes back', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    // Another tab shows: the Overview stays mounted, so nothing rolls yet.
+    rerender(4_500_000_000, true, 'day::', false);
+    expect(button.getAttribute('aria-busy')).toBeNull();
+
+    // Back to the Overview. The total has not moved; the return is the occasion.
+    rerender(4_500_000_000, true, 'day::', true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('4.5B');
+  });
+
+  it('leaves a still-owed entrance to play on the first Overview return', () => {
+    vi.useFakeTimers();
+    // summaryReady false: the entrance has not played, so it still owes its own
+    // zero-shaped motion and the return must not pre-empt it.
+    const { button, rerender } = mountHeadline(4_500_000_000, false);
+    rerender(4_500_000_000, false, 'day::', false);
+    rerender(4_500_000_000, false, 'day::', true);
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('0.0B');
+
+    // The authoritative total then arrives and the entrance plays as always.
+    rerender(4_500_000_000, true);
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    act(() => vi.advanceTimersByTime(1_400));
+    expect(button.textContent).toBe('4.5B');
+  });
+
+  it('holds still returning to a zero-usage Overview', () => {
+    vi.useFakeTimers();
+    const { button, rerender } = mountHeadline(0, true);
+    rerender(0, true, 'day::', false);
+    rerender(0, true, 'day::', true);
+
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('0');
+  });
+
+  it('swaps an Overview return silently under Reduce Motion', () => {
+    vi.useFakeTimers();
+    setReducedMotion(true);
+    const { button, rerender } = mountHeadline(4_500_000_000, true);
+    rerender(4_500_000_000, true, 'day::', false);
+    rerender(4_500_000_000, true, 'day::', true);
+
+    expect(button.getAttribute('aria-busy')).toBeNull();
+    expect(button.textContent).toBe('4.5B');
   });
 
   it('holds still when a background scan changes the same window figure', () => {

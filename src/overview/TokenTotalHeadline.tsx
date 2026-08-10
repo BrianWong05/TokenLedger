@@ -36,6 +36,11 @@ interface TokenTotalHeadlineProps {
   // what earns a roll: the same window reporting a new figure is a background
   // scan landing, which #12 story 9 keeps still.
   windowKey: string;
+  // Whether the Overview is the tab on screen. The Overview stays mounted while
+  // another tab shows, so this is the only way the headline can tell it has just
+  // come back into view — which rolls it (#94). Defaults true for the surfaces
+  // that mount the headline with nothing hiding it.
+  visible?: boolean;
   // Non-null makes the total a floor (ADR-0017): rendered as a ≥ prefix whose
   // hover text is this string — the per-Source unreadable-session reasons.
   incomplete?: string | null;
@@ -177,6 +182,7 @@ export default function TokenTotalHeadline({
   total,
   summaryReady,
   windowKey,
+  visible = true,
   incomplete = null,
 }: TokenTotalHeadlineProps) {
   const { t } = useOverviewT();
@@ -242,6 +248,15 @@ export default function TokenTotalHeadline({
   // ponytail: a switch between two windows with identical totals leaves the
   // recorded key stale, so a later scan on the new window rolls once. Needs the
   // store to say "this Summary is for that window" to close; not worth it.
+  // What every data-driven roll requires, wherever it is triggered from: an
+  // authoritative figure, usage to show (a zero window reads out immediately —
+  // rolling to it would imply usage settling into place where there is none),
+  // and an environment that wants motion at all. A click's roll answers to
+  // toggleMode's own conditions instead, because it may cross modes when the
+  // figure itself has not moved.
+  const rollAllowed = () =>
+    summaryReady && total > 0 && !prefersReducedMotion() && !usesCompactLayout();
+
   const settled = useRef<{ display: string; windowKey: string } | null>(null);
   useEffect(() => {
     if (awaitingInitialLoad || !summaryReady) return;
@@ -251,11 +266,23 @@ export default function TokenTotalHeadline({
     if (!previous) return; // the entrance (or its reduced-motion reveal) showed this value
     if (previous.windowKey === windowKey) return; // same window: a scan, not a switch
     if (modeAnimation?.to === display) return;
-    // A zero window reads out immediately: rolling to it would imply usage
-    // settling into place where there is none.
-    if (total <= 0) return;
-    if (!prefersReducedMotion() && !usesCompactLayout()) startAnimation(display);
+    if (rollAllowed()) startAnimation(display);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [awaitingInitialLoad, display, modeAnimation, startAnimation, summaryReady, total, windowKey]);
+
+  // Coming back to the Overview from another tab rolls the figure that is
+  // already on screen. The Overview stays mounted while Pricing or Settings
+  // shows, so nothing about the total changed — the return itself is the
+  // occasion (#94). A still-owed entrance wins: it has its own zero-shaped
+  // motion and has not played yet.
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    const returning = visible && !wasVisible.current;
+    wasVisible.current = visible;
+    if (!returning || awaitingInitialLoad) return;
+    if (rollAllowed()) startAnimation(display);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, awaitingInitialLoad, display, startAnimation, summaryReady, total]);
 
   const toggleMode = () => {
     // Only a click's own reel swallows further clicks; a data-driven roll must
