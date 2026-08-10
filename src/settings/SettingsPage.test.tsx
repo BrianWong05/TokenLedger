@@ -215,13 +215,13 @@ describe('SettingsPage', () => {
     expect(port.value.usdRate).toBe(7.85);
   });
 
-  // Custom range: up to four extra shortcuts for the Overview's range picker.
-  // Slots are positional and never compact, so the stored value is always four
-  // entries with holes where a slot is off.
-  describe('custom range shortcuts', () => {
+  // Custom range: up to four configured Presets for the Overview's range
+  // picker. Slots are positional and never compact, so the stored value is
+  // always four entries with holes where a slot is off.
+  describe('custom range presets', () => {
     const stored = () => JSON.parse(localStorage.getItem(CUSTOM_PRESETS_KEY) ?? 'null');
     const slots = (c: HTMLElement) =>
-      Array.from(c.querySelectorAll('select[aria-label^="Shortcut"]')) as HTMLSelectElement[];
+      Array.from(c.querySelectorAll('select[aria-label^="Preset"]')) as HTMLSelectElement[];
     const dayInput = (c: HTMLElement, n: number) =>
       q<HTMLInputElement>(c, `input[aria-label="Day count ${n}"]`);
 

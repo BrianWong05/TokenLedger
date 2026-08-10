@@ -815,9 +815,9 @@ describe('presetsOf', () => {
     expect(presetsOf(LAST, LAST).map((p) => p.key)).toEqual(['thisMonth', 'last90', 'thisYear']);
   });
 
-  // Configured shortcuts (Settings → Custom range). Slots are positional: a
+  // Configured Presets (Settings → Custom range). Slots are positional: a
   // cleared one stays a hole rather than pulling the later ones up.
-  describe('configured shortcuts', () => {
+  describe('configured presets', () => {
     const keys = (slots: PresetSlots) => presetsOf('2020-01-01', LAST, slots).map((p) => p.key);
     const one = (slot: PresetSlot, firstIso = '2020-01-01') =>
       presetsOf(firstIso, LAST, [slot]).find((p) => p.key === slot.key);

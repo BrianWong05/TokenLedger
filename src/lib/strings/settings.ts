@@ -11,8 +11,8 @@ export const settings = {
     'settings.theme.dark': 'Dark',
     'settings.language': 'Language',
     'settings.customRange': 'Custom range',
-    'settings.preset': 'Shortcut',
-    'settings.preset.caption': 'Extra shortcuts in the Custom range picker',
+    'settings.preset': 'Preset',
+    'settings.preset.caption': 'Extra presets in the Custom range picker',
     // The calendar periods themselves are named once, in the overview catalog —
     // this dropdown shows the same words the picker will.
     'settings.preset.off': 'Off',
@@ -71,6 +71,8 @@ export const settings = {
     'settings.theme.dark': '深色',
     'settings.language': '語言',
     'settings.customRange': '自訂範圍',
+    // "Preset" stays 快捷範圍 (quick range) rather than the literal 預設範圍:
+    // 預設 reads as "default", and these are not defaults.
     'settings.preset': '快捷範圍',
     'settings.preset.caption': '自訂範圍選擇器中的額外快捷範圍',
     'settings.preset.off': '關閉',
