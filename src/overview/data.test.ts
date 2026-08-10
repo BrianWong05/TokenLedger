@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResource, CtxToolRow, CtxSkillRow, CtxExecRow } from '../types';
+import type { PresetSlot, PresetSlots } from './data';
 import { emptyBySource } from './meta';
 import {
   seriesToDays,
@@ -812,6 +813,76 @@ describe('presetsOf', () => {
   it('drops a window that ends before the first record entirely', () => {
     // First record today: yesterday selects nothing, so it is not offered.
     expect(presetsOf(LAST, LAST).map((p) => p.key)).toEqual(['thisMonth', 'last90', 'thisYear']);
+  });
+
+  // Configured Presets (Settings → Custom range). Slots are positional: a
+  // cleared one stays a hole rather than pulling the later ones up.
+  describe('configured presets', () => {
+    const keys = (slots: PresetSlots) => presetsOf('2020-01-01', LAST, slots).map((p) => p.key);
+    const one = (slot: PresetSlot, firstIso = '2020-01-01') =>
+      presetsOf(firstIso, LAST, [slot]).find((p) => p.key === slot.key);
+
+    it('appends them after the shipped four, in slot order', () => {
+      expect(keys([{ key: 'lastYear' }, { key: 'rolling', days: 14 }])).toEqual([
+        'yesterday', 'thisMonth', 'last90', 'thisYear', 'lastYear', 'rolling',
+      ]);
+    });
+
+    it('leaves a cleared slot a hole instead of compacting the ones after it', () => {
+      expect(keys([null, { key: 'lastMonth' }, null, { key: 'lastYear' }]))
+        .toEqual(['yesterday', 'thisMonth', 'last90', 'thisYear', 'lastMonth', 'lastYear']);
+    });
+
+    it('reads a rolling shortcut as the N days ending today', () => {
+      // 14 days *including* today, matching the shipped 90-day window.
+      expect(one({ key: 'rolling', days: 14 }))
+        .toEqual({ key: 'rolling', days: 14, from: '2026-07-16', to: LAST });
+    });
+
+    it('reads Last month as the whole previous calendar month', () => {
+      expect(one({ key: 'lastMonth' }))
+        .toEqual({ key: 'lastMonth', from: '2026-06-01', to: '2026-06-30' });
+    });
+
+    it('reads Last quarter as the previous calendar quarter', () => {
+      // LAST is in Q3, so the completed quarter before it is Apr–Jun.
+      expect(one({ key: 'lastQuarter' }))
+        .toEqual({ key: 'lastQuarter', from: '2026-04-01', to: '2026-06-30' });
+    });
+
+    it('wraps Last quarter into the previous year from Q1', () => {
+      const p = presetsOf('2020-01-01', '2026-02-10', [{ key: 'lastQuarter' }])
+        .find((x) => x.key === 'lastQuarter');
+      expect(p).toEqual({ key: 'lastQuarter', from: '2025-10-01', to: '2025-12-31' });
+    });
+
+    it('reads Last year as the whole previous calendar year', () => {
+      expect(one({ key: 'lastYear' }))
+        .toEqual({ key: 'lastYear', from: '2025-01-01', to: '2025-12-31' });
+    });
+
+    it('clamps one that starts before the first record', () => {
+      expect(one({ key: 'lastMonth' }, '2026-06-15')?.from).toBe('2026-06-15');
+    });
+
+    it('drops one that ends before the first record entirely', () => {
+      // A ledger starting mid-June: last year selects nothing, last month still
+      // selects its tail.
+      const ks = presetsOf('2026-06-20', LAST, [{ key: 'lastYear' }, { key: 'lastMonth' }])
+        .map((p) => p.key);
+      expect(ks).not.toContain('lastYear');
+      expect(ks).toContain('lastMonth');
+    });
+
+    it('keeps shortcuts that clamp onto the same window as each other', () => {
+      // A young Ledger collapses these two onto one window. A row someone
+      // configured does not vanish for it — it comes back as history grows.
+      const ps = presetsOf('2026-06-25', LAST, [{ key: 'lastMonth' }, { key: 'lastQuarter' }]);
+      expect(ps.slice(-2)).toEqual([
+        { key: 'lastMonth', from: '2026-06-25', to: '2026-06-30' },
+        { key: 'lastQuarter', from: '2026-06-25', to: '2026-06-30' },
+      ]);
+    });
   });
 });
 

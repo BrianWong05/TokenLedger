@@ -92,6 +92,9 @@ export const PRESET_LABEL_KEY: Record<PresetKey, OverviewKey> = {
   thisMonth: 'overview.preset.thisMonth',
   last90: 'overview.preset.last90',
   thisYear: 'overview.preset.thisYear',
+  lastMonth: 'overview.preset.lastMonth',
+  lastQuarter: 'overview.preset.lastQuarter',
+  lastYear: 'overview.preset.lastYear',
 };
 
 // Range8b -> string keys, so both the segment (short) and the eyebrow (long)

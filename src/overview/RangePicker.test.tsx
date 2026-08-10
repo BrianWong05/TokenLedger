@@ -14,6 +14,7 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import { isoOf } from './data';
+import { CUSTOM_PRESETS_KEY } from './customPresets';
 import type { SeriesPoint, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -152,13 +153,25 @@ describe('Custom-range picker', () => {
     expect(pop(c)).toBeNull();
   });
 
-  it('offers only shortcuts the segments do not already cover', async () => {
-    const c = await mount();
-    const p = await openPicker(c);
-    const labels = Array.from(p.querySelectorAll('.tt-dp-preset')).map((b) => b.textContent);
+  it('offers only shortcuts the segments do not already cover, then the configured ones', async () => {
+    const labelsOf = (p: HTMLElement) =>
+      Array.from(p.querySelectorAll('.tt-dp-preset')).map((b) => b.textContent);
+
     // Week is the trailing 7 days and Month the trailing 30, so neither appears
     // here; Total already means all time.
-    expect(labels).toEqual(['Yesterday', 'This month', 'Last 90 days', 'This year']);
+    expect(labelsOf(await openPicker(await mount())))
+      .toEqual(['Yesterday', 'This month', 'Last 90 days', 'This year']);
+
+    // Configured slots (Settings -> Custom range) append in slot order. The
+    // rolling label is composed — no static string exists for an arbitrary N —
+    // while the calendar one is a plain key lookup like the shipped four.
+    localStorage.setItem(
+      CUSTOM_PRESETS_KEY,
+      JSON.stringify([{ key: 'rolling', days: 14 }, { key: 'lastMonth' }]),
+    );
+    expect(labelsOf(await openPicker(await mount()))).toEqual([
+      'Yesterday', 'This month', 'Last 90 days', 'This year', 'Last 14 days', 'Last month',
+    ]);
   });
 
   it('applies a shortcut to the page window and closes', async () => {

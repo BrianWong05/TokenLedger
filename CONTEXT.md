@@ -73,6 +73,20 @@ inspector that always holds exactly one bucket: its rank in the window,
 per-Model split, and its own exactly-computed Cost.
 _Avoid_: Chart, graph, histogram
 
+**Preset**:
+A named shortcut in the Custom range picker that resolves to a date window when
+clicked — distinct from the Range segments (Day, Week, Month, Total, Custom),
+which are the app's fixed vocabulary and are not Presets. Four ship with the
+app; a reader may configure up to four more in Settings, each either a rolling
+window of N days ending today or a completed calendar period. A Preset is a way
+of *asking* for a window, never a stored window itself: it is resolved afresh
+against the Ledger's extent every time the picker opens, so one whose window
+falls entirely before the first Usage Record is not offered at all. Named
+Preset in identifiers and in the UI; "shortcut" is long-standing informal prose
+for the same thing and stays fine in comments.
+_Avoid_: Saved range, bookmark, quick range — each names a stored window, which
+a Preset is not
+
 **Pricing**:
 The tab that presents rates, never usage: every Model seen in the Ledger with
 its resolved List Price, the catalog it came from, its Override if any, and

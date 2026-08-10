@@ -11,10 +11,11 @@
 // Day cells carry the usage they represent (same sqrt scale as the heatmap), so a
 // window can be picked against where the tokens actually are.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { calendarSpan, dailyTotals, isoOf, monthCells, presetsOf } from './data';
+import { calendarSpan, dailyTotals, isoOf, monthCells, presetsOf, type RangePreset } from './data';
+import { useCustomPresets } from './customPresets';
 import {
   countLabel, PRESET_LABEL_KEY, RANGE_LABEL_KEY, monthShortL, monthLongL,
-  weekdayNarrowL, useOverviewT,
+  weekdayNarrowL, useOverviewT, type OverviewKey,
 } from './localize';
 import { RANGES_8B, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
@@ -22,6 +23,14 @@ import type { SeriesPoint } from '../types';
 
 const spanLabel = (from: string, to: string, lang: Lang) =>
   countLabel(calendarSpan(from, to), 'overview.dayOne', 'overview.daysUnit', lang);
+
+// A shipped shortcut is a static key; a configured rolling one cannot be, since
+// its N is arbitrary — so that label is composed from a prefix and the day
+// count, reading "Last 14 days" and "過去 14 天" beside the shipped windows.
+const presetLabel = (p: RangePreset, lang: Lang, t: (k: OverviewKey) => string) =>
+  p.key === 'rolling'
+    ? `${t('overview.preset.lastN')} ${countLabel(p.days, 'overview.dayOne', 'overview.daysUnit', lang)}`
+    : t(PRESET_LABEL_KEY[p.key]);
 
 export interface RangePickerProps {
   /** Rect of the button that opened it; null while closed. */
@@ -184,6 +193,7 @@ function MonthGrid({ y, m, lang, lo, hi, years, selFrom, selTo, heat, onPick, on
 
 export default function RangePicker({ at, trigger, from, to, firstIso, lastIso, points, onPick, onClose }: RangePickerProps) {
   const { t, lang } = useOverviewT();
+  const [slots] = useCustomPresets();
   const [anchor, setAnchor] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
   // Left month of the pair; the window's end month sits on the right.
@@ -270,7 +280,7 @@ export default function RangePicker({ at, trigger, from, to, firstIso, lastIso, 
   const right = new Date(view.getFullYear(), view.getMonth() + 1, 1);
   const y0 = Number(firstIso.slice(0, 4));
   const years = Array.from({ length: Number(lastIso.slice(0, 4)) - y0 + 1 }, (_, i) => y0 + i);
-  const presets = presetsOf(firstIso, lastIso);
+  const presets = presetsOf(firstIso, lastIso, slots);
 
   // Arrow keys walk the grid; a day outside the bounds simply has no button to
   // land on, so the move is a no-op rather than an escape from the window.
@@ -308,12 +318,12 @@ export default function RangePicker({ at, trigger, from, to, firstIso, lastIso, 
         <div className="tt-dp-presets">
           {presets.map((x) => (
             <button
-              key={x.key}
+              key={x.key === 'rolling' ? `rolling-${x.days}` : x.key}
               type="button"
               className={'tt-dp-preset' + (x.from === from && x.to === to ? ' on' : '')}
               onClick={() => { onPick(x.from, x.to); close(); }}
             >
-              {t(PRESET_LABEL_KEY[x.key])}
+              {presetLabel(x, lang, t)}
             </button>
           ))}
         </div>
