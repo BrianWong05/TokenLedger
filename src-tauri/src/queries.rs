@@ -676,11 +676,17 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
     // pay a full-table sort. session_first_cw picks the (timestamp, dedup_key)
     // minimum per session: MIN(timestamp) first, then MIN(dedup_key) among the
     // Usage Records sharing that timestamp.
+    //
+    // One name for the cache-write sum. In the two CTE WHEREs it must render
+    // verbatim as idx_events_first_cw's predicate writes it (db.rs SCHEMA_V13),
+    // or the planner cannot prove the partial index applies and the full scan
+    // comes back — so this const is shared with the SUM arms, never reformatted.
+    const CW: &str = "cache_write_5m_tokens + cache_write_1h_tokens";
     let (where_sql, params) = build_where(f);
     let sql = format!(
         "WITH first_ts AS ( \
            SELECT source, session_id, MIN(timestamp) AS ts FROM events \
-           WHERE cache_write_5m_tokens + cache_write_1h_tokens > 0 \
+           WHERE {CW} > 0 \
              AND session_id IS NOT NULL AND source != 'hermes' \
            GROUP BY source, session_id), \
          session_first_cw AS ( \
@@ -688,13 +694,13 @@ pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBu
                   e.timestamp AS sfc_ts, MIN(e.dedup_key) AS sfc_dedup_key \
            FROM events e JOIN first_ts m \
              ON e.source = m.source AND e.session_id = m.session_id AND e.timestamp = m.ts \
-           WHERE e.cache_write_5m_tokens + e.cache_write_1h_tokens > 0 \
+           WHERE {CW} > 0 \
              AND e.session_id IS NOT NULL \
            GROUP BY e.source, e.session_id, e.timestamp) \
          SELECT source, \
-           SUM(cache_read_tokens) + SUM(CASE WHEN cache_write_5m_tokens + cache_write_1h_tokens > 0 AND sfc_dedup_key IS NULL THEN cache_write_5m_tokens + cache_write_1h_tokens ELSE 0 END), \
+           SUM(cache_read_tokens) + SUM(CASE WHEN {CW} > 0 AND sfc_dedup_key IS NULL THEN {CW} ELSE 0 END), \
            SUM(input_tokens), \
-           SUM(CASE WHEN sfc_dedup_key IS NOT NULL THEN cache_write_5m_tokens + cache_write_1h_tokens END), \
+           SUM(CASE WHEN sfc_dedup_key IS NOT NULL THEN {CW} END), \
            SUM(output_tokens), \
            SUM(reasoning_tokens) \
          FROM events LEFT JOIN session_first_cw \
