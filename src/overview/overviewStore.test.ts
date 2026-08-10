@@ -1,8 +1,15 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { createOverviewStore, selectDays, selectVisibleTools, type ClockPort } from './overviewStore';
+import {
+  createOverviewStore,
+  selectDays,
+  selectReportInput,
+  selectView,
+  selectVisibleTools,
+  type ClockPort,
+} from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
-import type { SeriesPoint, ScanStatus } from '../types';
+import type { BreakdownRow, SeriesPoint, ScanStatus, Settings } from '../types';
 
 // Fixed "now" = 2026-07-16; a separate virtual clock drives the debounce timers.
 function fakeClock(): ClockPort & { advance(ms: number): void } {
@@ -455,5 +462,182 @@ describe('overviewStore profile', () => {
     const snap = store.getSnapshot();
     expect(snap.profileSessions).toBeNull();
     expect(snap.allPoints).toHaveLength(1); // the series it travelled with still landed
+  });
+});
+
+// ---- the window report's input ----
+
+// The same instant fakeClock freezes, so a window derived here is the window
+// the store loaded against — the report must be a function of rendered state,
+// and a second clock would quietly break that.
+const NOW = new Date(2026, 6, 16);
+
+const SETTINGS: Settings = {
+  theme: 'system', language: 'en', currency: 'USD', usdRate: 1,
+  launchAtLogin: false, autoCheckUpdates: true, firstRunDone: true,
+};
+
+// One row of breakdown('tool') — the Source block's shape. Priced and
+// attributed by default so a test overrides only the field it is about.
+function sourceRow(key: string, over: Partial<BreakdownRow> = {}): BreakdownRow {
+  return {
+    key, source: key,
+    inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
+    totalTokens: 38, requests: 1, cost: 0.25, reasoningTokens: null, convs: 1,
+    cacheEstimated: false, hasUnpriced: false, unattributedTokens: 0,
+    ...over,
+  };
+}
+
+// A booted store over two priced days of Claude usage, with a window Summary
+// worth more than zero so a Cost assertion can tell "carried" from "empty".
+async function mountStoreWithUsage() {
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [pt({ bucket: '2026-07-15', cost: 1.25 }), pt({ bucket: '2026-07-16', cost: 0.5 })],
+    toolRows: [sourceRow('claude')],
+    summary: { ...makeFakeLedger().data.summary, totalTokens: 76, requests: 2, convs: 2, cost: 1.75 },
+  });
+  return { store: await boot(ledger, clock), ledger };
+}
+
+// Sources in `ctxSources` report usage AND Context; `alsoSeedUsageFor` names
+// Sources that appear in the window with usage alone, the way a Source without
+// the capability does. Reasoning and Agents stay null throughout: an
+// unattributable category must be omitted, not written as 0.
+async function mountStoreWithCtxFor(
+  ctxSources: string[],
+  opts: { alsoSeedUsageFor?: string[] } = {},
+) {
+  const usageOnly = opts.alsoSeedUsageFor ?? [];
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [
+      ...ctxSources.map((source) =>
+        pt({ source, ctxMessages: 8000, ctxSystem: 1200, ctxToolcalls: 900, ctxMcp: 300, ctxSkills: 150 }),
+      ),
+      ...usageOnly.map((source) => pt({ source })),
+    ],
+    toolRows: [...ctxSources, ...usageOnly].map((source) => sourceRow(source)),
+    ctxTools: ctxSources.flatMap((source) => [
+      { source, name: 'Read', estTokens: 600, calls: 4 },
+      { source, name: 'mcp__github__list_issues', estTokens: 300, calls: 2 },
+    ]),
+    ctxSkills: ctxSources.map((source) => ({ source, name: 'brainstorming', estTokens: 150, uses: 1 })),
+    // exe/cmd as the scanner stores them: cmd is already the two-word signature.
+    ctxExec: ctxSources.map((source) => ({
+      source, kind: 'bash', exe: 'git', cmd: 'git commit', estTokens: 40, calls: 3,
+    })),
+  });
+  return { store: await boot(ledger, clock), ledger };
+}
+
+// One day of Unpriced usage — cost 0 with hasUnpriced, the only shape a
+// SeriesPoint has for "no priced tokens" — beside a day that really is priced.
+async function mountStoreWithUnpricedDay() {
+  const unpricedDay = '2026-07-15';
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [
+      pt({ bucket: unpricedDay, cost: 0, hasUnpriced: true }),
+      pt({ bucket: '2026-07-16', cost: 2.5 }),
+    ],
+    toolRows: [sourceRow('claude')],
+  });
+  return { store: await boot(ledger, clock), ledger, unpricedDay };
+}
+
+// A Source holding Unreadable Artifacts of unknown age: nothing bounds their
+// content downward, so they could hold usage in any window (ADR-0017).
+async function mountStoreWithUnreadableArtifact() {
+  const clock = fakeClock();
+  const ledger = makeFakeLedger({
+    dayPoints: [pt({})],
+    toolRows: [sourceRow('claude')],
+    scan: {
+      scannedAt: 0,
+      sources: [{
+        source: 'claude', eventsInserted: 0, linesSkipped: 0,
+        artifactsUnreadable: 2, unreadableMaxMtime: null, error: null,
+      }],
+    },
+  });
+  return { store: await boot(ledger, clock), ledger };
+}
+
+describe('selectReportInput', () => {
+  it('loads per-Source usage rows with the rest of the window', async () => {
+    const { store, ledger } = await mountStoreWithUsage();
+    expect(ledger.calls.breakdown.map(([by]) => by)).toContain('tool');
+    expect(store.getSnapshot().sourceRows.length).toBeGreaterThan(0);
+  });
+
+  it('derives Context for every reporting Source, not only the selected one', async () => {
+    const { store } = await mountStoreWithCtxFor(['claude', 'codex']);
+    const s = { ...store.getSnapshot(), selected: 'claude' as const };
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(new Set(input.ctxCategories.map((c) => c.source))).toEqual(new Set(['claude', 'codex']));
+    // cmd carries the whole signature already, so both columns pass through
+    // untouched — nothing here splits, strips or re-joins them.
+    expect(input.ctxExec).toContainEqual({
+      source: 'codex', exe: 'git', cmd: 'git commit', estTokens: 40, calls: 3,
+    });
+  });
+
+  it('leaves out a Source present in the window that reports no Context', async () => {
+    // grok has usage in the window but attributes no Context category.
+    const { store } = await mountStoreWithCtxFor(['claude'], { alsoSeedUsageFor: ['grok'] });
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.ctxCategories.some((c) => c.source === 'grok')).toBe(false);
+    expect(input.sources.some((r) => r.key === 'grok')).toBe(true);
+    // Same rule one level down: claude reports no Reasoning, so that category
+    // is absent rather than present at 0.
+    expect(input.ctxCategories.filter((c) => c.source === 'claude').map((c) => c.category))
+      .not.toContain('reasoning');
+  });
+
+  it('resolves a fully-Unpriced bucket to an unavailable cost rather than zero', async () => {
+    const { store, unpricedDay } = await mountStoreWithUnpricedDay();
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.time.find((r) => r.key === unpricedDay)?.cost).toBe(null);
+    // Not a blanket null: the priced day keeps its figure.
+    expect(input.time.find((r) => r.key === '2026-07-16')?.cost).toBe(2.5);
+  });
+
+  it('carries the Display Currency without moving figures off USD', async () => {
+    const { store } = await mountStoreWithUsage();
+    const s = store.getSnapshot();
+    const view = selectView(s, NOW);
+    const aud = selectReportInput(s, view, { ...SETTINGS, currency: 'AUD', usdRate: 1.52 }, NOW);
+    expect(aud.displayCurrency).toBe('AUD');
+    expect(aud.usdRate).toBe(1.52);
+
+    const usd = selectReportInput(s, view, SETTINGS, NOW);
+    expect(usd.displayCurrency).toBe(null);
+    expect(usd.usdRate).toBe(null);
+    expect(usd.summary.cost).toBe(aud.summary.cost);
+  });
+
+  it("takes a Total window's dates from the Ledger's own extent", async () => {
+    const { store } = await mountStoreWithUsage();
+    const s = { ...store.getSnapshot(), range: 'total' as const };
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.fromIso).toBe(s.firstIso);
+    expect(input.toIso).toBe(s.lastIso);
+  });
+
+  it('marks the window a floor when an Unreadable Artifact could reach it', async () => {
+    const { store } = await mountStoreWithUnreadableArtifact();
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+    expect(input.tokensBasis).toBe('floor');
+
+    // The marker is earned, not constant: the same window with nothing
+    // unreadable reports its tokens exact.
+    const { store: clean } = await mountStoreWithUsage();
+    const c = clean.getSnapshot();
+    expect(selectReportInput(c, selectView(c, NOW), SETTINGS, NOW).tokensBasis).toBe('exact');
   });
 });

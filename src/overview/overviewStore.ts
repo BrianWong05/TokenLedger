@@ -38,6 +38,7 @@ import {
   mcpBars,
   type McpBar,
 } from './data';
+import type { ReportCtxCategory, ReportInput, ReportUsageRow } from './reportCsv';
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
@@ -55,6 +56,7 @@ import type {
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
+  Settings,
 } from '../types';
 
 // ---- clock port (Date + timers), so tests can freeze "now" and drive debounce ----
@@ -83,6 +85,10 @@ export interface OverviewSnapshot {
   // fetch because the Profile ignores the range, and null until it lands.
   profileSessions: number | null;
   modelRows: BreakdownRow[];
+  // One row per Source over the window. Nothing on screen reads these — the
+  // cards derive their totals from the series — but the report needs a Source
+  // block with the same Cost honesty the Model and Project blocks carry.
+  sourceRows: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResource[];
   ctxSkillRows: CtxSkillRow[];
@@ -122,7 +128,7 @@ type State = Omit<
 >;
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
-  'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'projectRows',
+  'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'sourceRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading',
@@ -135,7 +141,7 @@ function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
 class Store implements OverviewStore {
   private state: State = {
     allPoints: null, hourPoints: [], summary: null, profileSessions: null,
-    modelRows: [], projectRows: [],
+    modelRows: [], sourceRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxSkillRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
@@ -180,7 +186,7 @@ class Store implements OverviewStore {
 
     // Idle tick: nothing ingested, no source errored, data already on screen —
     // the Ledger is bit-identical to what's rendered, so skip the series fetch
-    // and the 8-query reload. This is the every-30s steady state of an open
+    // and the 9-query reload. This is the every-30s steady state of an open
     // app; the skip is what lets it sit at ~0 CPU instead of re-rendering the
     // whole dashboard each tick. Prices-rebuilt still forces a reload via its
     // own listener.
@@ -324,8 +330,8 @@ class Store implements OverviewStore {
     }, delay);
   }
 
-  // All jobs land as ONE patch/publish: eight individual landings would
-  // re-render the dashboard eight times per reload (visible as a long-task
+  // All jobs land as ONE patch/publish: nine individual landings would
+  // re-render the dashboard nine times per reload (visible as a long-task
   // burst every refresh tick).
   private runReload(epoch: number, filters: Filters, hourDay: string | null) {
     const land = (fn: () => void) => {
@@ -350,11 +356,12 @@ class Store implements OverviewStore {
       L.ctxSkills(filters),
       L.ctxExec(filters),
       hourDay ? L.series(filters, 'hour') : null,
+      L.breakdown('tool', filters),
     ])
-      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour]) =>
+      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour, sourceRows]) =>
         land(() =>
           this.patch({
-            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows,
+            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, sourceRows,
             ...(hour ? { hourPoints: hour } : {}),
             fetchError: null,
           }),
@@ -469,5 +476,151 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
     unreadable,
+  };
+}
+
+// ---- the window report's input ----
+
+// A BreakdownRow in the report's shape. `key: null` is the Model breakdown's
+// Unattributed Usage row; every other breakdown names its key.
+function reportRow(row: BreakdownRow, withSource: boolean): ReportUsageRow {
+  return {
+    key: row.key ?? 'Unattributed usage',
+    ...(withSource ? { source: row.source ?? '' } : {}),
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    totalTokens: row.totalTokens,
+    requests: row.requests,
+    sessions: row.convs,
+    cost: row.cost,
+    hasUnpriced: row.hasUnpriced,
+    unattributedTokens: row.unattributedTokens,
+    cacheEstimated: row.cacheEstimated,
+  };
+}
+
+// The time block: one row per bucket, summed across Sources as the Trend sums it.
+//
+// SeriesPoint carries `cost: number` with a separate hasUnpriced flag, so
+// unlike Summary and BreakdownRow it cannot express "no priced tokens". Rather
+// than refetch a summary per bucket — which would break the no-refetch property
+// this design rests on — a bucket with unpriced usage and no cost resolves to
+// null. The lean is deliberate: a bucket genuinely worth $0 that also holds an
+// Unpriced Model reads unavailable, erring toward admitting ignorance rather
+// than writing a 0 that means "unknown".
+function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
+  const byBucket = new Map<string, ReportUsageRow>();
+  for (const p of pts) {
+    const row = byBucket.get(p.bucket) ?? {
+      key: p.bucket,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      totalTokens: 0, requests: 0, sessions: 0, cost: 0,
+      hasUnpriced: false, unattributedTokens: 0, cacheEstimated: false,
+    };
+    row.inputTokens += p.inputTokens;
+    row.outputTokens += p.outputTokens;
+    row.cacheReadTokens += p.cacheReadTokens;
+    row.cacheWriteTokens += p.cacheWriteTokens;
+    row.totalTokens += p.totalTokens;
+    row.requests += p.requests;
+    row.sessions += p.convs;
+    row.cost = (row.cost ?? 0) + p.cost;
+    row.hasUnpriced ||= p.hasUnpriced;
+    row.unattributedTokens += p.unattributedTokens;
+    byBucket.set(p.bucket, row);
+  }
+  return [...byBucket.values()]
+    .map((row) => (row.hasUnpriced && row.cost === 0 ? { ...row, cost: null } : row))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+const CTX_EXACT = ['messages', 'system', 'reasoning'] as const;
+const CTX_ESTIMATED = ['toolcalls', 'agents', 'mcp', 'skills'] as const;
+
+export function selectReportInput(
+  s: OverviewSnapshot,
+  view: OverviewView,
+  settings: Settings,
+  now: Date = new Date(),
+): ReportInput {
+  const win = windowOf(s.range, s.from, s.to, now);
+  const summary = s.summary;
+  // A Total window is unbounded, so it reports the Ledger's own extent.
+  const fromIso = win.fromIso ?? s.firstIso;
+  const toIso = win.toIso ?? s.lastIso;
+
+  const ctxCategories: ReportCtxCategory[] = [];
+  const ctxTools: ReportInput['ctxTools'] = [];
+  const ctxMcp: ReportInput['ctxMcp'] = [];
+  const ctxSkills: ReportInput['ctxSkills'] = [];
+  const ctxExec: ReportInput['ctxExec'] = [];
+
+  // Every Source present in the window, so the file does not depend on which
+  // card happened to be selected. A Source with usage but no Context capability
+  // yields no rows rather than a row of zeros.
+  for (const key of Object.keys(view.toolTotals).sort()) {
+    const ctx = ctxTotals(view.rpts, key);
+    for (const category of CTX_EXACT) {
+      const v = ctx[category];
+      if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'exact' });
+    }
+    for (const category of CTX_ESTIMATED) {
+      const v = ctx[category];
+      if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'estimated' });
+    }
+    const toolRows = s.ctxToolRows.filter((r) => r.source === key);
+    for (const cat of toolTree(toolRows, ctx.toolcalls)) {
+      for (const leaf of cat.tools) {
+        ctxTools.push({ source: key, category: cat.label, name: leaf.name, estTokens: leaf.tokens, calls: leaf.calls });
+      }
+    }
+    for (const m of mcpBars(toolRows, ctx.mcp)) {
+      ctxMcp.push({ source: key, name: m.name, estTokens: m.tokens, calls: m.calls });
+    }
+    for (const sk of skillBars(s.ctxSkillRows, key)) {
+      ctxSkills.push({ source: key, name: sk.name, estTokens: sk.tokens, uses: sk.uses });
+    }
+    for (const e of s.ctxExecRows.filter((r) => r.source === key)) {
+      ctxExec.push({ source: key, exe: e.exe, cmd: e.cmd, estTokens: e.estTokens, calls: e.calls });
+    }
+  }
+
+  return {
+    generatedIso: now.toISOString(),
+    fromIso,
+    toIso,
+    grain: view.per,
+    tokensBasis: view.unreadable.length > 0 ? 'floor' : 'exact',
+    // USD needs no conversion note; anything else does, and the figures below
+    // stay USD either way (CONTEXT.md Display Currency).
+    displayCurrency: settings.currency === 'USD' ? null : settings.currency,
+    usdRate: settings.currency === 'USD' ? null : settings.usdRate,
+    summary: {
+      key: `${fromIso} .. ${toIso}`,
+      inputTokens: summary?.inputTokens ?? 0,
+      outputTokens: summary?.outputTokens ?? 0,
+      cacheReadTokens: summary?.cacheReadTokens ?? 0,
+      cacheWriteTokens: summary?.cacheWriteTokens ?? 0,
+      totalTokens: summary?.totalTokens ?? 0,
+      requests: summary?.requests ?? 0,
+      sessions: summary?.convs ?? 0,
+      cost: summary?.cost ?? null,
+      hasUnpriced: summary?.hasUnpriced ?? false,
+      unattributedTokens: summary?.unattributedTokens ?? 0,
+      cacheEstimated: (summary?.cacheEstimatedModels.length ?? 0) > 0,
+    },
+    unpricedModels: summary?.unpricedModels ?? [],
+    cacheEstimatedModels: summary?.cacheEstimatedModels ?? [],
+    time: reportTimeRows(view.rpts),
+    sources: s.sourceRows.map((r) => reportRow(r, false)),
+    models: s.modelRows.map((r) => reportRow(r, true)),
+    projects: s.projectRows.map((r) => reportRow(r, false)),
+    ctxCategories,
+    ctxTools,
+    ctxMcp,
+    ctxSkills,
+    ctxExec,
   };
 }
