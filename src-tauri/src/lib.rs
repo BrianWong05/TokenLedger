@@ -32,6 +32,11 @@ mod source_artifact_validation;
 #[cfg(test)]
 mod invariants;
 
+// Opt-in, release-mode performance standard over a deterministic synthetic
+// Ledger. Kept out of normal tests because it deliberately seeds 100k records.
+#[cfg(test)]
+mod performance;
+
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 

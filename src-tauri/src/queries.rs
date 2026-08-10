@@ -264,11 +264,11 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
 }
 
 pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<TrendPoint>> {
-    let fmt = if bucket == "hour" { "%Y-%m-%d %H:00" } else { "%Y-%m-%d" };
+    let hourly = hourly_flag(bucket);
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
     let sql = format!(
-        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, model, \
+        "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens) \
          FROM events {where_sql} GROUP BY bucket, model ORDER BY bucket"
@@ -368,15 +368,19 @@ fn add_opt(acc: &mut Option<i64>, v: Option<i64>) {
     }
 }
 
+fn hourly_flag(bucket: &str) -> i32 {
+    i32::from(bucket == "hour")
+}
+
 // Per-(bucket, source) series — the real-data twin of the frontend mock's DAYS.
 pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<SeriesPoint>> {
-    let fmt = if bucket == "hour" { "%Y-%m-%d %H:00" } else { "%Y-%m-%d" };
+    let hourly = hourly_flag(bucket);
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
 
     // Tokens/cost need per-model rows for rate resolution.
     let sql = format!(
-        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, model, \
+        "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, source, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens), \
          SUM(ctx_messages), SUM(ctx_system), SUM(ctx_reasoning), SUM(ctx_toolcalls), SUM(ctx_agents), SUM(ctx_mcp), SUM(ctx_skills) \
@@ -455,7 +459,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     // Convs need distinct-count at (bucket, source) — a session can span
     // models, so distinct-per-model counts cannot be summed.
     let sql2 = format!(
-        "SELECT strftime('{fmt}', timestamp, 'unixepoch', 'localtime') AS bucket, source, \
+        "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, source, \
          COUNT(DISTINCT session_id) FROM events {where_sql} GROUP BY bucket, source"
     );
     let mut stmt2 = conn.prepare(&sql2)?;
