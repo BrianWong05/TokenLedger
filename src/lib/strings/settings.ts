@@ -10,6 +10,15 @@ export const settings = {
     'settings.theme.light': 'Light',
     'settings.theme.dark': 'Dark',
     'settings.language': 'Language',
+    'settings.customRange': 'Custom range',
+    'settings.preset': 'Shortcut',
+    'settings.preset.caption': 'Extra shortcuts in the Custom range picker',
+    // The calendar periods themselves are named once, in the overview catalog —
+    // this dropdown shows the same words the picker will.
+    'settings.preset.off': 'Off',
+    'settings.preset.rolling': 'Last N days',
+    'settings.preset.dayCount': 'Day count',
+    'settings.preset.daysUnit': 'days',
     'settings.language.caption': 'English or 繁體中文',
 
     'settings.currencySection': 'Display currency',
@@ -61,6 +70,13 @@ export const settings = {
     'settings.theme.light': '淺色',
     'settings.theme.dark': '深色',
     'settings.language': '語言',
+    'settings.customRange': '自訂範圍',
+    'settings.preset': '快捷範圍',
+    'settings.preset.caption': '自訂範圍選擇器中的額外快捷範圍',
+    'settings.preset.off': '關閉',
+    'settings.preset.rolling': '過去 N 天',
+    'settings.preset.dayCount': '天數',
+    'settings.preset.daysUnit': '天',
     'settings.language.caption': 'English 或 繁體中文',
 
     'settings.currencySection': '顯示貨幣',

@@ -306,25 +306,69 @@ function rangeWindow(
 
 // ---- custom-range picker inputs ----
 
+// The completed calendar periods a reader can add to the picker. Each ends
+// before today, unlike every shipped shortcut — nothing downstream depends on a
+// preset running to the upper bound, but it is the first time one does not.
+// The list is the source of the type, so adding a period is one edit here (and
+// then whatever the label maps stop compiling without).
+export const CALENDAR_PRESETS = ['lastMonth', 'lastQuarter', 'lastYear'] as const;
+export type CalendarPresetKey = (typeof CALENDAR_PRESETS)[number];
+
 // The shortcuts the picker offers. Deliberately none that a segment already
 // covers: Week is the trailing 7 days, Month the trailing 30, Total everything.
 // "This month" earns its place by being the calendar month, not a trailing 30.
-export type PresetKey = 'yesterday' | 'thisMonth' | 'last90' | 'thisYear';
+export type PresetKey =
+  | 'yesterday' | 'thisMonth' | 'last90' | 'thisYear'
+  | CalendarPresetKey;
 
-export interface RangePreset { key: PresetKey; from: string; to: string }
+// One configured shortcut (Settings → Custom range), either a completed
+// calendar period or a rolling window of `days` ending today.
+export type PresetSlot = { key: CalendarPresetKey } | { key: 'rolling'; days: number };
 
-export function presetsOf(firstIso: string, lastIso: string): RangePreset[] {
+// Positional, so a slot cleared in the middle stays a hole: clearing one never
+// renumbers the shortcuts after it.
+export type PresetSlots = (PresetSlot | null)[];
+
+export type RangePreset =
+  | { key: PresetKey; from: string; to: string }
+  | { key: 'rolling'; days: number; from: string; to: string };
+
+export function presetsOf(
+  firstIso: string,
+  lastIso: string,
+  slots: PresetSlots = [],
+): RangePreset[] {
   const shift = (iso: string, n: number) => {
     const d = parseLocalDate(iso);
     d.setDate(d.getDate() + n);
     return isoOf(d);
   };
   const yesterday = shift(lastIso, -1);
+  const d = parseLocalDate(lastIso);
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const q = Math.floor(m / 3) * 3; // first month of the quarter holding lastIso
+  const period = (from: Date, to: Date) => ({ from: isoOf(from), to: isoOf(to) });
+  // Day 0 of a month is the last day of the one before it, and a negative month
+  // rolls into the previous year — so Q1 lands on Oct–Dec with no special case.
+  const calendar: Record<CalendarPresetKey, { from: string; to: string }> = {
+    lastMonth: period(new Date(y, m - 1, 1), new Date(y, m, 0)),
+    lastQuarter: period(new Date(y, q - 3, 1), new Date(y, q, 0)),
+    lastYear: period(new Date(y - 1, 0, 1), new Date(y - 1, 11, 31)),
+  };
   return ([
     { key: 'yesterday', from: yesterday, to: yesterday },
     { key: 'thisMonth', from: `${lastIso.slice(0, 8)}01`, to: lastIso },
     { key: 'last90', from: shift(lastIso, -89), to: lastIso },
     { key: 'thisYear', from: `${lastIso.slice(0, 4)}-01-01`, to: lastIso },
+    // configured shortcuts sit after the shipped ones, in slot order
+    ...slots.flatMap((s) => {
+      if (!s) return [];
+      return [s.key === 'rolling'
+        // N days *including* today, matching the shipped 90-day window
+        ? { key: s.key, days: s.days, from: shift(lastIso, -(s.days - 1)), to: lastIso }
+        : { key: s.key, ...calendar[s.key] }];
+    }),
   ] as RangePreset[])
     // a window falling entirely before the first record would select nothing
     .filter((p) => p.to >= firstIso)

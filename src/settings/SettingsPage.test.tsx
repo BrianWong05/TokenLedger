@@ -10,6 +10,7 @@ import { makeFakeSettings, type FakeSettings } from './settings.fake';
 import { setLaunchAtLogin } from './startup';
 import { I18nProvider } from '../lib/i18n';
 import { STORAGE_KEY } from '../overview/useAutoRefresh';
+import { CUSTOM_PRESETS_KEY } from '../overview/customPresets';
 import type { UpdateStatus } from './settings';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn().mockResolvedValue('1.4.2') }));
@@ -212,6 +213,138 @@ describe('SettingsPage', () => {
     await setValue(q<HTMLInputElement>(c, '.set-rate-input')!, '7.85');
     expect(port.value.currency).toBe('HKD');
     expect(port.value.usdRate).toBe(7.85);
+  });
+
+  // Custom range: up to four extra shortcuts for the Overview's range picker.
+  // Slots are positional and never compact, so the stored value is always four
+  // entries with holes where a slot is off.
+  describe('custom range shortcuts', () => {
+    const stored = () => JSON.parse(localStorage.getItem(CUSTOM_PRESETS_KEY) ?? 'null');
+    const slots = (c: HTMLElement) =>
+      Array.from(c.querySelectorAll('select[aria-label^="Shortcut"]')) as HTMLSelectElement[];
+    const dayInput = (c: HTMLElement, n: number) =>
+      q<HTMLInputElement>(c, `input[aria-label="Day count ${n}"]`);
+
+    beforeEach(() => localStorage.removeItem(CUSTOM_PRESETS_KEY));
+
+    it('offers one empty slot, and reveals the next only once it is filled', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+
+      expect(slots(c)).toHaveLength(1);
+      expect(slots(c)[0].value).toBe('');
+
+      await setValue(slots(c)[0], 'lastMonth');
+
+      expect(stored()).toEqual([{ key: 'lastMonth' }, null, null, null]);
+      expect(slots(c)).toHaveLength(2);
+    });
+
+    it('stops revealing slots at four', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      for (const key of ['lastMonth', 'lastQuarter', 'lastYear', 'rolling']) {
+        await setValue(slots(c)[slots(c).length - 1], key);
+      }
+      expect(slots(c)).toHaveLength(4);
+    });
+
+    it('seeds a day count for a rolling shortcut and persists a valid one', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+
+      expect(dayInput(c, 1)).toBeNull(); // no day field until rolling is chosen
+      await setValue(slots(c)[0], 'rolling');
+
+      expect(dayInput(c, 1)?.value).toBe('14');
+      expect(stored()[0]).toEqual({ key: 'rolling', days: 14 });
+
+      await setValue(dayInput(c, 1)!, '21');
+      expect(stored()[0]).toEqual({ key: 'rolling', days: 21 });
+    });
+
+    it('keeps an out-of-bounds or duplicate day count editable without persisting it', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await setValue(slots(c)[0], 'rolling');
+      await setValue(dayInput(c, 1)!, '21');
+
+      // 1 is today alone (Yesterday means something else), 1826 is past the
+      // ceiling, 90 is the shipped Last-90-days shortcut, and 'abc' is not a
+      // number at all.
+      for (const bad of ['1', '1826', '90', 'abc', '']) {
+        await setValue(dayInput(c, 1)!, bad);
+        expect(dayInput(c, 1)?.value).toBe(bad); // stays editable
+        expect(stored()[0]).toEqual({ key: 'rolling', days: 21 }); // never persisted
+      }
+
+      // 7 and 30 shadow the Week and Month segments and are allowed anyway:
+      // that no-repeat rule governs the set we ship, not the reader's own.
+      for (const ok of ['7', '30', '2', '1825']) {
+        await setValue(dayInput(c, 1)!, ok);
+        expect(stored()[0]).toEqual({ key: 'rolling', days: Number(ok) });
+      }
+    });
+
+    it('reads a configured shortcut back after a remount', async () => {
+      const first = await mount(makeFakeSettings({ firstRunDone: true }));
+      await setValue(slots(first)[0], 'rolling');
+      await setValue(dayInput(first, 1)!, '45');
+      await setValue(slots(first)[1], 'lastYear');
+
+      for (const root of mountedRoots.splice(0)) act(() => root.unmount());
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+
+      expect(slots(c).map((s) => s.value)).toEqual(['rolling', 'lastYear', '']);
+      expect(dayInput(c, 1)?.value).toBe('45');
+    });
+
+    it('marks a calendar period taken by another slot as unavailable', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await setValue(slots(c)[0], 'lastQuarter');
+
+      const taken = (s: HTMLSelectElement, v: string) =>
+        Array.from(s.options).find((o) => o.value === v)!.disabled;
+      expect(taken(slots(c)[1], 'lastQuarter')).toBe(true);
+      expect(taken(slots(c)[1], 'lastMonth')).toBe(false);
+      // The slot holding it still shows it, or it could not stay selected.
+      expect(taken(slots(c)[0], 'lastQuarter')).toBe(false);
+    });
+
+    it('refuses a day count already held by another slot', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await setValue(slots(c)[0], 'rolling');
+      await setValue(dayInput(c, 1)!, '30');
+      await setValue(slots(c)[1], 'rolling');
+      await setValue(dayInput(c, 2)!, '30');
+
+      expect(stored()[1]).not.toEqual({ key: 'rolling', days: 30 });
+    });
+
+    it('leaves a cleared slot empty instead of pulling the later ones up', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await setValue(slots(c)[0], 'lastMonth');
+      await setValue(slots(c)[1], 'lastYear');
+
+      await setValue(slots(c)[0], '');
+
+      expect(stored()).toEqual([null, { key: 'lastYear' }, null, null]);
+      expect(slots(c)).toHaveLength(3); // the hole and the filled slot both stay
+      expect(slots(c)[0].value).toBe('');
+      expect(slots(c)[1].value).toBe('lastYear');
+    });
+
+    it('reads malformed stored shortcuts as none configured', async () => {
+      localStorage.setItem(CUSTOM_PRESETS_KEY, '{"not":"an array"}');
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      expect(slots(c)).toHaveLength(1);
+      expect(slots(c)[0].value).toBe('');
+    });
+
+    it('drops stored entries that are not usable shortcuts', async () => {
+      localStorage.setItem(
+        CUSTOM_PRESETS_KEY,
+        JSON.stringify([{ key: 'rolling', days: 9999 }, { key: 'nonsense' }, { key: 'lastYear' }]),
+      );
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      expect(slots(c).map((s) => s.value)).toEqual(['', '', 'lastYear', '']);
+    });
   });
 
   it('keeps an invalid rate editable without persisting it', async () => {
