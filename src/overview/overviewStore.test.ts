@@ -241,6 +241,80 @@ describe('overviewStore reload orchestration', () => {
     expect(ledger.calls.summary.length).toBe(m);
   });
 
+  it('returning to an already-loaded window reuses the cached reload: no refetch, identical references', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock);
+
+    store.setRange('week');
+    clock.advance(0);
+    await flush();
+    const weekSummary = store.getSnapshot().summary;
+    const weekModels = store.getSnapshot().modelRows;
+    const n = ledger.calls.summary.length;
+
+    store.setRange('month');
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.summary.length).toBe(n + 1);
+
+    store.setRange('week');
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.summary.length).toBe(n + 1); // served from cache
+    expect(store.getSnapshot().summary).toBe(weekSummary); // same reference → memoized panels skip
+    expect(store.getSnapshot().modelRows).toBe(weekModels);
+    expect(store.getSnapshot().reloading).toBe(false); // the cached landing cleared the flag
+  });
+
+  it('a scan that ingested Usage Records invalidates every cached window', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock); // total: cached
+
+    store.setRange('week');
+    clock.advance(0);
+    await flush();
+
+    ledger.data.scan = {
+      scannedAt: 0,
+      sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
+    };
+    await store.refresh(); // reloads the current (week) window fresh
+    clock.advance(0);
+    await flush();
+    const n = ledger.calls.summary.length;
+
+    store.setRange('total'); // was cached pre-ingest; must refetch
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.summary.length).toBe(n + 1);
+  });
+
+  // eventsInserted === 0 does not mean unchanged: keep-max adapters upgrade
+  // existing Usage Records in place (a turn's output_tokens growing) while
+  // reporting nothing inserted. Every scan must therefore drop the cache,
+  // even one the idle gate then swallows.
+  it('a zero-insert scan still invalidates the cache', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock); // total: cached
+
+    store.setRange('week');
+    clock.advance(0);
+    await flush();
+
+    await store.refresh(); // default scan: nothing inserted → idle-gated
+    clock.advance(0);
+    await flush();
+    const n = ledger.calls.summary.length;
+
+    store.setRange('total'); // must refetch, not replay the cached total
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.summary.length).toBe(n + 1);
+  });
+
   it('Day range fetches the hourly series; leaving Day clears hourPoints', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({

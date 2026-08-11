@@ -178,6 +178,11 @@ fn cost_contribution(
 pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
+    // Two cheap passes, deliberately: folding the Session count into this scan
+    // (GROUP BY model, source, session) was measured SLOWER on a real Ledger —
+    // grouping into 37 model buckets plus a separate COUNT DISTINCT beats one
+    // scan paying a fat string key per row. breakdown() reaches the opposite
+    // verdict because its group key is already wide; see that comment.
     let sql = format!(
         "SELECT model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
@@ -503,19 +508,28 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     let src_expr = if group_col == "model" { "source" } else { "NULL" };
     let rates = RateMap::load(conn)?;
     let (where_sql, params) = build_where(f);
+    // One walk of the window at (grp, src, model, session) grain: the per-group
+    // distinct-Session count used to be a second full scan of the same rows.
+    // Measured ~25-35% faster on a real Ledger's month/total windows — this
+    // query's group key is already wide, so adding session costs little next to
+    // the scan it saves (summary() measures the other way; see its comment).
+    // The finer rows re-aggregate to (grp, src, model) grain below — integer
+    // sums are exact, so the pricing loop sees the same per-model figures the
+    // GROUP BY grp, src, model query produced.
     let sql = format!(
-        "SELECT {group_col} AS grp, {src_expr} AS src, model, \
+        "SELECT {group_col} AS grp, {src_expr} AS src, model, session_id, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
-         FROM events {where_sql} GROUP BY grp, src, model"
+         FROM events {where_sql} GROUP BY grp, src, model, session_id"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
             r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
-            r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
-            r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
-            r.get::<_, Option<i64>>(9)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
+            r.get::<_, i64>(7)?, r.get::<_, i64>(8)?, r.get::<_, i64>(9)?,
+            r.get::<_, Option<i64>>(10)?,
         ))
     })?;
 
@@ -526,11 +540,36 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
             Some(group.unwrap_or_else(|| "unknown".to_string()))
         }
     };
-    let mut map: HashMap<(Option<String>, Option<String>), Agg> = HashMap::new();
+    // BTreeMap so each (grp, src) group's pricing runs over its models in the
+    // same sorted order the old GROUP BY emitted them.
+    type Key3 = (Option<String>, Option<String>, Option<String>);
+    let mut subs: std::collections::BTreeMap<Key3, ([i64; 6], Option<i64>)> = Default::default();
+    // Convs at the row's own grain (distinct sessions can span models); a row
+    // with no session identity counts zero distinct, like the old
+    // COUNT(DISTINCT session_id) pass.
+    let mut sessions: std::collections::HashSet<(Option<String>, Option<String>, String)> =
+        Default::default();
     for row in rows {
-        let (grp, src, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
-        let key = (group_key(grp), src);
-        let a = map.entry(key).or_default();
+        let (grp, src, model, session, in_, out, cr, w5, w1, calls, reasoning) = row?;
+        let grp = group_key(grp);
+        if let Some(session) = session {
+            sessions.insert((grp.clone(), src.clone(), session));
+        }
+        let (sums, r_acc) = subs.entry((grp, src, model)).or_default();
+        sums[0] += in_;
+        sums[1] += out;
+        sums[2] += cr;
+        sums[3] += w5;
+        sums[4] += w1;
+        sums[5] += calls;
+        if let Some(r) = reasoning {
+            *r_acc = Some(r_acc.unwrap_or(0) + r);
+        }
+    }
+
+    let mut map: HashMap<(Option<String>, Option<String>), Agg> = HashMap::new();
+    for ((grp, src, model), ([in_, out, cr, w5, w1, calls], reasoning)) in subs {
+        let a = map.entry((grp, src)).or_default();
         a.input += in_;
         a.output += out;
         a.cache_read += cr;
@@ -547,21 +586,9 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         a.unpriced |= contribution.unpriced;
         a.unattributed += contribution.unattributed_tokens;
     }
-
-    // Convs at the row's own grain (distinct sessions can span models).
-    let sql2 = format!(
-        "SELECT {group_col} AS grp, {src_expr} AS src, COUNT(DISTINCT session_id) \
-         FROM events {where_sql} GROUP BY grp, src"
-    );
-    let mut stmt2 = conn.prepare(&sql2)?;
-    let crows = stmt2.query_map(params_from_iter(params.iter()), |r| {
-        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?))
-    })?;
-    for row in crows {
-        let (grp, src, convs) = row?;
-        let key = (group_key(grp), src);
-        if let Some(a) = map.get_mut(&key) {
-            a.convs = convs;
+    for (grp, src, _) in sessions {
+        if let Some(a) = map.get_mut(&(grp, src)) {
+            a.convs += 1;
         }
     }
 
