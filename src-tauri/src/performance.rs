@@ -132,6 +132,53 @@ fn performance_standard_large_ledger() {
     }
 }
 
+// Temporary comparison bench: per-query timings against a private Ledger
+// snapshot (TOKENLEDGER_PERF_DB). Prints cardinality and timing only.
+#[test]
+#[ignore = "manual: TOKENLEDGER_PERF_DB=<snapshot> cargo test --release real_range_timings -- --ignored --nocapture"]
+fn real_range_timings() {
+    let path = std::env::var_os("TOKENLEDGER_PERF_DB").expect("set TOKENLEDGER_PERF_DB");
+    let conn =
+        rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    db::register_query_functions(&conn).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let windows: [(&str, Option<i64>); 4] = [
+        ("day", Some(now - DAY_SECONDS)),
+        ("week", Some(now - 7 * DAY_SECONDS)),
+        ("month", Some(now - 30 * DAY_SECONDS)),
+        ("total", None),
+    ];
+    for (name, start_ts) in windows {
+        let filters = Filters { start_ts, ..Filters::default() };
+        for _ in 0..2 {
+            // warm-up pass first; the second line is the one to read
+            let started = Instant::now();
+            let s = queries::summary(&conn, &filters).unwrap();
+            let t_summary = started.elapsed();
+            let started = Instant::now();
+            let m = queries::breakdown(&conn, "model", &filters).unwrap();
+            let t_model = started.elapsed();
+            let started = Instant::now();
+            let p = queries::breakdown(&conn, "project", &filters).unwrap();
+            let t_project = started.elapsed();
+            let started = Instant::now();
+            let t = queries::breakdown(&conn, "tool", &filters).unwrap();
+            let t_tool = started.elapsed();
+            eprintln!(
+                "PERF {name}: summary={:.1}ms model={:.1}ms project={:.1}ms tool={:.1}ms rows={}/{}/{} convs={}",
+                t_summary.as_secs_f64() * 1e3,
+                t_model.as_secs_f64() * 1e3,
+                t_project.as_secs_f64() * 1e3,
+                t_tool.as_secs_f64() * 1e3,
+                m.len(), p.len(), t.len(), s.convs,
+            );
+        }
+    }
+}
+
 #[test]
 fn cached_local_bucketing_matches_sqlite_reference() {
     let dir = tempfile::tempdir().unwrap();
