@@ -110,6 +110,14 @@ export interface OverviewSnapshot {
   from: string;
   to: string;
   loading: boolean;
+  // A window-scoped reload is scheduled or in flight, so the fields it owns —
+  // summary, the three breakdowns, every ctx row — still describe the PREVIOUS
+  // window while range/from/to already name the new one. The screen wears that
+  // gap as a stale headline beside a fresh chart and it passes in a blink; a
+  // file saved in it would carry the new window in its header over the old
+  // window's figures, permanently. Anything that must state which window its
+  // figures belong to has to wait for this to clear.
+  reloading: boolean;
 }
 
 export interface OverviewStore {
@@ -125,14 +133,14 @@ export interface OverviewStore {
 // Raw state; derived fields live only in the built snapshot.
 type State = Omit<
   OverviewSnapshot,
-  'firstIso' | 'lastIso' | 'from' | 'to' | 'loading'
+  'firstIso' | 'lastIso' | 'from' | 'to' | 'loading' | 'reloading'
 >;
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'sourceRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
-  'firstIso', 'lastIso', 'from', 'to', 'loading',
+  'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading',
 ];
 
 function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
@@ -150,6 +158,10 @@ class Store implements OverviewStore {
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
   private epoch = 0; // monotonic; supersedes in-flight reload responses
+  // The epoch whose reload actually landed. Reusing the counter that already
+  // decides which response wins means "still loading" needs no second flag to
+  // keep in sync with it: scheduleReload bumps epoch, land() catches this up.
+  private loadedEpoch = 0;
   private reloadTimer: number | null = null; // pending debounce timer
 
   constructor(private ledger: LedgerPort, private clock: ClockPort) {
@@ -288,6 +300,7 @@ class Store implements OverviewStore {
       from: d.from,
       to: d.to,
       loading: s.allPoints === null,
+      reloading: this.epoch !== this.loadedEpoch,
     };
   }
 
@@ -329,14 +342,23 @@ class Store implements OverviewStore {
       this.reloadTimer = null;
       this.runReload(epoch, filters, hourDay);
     }, delay);
+    // The epoch bump above is what makes `reloading` true, and every caller
+    // published BEFORE calling here — so without this the new window would be
+    // on screen with nothing announcing that its figures have not caught up.
+    this.publish();
   }
 
   // All jobs land as ONE patch/publish: nine individual landings would
   // re-render the dashboard nine times per reload (visible as a long-task
   // burst every refresh tick).
   private runReload(epoch: number, filters: Filters, hourDay: string | null) {
+    // Both the success and the failure path land, so a reload that throws
+    // clears `reloading` too — fetchError is how a failure is reported, and
+    // leaving the flag set would disable the export button for good.
     const land = (fn: () => void) => {
-      if (epoch === this.epoch) fn();
+      if (epoch !== this.epoch) return;
+      this.loadedEpoch = epoch;
+      fn();
     };
     const L = this.ledger;
     // hourPoints describe exactly one day. Drop them when the window stops being

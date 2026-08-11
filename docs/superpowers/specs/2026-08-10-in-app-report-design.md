@@ -241,9 +241,24 @@ renders `scanError || fetchError` in its `tt-error` band (`:209-213`);
 toast infrastructure is introduced.
 
 `exporting` disables the button with `aria-busy`. The button is also disabled
-while the window is loading, since there is nothing to serialize. It is **not**
-disabled on an empty window: a window with no usage is a legitimate report
-costing `$0.00`, the one zero that is a figure rather than a gap.
+while the window is loading, since there is nothing to serialize; with no
+Summary, since the report input's token fields are non-nullable and an absent
+Summary would serialize as a `0` meaning "unknown"; and while the window is
+**reloading**. It is **not** disabled on an empty window: a window with no usage
+is a legitimate report costing `$0.00`, the one zero that is a figure rather
+than a gap.
+
+`reloading` is the gap the purity property does not close on its own. A range
+click moves `range`/`from`/`to` at once and schedules the reload that will
+replace Summary, the three breakdowns and every Context row; until it lands the
+snapshot names one window and holds another's figures. The screen shows that
+too — a stale headline beside a fresh chart — but wears it for an instant,
+whereas a file saved in the gap states the new window in its header over the old
+window's figures and keeps the claim forever. The store publishes the flag by
+comparing the epoch it last landed against the epoch currently scheduled, so it
+cannot drift from the counter that already decides which response wins; both the
+success and failure paths settle it, since a reload that fails reports through
+`fetchError` and must not leave the button dead.
 
 Assembly cannot fail — it is a pure function over state that has already
 rendered.

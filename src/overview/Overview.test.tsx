@@ -787,6 +787,30 @@ describe('Export', () => {
     expect(exportBtn().disabled).toBe(false);
   });
 
+  // A Summary that has landed is not the same as a Summary for THIS window.
+  // Switching range moves the header instantly and leaves every figure behind
+  // until the reload lands; exporting in that gap would write the new window
+  // over the old window's numbers, and unlike the screen a file keeps it.
+  it('withholds Export while the window has moved ahead of its figures', async () => {
+    const ledger = makeFakeLedger({ dayPoints: [pt({}), pt({ bucket: '2026-07-15' })], summary });
+    const { container, exporter } = await mountOverview({ ledger });
+    const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
+    expect(exportBtn().disabled).toBe(false);
+
+    ledger.hold('summary');
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.tt-toolbar .tt-seg button'))
+      .find((b) => b.textContent === 'Week')!);
+    expect(exportBtn().disabled).toBe(true);
+
+    // Even clicked through, nothing is written: the gate is the button's own.
+    await click(exportBtn());
+    expect(exporter.calls).toHaveLength(0);
+
+    ledger.resolveHeld('summary', ledger.held('summary').length - 1);
+    await settle();
+    expect(exportBtn().disabled).toBe(false);
+  });
+
   // Two instants, deliberately different. The window and its grain describe the
   // render being exported; `generated` describes the save. A tab rendered on
   // the 20th and exported on the 25th must write the 20th's trailing-30-day

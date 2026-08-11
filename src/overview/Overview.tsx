@@ -104,7 +104,7 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
   }, []);
 
   const {
-    loading, scanError, fetchError, scanSources, allPoints,
+    loading, reloading, scanError, fetchError, scanSources, allPoints,
     refresh, refreshing, scanAt,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
@@ -243,7 +243,13 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
           // input's token fields are non-nullable, so an absent Summary
           // serializes as 0, a figure that would mean "unknown". `loading` does
           // not cover it: that is the series alone.
-          disabled={exporting || loading || summary === null}
+          //
+          // `reloading` is the window having moved ahead of the figures that
+          // describe it — switch range and click here inside the reload and the
+          // file would state the new window over the old window's Summary,
+          // Sources, Models, Projects and Context. The screen shows that gap
+          // too, but wears it for an instant; a file keeps it.
+          disabled={exporting || loading || reloading || summary === null}
           aria-busy={exporting}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

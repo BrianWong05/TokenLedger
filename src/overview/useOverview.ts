@@ -128,6 +128,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
 
   return {
     loading: snap.loading,
+    reloading: snap.reloading,
     // Full unbounded daily series — the trend enlarge buckets it for its own
     // local window (the store keeps this reference stable across ticks).
     allPoints: snap.allPoints ?? [],

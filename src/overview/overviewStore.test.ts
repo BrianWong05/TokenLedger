@@ -329,6 +329,50 @@ describe('overviewStore reload orchestration', () => {
     expect(store.getSnapshot().hourPoints).toBe(held);
   });
 
+  // range/from/to move on the click; summary and the breakdowns move when the
+  // reload lands. Between the two the snapshot names one window and holds
+  // another's figures — survivable on screen, not in a saved file, so the gap
+  // has to be visible to anything that states which window its figures are for.
+  it('reports reloading from the range click until that window\'s figures land', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+    });
+    const store = await boot(ledger, clock);
+    expect(store.getSnapshot().reloading).toBe(false);
+
+    ledger.hold('summary');
+    store.setRange('week');
+    // The window has already moved, before any figure describing it exists.
+    expect(store.getSnapshot().range).toBe('week');
+    expect(store.getSnapshot().reloading).toBe(true);
+
+    clock.advance(0); // debounce fires, queries go out
+    await flush();
+    expect(store.getSnapshot().reloading).toBe(true);
+
+    ledger.resolveHeld('summary', 0);
+    await flush();
+    expect(store.getSnapshot().reloading).toBe(false);
+  });
+
+  // The flag gates a button, so latching it would disable that button for the
+  // rest of the session. A failed reload reports through fetchError and still
+  // settles: the figures on screen are once again the ones the window names.
+  it('settles reloading when the reload fails, rather than latching it', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({})] });
+    const store = await boot(ledger, clock);
+
+    ledger.failNext('summary', 'boom');
+    store.setRange('week');
+    expect(store.getSnapshot().reloading).toBe(true);
+
+    clock.advance(0);
+    await flush();
+    expect(store.getSnapshot().fetchError).toContain('boom');
+    expect(store.getSnapshot().reloading).toBe(false);
+  });
 });
 
 describe('overviewStore first-load vs later series failure', () => {
