@@ -15,8 +15,8 @@ rough edges there, and please report them.
 ## What it does
 
 - **Zero-effort tracking** — reads local logs automatically, no manual entry
-  and no API keys. Scans on launch and on a configurable timer (off / 30s /
-  60s, default 30s).
+  and no API keys. Scans on launch and on a configurable timer (10s / 30s /
+  60s / 5m, default 30s, or any whole number of seconds from 5s to 24h).
 - **Per-request token detail** — input, output, cache write (5m / 1h TTL
   split), and cache read, normalized so the four categories are mutually
   exclusive across every source.
