@@ -4,6 +4,11 @@
 // Override). Empty field => null bucket; at least one non-empty enables Save.
 // Data flows through PricingPort; Settings is read only for the currency note.
 import { useEffect, useState } from 'react';
+// The dialog's own stylesheet. It rides with the component, not with the
+// Pricing page — the Overview opens this editor without ever loading the
+// lazy PricingPage chunk, and got raw unstyled markup when the CSS was only
+// imported there.
+import './pricing.css';
 import { useT } from '../lib/i18n';
 import type { ModelPricing, RatesPerTok, Settings } from '../types';
 import type { PricingPort } from './pricing';
