@@ -132,8 +132,10 @@ fn performance_standard_large_ledger() {
     }
 }
 
-// Temporary comparison bench: per-query timings against a private Ledger
-// snapshot (TOKENLEDGER_PERF_DB). Prints cardinality and timing only.
+// Manual comparison bench: per-query timings against a private Ledger
+// snapshot (TOKENLEDGER_PERF_DB). Prints cardinality and timing only. Kept
+// permanently — this is the measurement the queries.rs one-scan-vs-two
+// comments rest on, and rebuilding it ad hoc is how it kept getting lost.
 #[test]
 #[ignore = "manual: TOKENLEDGER_PERF_DB=<snapshot> cargo test --release real_range_timings -- --ignored --nocapture"]
 fn real_range_timings() {
@@ -168,7 +170,7 @@ fn real_range_timings() {
             let t = queries::breakdown(&conn, "tool", &filters).unwrap();
             let t_tool = started.elapsed();
             eprintln!(
-                "PERF {name}: summary={:.1}ms model={:.1}ms project={:.1}ms tool={:.1}ms rows={}/{}/{} convs={}",
+                "PERF {name}: summary={:.1}ms model={:.1}ms project={:.1}ms source={:.1}ms rows={}/{}/{} convs={}",
                 t_summary.as_secs_f64() * 1e3,
                 t_model.as_secs_f64() * 1e3,
                 t_project.as_secs_f64() * 1e3,
