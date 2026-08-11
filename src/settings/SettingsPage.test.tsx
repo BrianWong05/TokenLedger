@@ -11,6 +11,7 @@ import { setLaunchAtLogin } from './startup';
 import { I18nProvider } from '../lib/i18n';
 import { STORAGE_KEY } from '../overview/useAutoRefresh';
 import { CUSTOM_PRESETS_KEY } from '../overview/customPresets';
+import { publishFirstRecord } from '../overview/ledgerExtent';
 import type { UpdateStatus } from './settings';
 
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn().mockResolvedValue('1.4.2') }));
@@ -104,6 +105,10 @@ const refreshSeg = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('.set-seg-mono button')) as HTMLButtonElement[];
 const q = <T extends Element>(c: ParentNode, s: string) => c.querySelector(s) as T | null;
 
+// The exchange rate shares .set-rate-input with the Custom-range day count, so
+// it is addressed by its own label.
+const RATE_INPUT = 'input[aria-label="Exchange rate"]';
+
 // The dropdowns are the page's own button + menu, not a <select> (a native
 // option list is drawn by the OS and takes no app styling): the button carries
 // the chosen value, and choosing means open it, then click the option.
@@ -131,7 +136,7 @@ describe('SettingsPage', () => {
 
     // Display currency + exchange rate (non-USD shows the rate row).
     expect(chosen(dropdown(c, 'Currency'))).toBe('HKD');
-    expect(q<HTMLInputElement>(c, '.set-rate-input')?.value).toBe('7.8');
+    expect(q<HTMLInputElement>(c, RATE_INPUT)?.value).toBe('7.8');
 
     // Startup + updates.
     expect(c.querySelector('[aria-label="Launch at login"]')).not.toBeNull();
@@ -218,157 +223,180 @@ describe('SettingsPage', () => {
     const port = makeFakeSettings({ firstRunDone: true, currency: 'USD' });
     const c = await mount(port);
 
-    expect(q<HTMLInputElement>(c, '.set-rate-input')).toBeNull();
+    expect(q<HTMLInputElement>(c, RATE_INPUT)).toBeNull();
 
     await pick(dropdown(c, 'Currency'), 'HKD');
-    expect(q<HTMLInputElement>(c, '.set-rate-input')).not.toBeNull();
+    expect(q<HTMLInputElement>(c, RATE_INPUT)).not.toBeNull();
 
-    await setValue(q<HTMLInputElement>(c, '.set-rate-input')!, '7.85');
+    await setValue(q<HTMLInputElement>(c, RATE_INPUT)!, '7.85');
     expect(port.value.currency).toBe('HKD');
     expect(port.value.usdRate).toBe(7.85);
   });
 
-  // Custom range: up to four configured Presets for the Overview's range
-  // picker. Slots are positional and never compact, so the stored value is
-  // always four entries with holes where a slot is off.
+  // Custom range: up to four configured shortcuts for the Overview's range
+  // picker. One add row builds them; each configured one gets a row of its own,
+  // captioned with the window it resolves to. Slots stay positional and never
+  // compact, so the stored value is always four entries with holes where one was
+  // removed.
   describe('custom range presets', () => {
     const stored = () => JSON.parse(localStorage.getItem(CUSTOM_PRESETS_KEY) ?? 'null');
-    const slots = (c: HTMLElement) =>
-      Array.from(c.querySelectorAll('button[aria-label^="Preset"]')) as HTMLButtonElement[];
-    const dayInput = (c: HTMLElement, n: number) =>
-      q<HTMLInputElement>(c, `input[aria-label="Day count ${n}"]`);
+    const types = (c: HTMLElement) =>
+      Array.from(
+        c.querySelectorAll('.set-seg[aria-label="Preset type"] button'),
+      ) as HTMLButtonElement[];
+    const type = (c: HTMLElement, text: string) => types(c).find((b) => b.textContent === text)!;
+    const dayInput = (c: HTMLElement) => q<HTMLInputElement>(c, 'input[aria-label="Day count"]');
+    const addBtn = (c: HTMLElement) =>
+      Array.from(c.querySelectorAll('.set-btn')).find(
+        (b) => b.textContent === 'Add',
+      ) as HTMLButtonElement;
+    const removes = (c: HTMLElement) =>
+      Array.from(c.querySelectorAll('button[aria-label^="Remove "]')) as HTMLButtonElement[];
+    // Each configured Preset, by the label its row shows.
+    const shortcuts = (c: HTMLElement) =>
+      removes(c).map((b) => b.getAttribute('aria-label')!.replace('Remove ', ''));
+    const captionOf = (c: HTMLElement, n: number) =>
+      removes(c)[n].closest('.set-row')!.querySelector('.set-row-caption')!.textContent;
 
-    beforeEach(() => localStorage.removeItem(CUSTOM_PRESETS_KEY));
-
-    it('offers one empty slot, and reveals the next only once it is filled', async () => {
-      const c = await mount(makeFakeSettings({ firstRunDone: true }));
-
-      expect(slots(c)).toHaveLength(1);
-      expect(chosen(slots(c)[0])).toBe('');
-
-      await pick(slots(c)[0], 'lastMonth');
-
-      expect(stored()).toEqual([{ key: 'lastMonth' }, null, null, null]);
-      expect(slots(c)).toHaveLength(2);
+    // The extent is module state published by the Overview; captions resolve
+    // against the plain calendar period until it lands.
+    beforeEach(() => {
+      localStorage.removeItem(CUSTOM_PRESETS_KEY);
+      publishFirstRecord('');
     });
 
-    it('stops revealing slots at four', async () => {
+    it('starts with none configured and adds the seeded rolling preset', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      for (const key of ['lastMonth', 'lastQuarter', 'lastYear', 'rolling']) {
-        await pick(slots(c)[slots(c).length - 1], key);
+
+      expect(c.textContent).toContain('None yet');
+      expect(shortcuts(c)).toEqual([]);
+      expect(dayInput(c)?.value).toBe('14'); // first count nothing has claimed
+
+      await click(addBtn(c));
+
+      expect(stored()).toEqual([{ key: 'rolling', days: 14 }, null, null, null]);
+      expect(shortcuts(c)).toEqual(['Last 14 days']);
+      expect(c.textContent).not.toContain('None yet');
+    });
+
+    it('captions a preset with the window it resolves to', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await click(addBtn(c));
+
+      // 14 days ending today, so only the span is fixed enough to assert on;
+      // presetsOf owns the dates and is tested against them directly.
+      expect(captionOf(c, 0)).toMatch(/^.+ – .+ · 14 days$/);
+    });
+
+    it('says so when the Ledger has no history for a preset yet', async () => {
+      // A Ledger that starts today: last year ended long before the first
+      // record, so the picker will not offer that preset at all.
+      publishFirstRecord(new Date().toISOString().slice(0, 10));
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await click(type(c, 'Last year'));
+      await click(addBtn(c));
+
+      expect(captionOf(c, 0)).toContain('not offered yet');
+    });
+
+    it('adds a calendar period and will not offer it twice', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+
+      await click(type(c, 'Last quarter'));
+      expect(dayInput(c)).toBeNull(); // no day field outside the rolling type
+      await click(addBtn(c));
+
+      expect(stored()[0]).toEqual({ key: 'lastQuarter' });
+      expect(type(c, 'Last quarter').disabled).toBe(true);
+      expect(type(c, 'Last month').disabled).toBe(false);
+      // adding one falls back to the type that is always available
+      expect(dayInput(c)?.value).toBe('14');
+    });
+
+    it('stops adding at four', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      for (const label of ['Last N days', 'Last month', 'Last quarter', 'Last year']) {
+        await click(type(c, label));
+        await click(addBtn(c));
       }
-      expect(slots(c)).toHaveLength(4);
+
+      expect(shortcuts(c)).toHaveLength(4);
+      expect(addBtn(c).disabled).toBe(true);
     });
 
-    it('seeds a day count for a rolling shortcut and persists a valid one', async () => {
+    it('keeps an out-of-bounds or duplicate day count editable without adding it', async () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-
-      expect(dayInput(c, 1)).toBeNull(); // no day field until rolling is chosen
-      await pick(slots(c)[0], 'rolling');
-
-      expect(dayInput(c, 1)?.value).toBe('14');
-      expect(stored()[0]).toEqual({ key: 'rolling', days: 14 });
-
-      await setValue(dayInput(c, 1)!, '21');
-      expect(stored()[0]).toEqual({ key: 'rolling', days: 21 });
-    });
-
-    it('keeps an out-of-bounds or duplicate day count editable without persisting it', async () => {
-      const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await pick(slots(c)[0], 'rolling');
-      await setValue(dayInput(c, 1)!, '21');
+      await setValue(dayInput(c)!, '21');
+      await click(addBtn(c));
 
       // 1 is today alone (Yesterday means something else), 1826 is past the
-      // ceiling, 90 is the shipped Last-90-days shortcut, and 'abc' is not a
-      // number at all.
-      for (const bad of ['1', '1826', '90', 'abc', '']) {
-        await setValue(dayInput(c, 1)!, bad);
-        expect(dayInput(c, 1)?.value).toBe(bad); // stays editable
-        expect(stored()[0]).toEqual({ key: 'rolling', days: 21 }); // never persisted
+      // ceiling, 90 is the shipped Last-90-days shortcut, 21 is now taken, and
+      // 'abc' is not a number at all.
+      for (const bad of ['1', '1826', '90', '21', 'abc', '']) {
+        await setValue(dayInput(c)!, bad);
+        expect(dayInput(c)?.value).toBe(bad); // stays editable
+        expect(addBtn(c).disabled).toBe(true);
       }
+      expect(stored()).toEqual([{ key: 'rolling', days: 21 }, null, null, null]);
 
       // 7 and 30 shadow the Week and Month segments and are allowed anyway:
       // that no-repeat rule governs the set we ship, not the reader's own.
       for (const ok of ['7', '30', '2', '1825']) {
-        await setValue(dayInput(c, 1)!, ok);
-        expect(stored()[0]).toEqual({ key: 'rolling', days: Number(ok) });
+        await setValue(dayInput(c)!, ok);
+        expect(addBtn(c).disabled).toBe(false);
       }
     });
 
-    it('reads a configured shortcut back after a remount', async () => {
+    it('leaves a removed preset as a hole for the next one to fill', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await click(type(c, 'Last month'));
+      await click(addBtn(c));
+      await click(type(c, 'Last year'));
+      await click(addBtn(c));
+
+      await click(removes(c)[0]);
+
+      expect(stored()).toEqual([null, { key: 'lastYear' }, null, null]);
+      expect(shortcuts(c)).toEqual(['Last year']);
+
+      await click(addBtn(c));
+      expect(stored()).toEqual([{ key: 'rolling', days: 14 }, { key: 'lastYear' }, null, null]);
+    });
+
+    it('reads configured presets back after a remount', async () => {
       const first = await mount(makeFakeSettings({ firstRunDone: true }));
-      await pick(slots(first)[0], 'rolling');
-      await setValue(dayInput(first, 1)!, '45');
-      await pick(slots(first)[1], 'lastYear');
+      await setValue(dayInput(first)!, '45');
+      await click(addBtn(first));
+      await click(type(first, 'Last year'));
+      await click(addBtn(first));
 
       for (const root of mountedRoots.splice(0)) act(() => root.unmount());
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
 
-      expect(slots(c).map(chosen)).toEqual(['rolling', 'lastYear', '']);
-      expect(dayInput(c, 1)?.value).toBe('45');
+      expect(shortcuts(c)).toEqual(['Last 45 days', 'Last year']);
     });
 
-    it('marks a calendar period taken by another slot as unavailable', async () => {
-      const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await pick(slots(c)[0], 'lastQuarter');
-
-      // The options only exist while the menu is open, so read each one there.
-      const taken = async (btn: HTMLButtonElement, v: string) => {
-        await click(btn);
-        const off = option(btn, v)!.disabled;
-        await click(btn);
-        return off;
-      };
-      expect(await taken(slots(c)[1], 'lastQuarter')).toBe(true);
-      expect(await taken(slots(c)[1], 'lastMonth')).toBe(false);
-      // The slot holding it still shows it, or it could not stay selected.
-      expect(await taken(slots(c)[0], 'lastQuarter')).toBe(false);
-    });
-
-    it('refuses a day count already held by another slot', async () => {
-      const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await pick(slots(c)[0], 'rolling');
-      await setValue(dayInput(c, 1)!, '30');
-      await pick(slots(c)[1], 'rolling');
-      await setValue(dayInput(c, 2)!, '30');
-
-      expect(stored()[1]).not.toEqual({ key: 'rolling', days: 30 });
-    });
-
-    it('leaves a cleared slot empty instead of pulling the later ones up', async () => {
-      const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      await pick(slots(c)[0], 'lastMonth');
-      await pick(slots(c)[1], 'lastYear');
-
-      await pick(slots(c)[0], '');
-
-      expect(stored()).toEqual([null, { key: 'lastYear' }, null, null]);
-      expect(slots(c)).toHaveLength(3); // the hole and the filled slot both stay
-      expect(chosen(slots(c)[0])).toBe('');
-      expect(chosen(slots(c)[1])).toBe('lastYear');
-    });
-
-    it('reads malformed stored shortcuts as none configured', async () => {
+    it('reads malformed stored presets as none configured', async () => {
       localStorage.setItem(CUSTOM_PRESETS_KEY, '{"not":"an array"}');
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      expect(slots(c)).toHaveLength(1);
-      expect(chosen(slots(c)[0])).toBe('');
+      expect(shortcuts(c)).toEqual([]);
+      expect(c.textContent).toContain('None yet');
     });
 
-    it('drops stored entries that are not usable shortcuts', async () => {
+    it('drops stored entries that are not usable presets', async () => {
       localStorage.setItem(
         CUSTOM_PRESETS_KEY,
         JSON.stringify([{ key: 'rolling', days: 9999 }, { key: 'nonsense' }, { key: 'lastYear' }]),
       );
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
-      expect(slots(c).map(chosen)).toEqual(['', '', 'lastYear', '']);
+      expect(shortcuts(c)).toEqual(['Last year']);
     });
   });
 
   it('keeps an invalid rate editable without persisting it', async () => {
     const port = makeFakeSettings({ firstRunDone: true, currency: 'HKD', usdRate: 7.8 });
     const c = await mount(port);
-    const input = q<HTMLInputElement>(c, '.set-rate-input')!;
+    const input = q<HTMLInputElement>(c, RATE_INPUT)!;
 
     for (const bad of ['abc', '-3', '', '0']) {
       await setValue(input, bad);

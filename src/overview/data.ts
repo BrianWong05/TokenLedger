@@ -375,6 +375,19 @@ export function presetsOf(
     .map((p) => ({ ...p, from: p.from < firstIso ? firstIso : p.from }));
 }
 
+// The window a single configured Preset resolves to against the same extent the
+// picker uses — or null when its window falls entirely before the first record,
+// which is the case where the picker does not offer it at all. Shipped and
+// configurable keys are disjoint, so finding the one slot's preset by key can
+// never land on a shipped shortcut.
+export function presetWindow(
+  slot: PresetSlot,
+  firstIso: string,
+  lastIso: string,
+): RangePreset | null {
+  return presetsOf(firstIso, lastIso, [slot]).find((p) => p.key === slot.key) ?? null;
+}
+
 // One month as Monday-first calendar cells; nulls pad the leading and trailing
 // week so the grid stays seven wide.
 export function monthCells(year: number, month: number): (string | null)[] {
