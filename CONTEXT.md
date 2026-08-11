@@ -30,6 +30,20 @@ to supersede a coarser Record with Records that the Source proves carry the
 same usage, as OpenCode's per-Model split does.
 _Avoid_: Cache, database, store
 
+**Scan**:
+One pass over the Source Artifacts on this machine, parsing what they hold into
+Usage Records and adding them to the Ledger. A Scan only ever reads: it never
+writes to a Source's files and never talks to a Source's servers. It happens on
+launch, every few hours on a resident cadence so a hidden app keeps recording,
+on the Overview's auto-refresh timer while that window is focused, and on
+demand when a person presses Rescan. Only the auto-refresh timer is the
+reader's to set, and it is the only one they can turn off — the resident
+cadence is not theirs to stop, because a Ledger that recorded only while
+someone watched would lose the logs its Sources prune. Turning the timer off
+therefore stops this window re-reading, never the recording.
+_Avoid_: Sync, import, fetch — each suggests usage arriving from somewhere
+else; a Scan only reads what is already on this machine
+
 **Overview**:
 The application's home tab: the presentation of the Ledger over a
 user-selected date window and Source selection — headline token total, Cost,
