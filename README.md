@@ -47,7 +47,7 @@ an invoice.
 |---|---|
 | **Overview** | Everything above, over a date window and source selection you choose — plus **Export** (the whole selected window written to one sectioned CSV), **Trend** (enlarges into its own window, bucket size, and per-bucket CSV export), **Activity** (a 12-month heatmap that enlarges into a rotatable 3D landscape), and **Profile** (a portrait of the whole ledger). Activity and Profile deliberately ignore the date window and source selection. |
 | **Pricing** | Every model seen in the ledger with its resolved list price, the catalog it came from, and any override you've set |
-| **Settings** | Theme (system / light / dark), language (English / 繁體中文), display currency at a fixed exchange rate, launch at login, auto-update checks, and the scan interval |
+| **Settings** | Theme (system / light / dark), language (English / 繁體中文), display currency at a fixed exchange rate, launch at login, auto-update checks, the scan interval, and **Custom range presets** — up to four of your own beside the four that ship, each a rolling *last N days* or a completed calendar period. Add one, reorder them by dragging (or with the arrows), retype a rolling one's day count, remove any; each row shows the dates it currently resolves to, and the picker lists them in the order you put them in |
 
 ## Install
 
