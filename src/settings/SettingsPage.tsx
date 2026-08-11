@@ -332,6 +332,9 @@ function CustomRangeGroup() {
             extentFrom={extentFrom}
             today={today}
             bounds={list}
+            // its own count is not a duplicate of itself
+            takenDays={new Set([...takenDays].filter((d) => slot.key !== 'rolling' || d !== slot.days))}
+            onEdit={(d) => put(i, { key: 'rolling', days: d })}
             onMove={(dir) => move(pos, dir)}
             onRemove={() => put(i, null)}
           />
@@ -344,7 +347,7 @@ function CustomRangeGroup() {
 // One configured Preset. Its own component because each row owns the drag
 // controls that let the grip — and only the grip — start a drag: a row-wide
 // drag listener would swallow the presses meant for its three buttons.
-function PresetRow({ slot, id, first, last, extentFrom, today, bounds, onMove, onRemove }: {
+function PresetRow({ slot, id, first, last, extentFrom, today, bounds, takenDays, onEdit, onMove, onRemove }: {
   slot: PresetSlot;
   id: string;
   first: boolean;
@@ -352,11 +355,13 @@ function PresetRow({ slot, id, first, last, extentFrom, today, bounds, onMove, o
   extentFrom: string;
   today: string;
   bounds: React.RefObject<HTMLDivElement | null>;
+  takenDays: ReadonlySet<number>;
+  onEdit: (days: number) => void;
   onMove: (dir: -1 | 1) => void;
   onRemove: () => void;
 }) {
   const { t } = useT();
-  const { lang } = useOverviewT();
+  const { t: overviewT, lang } = useOverviewT();
   const drag = useDragControls();
   const win = presetWindow(slot, extentFrom, today);
   const label = presetLabelL(slot, lang);
@@ -379,7 +384,7 @@ function PresetRow({ slot, id, first, last, extentFrom, today, bounds, onMove, o
       // the selection then smears across every other group on the page as the
       // pointer moves.
       onMouseDown={(e) => {
-        if (!(e.target as HTMLElement).closest('button')) e.preventDefault();
+        if (!(e.target as HTMLElement).closest('button, input')) e.preventDefault();
       }}
       className="set-row set-row-preset"
       // lifted off the card while it is being carried, so the row being moved
@@ -400,7 +405,22 @@ function PresetRow({ slot, id, first, last, extentFrom, today, bounds, onMove, o
         </svg>
       </span>
       <div className="set-row-text">
-        <div className="set-row-title">{label}</div>
+        <div className="set-row-title">
+          {slot.key === 'rolling' ? (
+            <>
+              {overviewT('overview.preset.lastN')}{' '}
+              <DaysField
+                days={slot.days}
+                taken={takenDays}
+                label={`${t('settings.preset.dayCount')} ${label}`}
+                onCommit={onEdit}
+              />{' '}
+              {overviewT('overview.daysUnit')}
+            </>
+          ) : (
+            label
+          )}
+        </div>
         <div className="set-row-caption">
           {win
             ? `${fmtIsoRangeL(win.from, win.to, lang)} · ${spanLabelL(win.from, win.to, lang)}`
@@ -438,6 +458,44 @@ function PresetRow({ slot, id, first, last, extentFrom, today, bounds, onMove, o
         </button>
       </div>
     </Reorder.Item>
+  );
+}
+
+// A rolling Preset's day count, edited in place. Unlike the rate row's field
+// this commits on blur or Enter rather than on every valid keystroke: a Preset's
+// identity IS its count, so committing mid-word would change the row's key,
+// remount it, and take the caret out of the reader's hands between digits. A
+// count that is out of bounds or already taken is not a Preset, so the field
+// falls back to the stored one rather than leaving a number the row does not
+// have.
+function DaysField({ days, taken, label, onCommit }: {
+  days: number;
+  taken: ReadonlySet<number>;
+  label: string;
+  onCommit: (days: number) => void;
+}) {
+  const [text, setText] = useState(String(days));
+
+  const commit = () => {
+    const n = Number(text);
+    if (text.trim() !== '' && validDays(n) && !taken.has(n)) onCommit(n);
+    else setText(String(days));
+  };
+
+  return (
+    <input
+      className="set-days"
+      inputMode="numeric"
+      aria-label={label}
+      value={text}
+      size={Math.max(2, text.length)}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        if (e.key === 'Escape') { setText(String(days)); e.currentTarget.blur(); }
+      }}
+    />
   );
 }
 

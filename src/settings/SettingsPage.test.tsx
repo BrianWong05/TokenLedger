@@ -88,6 +88,14 @@ async function setValue(el: HTMLInputElement, value: string) {
   });
 }
 
+async function blur(el: HTMLElement) {
+  await act(async () => {
+    el.blur();
+    el.dispatchEvent(new FocusEvent('blur', { bubbles: false }));
+    el.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  });
+}
+
 async function click(el: Element) {
   await act(async () => {
     (el as HTMLElement).click();
@@ -365,6 +373,43 @@ describe('SettingsPage', () => {
 
       await click(addBtn(c));
       expect(stored()).toEqual([{ key: 'rolling', days: 14 }, { key: 'lastYear' }, null, null]);
+    });
+
+    // Update: a rolling preset's count is editable in its own row, so changing
+    // one does not mean removing it and adding it back at the bottom.
+    it('edits a rolling preset in place, keeping its position', async () => {
+      localStorage.setItem(
+        CUSTOM_PRESETS_KEY,
+        JSON.stringify([{ key: 'rolling', days: 14 }, { key: 'lastYear' }, null, null]),
+      );
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      const field = () => q<HTMLInputElement>(c, 'input[aria-label="Day count Last 14 days"]')!;
+
+      await setValue(field(), '45');
+      expect(stored()[0]).toEqual({ key: 'rolling', days: 14 }); // not while typing
+      await blur(field());
+
+      expect(stored()).toEqual([{ key: 'rolling', days: 45 }, { key: 'lastYear' }, null, null]);
+      expect(shortcuts(c)).toEqual(['Last 45 days', 'Last year']);
+      expect(captionOf(c, 0)).toMatch(/· 45 days$/);
+    });
+
+    it('falls back to the stored count when the edit is not a preset', async () => {
+      localStorage.setItem(
+        CUSTOM_PRESETS_KEY,
+        JSON.stringify([{ key: 'rolling', days: 14 }, { key: 'rolling', days: 30 }, null, null]),
+      );
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      const field = () => q<HTMLInputElement>(c, 'input[aria-label="Day count Last 14 days"]')!;
+
+      // 1 is below the floor, 1826 past the ceiling, 90 is a shipped shortcut,
+      // 30 belongs to the other row, and 'abc' is not a number.
+      for (const bad of ['1', '1826', '90', '30', 'abc', '']) {
+        await setValue(field(), bad);
+        await blur(field());
+        expect(field().value).toBe('14');
+        expect(stored()[0]).toEqual({ key: 'rolling', days: 14 });
+      }
     });
 
     it('moves a preset past the row below it, and the picker follows', async () => {

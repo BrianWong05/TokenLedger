@@ -344,6 +344,36 @@
   user-select: none;
 }
 
+/* the editable day count sitting inside a row's title — a field that reads as
+   the number it replaces until it is focused */
+.set-days {
+  background: transparent;
+  border: none;
+  border-bottom: 1px dashed var(--border-strong);
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  padding: 0 2px;
+  text-align: center;
+  outline: none;
+}
+
+.set-days:hover {
+  border-bottom-color: var(--text);
+}
+
+.set-days:focus {
+  border-bottom-style: solid;
+  border-bottom-color: var(--accent);
+}
+
+/* a row press cannot select the row's own text, but the count is a field: what
+   is typed there has to stay selectable */
+.set-row-preset input {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 /* the drag handle on a configured Preset's row — the mouse's way to reorder;
    the arrow buttons are the keyboard's */
 .set-grip {
