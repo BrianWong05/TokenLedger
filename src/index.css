@@ -451,20 +451,3 @@ tr:last-child td {
   border-color: var(--accent);
   color: #fff;
 }
-
-/* ---- Recharts theming (axes/grid) ---- */
-
-.recharts-cartesian-axis-tick text {
-  fill: var(--muted);
-  font-size: 11px;
-}
-
-.recharts-cartesian-grid line {
-  stroke: var(--border);
-}
-
-.recharts-tooltip-wrapper .recharts-default-tooltip {
-  background: var(--card) !important;
-  border: 1px solid var(--border) !important;
-  border-radius: 8px;
-}
