@@ -78,12 +78,19 @@ A named shortcut in the Custom range picker that resolves to a date window when
 clicked — distinct from the Range segments (Day, Week, Month, Total, Custom),
 which are the app's fixed vocabulary and are not Presets. Four ship with the
 app; a reader may configure up to four more in Settings, each either a rolling
-window of N days ending today or a completed calendar period. A Preset is a way
-of *asking* for a window, never a stored window itself: it is resolved afresh
+window of N days ending today or a completed calendar period. A configured one
+is theirs to manage in full: they add it, read the window it currently resolves
+to, change a rolling one's day count in place, order the four against each
+other, and remove any of them — the shipped four are none of those things, and
+cannot be edited, reordered or removed. Order is part of what a reader
+configures, not an accident of when they added each one: the picker lists
+configured Presets in the order Settings shows them. A Preset is a way of
+*asking* for a window, never a stored window itself: it is resolved afresh
 against the Ledger's extent every time the picker opens, so one whose window
-falls entirely before the first Usage Record is not offered at all. Named
-Preset in identifiers and in the UI; "shortcut" is long-standing informal prose
-for the same thing and stays fine in comments.
+falls entirely before the first Usage Record is not offered at all — Settings
+says as much on a Preset in that state rather than naming a window nothing can
+pick. Named Preset in identifiers and in the UI; "shortcut" is long-standing
+informal prose for the same thing and stays fine in comments.
 _Avoid_: Saved range, bookmark, quick range — each names a stored window, which
 a Preset is not
 
