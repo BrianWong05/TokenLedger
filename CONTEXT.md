@@ -115,6 +115,15 @@ its pricing state (Unpriced or Cache-Estimated). The one place rates are
 edited — selecting a Model in the Overview opens this same editor in place.
 _Avoid_: Rate card, price list, models tab
 
+**Limits**:
+The tab that presents each Source's Limits, never usage: one card per Source
+with a bar per Limit, driven by the newest valid Limit Reading. It ignores the
+Overview's date window and Source selection entirely — it is now, not a range.
+A Source that cannot expose Limits gets no card; one that could but has no
+credentials gets a disabled card, so "not signed in" and "unsupported" never
+look alike.
+_Avoid_: Quotas, Usage, Rate Limits
+
 **Menu Bar Extra**:
 The application's resident presence in the system's status area — the one
 name for that presence on every platform, however the platform presents it.
@@ -175,9 +184,10 @@ _Avoid_: Blocked artifact, encrypted artifact, unsupported artifact, skipped
 file
 
 **Export Artifact**:
-A passive Artifact a Companion writes so the scan can read usage a Source
-keeps encrypted — for Antigravity, `<session>.tokenledger.json` beside the
-`.pb` it stands in for. It carries a schema version, and one the Ledger does
+A passive Artifact a Companion writes so the scan can read what it cannot
+passively acquire — usage a Source keeps encrypted (for Antigravity,
+`<session>.tokenledger.json` beside the `.pb` it stands in for), or a Limit
+Reading fetched from a Source's vendor (ADR-0019). It carries a schema version, and one the Ledger does
 not recognise is a malformed instance of a supported shape (a warning), not a
 new Artifact class. The scan only ever reads it, so acquisition stays passive
 (ADR-0018).
@@ -192,8 +202,8 @@ something the code promises.
 _Avoid_: Plugin, integration, sync agent, importer
 
 **Source Capability**:
-A kind of attribution a Source can truthfully expose, independent of whether a
-particular Source Artifact happens to contain it. An unavailable Capability is
+A kind of attribution or live state a Source can truthfully expose, independent
+of whether a particular Source Artifact happens to contain it. An unavailable Capability is
 unknown, never a measured zero.
 _Avoid_: Feature, field, support level
 
@@ -375,3 +385,24 @@ have no rate, so its Cost is real yet excludes those counted-but-unpriced cache
 tokens. A weaker gap than Unpriced: it is flagged per-Model (a cost marker) but,
 unlike an Unpriced Model, does not turn the view's total into a "≥" Partial Cost.
 _Avoid_: Cache-free, partial price
+
+### Limits
+
+**Limit**:
+A rolling-window quota a Source's vendor imposes on the subscription itself —
+a window with a ceiling that fills and resets, like Claude's 5-hour and weekly
+windows or Codex's weekly window. Not throttling, not a context window (that
+is a size, not something you run out of over time), and not a self-imposed
+spend cap. Whether a Source can expose Limits at all is a Source Capability,
+so an unreported window is unknown, never a measured zero, and renders no bar.
+_Avoid_: Rate limit, quota, allowance, cap, throttle
+
+**Limit Reading**:
+One observation of a Limit at a moment — how much of the window is used, and
+when it resets — parsed from a Source's own logs (Codex) or fetched by a
+Companion (Claude, ADR-0019). Not a Usage Record: it holds no tokens, and the
+Ledger holds Usage Records only, so Readings persist beside the Ledger —
+append-only, a new valid Reading never replacing an old one, with cards
+presenting the newest valid Reading and the stored series feeding the
+forecast. A refused fetch is not a Reading.
+_Avoid_: Observation, sample, snapshot, measurement

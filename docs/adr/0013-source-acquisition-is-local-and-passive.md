@@ -3,7 +3,9 @@
 **Amended by ADR-0018**: this rule binds the *scan*, which still only reads
 what is already on disk. A Companion — a separate executable, run because a
 person asked — may talk to a Source to write an Export Artifact the scan can
-then read. Nothing here loosens for the scan itself.
+then read. ADR-0019 extends a Companion's reach to a Source's vendor —
+presenting a stored credential, read-only, to fetch Limit state. Nothing here
+loosens for the scan or the app itself.
 
 TokenLedger only reads Source Artifacts already present on the machine. An
 already-populated third-party cache is acceptable, but TokenLedger never runs
