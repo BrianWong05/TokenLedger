@@ -1109,3 +1109,34 @@ export function execFacets(rows: CtxExecRow[], bashTotal: number | null): ExecFa
     byCommand: facetOf(rows, (r) => r.cmd, bashTotal),
   };
 }
+
+export interface ExecSignature { exe: string; cmd: string; tokens: number; calls: number }
+
+// One row per signature for the report, allocated against the same Bash leaf
+// total the facets above are allocated against — a file that wrote the raw
+// est_tokens instead would state Context figures on a different scale from the
+// panel it was taken from.
+//
+// Grouping is by cmd alone, which is what makes the rows unique: ctx_exec
+// groups by kind as well, and kind reads the raw command line while cmd is the
+// two-word signature, so `npm run build` and `npm run dev` arrive as two rows
+// that both reduce to `npm run`. exe rides along rather than joining the key —
+// exec_exe and exec_cmd derive from the same raw line, so a signature has only
+// one executable — and is repeated per row so a spreadsheet can group by it.
+export function execSignatures(rows: CtxExecRow[], bashTotal: number | null): ExecSignature[] {
+  if (bashTotal == null || rows.length === 0) return [];
+  const bySig = new Map<string, { exe: string; weight: number; calls: number }>();
+  for (const r of rows) {
+    const g = bySig.get(r.cmd) ?? { exe: r.exe, weight: 0, calls: 0 };
+    g.weight += r.estTokens;
+    g.calls += r.calls;
+    bySig.set(r.cmd, g);
+  }
+  const alloc = allocateByWeight(
+    bashTotal,
+    [...bySig.entries()].map(([cmd, g]) => ({ key: cmd, weight: g.weight })),
+  );
+  return [...bySig.entries()]
+    .map(([cmd, g]) => ({ exe: g.exe, cmd, tokens: alloc.get(cmd) ?? 0, calls: g.calls }))
+    .sort((a, b) => b.tokens - a.tokens || (a.cmd < b.cmd ? -1 : 1));
+}

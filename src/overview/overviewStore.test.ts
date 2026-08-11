@@ -9,6 +9,7 @@ import {
   type ClockPort,
 } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
+import { execFacets } from './data';
 import type { BreakdownRow, SeriesPoint, ScanStatus, Settings } from '../types';
 
 // Fixed "now" = 2026-07-16; a separate virtual clock drives the debounce timers.
@@ -327,6 +328,7 @@ describe('overviewStore reload orchestration', () => {
     await flush();
     expect(store.getSnapshot().hourPoints).toBe(held);
   });
+
 });
 
 describe('overviewStore first-load vs later series failure', () => {
@@ -519,9 +521,13 @@ async function mountStoreWithCtxFor(
       ...usageOnly.map((source) => pt({ source })),
     ],
     toolRows: [...ctxSources, ...usageOnly].map((source) => sourceRow(source)),
+    // A Bash tool row rides with the exec rows below, the way a real scan
+    // writes them: both come from the same `tool_use`, and the Bash leaf is
+    // what the exec rows are allocated against.
     ctxTools: ctxSources.flatMap((source) => [
       { source, name: 'Read', estTokens: 600, calls: 4 },
       { source, name: 'mcp__github__list_issues', estTokens: 300, calls: 2 },
+      { source, name: 'Bash', estTokens: 300, calls: 3 },
     ]),
     ctxSkills: ctxSources.map((source) => ({ source, name: 'brainstorming', estTokens: 150, uses: 1 })),
     // exe/cmd as the scanner stores them: cmd is already the two-word signature.
@@ -636,11 +642,58 @@ describe('selectReportInput', () => {
     const s = { ...store.getSnapshot(), selected: 'claude' as const };
     const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
     expect(new Set(input.ctxCategories.map((c) => c.source))).toEqual(new Set(['claude', 'codex']));
-    // cmd carries the whole signature already, so both columns pass through
-    // untouched — nothing here splits, strips or re-joins them.
-    expect(input.ctxExec).toContainEqual({
-      source: 'codex', exe: 'git', cmd: 'git commit', estTokens: 40, calls: 3,
+    // cmd carries the whole signature already, so both name columns pass
+    // through untouched — nothing here splits, strips or re-joins them.
+    // est_tokens is allocated, which the next test is about.
+    expect(input.ctxExec).toContainEqual(
+      expect.objectContaining({ source: 'codex', exe: 'git', cmd: 'git commit', calls: 3 }),
+    );
+  });
+
+  // The Bash block is the one Context block whose rows arrive as raw content
+  // weights: ctx_exec stores sizes, while the panel shows each row's share of
+  // the Bash leaf's allocated tokens. Writing the raw figures would put this
+  // block on a scale nothing else in the file — or on the screen — is on.
+  it('allocates Bash rows against the Bash leaf, as the drill-down does', async () => {
+    const { store } = await mountStoreWithCtxFor(['claude']);
+    const s = store.getSnapshot();
+    const view = selectView(s, NOW);
+    const input = selectReportInput(s, view, SETTINGS, NOW);
+
+    const bashLeaf = view.ctxTree.flatMap((c) => c.tools).find((leaf) => leaf.name === 'Bash')!;
+    const mine = input.ctxExec.filter((e) => e.source === 'claude');
+    expect(mine.reduce((a, e) => a + e.estTokens, 0)).toBe(bashLeaf.tokens);
+    // Raw would have been 40 — the stored content size, on the wrong scale.
+    expect(mine[0].estTokens).not.toBe(40);
+
+    // And it matches the very rows the panel renders for the same leaf.
+    expect(mine.map((e) => e.estTokens)).toEqual(
+      execFacets(view.selExecRows, bashLeaf.tokens)!.byCommand.map((f) => f.tokens),
+    );
+  });
+
+  // ctx_exec groups by kind as well as cmd, and kind reads the raw command
+  // line while cmd is the two-word signature — so `npm run build` and
+  // `npm run dev` arrive as two rows that both reduce to `npm run`. The block
+  // has no kind column, so unmerged they would be two rows under one key with
+  // nothing telling them apart.
+  it('merges signatures that differ only by the kind column it does not carry', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'claude', ctxToolcalls: 900 })],
+      toolRows: [sourceRow('claude')],
+      ctxTools: [{ source: 'claude', name: 'Bash', estTokens: 300, calls: 5 }],
+      ctxExec: [
+        { source: 'claude', kind: 'build', exe: 'npm', cmd: 'npm run', estTokens: 60, calls: 2 },
+        { source: 'claude', kind: 'dev_server', exe: 'npm', cmd: 'npm run', estTokens: 40, calls: 3 },
+      ],
     });
+    const store = await boot(ledger, clock);
+    const s = store.getSnapshot();
+    const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
+
+    expect(input.ctxExec).toHaveLength(1);
+    expect(input.ctxExec[0]).toMatchObject({ exe: 'npm', cmd: 'npm run', calls: 5 });
   });
 
   it('leaves out a Source present in the window that reports no Context', async () => {

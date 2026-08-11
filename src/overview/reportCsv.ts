@@ -87,25 +87,38 @@ function cacheHitRate(row: ReportUsageRow): number {
   return prompt > 0 ? row.cacheReadTokens / prompt : 0;
 }
 
-const USAGE_COLS =
-  'input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,' +
-  'requests,sessions,cache_hit_rate,cost_usd,cost_basis,unattributed_tokens,cache_estimated';
+// Name and cell together, so a block that drops a column cannot drift out of
+// step with its own header.
+interface UsageColumn { name: string; cell: (row: ReportUsageRow) => string }
 
-function usageCells(row: ReportUsageRow): string[] {
-  return [
-    String(row.inputTokens),
-    String(row.outputTokens),
-    String(row.cacheReadTokens),
-    String(row.cacheWriteTokens),
-    String(row.totalTokens),
-    String(row.requests),
-    String(row.sessions),
-    cacheHitRate(row).toFixed(4),
-    row.cost === null ? '' : row.cost.toFixed(6),
-    costBasis(row),
-    String(row.unattributedTokens),
-    row.cacheEstimated === null ? '' : String(row.cacheEstimated),
-  ];
+const USAGE_COLUMNS: UsageColumn[] = [
+  { name: 'input_tokens', cell: (r) => String(r.inputTokens) },
+  { name: 'output_tokens', cell: (r) => String(r.outputTokens) },
+  { name: 'cache_read_tokens', cell: (r) => String(r.cacheReadTokens) },
+  { name: 'cache_write_tokens', cell: (r) => String(r.cacheWriteTokens) },
+  { name: 'total_tokens', cell: (r) => String(r.totalTokens) },
+  { name: 'requests', cell: (r) => String(r.requests) },
+  { name: 'sessions', cell: (r) => String(r.sessions) },
+  { name: 'cache_hit_rate', cell: (r) => cacheHitRate(r).toFixed(4) },
+  { name: 'cost_usd', cell: (r) => (r.cost === null ? '' : r.cost.toFixed(6)) },
+  { name: 'cost_basis', cell: costBasis },
+  { name: 'unattributed_tokens', cell: (r) => String(r.unattributedTokens) },
+  { name: 'cache_estimated', cell: (r) => (r.cacheEstimated === null ? '' : String(r.cacheEstimated)) },
+];
+
+// Sessions are the one figure here that does not add up across rows: they are
+// counted distinct per window, so a Session spanning days is counted in each
+// day it touches (bindings/Summary.ts). In a whole-window block that is the
+// answer. In the time block it would sit among eleven columns a spreadsheet
+// can sum, inviting the one sum that silently double-counts — so the block
+// omits it rather than publishing a figure whose column heading lies about
+// what it does.
+const TIME_COLUMNS = USAGE_COLUMNS.filter((c) => c.name !== 'sessions');
+
+const USAGE_COLS = USAGE_COLUMNS.map((c) => c.name).join(',');
+
+function usageCells(row: ReportUsageRow, columns: UsageColumn[] = USAGE_COLUMNS): string[] {
+  return columns.map((c) => c.cell(row));
 }
 
 export function reportFilename(fromIso: string, toIso: string): string {
@@ -114,11 +127,16 @@ export function reportFilename(fromIso: string, toIso: string): string {
 
 // A usage block, or nothing. An empty block is omitted rather than written as a
 // lone header: a reader should not have to tell "no rows" from "no data".
-function usageBlock(first: string, rows: ReportUsageRow[], withSource = false): string | null {
+function usageBlock(
+  first: string,
+  rows: ReportUsageRow[],
+  { withSource = false, columns = USAGE_COLUMNS }: { withSource?: boolean; columns?: UsageColumn[] } = {},
+): string | null {
   if (rows.length === 0) return null;
-  const header = withSource ? `${first},source,${USAGE_COLS}` : `${first},${USAGE_COLS}`;
+  const cols = columns.map((c) => c.name).join(',');
+  const header = withSource ? `${first},source,${cols}` : `${first},${cols}`;
   const lines = rows.map((row) =>
-    [esc(row.key), ...(withSource ? [esc(row.source ?? '')] : []), ...usageCells(row)].join(','),
+    [esc(row.key), ...(withSource ? [esc(row.source ?? '')] : []), ...usageCells(row, columns)].join(','),
   );
   return [header, ...lines].join('\n');
 }
@@ -156,9 +174,9 @@ export function windowReportCsv(input: ReportInput): string {
   const blocks = [
     header.join('\n'),
     summary.join('\n'),
-    usageBlock(input.grain, input.time),
+    usageBlock(input.grain, input.time, { columns: TIME_COLUMNS }),
     usageBlock('source', input.sources),
-    usageBlock('model', input.models, true),
+    usageBlock('model', input.models, { withSource: true }),
     usageBlock('project', input.projects),
     ctxBlock(
       'context,source,est_tokens,basis',

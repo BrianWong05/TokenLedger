@@ -133,7 +133,8 @@ Ledger's own extent (`firstIso`, `lastIso`).
 
 All five share: `input_tokens`, `output_tokens`, `cache_read_tokens`,
 `cache_write_tokens`, `total_tokens`, `requests`, `sessions`, `cache_hit_rate`,
-`cost_usd`, `cost_basis`, `unattributed_tokens`, `cache_estimated`.
+`cost_usd`, `cost_basis`, `unattributed_tokens`, `cache_estimated` — except the
+time block, which omits `sessions`. See below.
 
 `cache_hit_rate` is not on `BreakdownRow`, so the serializer computes it per row
 as `cache_read / (input + cache_read + cache_write)` — well defined in every
@@ -146,6 +147,15 @@ block precisely because Input excludes cache reads (ADR-0001).
 `queries::breakdown` counts them; a Session spanning two Models counts in both,
 so the column does not sum to the summary's figure. This matches what the app
 displays.
+
+**The time block omits it.** The non-additivity above holds in every block, but
+only the time block is a sequence the file explicitly invites the reader to roll
+up — that is why it carries the finest grain it holds rather than the chart's
+aggregate. A column that must not be summed has no place in the one block whose
+stated contract is that summing it is correct: a Session open across midnight
+would be counted in each day it touches, and the total would silently exceed the
+summary's. The four whole-window blocks keep the column, because there the rows
+are categories and no roll-up is implied.
 
 #### The time block's cost is a weaker signal than the others
 
@@ -191,6 +201,21 @@ to a whole; a total would invite exactly the reading the app declines to offer.
 A category a Source cannot attribute is omitted, not zeroed. `uses` counts
 injections rather than distinct skills — a re-invoked skill reloads its whole
 body, which is what makes `est_tokens` grow.
+
+**`est_tokens` is the allocated figure the panel shows, never the raw stored
+weight.** `ctx_tools` and `ctx_exec` store content sizes; `toolTree`, `mcpBars`
+and the Bash drill-down each spread a Context total across those sizes, so a
+block written from the raw rows would sit on a different scale from the panel it
+was taken from — the failure this design cites to rule out assembling in Rust.
+The tools and Bash blocks therefore resolve the same Bash leaf the drill-down
+expands, and a Source that attributes no Tool-calls total contributes no rows,
+exactly as it renders no drill-down.
+
+**The Bash block merges rows sharing a signature.** `ctx_exec` groups by `kind`
+as well, and `kind` reads the raw command line while `cmd` is the two-word
+signature — `npm run build` and `npm run dev` are two stored rows that both
+reduce to `npm run`. The block carries no `kind` column, so unmerged they would
+be two rows under one key with nothing to tell them apart.
 
 Only Claude, Codex and pi report Context; the blocks are absent when no Source in
 the window does.

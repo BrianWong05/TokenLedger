@@ -36,6 +36,7 @@ import {
   skillBars,
   type SkillBar,
   mcpBars,
+  execSignatures,
   type McpBar,
 } from './data';
 import type { ReportCtxCategory, ReportInput, ReportUsageRow } from './reportCsv';
@@ -608,7 +609,8 @@ export function selectReportInput(
       if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'estimated' });
     }
     const toolRows = s.ctxToolRows.filter((r) => r.source === key);
-    for (const cat of toolTree(toolRows, ctx.toolcalls)) {
+    const tree = toolTree(toolRows, ctx.toolcalls);
+    for (const cat of tree) {
       for (const leaf of cat.tools) {
         ctxTools.push({ source: key, category: cat.label, name: leaf.name, estTokens: leaf.tokens, calls: leaf.calls });
       }
@@ -623,8 +625,14 @@ export function selectReportInput(
     for (const sk of s.ctxSkillRows.filter((r) => r.source === key)) {
       ctxSkills.push({ source: key, name: sk.name, estTokens: sk.estTokens, uses: sk.uses });
     }
-    for (const e of s.ctxExecRows.filter((r) => r.source === key)) {
-      ctxExec.push({ source: key, exe: e.exe, cmd: e.cmd, estTokens: e.estTokens, calls: e.calls });
+    // Allocated against the Bash leaf, exactly as the drill-down allocates its
+    // facets: the raw ctx_exec weights are content sizes, while the leaf holds
+    // that Source's share of the billed Tool-calls total, so writing the raw
+    // figures would put this block on a scale no other block in the file — and
+    // no panel the file was taken from — is on.
+    const bashLeaf = tree.flatMap((c) => c.tools).find((leaf) => leaf.name === 'Bash') ?? null;
+    for (const e of execSignatures(s.ctxExecRows.filter((r) => r.source === key), bashLeaf?.tokens ?? null)) {
+      ctxExec.push({ source: key, exe: e.exe, cmd: e.cmd, estTokens: e.tokens, calls: e.calls });
     }
   }
 

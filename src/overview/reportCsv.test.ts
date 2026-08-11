@@ -5,6 +5,9 @@ const USAGE_COLS_FOR_TEST =
   'input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,' +
   'requests,sessions,cache_hit_rate,cost_usd,cost_basis,unattributed_tokens,cache_estimated';
 
+// The time block drops the one column that does not add up down the page.
+const TIME_COLS_FOR_TEST = USAGE_COLS_FOR_TEST.replace(',sessions,', ',');
+
 // A fully-priced row. Tests override only the field under test, so a column's
 // rule is stated in one place and every other column stays neutral.
 function usageRow(over: Partial<ReportUsageRow> = {}): ReportUsageRow {
@@ -203,9 +206,28 @@ describe('usage blocks', () => {
   it('names the time block after the window grain', () => {
     for (const grain of ['hour', 'day', 'week', 'month'] as const) {
       const csv = windowReportCsv(reportInput({ grain, time: [usageRow({ key: '2026-07-12' })] }));
-      expect(block(csv, grain)[0]).toBe(`${grain},${USAGE_COLS_FOR_TEST}`);
+      expect(block(csv, grain)[0]).toBe(`${grain},${TIME_COLS_FOR_TEST}`);
       expect(block(csv, grain)[1]).toContain('2026-07-12,100,50,800,50,1000');
     }
+  });
+
+  // Sessions are counted distinct per window, so a Session spanning days is
+  // counted in each day it touches. Every other column in the time block adds
+  // up down the page; this one does not, and a column that cannot be summed
+  // has no business sitting in the block a spreadsheet sums.
+  it('omits sessions from the time block while the whole-window blocks keep it', () => {
+    const csv = windowReportCsv(
+      reportInput({
+        time: [usageRow({ key: '2026-07-12' })],
+        sources: [usageRow({ key: 'claude' })],
+      }),
+    );
+    expect(block(csv, 'day')[0].split(',')).not.toContain('sessions');
+    expect(block(csv, 'source')[0].split(',')).toContain('sessions');
+    expect(block(csv, 'window')[0].split(',')).toContain('sessions');
+    // The cells shift with the header rather than leaving a hole: requests is
+    // the last count before the hit rate.
+    expect(block(csv, 'day')[1]).toBe('2026-07-12,100,50,800,50,1000,7,0.8421,1.500000,exact,0,false');
   });
 
   it('scopes a Model row to the tool that ran it', () => {
