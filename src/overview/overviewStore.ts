@@ -158,11 +158,13 @@ class Store implements OverviewStore {
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
   // Reload results by window (filters + hourly day): returning to a window
-  // already fetched this scan-generation skips the 10-query fan-out and
+  // already fetched since the last scan skips the 10-query fan-out and
   // repatches the exact same references, so the memoized panels don't
-  // re-render either. Cleared whenever the Ledger may hold different rows (a
-  // scan past the idle gate, prices rebuilt); entries land only from reloads
-  // that won the epoch race, so a superseded response can never be replayed.
+  // re-render either. Cleared at EVERY refresh — the idle gate's zero-insert
+  // signal cannot stand in for "unchanged", because keep-max adapters upgrade
+  // existing Usage Records in place while reporting nothing inserted — and
+  // when prices rebuild. Entries land only from reloads that won the epoch
+  // race, so a superseded response can never be replayed.
   private reloadCache = new Map<string, ReloadResult>();
   private epoch = 0; // monotonic; supersedes in-flight reload responses
   // The epoch whose reload actually landed. Reusing the counter that already
@@ -187,6 +189,10 @@ class Store implements OverviewStore {
   }
 
   async refresh() {
+    // Before anything else: a scan is about to run (or just failed partway),
+    // so every cached window is suspect — see the cache's comment for why the
+    // idle gate below is not a safe substitute.
+    this.reloadCache.clear();
     let status: ScanStatus;
     try {
       status = await this.ledger.scan();
@@ -214,9 +220,6 @@ class Store implements OverviewStore {
     // even when the scan reports nothing new.
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
     if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
-
-    // Past the idle gate the Ledger may hold rows no cached window has seen.
-    this.reloadCache.clear();
 
     try {
       // The Profile's Session count rides with the unbounded series, not with
@@ -422,8 +425,9 @@ class Store implements OverviewStore {
   }
 }
 
-// What one reload fetches, in Promise.all order (summary, the three
-// breakdowns, the five ctx reads, the optional hourly series).
+// What one reload fetches, in Promise.all order: summary, the model and
+// project breakdowns, the five ctx reads, the optional hourly series, and
+// last the Source breakdown.
 type ReloadResult = [
   Summary,
   BreakdownRow[],

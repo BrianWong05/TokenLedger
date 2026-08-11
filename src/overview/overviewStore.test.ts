@@ -267,7 +267,7 @@ describe('overviewStore reload orchestration', () => {
     expect(store.getSnapshot().reloading).toBe(false); // the cached landing cleared the flag
   });
 
-  it('a scan that ingested events invalidates every cached window', async () => {
+  it('a scan that ingested Usage Records invalidates every cached window', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger();
     const store = await boot(ledger, clock); // total: cached
@@ -286,6 +286,30 @@ describe('overviewStore reload orchestration', () => {
     const n = ledger.calls.summary.length;
 
     store.setRange('total'); // was cached pre-ingest; must refetch
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.summary.length).toBe(n + 1);
+  });
+
+  // eventsInserted === 0 does not mean unchanged: keep-max adapters upgrade
+  // existing Usage Records in place (a turn's output_tokens growing) while
+  // reporting nothing inserted. Every scan must therefore drop the cache,
+  // even one the idle gate then swallows.
+  it('a zero-insert scan still invalidates the cache', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock); // total: cached
+
+    store.setRange('week');
+    clock.advance(0);
+    await flush();
+
+    await store.refresh(); // default scan: nothing inserted → idle-gated
+    clock.advance(0);
+    await flush();
+    const n = ledger.calls.summary.length;
+
+    store.setRange('total'); // must refetch, not replay the cached total
     clock.advance(0);
     await flush();
     expect(ledger.calls.summary.length).toBe(n + 1);
