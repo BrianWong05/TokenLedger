@@ -7,11 +7,13 @@ import {
   createOverviewStore,
   selectDays,
   selectProfile,
+  selectReportInput,
   selectView,
   selectVisibleTools,
   type ClockPort,
 } from './overviewStore';
 import type { LedgerPort } from './ledger';
+import type { Settings } from '../types';
 import { useAutoRefresh } from './useAutoRefresh';
 import { loadCustomRange, saveCustomRange } from './rangeMemory';
 import type { Range8b, SourceKey } from './meta';
@@ -73,8 +75,16 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   // publishes a new snapshot for scanAt alone, and rebuilding the whole view
   // for a clock label was most of the dashboard's steady-state CPU.
   /* eslint-disable react-hooks/exhaustive-deps */
-  const view = useMemo(
-    () => selectView(snap, undefined, lang),
+  // `now` is captured rather than left to selectView's default, and kept beside
+  // the view it produced: it decides both the window bounds and — through
+  // hourlyDayOf — whether the report's time block is hourly. A second
+  // `new Date()` at export time could answer either question differently from
+  // the render being exported, so the report reuses this one.
+  const { view, viewNow } = useMemo(
+    () => {
+      const now = new Date();
+      return { view: selectView(snap, now, lang), viewNow: now };
+    },
     [
       snap.allPoints, snap.hourPoints, snap.summary, snap.modelRows, snap.projectRows,
       snap.ctxResources, snap.ctxBuckets, snap.ctxToolRows, snap.ctxExecRows,
@@ -93,6 +103,19 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   );
   /* eslint-enable react-hooks/exhaustive-deps */
 
+  // The report's input, built from the same snapshot and view this hook renders
+  // from — which is what keeps the exported file from disagreeing with the
+  // screen. `viewNow` fixes the window and the grain; `generatedAt` is passed
+  // separately by the caller and is the instant the file was asked for, which
+  // on a tab left open all afternoon is nowhere near `viewNow`. `settings`
+  // arrives from the component too: Display Currency lives in SettingsContext,
+  // which the shell consumes and this hook does not.
+  const reportInput = useCallback(
+    (settings: Settings, generatedAt: Date) =>
+      selectReportInput(snap, view, settings, viewNow, generatedAt),
+    [snap, view, viewNow],
+  );
+
   const setRange = useCallback((r: Range8b) => store.setRange(r), [store]);
   const setSel = useCallback((k: SourceKey) => store.setSelected(k), [store]);
   const setCustomRange = useCallback(
@@ -105,6 +128,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
 
   return {
     loading: snap.loading,
+    reloading: snap.reloading,
     // Full unbounded daily series — the trend enlarge buckets it for its own
     // local window (the store keeps this reference stable across ticks).
     allPoints: snap.allPoints ?? [],
@@ -123,6 +147,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     customFrom: snap.customFrom,
     customTo: snap.customTo,
     setCustomRange,
+    reportInput,
     sel: snap.selected,
     setSel,
     rangeLabel: view.rangeLabel,

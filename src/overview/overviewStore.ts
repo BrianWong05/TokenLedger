@@ -36,8 +36,10 @@ import {
   skillBars,
   type SkillBar,
   mcpBars,
+  execSignatures,
   type McpBar,
 } from './data';
+import type { ReportCtxCategory, ReportInput, ReportUsageRow } from './reportCsv';
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
@@ -55,6 +57,7 @@ import type {
   CtxBuckets,
   CtxToolRow,
   CtxExecRow,
+  Settings,
 } from '../types';
 
 // ---- clock port (Date + timers), so tests can freeze "now" and drive debounce ----
@@ -83,6 +86,10 @@ export interface OverviewSnapshot {
   // fetch because the Profile ignores the range, and null until it lands.
   profileSessions: number | null;
   modelRows: BreakdownRow[];
+  // One row per Source over the window. Nothing on screen reads these — the
+  // cards derive their totals from the series — but the report needs a Source
+  // block with the same Cost honesty the Model and Project blocks carry.
+  sourceRows: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResource[];
   ctxSkillRows: CtxSkillRow[];
@@ -103,6 +110,14 @@ export interface OverviewSnapshot {
   from: string;
   to: string;
   loading: boolean;
+  // A window-scoped reload is scheduled or in flight, so the fields it owns —
+  // summary, the three breakdowns, every ctx row — still describe the PREVIOUS
+  // window while range/from/to already name the new one. The screen wears that
+  // gap as a stale headline beside a fresh chart and it passes in a blink; a
+  // file saved in it would carry the new window in its header over the old
+  // window's figures, permanently. Anything that must state which window its
+  // figures belong to has to wait for this to clear.
+  reloading: boolean;
 }
 
 export interface OverviewStore {
@@ -118,14 +133,14 @@ export interface OverviewStore {
 // Raw state; derived fields live only in the built snapshot.
 type State = Omit<
   OverviewSnapshot,
-  'firstIso' | 'lastIso' | 'from' | 'to' | 'loading'
+  'firstIso' | 'lastIso' | 'from' | 'to' | 'loading' | 'reloading'
 >;
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
-  'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'projectRows',
+  'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'sourceRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
-  'firstIso', 'lastIso', 'from', 'to', 'loading',
+  'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading',
 ];
 
 function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
@@ -135,7 +150,7 @@ function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
 class Store implements OverviewStore {
   private state: State = {
     allPoints: null, hourPoints: [], summary: null, profileSessions: null,
-    modelRows: [], projectRows: [],
+    modelRows: [], sourceRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxSkillRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
@@ -143,6 +158,10 @@ class Store implements OverviewStore {
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
   private epoch = 0; // monotonic; supersedes in-flight reload responses
+  // The epoch whose reload actually landed. Reusing the counter that already
+  // decides which response wins means "still loading" needs no second flag to
+  // keep in sync with it: scheduleReload bumps epoch, land() catches this up.
+  private loadedEpoch = 0;
   private reloadTimer: number | null = null; // pending debounce timer
 
   constructor(private ledger: LedgerPort, private clock: ClockPort) {
@@ -180,7 +199,7 @@ class Store implements OverviewStore {
 
     // Idle tick: nothing ingested, no source errored, data already on screen —
     // the Ledger is bit-identical to what's rendered, so skip the series fetch
-    // and the 8-query reload. This is the every-30s steady state of an open
+    // and the 9-query reload. This is the every-30s steady state of an open
     // app; the skip is what lets it sit at ~0 CPU instead of re-rendering the
     // whole dashboard each tick. Prices-rebuilt still forces a reload via its
     // own listener.
@@ -281,6 +300,7 @@ class Store implements OverviewStore {
       from: d.from,
       to: d.to,
       loading: s.allPoints === null,
+      reloading: this.epoch !== this.loadedEpoch,
     };
   }
 
@@ -322,14 +342,23 @@ class Store implements OverviewStore {
       this.reloadTimer = null;
       this.runReload(epoch, filters, hourDay);
     }, delay);
+    // The epoch bump above is what makes `reloading` true, and every caller
+    // published BEFORE calling here — so without this the new window would be
+    // on screen with nothing announcing that its figures have not caught up.
+    this.publish();
   }
 
-  // All jobs land as ONE patch/publish: eight individual landings would
-  // re-render the dashboard eight times per reload (visible as a long-task
+  // All jobs land as ONE patch/publish: nine individual landings would
+  // re-render the dashboard nine times per reload (visible as a long-task
   // burst every refresh tick).
   private runReload(epoch: number, filters: Filters, hourDay: string | null) {
+    // Both the success and the failure path land, so a reload that throws
+    // clears `reloading` too — fetchError is how a failure is reported, and
+    // leaving the flag set would disable the export button for good.
     const land = (fn: () => void) => {
-      if (epoch === this.epoch) fn();
+      if (epoch !== this.epoch) return;
+      this.loadedEpoch = epoch;
+      fn();
     };
     const L = this.ledger;
     // hourPoints describe exactly one day. Drop them when the window stops being
@@ -350,11 +379,12 @@ class Store implements OverviewStore {
       L.ctxSkills(filters),
       L.ctxExec(filters),
       hourDay ? L.series(filters, 'hour') : null,
+      L.breakdown('tool', filters),
     ])
-      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour]) =>
+      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour, sourceRows]) =>
         land(() =>
           this.patch({
-            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows,
+            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, sourceRows,
             ...(hour ? { hourPoints: hour } : {}),
             fetchError: null,
           }),
@@ -469,5 +499,199 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
     unreadable,
+  };
+}
+
+// ---- the window report's input ----
+
+// A BreakdownRow in the report's shape. `key: null` is the Model breakdown's
+// Unattributed Usage row; every other breakdown names its key.
+function reportRow(row: BreakdownRow, withSource: boolean): ReportUsageRow {
+  return {
+    key: row.key ?? 'Unattributed usage',
+    ...(withSource ? { source: row.source ?? '' } : {}),
+    inputTokens: row.inputTokens,
+    outputTokens: row.outputTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    totalTokens: row.totalTokens,
+    requests: row.requests,
+    sessions: row.convs,
+    cost: row.cost,
+    hasUnpriced: row.hasUnpriced,
+    unattributedTokens: row.unattributedTokens,
+    cacheEstimated: row.cacheEstimated,
+  };
+}
+
+// The time block: one row per bucket, summed across Sources as the Trend sums it.
+//
+// SeriesPoint carries `cost: number` with a separate hasUnpriced flag, so
+// unlike Summary and BreakdownRow it cannot express "no priced tokens". Rather
+// than refetch a summary per bucket — which would break the no-refetch property
+// this design rests on — a bucket with unpriced usage and no cost resolves to
+// null. The lean is deliberate: a bucket genuinely worth $0 that also holds an
+// Unpriced Model reads unavailable, erring toward admitting ignorance rather
+// than writing a 0 that means "unknown".
+function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
+  const byBucket = new Map<string, ReportUsageRow>();
+  for (const p of pts) {
+    const row = byBucket.get(p.bucket) ?? {
+      key: p.bucket,
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      totalTokens: 0, requests: 0, sessions: 0, cost: 0,
+      // SeriesPoint carries no cache-estimated flag, so this block cannot know
+      // whether a bucket's cache figures were logged or reconstructed. null
+      // writes an empty cell, which is how the file says "unknown" — a `false`
+      // here would read as a definite claim beneath a summary row saying true.
+      hasUnpriced: false, unattributedTokens: 0, cacheEstimated: null,
+    };
+    row.inputTokens += p.inputTokens;
+    row.outputTokens += p.outputTokens;
+    row.cacheReadTokens += p.cacheReadTokens;
+    row.cacheWriteTokens += p.cacheWriteTokens;
+    row.totalTokens += p.totalTokens;
+    row.requests += p.requests;
+    row.sessions += p.convs;
+    row.cost = (row.cost ?? 0) + p.cost;
+    row.hasUnpriced ||= p.hasUnpriced;
+    row.unattributedTokens += p.unattributedTokens;
+    byBucket.set(p.bucket, row);
+  }
+  return [...byBucket.values()]
+    .map((row) => (row.hasUnpriced && row.cost === 0 ? { ...row, cost: null } : row))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
+const CTX_EXACT = ['messages', 'system', 'reasoning'] as const;
+const CTX_ESTIMATED = ['toolcalls', 'agents', 'mcp', 'skills'] as const;
+
+// `now` and `generatedAt` are two different instants and must stay that way.
+// `now` is the instant the view being exported was built from: it fixes the
+// window bounds and, through hourlyDayOf, the time block's grain, so a file
+// taken from a render describes that render. `generatedAt` is when the file
+// was asked for, which is the only honest thing to stamp on it — a tab left
+// open all afternoon still renders the window it rendered, but the save is
+// happening now. Both are parameters because this selector is pure: it reads
+// no clock of its own, exactly like every other selector in this file.
+export function selectReportInput(
+  s: OverviewSnapshot,
+  view: OverviewView,
+  settings: Settings,
+  now: Date = new Date(),
+  generatedAt: Date = now,
+): ReportInput {
+  const win = windowOf(s.range, s.from, s.to, now);
+  const summary = s.summary;
+  // A Total window is unbounded, so it reports the Ledger's own extent.
+  const fromIso = win.fromIso ?? s.firstIso;
+  const toIso = win.toIso ?? s.lastIso;
+
+  // The time block's first column names the grain of the rows beneath it,
+  // which is NOT the Trend's display bucket (view.per): the chart aggregates a
+  // long window to weeks or months, the file never does. A report carries the
+  // finest honest grain it holds and lets the spreadsheet roll it up, so
+  // pre-rolling into months here would destroy detail the file otherwise
+  // keeps. That leaves two cases — a single-day window, where the store
+  // already holds the very hours the screen is showing, and everything else,
+  // which is daily. hourlyDayOf is the one place that rule runs, so the report
+  // and the store's hourly fetch can never disagree about which window is
+  // hourly; hours that have not landed fall back to the daily row rather than
+  // writing an empty block. window_grain and this column read the same value
+  // by construction.
+  // The held hours must be the SAME day, not merely present: runReload clears
+  // stale hourPoints, but that runs after the debounce (250ms for a custom
+  // range), so a snapshot in that gap carries the new bounds beside the
+  // previous day's hours with loading already false. Comparing days is the
+  // idiom runReload itself uses.
+  const hourDay = hourlyDayOf(s.range, s.from, s.to, s.firstIso, s.lastIso, now);
+  const hourly = hourDay !== null && s.hourPoints[0]?.bucket.slice(0, 10) === hourDay;
+  const grain: Granularity = hourly ? 'hour' : 'day';
+
+  const ctxCategories: ReportCtxCategory[] = [];
+  const ctxTools: ReportInput['ctxTools'] = [];
+  const ctxMcp: ReportInput['ctxMcp'] = [];
+  const ctxSkills: ReportInput['ctxSkills'] = [];
+  const ctxExec: ReportInput['ctxExec'] = [];
+
+  // Every Source in the catalog — toolTotalsOfPoints seeds them all, so a
+  // Source absent from the window is walked too and simply contributes nothing:
+  // ctxTotals reports null for every category and each helper below returns []
+  // for a Source it has no rows for. The file therefore does not depend on which
+  // card happened to be selected, and a Source with usage but no Context
+  // capability yields no rows rather than a row of zeros.
+  for (const key of Object.keys(view.toolTotals).sort()) {
+    const ctx = ctxTotals(view.rpts, key);
+    for (const category of CTX_EXACT) {
+      const v = ctx[category];
+      if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'exact' });
+    }
+    for (const category of CTX_ESTIMATED) {
+      const v = ctx[category];
+      if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'estimated' });
+    }
+    const toolRows = s.ctxToolRows.filter((r) => r.source === key);
+    const tree = toolTree(toolRows, ctx.toolcalls);
+    for (const cat of tree) {
+      for (const leaf of cat.tools) {
+        ctxTools.push({ source: key, category: cat.label, name: leaf.name, estTokens: leaf.tokens, calls: leaf.calls });
+      }
+    }
+    for (const m of mcpBars(toolRows, ctx.mcp)) {
+      ctxMcp.push({ source: key, name: m.name, estTokens: m.tokens, calls: m.calls });
+    }
+    // The raw rows, not skillBars: that helper is card layout — it keeps the
+    // top ten and folds the rest into one nameless row, which here would drop
+    // skills 11..N from a report whose whole point is completeness and write a
+    // total row into a Context block with an empty first cell meaning "unknown".
+    for (const sk of s.ctxSkillRows.filter((r) => r.source === key)) {
+      ctxSkills.push({ source: key, name: sk.name, estTokens: sk.estTokens, uses: sk.uses });
+    }
+    // Allocated against the Bash leaf, exactly as the drill-down allocates its
+    // facets: the raw ctx_exec weights are content sizes, while the leaf holds
+    // that Source's share of the billed Tool-calls total, so writing the raw
+    // figures would put this block on a scale no other block in the file — and
+    // no panel the file was taken from — is on.
+    const bashLeaf = tree.flatMap((c) => c.tools).find((leaf) => leaf.name === 'Bash') ?? null;
+    for (const e of execSignatures(s.ctxExecRows.filter((r) => r.source === key), bashLeaf?.tokens ?? null)) {
+      ctxExec.push({ source: key, exe: e.exe, cmd: e.cmd, estTokens: e.tokens, calls: e.calls });
+    }
+  }
+
+  return {
+    generatedIso: generatedAt.toISOString(),
+    fromIso,
+    toIso,
+    grain,
+    tokensBasis: view.unreadable.length > 0 ? 'floor' : 'exact',
+    // USD needs no conversion note; anything else does, and the figures below
+    // stay USD either way (CONTEXT.md Display Currency).
+    displayCurrency: settings.currency === 'USD' ? null : settings.currency,
+    usdRate: settings.currency === 'USD' ? null : settings.usdRate,
+    summary: {
+      key: `${fromIso} .. ${toIso}`,
+      inputTokens: summary?.inputTokens ?? 0,
+      outputTokens: summary?.outputTokens ?? 0,
+      cacheReadTokens: summary?.cacheReadTokens ?? 0,
+      cacheWriteTokens: summary?.cacheWriteTokens ?? 0,
+      totalTokens: summary?.totalTokens ?? 0,
+      requests: summary?.requests ?? 0,
+      sessions: summary?.convs ?? 0,
+      cost: summary?.cost ?? null,
+      hasUnpriced: summary?.hasUnpriced ?? false,
+      unattributedTokens: summary?.unattributedTokens ?? 0,
+      cacheEstimated: (summary?.cacheEstimatedModels.length ?? 0) > 0,
+    },
+    unpricedModels: summary?.unpricedModels ?? [],
+    cacheEstimatedModels: summary?.cacheEstimatedModels ?? [],
+    time: reportTimeRows(hourly ? s.hourPoints : view.rpts),
+    sources: s.sourceRows.map((r) => reportRow(r, false)),
+    models: s.modelRows.map((r) => reportRow(r, true)),
+    projects: s.projectRows.map((r) => reportRow(r, false)),
+    ctxCategories,
+    ctxTools,
+    ctxMcp,
+    ctxSkills,
+    ctxExec,
   };
 }

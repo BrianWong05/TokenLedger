@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import './overview.css';
 import Heatmap from './Heatmap';
 import HeatmapModal from './HeatmapModal';
@@ -23,6 +23,7 @@ import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
 import { tauriLedger, type LedgerPort } from './ledger';
 import { tauriExport, type ExportPort } from './export';
+import { reportFilename, windowReportCsv } from './reportCsv';
 import type { ClockPort } from './overviewStore';
 import { heatFilters } from './data';
 import { tauriPricing, type PricingPort } from '../pricing/pricing';
@@ -103,15 +104,44 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
   }, []);
 
   const {
-    loading, scanError, fetchError, scanSources, allPoints,
+    loading, reloading, scanError, fetchError, scanSources, allPoints,
     refresh, refreshing, scanAt,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
+    reportInput,
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
     summary, modelRows, canOpenCostBreakdown, headline, unreadable,
     panels,
   } = useOverview(ports);
+
+  // The window report: one CSV of whatever this tab is showing.
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  // A failure describes the window it was raised for, so a new window retires
+  // it — otherwise the band would keep accusing a window that was never asked
+  // to export.
+  useEffect(() => setExportError(null), [range, from, to]);
+  // Serializes the state that is already rendered — no refetch, so a scan
+  // landing mid-export cannot produce a file matching neither the screen
+  // before it nor the screen after.
+  const exportWindow = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      // The click is the file's `generated` stamp. The window and its grain
+      // still come from the render being exported (useOverview's viewNow), so
+      // an idle tab exports the window it is showing, dated when you asked.
+      const input = reportInput(settings, new Date());
+      // A cancelled save resolves false and says nothing: backing out of the
+      // sheet is a decision, not a fault.
+      await exporter.saveCsv(reportFilename(input.fromIso, input.toIso), windowReportCsv(input));
+    } catch (e) {
+      setExportError(`${t('overview.exportFailed')}: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // The ≥ reason (ADR-0017): which Sources hold Unreadable Artifacts whose
   // content could fall in this window — visible count beside the eyebrow,
@@ -203,12 +233,38 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
           </svg>
           {tShell('header.rescan')}
         </button>
+        <button
+          type="button"
+          className="tt-export"
+          onClick={() => void exportWindow()}
+          // Not disabled on an empty window: a window with no usage is a
+          // legitimate report costing $0.00, the one zero that is a figure.
+          // Disabled with no Summary, which is the opposite case — the report
+          // input's token fields are non-nullable, so an absent Summary
+          // serializes as 0, a figure that would mean "unknown". `loading` does
+          // not cover it: that is the series alone.
+          //
+          // `reloading` is the window having moved ahead of the figures that
+          // describe it — switch range and click here inside the reload and the
+          // file would state the new window over the old window's Summary,
+          // Sources, Models, Projects and Context. The screen shows that gap
+          // too, but wears it for an instant; a file keeps it.
+          disabled={exporting || loading || reloading || summary === null}
+          aria-busy={exporting}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="M7 10l5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+          {exporting ? t('overview.exporting') : t('overview.export')}
+        </button>
       </div>
 
       <div className="tt-body">
-      {(scanError || fetchError) && (
+      {(scanError || fetchError || exportError) && (
         <div className="tt-error">
-          {scanError && fetchError ? `${scanError} · ${fetchError}` : scanError || fetchError}
+          {[scanError, fetchError, exportError].filter(Boolean).join(' · ')}
         </div>
       )}
 

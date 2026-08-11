@@ -114,8 +114,11 @@ display_rate,1.52
 than restates. `display_currency` and `display_rate` appear only when a Display
 Currency is set; every figure below stays USD regardless, because a file outlives
 the user-editable rate that would otherwise define it. `window_grain` names the
-adaptive granularity from `granularityOf`, so the time block states its meaning
-rather than leaving it inferred. For a `Total` window the dates come from the
+grain of the file's own rows — the same value as the time block's first column,
+by construction — not the Trend's display bucket. A report carries the finest
+honest grain it holds and lets the spreadsheet roll it up, so the chart's
+aggregation to weeks or months is never exported: pre-rolling here would destroy
+detail the file otherwise keeps. For a `Total` window the dates come from the
 Ledger's own extent (`firstIso`, `lastIso`).
 
 ### Usage blocks
@@ -123,14 +126,15 @@ Ledger's own extent (`firstIso`, `lastIso`).
 | Block | First column | Notes |
 |---|---|---|
 | summary | `window` | plus `unpriced_models`, `cache_estimated_models`, space-joined |
-| time | `hour` \| `day` \| `week` \| `month` | ascending |
+| time | `hour` \| `day` | ascending; `hour` only for a single-day window whose hours have landed, `day` otherwise |
 | by Source | `source` | total tokens descending |
 | by Model | `model` | plus a `source` column: a Model is scoped to the tool that ran it |
 | by Project | `project` | quoted; paths contain commas |
 
 All five share: `input_tokens`, `output_tokens`, `cache_read_tokens`,
 `cache_write_tokens`, `total_tokens`, `requests`, `sessions`, `cache_hit_rate`,
-`cost_usd`, `cost_basis`, `unattributed_tokens`, `cache_estimated`.
+`cost_usd`, `cost_basis`, `unattributed_tokens`, `cache_estimated` — except the
+time block, which omits `sessions`. See below.
 
 `cache_hit_rate` is not on `BreakdownRow`, so the serializer computes it per row
 as `cache_read / (input + cache_read + cache_write)` — well defined in every
@@ -143,6 +147,15 @@ block precisely because Input excludes cache reads (ADR-0001).
 `queries::breakdown` counts them; a Session spanning two Models counts in both,
 so the column does not sum to the summary's figure. This matches what the app
 displays.
+
+**The time block omits it.** The non-additivity above holds in every block, but
+only the time block is a sequence the file explicitly invites the reader to roll
+up — that is why it carries the finest grain it holds rather than the chart's
+aggregate. A column that must not be summed has no place in the one block whose
+stated contract is that summing it is correct: a Session open across midnight
+would be counted in each day it touches, and the total would silently exceed the
+summary's. The four whole-window blocks keep the column, because there the rows
+are categories and no roll-up is implied.
 
 #### The time block's cost is a weaker signal than the others
 
@@ -172,11 +185,11 @@ does not depend on which Source card happened to be selected.
 
 | Block | First column | Columns |
 |---|---|---|
-| categories | `context` | `source, category, est_tokens, basis` |
+| categories | `context` | `source, est_tokens, basis` — the first column holds the category |
 | tools | `tool` | `source, category, est_tokens, calls` |
 | MCP | `mcp_server` | `source, est_tokens, calls` |
 | skills | `skill` | `source, est_tokens, uses` |
-| Bash | `bash` | `source, exe, cmd, est_tokens, calls` |
+| Bash | `bash` | `source, exe, est_tokens, calls` — the first column holds `cmd`, already the two-word signature |
 
 `category` takes one of seven values, from `ctxTotals`: `messages`, `system` and
 `reasoning`, then `toolcalls`, `agents`, `mcp` and `skills`. `basis` is `exact`
@@ -188,6 +201,21 @@ to a whole; a total would invite exactly the reading the app declines to offer.
 A category a Source cannot attribute is omitted, not zeroed. `uses` counts
 injections rather than distinct skills — a re-invoked skill reloads its whole
 body, which is what makes `est_tokens` grow.
+
+**`est_tokens` is the allocated figure the panel shows, never the raw stored
+weight.** `ctx_tools` and `ctx_exec` store content sizes; `toolTree`, `mcpBars`
+and the Bash drill-down each spread a Context total across those sizes, so a
+block written from the raw rows would sit on a different scale from the panel it
+was taken from — the failure this design cites to rule out assembling in Rust.
+The tools and Bash blocks therefore resolve the same Bash leaf the drill-down
+expands, and a Source that attributes no Tool-calls total contributes no rows,
+exactly as it renders no drill-down.
+
+**The Bash block merges rows sharing a signature.** `ctx_exec` groups by `kind`
+as well, and `kind` reads the raw command line while `cmd` is the two-word
+signature — `npm run build` and `npm run dev` are two stored rows that both
+reduce to `npm run`. The block carries no `kind` column, so unmerged they would
+be two rows under one key with nothing to tell them apart.
 
 Only Claude, Codex and pi report Context; the blocks are absent when no Source in
 the window does.
@@ -213,9 +241,24 @@ renders `scanError || fetchError` in its `tt-error` band (`:209-213`);
 toast infrastructure is introduced.
 
 `exporting` disables the button with `aria-busy`. The button is also disabled
-while the window is loading, since there is nothing to serialize. It is **not**
-disabled on an empty window: a window with no usage is a legitimate report
-costing `$0.00`, the one zero that is a figure rather than a gap.
+while the window is loading, since there is nothing to serialize; with no
+Summary, since the report input's token fields are non-nullable and an absent
+Summary would serialize as a `0` meaning "unknown"; and while the window is
+**reloading**. It is **not** disabled on an empty window: a window with no usage
+is a legitimate report costing `$0.00`, the one zero that is a figure rather
+than a gap.
+
+`reloading` is the gap the purity property does not close on its own. A range
+click moves `range`/`from`/`to` at once and schedules the reload that will
+replace Summary, the three breakdowns and every Context row; until it lands the
+snapshot names one window and holds another's figures. The screen shows that
+too — a stale headline beside a fresh chart — but wears it for an instant,
+whereas a file saved in the gap states the new window in its header over the old
+window's figures and keeps the claim forever. The store publishes the flag by
+comparing the epoch it last landed against the epoch currently scheduled, so it
+cannot drift from the counter that already decides which response wins; both the
+success and failure paths settle it, since a reload that fails reports through
+`fetchError` and must not leave the button dead.
 
 Assembly cannot fail — it is a pure function over state that has already
 rendered.
@@ -239,7 +282,8 @@ change touches.
   stays USD either way
 - `tokens_basis` is `floor` when an unreadable Artifact's mtime is at or after
   the window start
-- the grain line reads `hour`, `day`, `week` or `month` to match the window
+- the grain line reads `hour` or `day` — `hour` only for a single-day window
+  whose hours have landed, `day` for every other window, however long
 - a `Total` window takes its filename dates from the Ledger's extent
 - a time-block bucket with `hasUnpriced` and `cost === 0` writes an empty
   `cost_usd` with `cost_basis` `unavailable`, not `0`

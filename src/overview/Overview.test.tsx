@@ -50,6 +50,25 @@ const summary: Summary = {
   unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
 };
 
+// Fake file-save port: records (filename, contents) instead of opening a
+// dialog. The three results are the three things a save sheet can do —
+// 'cancelled' resolves false (the user backed out; not a failure), 'fails'
+// rejects (the write itself broke). Both record the call, so a test can assert
+// what would have been written either way.
+function makeFakeExporter(result: 'written' | 'cancelled' | 'fails' = 'written') {
+  const calls: [string, string][] = [];
+  return {
+    calls,
+    saveCsv: (filename: string, contents: string): Promise<boolean> => {
+      calls.push([filename, contents]);
+      if (result === 'fails') return Promise.reject(new Error('disk full'));
+      return Promise.resolve(result === 'written');
+    },
+  };
+}
+
+type FakeExporter = ReturnType<typeof makeFakeExporter>;
+
 const mountedRoots: Root[] = [];
 
 async function settle(times = 4) {
@@ -60,10 +79,14 @@ async function settle(times = 4) {
   }
 }
 
-async function mount(
-  seed: Parameters<typeof makeFakeLedger>[0],
-): Promise<{ container: HTMLElement; ledger: FakeLedger }> {
-  const ledger = makeFakeLedger(seed);
+// The general mount: every port faked, including the file-save one, so no test
+// can reach the real `invoke`. mount(seed) below is this with the ledger seed
+// spelled out, which is all most tests care about.
+async function mountOverview(
+  opts: { ledger?: FakeLedger; exporter?: FakeExporter } = {},
+): Promise<{ container: HTMLElement; ledger: FakeLedger; exporter: FakeExporter }> {
+  const ledger = opts.ledger ?? makeFakeLedger({ dayPoints: [pt({})], summary });
+  const exporter = opts.exporter ?? makeFakeExporter();
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -71,12 +94,34 @@ async function mount(
   await act(async () => {
     root.render(
       <SettingsProvider port={makeFakeSettings()}>
-        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing() }} />
+        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing(), export: exporter }} />
       </SettingsProvider>,
     );
   });
   await settle();
-  return { container, ledger };
+  return { container, ledger, exporter };
+}
+
+async function mount(
+  seed: Parameters<typeof makeFakeLedger>[0],
+): Promise<{ container: HTMLElement; ledger: FakeLedger }> {
+  return mountOverview({ ledger: makeFakeLedger(seed) });
+}
+
+async function click(el: Element) {
+  await act(async () => {
+    (el as HTMLElement).click();
+  });
+  await settle(2);
+}
+
+// The headline paints a compact figure ("1.2K"), so the exact total it stands
+// for is only readable from its aria-label — "<exact> total tokens. <action>",
+// optionally prefixed by the ≥ reading. Digits only, which drops the prefix
+// and the thousands separators together.
+function headlineTotal(container: HTMLElement): number {
+  const label = container.querySelector('.tt-b8-total')!.getAttribute('aria-label')!;
+  return Number(label.slice(0, label.indexOf(' total tokens.')).replace(/\D/g, ''));
 }
 
 // Like mount(), but on fake timers, advanced past the ≥1s Rescan spin hold so
@@ -93,7 +138,7 @@ async function mountSettled(
   await act(async () => {
     root.render(
       <SettingsProvider port={makeFakeSettings()}>
-        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing() }} />
+        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing(), export: makeFakeExporter() }} />
       </SettingsProvider>,
     );
   });
@@ -671,5 +716,127 @@ describe('Overview presentation', () => {
 
     expect(ledger.calls.scan.length).toBe(2);
     expect(c.querySelector('.tt-lastscan')?.textContent).toMatch(/^last scan/);
+  });
+});
+
+// The window report (docs/specs 2026-08-10): one CSV over whatever the Overview
+// is showing, written through the same save port the Trend enlarge uses.
+describe('Export', () => {
+  it('writes the window under the range it covers', async () => {
+    const { container, exporter } = await mountOverview();
+    await click(container.querySelector('.tt-export')!);
+    expect(exporter.calls).toHaveLength(1);
+    const [filename, contents] = exporter.calls[0];
+    expect(filename).toMatch(/^usage-\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}\.csv$/);
+    expect(contents.startsWith('tokenledger_report,1\n')).toBe(true);
+  });
+
+  // The property the architecture exists for: the file is a function of the
+  // state that rendered, so it cannot report a total the screen never showed.
+  it('reports the same total the headline shows', async () => {
+    const { container, exporter } = await mountOverview();
+    const headline = headlineTotal(container);
+    await click(container.querySelector('.tt-export')!);
+    const [, contents] = exporter.calls[0];
+    const summaryRow = contents.split('\n\n').find((b) => b.startsWith('window,input_tokens'))!.split('\n')[1];
+    expect(Number(summaryRow.split(',')[5])).toBe(headline);
+  });
+
+  it('says nothing when the save dialog is cancelled', async () => {
+    const { container } = await mountOverview({ exporter: makeFakeExporter('cancelled') });
+    await click(container.querySelector('.tt-export')!);
+    expect(container.querySelector('.tt-error')).toBe(null);
+  });
+
+  it('surfaces a failed write in the error band', async () => {
+    const { container } = await mountOverview({ exporter: makeFakeExporter('fails') });
+    await click(container.querySelector('.tt-export')!);
+    expect(container.querySelector('.tt-error')?.textContent).toContain('disk full');
+  });
+
+  it('offers Export for an empty window, which costs $0.00 rather than nothing', async () => {
+    const { container } = await mountOverview({ ledger: makeFakeLedger({ dayPoints: [] }) });
+    expect(container.querySelector<HTMLButtonElement>('.tt-export')!.disabled).toBe(false);
+  });
+
+  // A window whose Summary has not landed cannot be serialized honestly: the
+  // selector's token fields are non-nullable, so an absent Summary becomes 0 —
+  // a figure meaning "unknown". Only the caller can refuse, and it does.
+  //
+  // Reaching that state takes two steps, because the fake's hold() is scoped to
+  // the METHOD, not the call: holding 'summary' also holds the Profile-sessions
+  // count that rides with the initial series load. Resolving that first held
+  // call lets allPoints land — which is what ends `loading` and fires the
+  // per-range reload, whose own Summary is then the held call that matters.
+  // Skipping the first resolve leaves the button disabled by `loading` and
+  // tests nothing.
+  it('withholds Export until the window\'s Summary has landed', async () => {
+    const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
+    ledger.hold('summary');
+    const { container } = await mountOverview({ ledger });
+    const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
+
+    ledger.resolveHeld('summary', 0); // Profile sessions — lets the first load land
+    await settle();
+    expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
+    expect(ledger.held('summary').length).toBe(2); // [0] profile, [1] the window's
+    expect(exportBtn().disabled).toBe(true);
+
+    ledger.resolveHeld('summary', 1); // the window's own Summary
+    await settle();
+    expect(exportBtn().disabled).toBe(false);
+  });
+
+  // A Summary that has landed is not the same as a Summary for THIS window.
+  // Switching range moves the header instantly and leaves every figure behind
+  // until the reload lands; exporting in that gap would write the new window
+  // over the old window's numbers, and unlike the screen a file keeps it.
+  it('withholds Export while the window has moved ahead of its figures', async () => {
+    const ledger = makeFakeLedger({ dayPoints: [pt({}), pt({ bucket: '2026-07-15' })], summary });
+    const { container, exporter } = await mountOverview({ ledger });
+    const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
+    expect(exportBtn().disabled).toBe(false);
+
+    ledger.hold('summary');
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.tt-toolbar .tt-seg button'))
+      .find((b) => b.textContent === 'Week')!);
+    expect(exportBtn().disabled).toBe(true);
+
+    // Even clicked through, nothing is written: the gate is the button's own.
+    await click(exportBtn());
+    expect(exporter.calls).toHaveLength(0);
+
+    ledger.resolveHeld('summary', ledger.held('summary').length - 1);
+    await settle();
+    expect(exportBtn().disabled).toBe(false);
+  });
+
+  // Two instants, deliberately different. The window and its grain describe the
+  // render being exported; `generated` describes the save. A tab rendered on
+  // the 20th and exported on the 25th must write the 20th's trailing-30-day
+  // window under the 25th's timestamp — swapping either instant for the other
+  // breaks exactly one of these two assertions.
+  it('stamps the save instant while the window stays the render\'s', async () => {
+    vi.setSystemTime(new Date(2026, 6, 20, 12));
+    const { container, exporter } = await mountOverview();
+    // Month, so the bounds are computed from an instant rather than from the
+    // Ledger's extent as an unbounded Total window would be.
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.tt-toolbar .tt-seg button'))
+      .find((b) => b.textContent === 'Month')!);
+
+    // Five days pass with the tab open. No view dependency moves, so the render
+    // — and the window it is showing — stays where it was.
+    vi.setSystemTime(new Date(2026, 6, 25, 9, 30));
+    await click(container.querySelector('.tt-export')!);
+
+    const [filename, contents] = exporter.calls[0];
+    // The first block is the header; the summary block's own header also starts
+    // "window,", so scope the lookup rather than scanning the whole file.
+    const headerBlock = contents.split('\n\n')[0].split('\n');
+    const line = (prefix: string) => headerBlock.find((l) => l.startsWith(prefix))!;
+    expect(line('generated,')).toBe(`generated,${new Date(2026, 6, 25, 9, 30).toISOString()}`);
+    // 30 trailing days ending on the render's day, not the save's.
+    expect(line('window,')).toBe('window,2026-06-21,2026-07-20');
+    expect(filename).toBe('usage-2026-06-21_2026-07-20.csv');
   });
 });
