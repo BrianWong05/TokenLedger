@@ -48,6 +48,10 @@ export const settings = {
     'settings.scanning': 'Scanning',
     'settings.refresh': 'Auto-refresh interval',
     'settings.refresh.caption': 'How often usage data is re-read from disk',
+    'settings.refresh.off': 'Off',
+    // "Off" on an app whose job is recording has to say what it does not stop.
+    'settings.refresh.offNote':
+      'This window re-reads only when you press Rescan. Background recording carries on.',
     'settings.refresh.custom': 'Custom',
     'settings.refreshCustom': 'Custom interval',
     'settings.refreshCustom.caption': 'Any whole number of seconds, 5 s – 24 h',
@@ -114,6 +118,8 @@ export const settings = {
     'settings.scanning': '掃描',
     'settings.refresh': '自動重新整理間隔',
     'settings.refresh.caption': '多久從磁碟重新讀取一次使用資料',
+    'settings.refresh.off': '關閉',
+    'settings.refresh.offNote': '此視窗只在你按「重新掃描」時重讀。背景記錄照常進行。',
     'settings.refresh.custom': '自訂',
     'settings.refreshCustom': '自訂間隔',
     'settings.refreshCustom.caption': '任意整數秒數，5 秒至 24 小時',

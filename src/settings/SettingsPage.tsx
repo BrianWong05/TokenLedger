@@ -11,6 +11,7 @@ import { setLaunchAtLogin } from './startup';
 import {
   MAX_REFRESH_SEC,
   MIN_REFRESH_SEC,
+  REFRESH_OFF,
   REFRESH_PRESETS,
   useRefreshSec,
 } from '../overview/useAutoRefresh';
@@ -682,10 +683,12 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
   const { settings, update } = useSettings();
   const [refreshSec, setRefreshSec] = useRefreshSec();
   // A custom value can equal a preset, so a view-local flag disambiguates which
-  // segment is active; Custom is also active whenever the value isn't a preset.
+  // segment is active; Custom is also active whenever the value isn't a preset
+  // or Off — Off is not a duration, so it is neither a preset nor a custom one.
   const isPreset = REFRESH_PRESETS.some((p) => p.sec === refreshSec);
   const [customOpen, setCustomOpen] = useState(false);
-  const customActive = customOpen || !isPreset;
+  const off = refreshSec === REFRESH_OFF && !customOpen;
+  const customActive = customOpen || (!isPreset && refreshSec !== REFRESH_OFF);
 
   return (
     <div className="tl-page tl-page-settings">
@@ -778,6 +781,17 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-caption">{t('settings.refresh.caption')}</div>
             </div>
             <div className="set-seg set-seg-mono" role="group" aria-label={t('settings.refresh')}>
+              <button
+                type="button"
+                className={off ? 'active' : ''}
+                aria-pressed={off}
+                onClick={() => {
+                  setRefreshSec(REFRESH_OFF);
+                  setCustomOpen(false);
+                }}
+              >
+                {t('settings.refresh.off')}
+              </button>
               {REFRESH_PRESETS.map((p) => {
                 const active = refreshSec === p.sec && !customActive;
                 return (
@@ -805,6 +819,13 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               </button>
             </div>
           </div>
+          {/* Off stops this window scanning on its own, and nothing else — said
+              plainly, because "off" on a recording app reads as "stop recording" */}
+          {off && (
+            <div className="set-row">
+              <div className="set-row-caption">{t('settings.refresh.offNote')}</div>
+            </div>
+          )}
           {customActive && <CustomIntervalRow sec={refreshSec} onCommit={setRefreshSec} />}
         </section>
 

@@ -163,8 +163,9 @@ describe('SettingsPage', () => {
     const port = makeFakeSettings({ firstRunDone: true });
     const c = await mount(port);
 
-    // Four presets + Custom; 30s active by default (parseRefreshSec fallback).
-    expect(refreshSeg(c).map((b) => b.textContent)).toEqual(['10s', '30s', '60s', '5m', 'Custom']);
+    // Off + four presets + Custom; 30s active by default (parseRefreshSec fallback).
+    expect(refreshSeg(c).map((b) => b.textContent))
+      .toEqual(['Off', '10s', '30s', '60s', '5m', 'Custom']);
     expect(refreshSeg(c).find((b) => b.classList.contains('active'))?.textContent).toBe('30s');
 
     await click(refreshSeg(c).find((b) => b.textContent === '60s')!);
@@ -485,6 +486,34 @@ describe('SettingsPage', () => {
       const c = await mount(makeFakeSettings({ firstRunDone: true }));
       expect(shortcuts(c)).toEqual(['Last year']);
     });
+  });
+
+  it('turns auto-refresh off, and says what off does not stop', async () => {
+    const c = await mount(makeFakeSettings({ firstRunDone: true }));
+    const seg = (label: string) => refreshSeg(c).find((b) => b.textContent === label)!;
+
+    await click(seg('Off'));
+
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('0');
+    expect(seg('Off').classList.contains('active')).toBe(true);
+    // Off is not a duration, so the Custom field must not open on it
+    expect(q<HTMLInputElement>(c, 'input[aria-label="Custom interval"]')).toBeNull();
+    // "off" on a recording app has to say what it leaves running
+    expect(c.textContent).toContain('Background recording carries on');
+
+    await click(seg('60s'));
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('60');
+    expect(seg('Off').classList.contains('active')).toBe(false);
+    expect(c.textContent).not.toContain('Background recording carries on');
+  });
+
+  it('reads a stored Off back as Off rather than as a custom interval', async () => {
+    localStorage.setItem(STORAGE_KEY, '0');
+    const c = await mount(makeFakeSettings({ firstRunDone: true }));
+    const seg = (label: string) => refreshSeg(c).find((b) => b.textContent === label)!;
+
+    expect(seg('Off').classList.contains('active')).toBe(true);
+    expect(seg('Custom').classList.contains('active')).toBe(false);
   });
 
   it('keeps an invalid rate editable without persisting it', async () => {

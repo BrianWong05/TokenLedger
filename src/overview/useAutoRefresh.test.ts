@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   parseRefreshSec,
+  REFRESH_OFF,
   loadRefreshSec,
   saveRefreshSec,
   scheduleAutoRefresh,
@@ -34,13 +35,19 @@ describe('parseRefreshSec / load / save', () => {
     expect(parseRefreshSec('1e3')).toBe(1000); // Number('1e3') === 1000, an integer
     // Out of range, non-integer, or unparseable → 30.
     expect(parseRefreshSec('4')).toBe(30);
-    expect(parseRefreshSec('0')).toBe(30);
     expect(parseRefreshSec('-30')).toBe(30);
     expect(parseRefreshSec('86401')).toBe(30);
     expect(parseRefreshSec('45.5')).toBe(30);
     expect(parseRefreshSec('nope')).toBe(30);
     expect(parseRefreshSec(null)).toBe(30);
     expect(parseRefreshSec('')).toBe(30);
+  });
+
+  it('reads 0 as Off rather than a duration out of range', () => {
+    expect(parseRefreshSec('0')).toBe(REFRESH_OFF);
+    // still not a licence for near-zero durations
+    expect(parseRefreshSec('0.5')).toBe(30);
+    expect(parseRefreshSec('-30')).toBe(30);
   });
 
   it('loadRefreshSec reads storage; invalid → 30', () => {
@@ -63,6 +70,16 @@ describe('scheduleAutoRefresh', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('Off schedules nothing at all', () => {
+    const tick = vi.fn();
+    const stop = scheduleAutoRefresh(REFRESH_OFF, tick);
+    // a 0-second interval would be a tick per event-loop turn, not a slow one
+    vi.advanceTimersByTime(60_000);
+    expect(tick).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    stop();
   });
 
   it('10s → ticks once per interval', () => {

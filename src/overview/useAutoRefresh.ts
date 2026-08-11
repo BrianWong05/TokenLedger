@@ -11,12 +11,19 @@ export const REFRESH_PRESETS: ReadonlyArray<{ label: string; sec: RefreshSec }> 
 
 export const STORAGE_KEY = 'tokenledger.refreshSec';
 
+// Auto-refresh off. Not a duration, so it sits outside the MIN..MAX range the
+// Custom field validates against — and it stops only what this window does on
+// its own: the resident capture thread still scans every few hours (ADR-0005),
+// and Rescan still scans on demand.
+export const REFRESH_OFF = 0;
+
 export const MIN_REFRESH_SEC = 5;
 export const MAX_REFRESH_SEC = 86_400;
 
 export function parseRefreshSec(raw: string | null): RefreshSec {
   if (raw == null || raw === '') return 30;
   const n = Number(raw);
+  if (n === REFRESH_OFF) return REFRESH_OFF;
   if (Number.isInteger(n) && n >= MIN_REFRESH_SEC && n <= MAX_REFRESH_SEC) return n;
   return 30;
 }
@@ -42,6 +49,9 @@ export function scheduleAutoRefresh(
     clearInterval: typeof clearInterval;
   } = globalThis,
 ): () => void {
+  // Off schedules nothing. Guarded here as well as at the caller because a
+  // 0-second interval is not a slow tick, it is a tick every event loop turn.
+  if (sec === REFRESH_OFF) return () => {};
   const id = timers.setInterval(tick, sec * 1000);
   return () => timers.clearInterval(id);
 }
@@ -168,7 +178,9 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
   useEffect(() => {
     const returnedToWindow = focused && !previouslyFocused.current;
     previouslyFocused.current = focused;
-    if (!focused) return;
+    // Off means this window scans only when asked: no tick, and no scan on the
+    // way back to it either. The initial load is not auto-refresh and still runs.
+    if (!focused || refreshSec === REFRESH_OFF) return;
     if (returnedToWindow) void refresh();
     return scheduleAutoRefresh(refreshSec, () => {
       void refresh();
