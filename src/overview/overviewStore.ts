@@ -157,6 +157,13 @@ class Store implements OverviewStore {
   };
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
+  // Reload results by window (filters + hourly day): returning to a window
+  // already fetched this scan-generation skips the 10-query fan-out and
+  // repatches the exact same references, so the memoized panels don't
+  // re-render either. Cleared whenever the Ledger may hold different rows (a
+  // scan past the idle gate, prices rebuilt); entries land only from reloads
+  // that won the epoch race, so a superseded response can never be replayed.
+  private reloadCache = new Map<string, ReloadResult>();
   private epoch = 0; // monotonic; supersedes in-flight reload responses
   // The epoch whose reload actually landed. Reusing the counter that already
   // decides which response wins means "still loading" needs no second flag to
@@ -207,6 +214,9 @@ class Store implements OverviewStore {
     // even when the scan reports nothing new.
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
     if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
+
+    // Past the idle gate the Ledger may hold rows no cached window has seen.
+    this.reloadCache.clear();
 
     try {
       // The Profile's Session count rides with the unbounded series, not with
@@ -268,7 +278,10 @@ class Store implements OverviewStore {
   }
 
   start() {
-    const unsub = this.ledger.onPricesRebuilt(() => this.scheduleReload());
+    const unsub = this.ledger.onPricesRebuilt(() => {
+      this.reloadCache.clear(); // a rate change reprices every cached window
+      this.scheduleReload();
+    });
     return () => {
       unsub();
       if (this.reloadTimer !== null) {
@@ -369,6 +382,18 @@ class Store implements OverviewStore {
     if (this.state.hourPoints.length && held !== hourDay) {
       this.patch({ hourPoints: [] });
     }
+    const apply = ([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour, sourceRows]: ReloadResult) =>
+      this.patch({
+        summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, sourceRows,
+        ...(hour ? { hourPoints: hour } : {}),
+        fetchError: null,
+      });
+    const key = JSON.stringify([filters, hourDay]);
+    const cached = this.reloadCache.get(key);
+    if (cached) {
+      land(() => apply(cached));
+      return;
+    }
     Promise.all([
       L.summary(filters),
       L.breakdown('model', filters),
@@ -381,18 +406,36 @@ class Store implements OverviewStore {
       hourDay ? L.series(filters, 'hour') : null,
       L.breakdown('tool', filters),
     ])
-      .then(([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour, sourceRows]) =>
-        land(() =>
-          this.patch({
-            summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, sourceRows,
-            ...(hour ? { hourPoints: hour } : {}),
-            fetchError: null,
-          }),
-        ),
+      .then((result) =>
+        land(() => {
+          this.reloadCache.set(key, result);
+          // A session can walk arbitrarily many custom windows; drop the
+          // oldest entry rather than growing without bound.
+          if (this.reloadCache.size > 16) {
+            const oldest = this.reloadCache.keys().next();
+            if (!oldest.done) this.reloadCache.delete(oldest.value);
+          }
+          apply(result);
+        }),
       )
       .catch((e) => land(() => this.patch({ fetchError: String(e) })));
   }
 }
+
+// What one reload fetches, in Promise.all order (summary, the three
+// breakdowns, the five ctx reads, the optional hourly series).
+type ReloadResult = [
+  Summary,
+  BreakdownRow[],
+  BreakdownRow[],
+  CtxResource[],
+  CtxBuckets[],
+  CtxToolRow[],
+  CtxSkillRow[],
+  CtxExecRow[],
+  SeriesPoint[] | null,
+  BreakdownRow[],
+];
 
 export function createOverviewStore(ports?: {
   ledger?: LedgerPort;
