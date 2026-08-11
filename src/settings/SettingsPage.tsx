@@ -19,8 +19,9 @@ import {
   useCustomPresets,
   validDays,
 } from '../overview/customPresets';
-import { CALENDAR_PRESETS } from '../overview/data';
-import { PRESET_LABEL_KEY, useOverviewT } from '../overview/localize';
+import { CALENDAR_PRESETS, isoOf, presetWindow } from '../overview/data';
+import { useFirstRecord } from '../overview/ledgerExtent';
+import { fmtIsoRangeL, PRESET_LABEL_KEY, presetLabelL, spanLabelL, useOverviewT } from '../overview/localize';
 import type { CalendarPresetKey, PresetSlot } from '../overview/data';
 import type { SettingsPort, UpdateStatus } from './settings';
 import type { Settings } from '../types';
@@ -172,118 +173,152 @@ function RateRow({ code }: { code: string }) {
   );
 }
 
-// Mounted only while its slot holds a rolling shortcut, so the text re-seeds
-// from the stored count each time it appears (RateRow's contract). Invalid or
-// already-taken input stays editable but is never persisted.
-function PresetDaysInput({ index, days, takenDays, onCommit }: {
-  index: number;
-  days: number;
-  takenDays: ReadonlySet<number>;
-  onCommit: (n: number) => void;
-}) {
-  const { t } = useT();
-  const [text, setText] = useState(String(days));
-
-  const onChange = (v: string) => {
-    setText(v);
-    const n = Number(v);
-    if (v.trim() !== '' && validDays(n) && !takenDays.has(n)) onCommit(n);
-  };
-
-  return (
-    <>
-      <input
-        className="set-rate-input"
-        inputMode="numeric"
-        aria-label={`${t('settings.preset.dayCount')} ${index + 1}`}
-        value={text}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="set-rate-side">{t('settings.preset.daysUnit')}</span>
-    </>
-  );
-}
-
-// Up to four extra shortcuts for the Overview's Custom-range picker. Slots are
-// positional: the next empty one appears once the previous is set, and clearing
-// one in the middle leaves a hole rather than renumbering those after it — so a
-// shortcut never moves out from under the reader who put it there.
+// Up to four extra Presets for the Overview's Custom-range picker: one row to
+// add one, then a row per configured Preset, captioned with the window it
+// resolves to today — the thing a bare "Last quarter" never tells you. Slots
+// stay positional in storage, so removing one in the middle leaves a hole for
+// the next Add to fill rather than renumbering the Presets after it.
 function CustomRangeGroup() {
   const { t } = useT();
-  // The calendar periods are named once, in the overview catalog: this dropdown
+  // The calendar periods are named once, in the overview catalog: this group
   // shows the reader the same words the picker will.
-  const { t: overviewT } = useOverviewT();
+  const { t: overviewT, lang } = useOverviewT();
   const [slots, setSlots] = useCustomPresets();
+  const [kind, setKind] = useState<'rolling' | CalendarPresetKey>('rolling');
+  const firstRecord = useFirstRecord();
 
-  // Reveal one slot past the last filled one, so nobody who configures none
-  // faces four empty dropdowns.
-  const filled = slots.reduce((last, s, i) => (s ? i : last), -1);
-  const visible = Math.min(MAX_CUSTOM_PRESETS, filled + 2);
+  const filled = slots.flatMap((s, i) => (s ? [{ slot: s, i }] : []));
+  // Duplicates are blocked by definition rather than by resolved window: two
+  // slots cannot hold the same period, and none can restate a shipped one.
+  const takenDays = new Set([
+    ...SHIPPED_DAYS,
+    ...slots.flatMap((s) => (s?.key === 'rolling' ? [s.days] : [])),
+  ]);
+  const has = (key: CalendarPresetKey) => slots.some((s) => s?.key === key);
 
   const put = (i: number, slot: PresetSlot | null) => {
     const next = slots.slice();
     next[i] = slot;
     setSlots(next);
   };
-  // Duplicates are blocked by definition rather than by resolved window: two
-  // slots cannot hold the same period, and none can restate a shipped one.
-  const otherSlots = (i: number) => slots.filter((_, j) => j !== i);
-  const takenDays = (i: number) => new Set([
-    ...SHIPPED_DAYS,
-    ...otherSlots(i).flatMap((s) => (s?.key === 'rolling' ? [s.days] : [])),
-  ]);
-  const takenCalendar = (i: number) =>
-    new Set(otherSlots(i).flatMap((s) => (s && s.key !== 'rolling' ? [s.key] : [])));
+
+  // The day field's text is what Add commits: out of bounds, already taken or
+  // not a number at all simply leaves Add unavailable, so nothing unusable is
+  // ever stored and the reader keeps what they typed.
+  const [text, setText] = useState(() => String(freeDays(takenDays)));
+  const days = Number(text);
+  const daysOk = text.trim() !== '' && validDays(days) && !takenDays.has(days);
+  const canAdd =
+    filled.length < MAX_CUSTOM_PRESETS && (kind === 'rolling' ? daysOk : !has(kind));
+
+  const add = () => {
+    const i = slots.findIndex((s) => !s);
+    if (i < 0) return;
+    put(i, kind === 'rolling' ? { key: 'rolling', days } : { key: kind });
+    // A calendar period can only be added once, so the row falls back to the one
+    // type that is always available, on a count nothing holds yet. The count just
+    // added counts as claimed: the stored slots have not caught up yet.
+    setKind('rolling');
+    setText(String(freeDays(takenDays, kind === 'rolling' ? days : undefined)));
+  };
+
+  // The picker's own resolver against the same extent, so a caption states
+  // exactly the window its Preset will select — clamped to the first record, and
+  // absent altogether for a period that ends before the Ledger even starts.
+  // Until the Overview's first load publishes that extent, the epoch stands in
+  // and every Preset states its plain calendar period.
+  const extentFrom = firstRecord || '1970-01-01';
+  const today = isoOf(new Date());
 
   return (
     <section className="set-group">
       <div className="set-group-label">{t('settings.customRange')}</div>
-      {Array.from({ length: visible }, (_, i) => {
-        const slot = slots[i];
-        const taken = takenDays(i);
+      <div className="set-row set-row-stack">
+        <div className="set-row-text">
+          <div className="set-row-title">{t('settings.preset.add')}</div>
+          <div className="set-row-caption">{t('settings.preset.caption')}</div>
+        </div>
+        <div className="set-rate">
+          <div className="set-seg" role="group" aria-label={t('settings.preset.type')}>
+            <button
+              type="button"
+              className={kind === 'rolling' ? 'active' : ''}
+              aria-pressed={kind === 'rolling'}
+              onClick={() => setKind('rolling')}
+            >
+              {t('settings.preset.rolling')}
+            </button>
+            {CALENDAR_PRESETS.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={kind === key ? 'active' : ''}
+                aria-pressed={kind === key}
+                // already configured: adding it twice would be the same window
+                disabled={has(key)}
+                onClick={() => setKind(key)}
+              >
+                {overviewT(PRESET_LABEL_KEY[key])}
+              </button>
+            ))}
+          </div>
+          {kind === 'rolling' && (
+            <>
+              <input
+                className="set-rate-input"
+                inputMode="numeric"
+                aria-label={t('settings.preset.dayCount')}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+              <span className="set-rate-side">{t('settings.preset.daysUnit')}</span>
+            </>
+          )}
+          <button type="button" className="set-btn" disabled={!canAdd} onClick={add}>
+            {t('settings.preset.addAction')}
+          </button>
+        </div>
+      </div>
+
+      {filled.length === 0 && (
+        <div className="set-row">
+          <div className="set-row-caption">{t('settings.preset.none')}</div>
+        </div>
+      )}
+      {filled.map(({ slot, i }) => {
+        const win = presetWindow(slot, extentFrom, today);
+        const label = presetLabelL(slot, lang);
         return (
           <div className="set-row" key={i}>
             <div className="set-row-text">
-              <div className="set-row-title">{t('settings.preset')} {i + 1}</div>
-              {i === 0 && <div className="set-row-caption">{t('settings.preset.caption')}</div>}
+              <div className="set-row-title">{label}</div>
+              <div className="set-row-caption">
+                {win
+                  ? `${fmtIsoRangeL(win.from, win.to, lang)} · ${spanLabelL(win.from, win.to, lang)}`
+                  : t('settings.preset.outside')}
+              </div>
             </div>
-            <div className="set-rate">
-              <Select
-                label={`${t('settings.preset')} ${i + 1}`}
-                value={slot?.key ?? ''}
-                options={[
-                  { v: '', text: t('settings.preset.off') },
-                  { v: 'rolling', text: t('settings.preset.rolling') },
-                  ...CALENDAR_PRESETS.map((key) => ({
-                    v: key,
-                    text: overviewT(PRESET_LABEL_KEY[key]),
-                    disabled: takenCalendar(i).has(key),
-                  })),
-                ]}
-                onPick={(key) => {
-                  if (!key) return put(i, null);
-                  if (key !== 'rolling') return put(i, { key: key as CalendarPresetKey });
-                  // Seed the first count nothing else has claimed, so choosing
-                  // the option always lands on a usable shortcut.
-                  let n = 14;
-                  while (taken.has(n)) n++;
-                  put(i, { key: 'rolling', days: n });
-                }}
-              />
-              {slot?.key === 'rolling' && (
-                <PresetDaysInput
-                  index={i}
-                  days={slot.days}
-                  takenDays={taken}
-                  onCommit={(n) => put(i, { key: 'rolling', days: n })}
-                />
-              )}
-            </div>
+            <button
+              type="button"
+              className="set-btn"
+              aria-label={`${t('settings.preset.remove')} ${label}`}
+              onClick={() => put(i, null)}
+            >
+              {t('settings.preset.remove')}
+            </button>
           </div>
         );
       })}
     </section>
   );
+}
+
+// The first day count nothing has claimed, so the field always offers a usable
+// one. `justAdded` is claimed too where the stored slots have not caught up yet.
+function freeDays(taken: ReadonlySet<number>, justAdded?: number): number {
+  let n = 14;
+  while (taken.has(n) || n === justAdded) n++;
+  return n;
 }
 
 // Mounted only while the Custom refresh segment is active, so its text state

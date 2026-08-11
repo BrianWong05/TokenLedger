@@ -7,6 +7,7 @@
 import { makeTranslator, useT, type Lang } from '../lib/i18n';
 import { overview } from '../lib/strings/overview';
 import { parseLocalDate } from '../lib/dateRange';
+import { calendarSpan } from './data';
 import { formatCost as formatUsdCost } from '../lib/format';
 import { formatCost as formatCurrency } from '../lib/currency';
 import {
@@ -15,7 +16,7 @@ import {
   type CostCompleteness,
 } from '../lib/costCompleteness';
 import { sourceMeta, type Range8b } from './meta';
-import type { PresetKey } from './data';
+import type { PresetKey, PresetSlot, RangePreset } from './data';
 import type { Settings } from '../types';
 
 export type OverviewKey = keyof typeof overview.en;
@@ -74,6 +75,27 @@ export function countLabel(n: number, oneKey: OverviewKey, manyKey: OverviewKey,
   return `${n} ${translate(lang, n === 1 ? oneKey : manyKey)}`;
 }
 
+// "14 days" — how long a picked window is. Shared by the picker's mid-pick hint
+// and the Settings rows that caption a configured Preset.
+export function spanLabelL(from: string, to: string, lang: Lang): string {
+  return countLabel(calendarSpan(from, to), 'overview.dayOne', 'overview.daysUnit', lang);
+}
+
+// "Apr 1, 2026 – Jun 30, 2026" / "2026年4月1日 – 2026年6月30日". Both ends carry
+// the year, which a pair of bare short dates cannot: "Jan 1 – Dec 31" hides
+// that in Q1 the last quarter is October of the year before. Repeating it beats
+// collapsing the shared parts, which each language does differently (Intl's own
+// formatRange would, but it is absent from the WebView on older macOS).
+export function fmtIsoRangeL(from: string, to: string, lang: Lang): string {
+  const withYear = (iso: string) =>
+    parseLocalDate(iso).toLocaleDateString(localeOf(lang), {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  return `${withYear(from)} – ${withYear(to)}`;
+}
+
 // The ≥ floor marker's reason (ADR-0017): which Sources hold Unreadable
 // Artifacts whose content could fall in the marked window, e.g.
 // "Antigravity: 100 sessions unreadable". One builder for every ≥ surface.
@@ -96,6 +118,16 @@ export const PRESET_LABEL_KEY: Record<PresetKey, OverviewKey> = {
   lastQuarter: 'overview.preset.lastQuarter',
   lastYear: 'overview.preset.lastYear',
 };
+
+// A shipped shortcut is a static key; a configured rolling one cannot be, since
+// its N is arbitrary — so that label is composed from a prefix and the day
+// count, reading "Last 14 days" and "過去 14 天" beside the shipped windows. One
+// builder for the picker's buttons and the Settings rows that configure them.
+export function presetLabelL(p: RangePreset | PresetSlot, lang: Lang): string {
+  return p.key === 'rolling'
+    ? `${translate(lang, 'overview.preset.lastN')} ${countLabel(p.days, 'overview.dayOne', 'overview.daysUnit', lang)}`
+    : translate(lang, PRESET_LABEL_KEY[p.key]);
+}
 
 // Range8b -> string keys, so both the segment (short) and the eyebrow (long)
 // translate the same presets without a computed-key type hole.

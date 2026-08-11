@@ -11,14 +11,24 @@ export const settings = {
     'settings.theme.dark': 'Dark',
     'settings.language': 'Language',
     'settings.customRange': 'Custom range',
-    'settings.preset': 'Preset',
-    'settings.preset.caption': 'Extra presets in the Custom range picker',
+    // "Preset" is the glossary's word for these (CONTEXT.md); "shortcut" stays
+    // informal prose for comments, not UI.
+    'settings.preset.add': 'Add a preset',
+    // "four" is MAX_CUSTOM_PRESETS (customPresets.ts) — the picker's column
+    // holds four configured presets beside its four shipped ones.
+    'settings.preset.caption': 'Up to four extra presets in the Custom range picker',
     // The calendar periods themselves are named once, in the overview catalog —
-    // this dropdown shows the same words the picker will.
-    'settings.preset.off': 'Off',
+    // this control shows the same words the picker will.
+    'settings.preset.type': 'Preset type',
     'settings.preset.rolling': 'Last N days',
     'settings.preset.dayCount': 'Day count',
     'settings.preset.daysUnit': 'days',
+    'settings.preset.addAction': 'Add',
+    'settings.preset.remove': 'Remove',
+    'settings.preset.none': 'None yet — the picker shows its four built-in presets',
+    // A period that ends before the first record: the picker does not offer it
+    // at all, so the row says why rather than naming a window nothing can pick.
+    'settings.preset.outside': 'Ends before your first record — not offered yet',
     'settings.language.caption': 'English or 繁體中文',
 
     'settings.currencySection': 'Display currency',
@@ -73,12 +83,16 @@ export const settings = {
     'settings.customRange': '自訂範圍',
     // "Preset" stays 快捷範圍 (quick range) rather than the literal 預設範圍:
     // 預設 reads as "default", and these are not defaults.
-    'settings.preset': '快捷範圍',
-    'settings.preset.caption': '自訂範圍選擇器中的額外快捷範圍',
-    'settings.preset.off': '關閉',
+    'settings.preset.add': '新增快捷範圍',
+    'settings.preset.caption': '自訂範圍選擇器中最多四個額外快捷範圍',
+    'settings.preset.type': '快捷範圍類型',
     'settings.preset.rolling': '過去 N 天',
     'settings.preset.dayCount': '天數',
     'settings.preset.daysUnit': '天',
+    'settings.preset.addAction': '新增',
+    'settings.preset.remove': '移除',
+    'settings.preset.none': '尚未新增 — 選擇器只顯示內建的四個快捷範圍',
+    'settings.preset.outside': '結束於首筆記錄之前 — 選擇器尚未提供',
     'settings.language.caption': 'English 或 繁體中文',
 
     'settings.currencySection': '顯示貨幣',

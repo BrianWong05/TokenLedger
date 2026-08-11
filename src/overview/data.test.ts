@@ -16,6 +16,7 @@ import {
   modelTools,
   calendarSpan,
   presetsOf,
+  presetWindow,
   monthCells,
   dailyTotals,
   dailyTableRows,
@@ -883,6 +884,28 @@ describe('presetsOf', () => {
         { key: 'lastQuarter', from: '2026-06-25', to: '2026-06-30' },
       ]);
     });
+  });
+});
+
+// The Settings rows caption one configured Preset each, so they resolve one at
+// a time against the same extent the picker uses.
+describe('presetWindow', () => {
+  const LAST = '2026-07-29';
+
+  it('resolves a single configured Preset to its window', () => {
+    expect(presetWindow({ key: 'lastMonth' }, '2020-01-01', LAST))
+      .toEqual({ key: 'lastMonth', from: '2026-06-01', to: '2026-06-30' });
+    expect(presetWindow({ key: 'rolling', days: 14 }, '2020-01-01', LAST))
+      .toEqual({ key: 'rolling', days: 14, from: '2026-07-16', to: LAST });
+  });
+
+  it('clamps one that starts before the first record', () => {
+    expect(presetWindow({ key: 'lastMonth' }, '2026-06-15', LAST)?.from).toBe('2026-06-15');
+  });
+
+  it('returns null for one the picker will not offer at all', () => {
+    // A Ledger starting mid-June: last year ends long before the first record.
+    expect(presetWindow({ key: 'lastYear' }, '2026-06-20', LAST)).toBeNull();
   });
 });
 

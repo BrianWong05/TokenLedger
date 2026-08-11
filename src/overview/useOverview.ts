@@ -14,6 +14,7 @@ import {
 import type { LedgerPort } from './ledger';
 import { useAutoRefresh } from './useAutoRefresh';
 import { loadCustomRange, saveCustomRange } from './rangeMemory';
+import { publishFirstRecord } from './ledgerExtent';
 import type { Range8b, SourceKey } from './meta';
 import { useT } from '../lib/i18n';
 
@@ -58,6 +59,14 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     const [from, to] = saved;
     if (to >= snap.firstIso) store.setCustomRange(from < snap.firstIso ? snap.firstIso : from, to);
   }, [snap.allPoints, snap.firstIso, store]);
+
+  // Publish the extent for Settings, which captions each configured Preset with
+  // the window it resolves to. Gated on real series data for the same reason the
+  // restore above is: before it lands, firstIso is today, which would read as a
+  // Ledger with no history at all.
+  useEffect(() => {
+    if (snap.allPoints?.length) publishFirstRecord(snap.firstIso);
+  }, [snap.allPoints, snap.firstIso]);
 
   // The 365-day heatmap grid depends only on the full series — the store keeps
   // allPoints's reference stable across range/selection, so this never

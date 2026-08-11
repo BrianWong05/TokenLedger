@@ -11,26 +11,15 @@
 // Day cells carry the usage they represent (same sqrt scale as the heatmap), so a
 // window can be picked against where the tokens actually are.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { calendarSpan, dailyTotals, isoOf, monthCells, presetsOf, type RangePreset } from './data';
+import { dailyTotals, isoOf, monthCells, presetsOf } from './data';
 import { useCustomPresets } from './customPresets';
 import {
-  countLabel, PRESET_LABEL_KEY, RANGE_LABEL_KEY, monthShortL, monthLongL,
-  weekdayNarrowL, useOverviewT, type OverviewKey,
+  presetLabelL, spanLabelL, RANGE_LABEL_KEY, monthShortL, monthLongL,
+  weekdayNarrowL, useOverviewT,
 } from './localize';
 import { RANGES_8B, type Range8b } from './meta';
 import type { Lang } from '../lib/i18n';
 import type { SeriesPoint } from '../types';
-
-const spanLabel = (from: string, to: string, lang: Lang) =>
-  countLabel(calendarSpan(from, to), 'overview.dayOne', 'overview.daysUnit', lang);
-
-// A shipped shortcut is a static key; a configured rolling one cannot be, since
-// its N is arbitrary — so that label is composed from a prefix and the day
-// count, reading "Last 14 days" and "過去 14 天" beside the shipped windows.
-const presetLabel = (p: RangePreset, lang: Lang, t: (k: OverviewKey) => string) =>
-  p.key === 'rolling'
-    ? `${t('overview.preset.lastN')} ${countLabel(p.days, 'overview.dayOne', 'overview.daysUnit', lang)}`
-    : t(PRESET_LABEL_KEY[p.key]);
 
 export interface RangePickerProps {
   /** Rect of the button that opened it; null while closed. */
@@ -323,7 +312,7 @@ export default function RangePicker({ at, trigger, from, to, firstIso, lastIso, 
               className={'tt-dp-preset' + (x.from === from && x.to === to ? ' on' : '')}
               onClick={() => { onPick(x.from, x.to); close(); }}
             >
-              {presetLabel(x, lang, t)}
+              {presetLabelL(x, lang)}
             </button>
           ))}
         </div>
@@ -334,7 +323,7 @@ export default function RangePicker({ at, trigger, from, to, firstIso, lastIso, 
                 commit a window and then count it */}
             <span aria-live="polite">
               {anchor && hover
-                ? <b>{spanLabel(selFrom, selTo, lang)}</b>
+                ? <b>{spanLabelL(selFrom, selTo, lang)}</b>
                 : t(anchor ? 'overview.pickEnd' : 'overview.pickStart')}
             </span>
             <button type="button" onClick={() => shift(1)} aria-label={t('overview.nextMonth')}>›</button>
