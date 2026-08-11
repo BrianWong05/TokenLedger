@@ -4,6 +4,7 @@
 // (the rate text field, the app version, the update-check result).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
+import { Reorder, useDragControls } from 'motion/react';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
 import { setLaunchAtLogin } from './startup';
@@ -182,10 +183,13 @@ function CustomRangeGroup() {
   const { t } = useT();
   // The calendar periods are named once, in the overview catalog: this group
   // shows the reader the same words the picker will.
-  const { t: overviewT, lang } = useOverviewT();
+  const { t: overviewT } = useOverviewT();
   const [slots, setSlots] = useCustomPresets();
   const [kind, setKind] = useState<'rolling' | CalendarPresetKey>('rolling');
   const firstRecord = useFirstRecord();
+  // A dragged row is clamped to this list: the card below is another group's
+  // business, and a Preset carried over it reads as a drop target it is not.
+  const list = useRef<HTMLDivElement | null>(null);
 
   const filled = slots.flatMap((s, i) => (s ? [{ slot: s, i }] : []));
   // Duplicates are blocked by definition rather than by resolved window: two
@@ -200,6 +204,32 @@ function CustomRangeGroup() {
     const next = slots.slice();
     next[i] = slot;
     setSlots(next);
+  };
+
+  // Reorder writes a new order into the slots that already hold Presets, so the
+  // holes between them stay exactly where they are: the reader moves a row past
+  // the row above or below it, never past an empty position they cannot see.
+  // Dragging and the arrow buttons both come through here, as a permutation of
+  // the Presets' own ids — never of the slot positions. A position is exactly
+  // what a reorder changes, so keying rows by one leaves React holding a row
+  // that "never moved" while its contents swapped underneath, and the drag
+  // animates a ghost.
+  const reorder = (order: string[]) => {
+    const at = filled.map((f) => f.i); // ascending, so the nth row keeps the nth position
+    const next = slots.slice();
+    order.forEach((id, n) => {
+      next[at[n]] = filled.find((f) => presetId(f.slot) === id)?.slot ?? null;
+    });
+    setSlots(next);
+  };
+
+  const move = (pos: number, dir: -1 | 1) => {
+    // bounds, not truthiness: the first slot is a perfectly good neighbour
+    if (pos + dir < 0 || pos + dir >= filled.length) return;
+    const order = filled.map((f) => presetId(f.slot));
+    const [moved] = order.splice(pos, 1);
+    order.splice(pos + dir, 0, moved);
+    reorder(order);
   };
 
   // The day field's text is what Add commits: out of bounds, already taken or
@@ -285,31 +315,146 @@ function CustomRangeGroup() {
           <div className="set-row-caption">{t('settings.preset.none')}</div>
         </div>
       )}
-      {filled.map(({ slot, i }) => {
-        const win = presetWindow(slot, extentFrom, today);
-        const label = presetLabelL(slot, lang);
-        return (
-          <div className="set-row" key={i}>
-            <div className="set-row-text">
-              <div className="set-row-title">{label}</div>
-              <div className="set-row-caption">
-                {win
-                  ? `${fmtIsoRangeL(win.from, win.to, lang)} · ${spanLabelL(win.from, win.to, lang)}`
-                  : t('settings.preset.outside')}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="set-btn"
-              aria-label={`${t('settings.preset.remove')} ${label}`}
-              onClick={() => put(i, null)}
-            >
-              {t('settings.preset.remove')}
-            </button>
-          </div>
-        );
-      })}
+      <Reorder.Group
+        as="div"
+        ref={list}
+        axis="y"
+        values={filled.map((f) => presetId(f.slot))}
+        onReorder={reorder}
+      >
+        {filled.map(({ slot, i }, pos) => (
+          <PresetRow
+            key={presetId(slot)}
+            slot={slot}
+            id={presetId(slot)}
+            first={pos === 0}
+            last={pos === filled.length - 1}
+            extentFrom={extentFrom}
+            today={today}
+            bounds={list}
+            onMove={(dir) => move(pos, dir)}
+            onRemove={() => put(i, null)}
+          />
+        ))}
+      </Reorder.Group>
     </section>
+  );
+}
+
+// One configured Preset. Its own component because each row owns the drag
+// controls that let the grip — and only the grip — start a drag: a row-wide
+// drag listener would swallow the presses meant for its three buttons.
+function PresetRow({ slot, id, first, last, extentFrom, today, bounds, onMove, onRemove }: {
+  slot: PresetSlot;
+  id: string;
+  first: boolean;
+  last: boolean;
+  extentFrom: string;
+  today: string;
+  bounds: React.RefObject<HTMLDivElement | null>;
+  onMove: (dir: -1 | 1) => void;
+  onRemove: () => void;
+}) {
+  const { t } = useT();
+  const { lang } = useOverviewT();
+  const drag = useDragControls();
+  const win = presetWindow(slot, extentFrom, today);
+  const label = presetLabelL(slot, lang);
+
+  return (
+    <Reorder.Item
+      as="div"
+      value={id}
+      dragListener={false}
+      dragControls={drag}
+      // no fling after release and barely any give at the ends: a four-row list
+      // inside a card wants the row to sit where it was let go, not coast
+      dragMomentum={false}
+      dragConstraints={bounds}
+      // no give at all past the list: elastic let the row stretch over the card
+      // below, which reads as a drop target it is not
+      dragElastic={0}
+      // A press anywhere but the buttons must not anchor a text selection. The
+      // row's own text is already unselectable, but the anchor still lands and
+      // the selection then smears across every other group on the page as the
+      // pointer moves.
+      onMouseDown={(e) => {
+        if (!(e.target as HTMLElement).closest('button')) e.preventDefault();
+      }}
+      className="set-row set-row-preset"
+      // lifted off the card while it is being carried, so the row being moved
+      // is the one under the cursor rather than one more line in the stack
+      whileDrag={{ zIndex: 2, boxShadow: '0 8px 24px rgb(0 0 0 / 0.22)' }}
+    >
+      {/* decorative: dragging is the mouse's way in, and the arrows below are
+          the keyboard's, so a screen reader has nothing to do here */}
+      <span
+        className="set-grip"
+        aria-hidden="true"
+        onPointerDown={(e) => drag.start(e)}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" />
+          <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
+          <circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" />
+        </svg>
+      </span>
+      <div className="set-row-text">
+        <div className="set-row-title">{label}</div>
+        <div className="set-row-caption">
+          {win
+            ? `${fmtIsoRangeL(win.from, win.to, lang)} · ${spanLabelL(win.from, win.to, lang)}`
+            : t('settings.preset.outside')}
+        </div>
+      </div>
+      <div className="set-row-tools">
+        {/* the picker lists these in this order, so moving a row here is the
+            only way to reach a Preset sooner in the picker */}
+        <button
+          type="button"
+          className="set-move"
+          aria-label={`${t('settings.preset.moveUp')} ${label}`}
+          disabled={first}
+          onClick={() => onMove(-1)}
+        >
+          <Chevron up />
+        </button>
+        <button
+          type="button"
+          className="set-move"
+          aria-label={`${t('settings.preset.moveDown')} ${label}`}
+          disabled={last}
+          onClick={() => onMove(1)}
+        >
+          <Chevron />
+        </button>
+        <button
+          type="button"
+          className="set-btn"
+          aria-label={`${t('settings.preset.remove')} ${label}`}
+          onClick={onRemove}
+        >
+          {t('settings.preset.remove')}
+        </button>
+      </div>
+    </Reorder.Item>
+  );
+}
+
+// A configured Preset's identity, which is its content: two slots cannot hold
+// the same period or the same day count, so this is unique across the list and —
+// unlike a slot position — it travels with the row when the order changes. The
+// picker keys its buttons the same way.
+function presetId(slot: PresetSlot): string {
+  return slot.key === 'rolling' ? `rolling-${slot.days}` : slot.key;
+}
+
+// The reorder arrows' mark, the same lucide chevron the Select's button carries.
+function Chevron({ up }: { up?: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={up ? 'm18 15-6-6-6 6' : 'm6 9 6 6 6-6'} />
+    </svg>
   );
 }
 

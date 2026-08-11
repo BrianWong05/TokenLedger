@@ -25,6 +25,10 @@ export const settings = {
     'settings.preset.daysUnit': 'days',
     'settings.preset.addAction': 'Add',
     'settings.preset.remove': 'Remove',
+    // The picker lists configured presets in this order, so these move a preset
+    // past the one above or below it there too.
+    'settings.preset.moveUp': 'Move up',
+    'settings.preset.moveDown': 'Move down',
     'settings.preset.none': 'None yet — the picker shows its four built-in presets',
     // A period that ends before the first record: the picker does not offer it
     // at all, so the row says why rather than naming a window nothing can pick.
@@ -91,6 +95,8 @@ export const settings = {
     'settings.preset.daysUnit': '天',
     'settings.preset.addAction': '新增',
     'settings.preset.remove': '移除',
+    'settings.preset.moveUp': '上移',
+    'settings.preset.moveDown': '下移',
     'settings.preset.none': '尚未新增 — 選擇器只顯示內建的四個快捷範圍',
     'settings.preset.outside': '結束於首筆記錄之前 — 選擇器尚未提供',
     'settings.language.caption': 'English 或 繁體中文',

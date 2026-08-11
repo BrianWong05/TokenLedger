@@ -250,6 +250,10 @@ describe('SettingsPage', () => {
       Array.from(c.querySelectorAll('.set-btn')).find(
         (b) => b.textContent === 'Add',
       ) as HTMLButtonElement;
+    const arrows = (c: HTMLElement, dir: 'up' | 'down') =>
+      Array.from(
+        c.querySelectorAll(`button[aria-label^="Move ${dir} "]`),
+      ) as HTMLButtonElement[];
     const removes = (c: HTMLElement) =>
       Array.from(c.querySelectorAll('button[aria-label^="Remove "]')) as HTMLButtonElement[];
     // Each configured Preset, by the label its row shows.
@@ -361,6 +365,51 @@ describe('SettingsPage', () => {
 
       await click(addBtn(c));
       expect(stored()).toEqual([{ key: 'rolling', days: 14 }, { key: 'lastYear' }, null, null]);
+    });
+
+    it('moves a preset past the row below it, and the picker follows', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await click(type(c, 'Last month'));
+      await click(addBtn(c));
+      await click(type(c, 'Last year'));
+      await click(addBtn(c));
+      expect(shortcuts(c)).toEqual(['Last month', 'Last year']);
+
+      await click(arrows(c, 'down')[0]);
+
+      // Slot order is the picker's order, so the store is the assertion.
+      expect(stored()).toEqual([{ key: 'lastYear' }, { key: 'lastMonth' }, null, null]);
+      expect(shortcuts(c)).toEqual(['Last year', 'Last month']);
+
+      await click(arrows(c, 'up')[1]);
+      expect(shortcuts(c)).toEqual(['Last month', 'Last year']);
+    });
+
+    it('swaps past a hole without filling it', async () => {
+      // Three presets, middle one removed: the hole stays a hole while the two
+      // survivors trade places around it.
+      localStorage.setItem(
+        CUSTOM_PRESETS_KEY,
+        JSON.stringify([{ key: 'lastMonth' }, null, { key: 'lastYear' }, null]),
+      );
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+
+      await click(arrows(c, 'down')[0]);
+
+      expect(stored()).toEqual([{ key: 'lastYear' }, null, { key: 'lastMonth' }, null]);
+      expect(shortcuts(c)).toEqual(['Last year', 'Last month']);
+    });
+
+    it('offers no move past either end', async () => {
+      const c = await mount(makeFakeSettings({ firstRunDone: true }));
+      await click(addBtn(c)); // one preset: nowhere to go in either direction
+      expect(arrows(c, 'up')[0].disabled).toBe(true);
+      expect(arrows(c, 'down')[0].disabled).toBe(true);
+
+      await click(type(c, 'Last year'));
+      await click(addBtn(c));
+      expect(arrows(c, 'up').map((b) => b.disabled)).toEqual([true, false]);
+      expect(arrows(c, 'down').map((b) => b.disabled)).toEqual([false, true]);
     });
 
     it('reads configured presets back after a remount', async () => {

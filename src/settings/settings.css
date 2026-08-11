@@ -151,6 +151,7 @@
 .set-select:focus-visible,
 .set-menu-item:focus-visible,
 .set-btn:focus-visible,
+.set-move:focus-visible,
 .set-toggle:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px var(--nav-focus-ring);
@@ -327,6 +328,74 @@
 .set-btn:disabled {
   cursor: default;
   opacity: 0.7;
+}
+
+/* a configured Preset's row carries three children (grip, text, controls), so
+   the text has to claim the slack — space-between would strand it in the middle */
+.set-row-preset .set-row-text {
+  flex: 1;
+}
+
+/* a press on this row may become a drag, and a press that becomes a drag must
+   not also start a text selection — the row would carry a blue smear with it.
+   Scoped to the draggable rows; every other row's text stays selectable. */
+.set-row-preset {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* the drag handle on a configured Preset's row — the mouse's way to reorder;
+   the arrow buttons are the keyboard's */
+.set-grip {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin: -13px 0 -13px -6px;
+  padding: 13px 4px;
+  color: var(--text-tertiary);
+  cursor: grab;
+  touch-action: none;
+}
+
+.set-grip:active {
+  cursor: grabbing;
+}
+
+.set-row:hover .set-grip {
+  color: var(--muted);
+}
+
+/* a configured Preset's row controls: the two reorder arrows beside Remove */
+.set-row-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.set-move {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: var(--set-inset-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.set-move:hover:not(:disabled) {
+  border-color: var(--rescan-hover-border);
+  color: var(--text);
+}
+
+/* the top and bottom rows: there is nothing to swap past */
+.set-move:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .set-primary-btn {
