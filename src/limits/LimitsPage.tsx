@@ -198,6 +198,25 @@ function Card({
         {icon ? <img src={icon} alt="" width={18} height={18} /> : <span className="tl-lim-nomark" />}
         <span className="tl-lim-name">{card.meta.label}</span>
         {card.plan && <span className="tl-lim-plan">{planLabel(card.plan)}</span>}
+        {card.usageResetsAvailable !== null && (
+          <span
+            className={'tl-lim-usage-resets' + (card.usageResetsAvailable === 0 ? ' zero' : '')}
+            aria-label={fill(
+              t(card.usageResetsAvailable === 1
+                ? 'limits.usageReset.a11yOne'
+                : 'limits.usageReset.a11yMany'),
+              { n: card.usageResetsAvailable },
+            )}
+          >
+            <span aria-hidden="true">↻</span>
+            {fill(
+              t(card.usageResetsAvailable === 1
+                ? 'limits.usageReset.one'
+                : 'limits.usageReset.many'),
+              { n: card.usageResetsAvailable },
+            )}
+          </span>
+        )}
         {fresh && (
           <span className={'tl-lim-fresh' + (fresh.key === 'observedOld' ? ' old' : '')}>
             {fresh.key === 'checkedNow'

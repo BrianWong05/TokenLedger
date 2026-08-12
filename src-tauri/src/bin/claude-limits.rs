@@ -90,6 +90,7 @@ fn run() -> Result<String, String> {
         source: "claude".to_string(),
         fetched_at: now(),
         plan: credential.plan,
+        usage_resets_available: None,
         windows: windows(&body),
     };
 

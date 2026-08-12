@@ -45,6 +45,8 @@ export interface CardView {
   via: LimitsVia;
   state: CardState;
   plan: string | null;
+  /** Current source-level count; null means the vendor did not report it. */
+  usageResetsAvailable: number | null;
   /** Epoch seconds of the newest observation behind these windows, or null. */
   observedAt: number | null;
   windows: WindowView[];
@@ -210,6 +212,7 @@ export function cards(
       via,
       state,
       plan: state === 'live' ? (held?.plan ?? null) : null,
+      usageResetsAvailable: state === 'live' ? (held?.usageResetsAvailable ?? null) : null,
       observedAt,
       windows: state === 'live' ? windows : [],
       ...(failure && failure !== 'signed-out' ? { detail: failure.detail } : {}),

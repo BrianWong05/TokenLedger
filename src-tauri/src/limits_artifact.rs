@@ -47,7 +47,11 @@ pub fn window_key(window_minutes: i64) -> String {
 /// Bump when the shape changes. An Artifact declaring a schema the reader does
 /// not know is a malformed instance of a supported shape (ADR-0015): it warns
 /// and is not read, rather than being guessed at.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
+
+fn supported_schema(schema: u32) -> bool {
+    schema == 1 || schema == SCHEMA
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LimitsExport {
@@ -60,6 +64,10 @@ pub struct LimitsExport {
     /// The plan label the credential document carried (`rateLimitTier`).
     #[serde(default)]
     pub plan: Option<String>,
+    /// Codex Usage Resets currently available. This is source-level current
+    /// state, not a rolling-window Reading and not history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_resets_available: Option<u64>,
     #[serde(default)]
     pub windows: Vec<WindowExport>,
 }
@@ -111,6 +119,15 @@ pub fn readings(export: &LimitsExport) -> Vec<LimitReading> {
 
 pub fn path_in(dir: &Path, source: &str) -> PathBuf {
     dir.join(file_name(source))
+}
+
+/// Read the current source-level state from an Artifact. Invalid, stale-schema,
+/// or mismatched files simply report no current state; `ingest` remains the
+/// warning path for malformed exports.
+pub fn read(dir: &Path, source: &str) -> Option<LimitsExport> {
+    let raw = std::fs::read_to_string(path_in(dir, source)).ok()?;
+    let export = serde_json::from_str::<LimitsExport>(&raw).ok()?;
+    (supported_schema(export.schema) && export.source == source).then_some(export)
 }
 
 /// A vendor response's structure, values mostly redacted — every Companion's
@@ -187,7 +204,7 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
     }
 
     let export: LimitsExport = match serde_json::from_str::<LimitsExport>(&raw) {
-        Ok(export) if export.schema == SCHEMA => export,
+        Ok(export) if supported_schema(export.schema) => export,
         // A malformed instance of a *supported* shape: warn, per ADR-0015. File
         // state stays unwritten so a corrected export is read on the next pass.
         _ => {
@@ -319,6 +336,7 @@ mod tests {
             source: "claude".to_string(),
             fetched_at: 1_786_492_800,
             plan: Some("Team 5x".to_string()),
+            usage_resets_available: Some(1),
             windows: vec![WindowExport {
                 key: "five_hour".to_string(),
                 window_minutes: Some(300),
@@ -328,9 +346,9 @@ mod tests {
         };
         write(&dir, &export).unwrap();
 
-        let raw = std::fs::read_to_string(path_in(&dir, "claude")).unwrap();
-        let read: LimitsExport = serde_json::from_str(&raw).unwrap();
+        let read = super::read(&dir, "claude").unwrap();
         assert_eq!(read.source, "claude");
+        assert_eq!(read.usage_resets_available, Some(1));
         assert_eq!(read.windows[0].used_pct, 18.0);
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()

@@ -314,9 +314,17 @@ fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecR
 /// Filters: the Limits page is *now*, not a range, and it ignores the Overview's
 /// date window and Source selection entirely.
 #[tauri::command(async)]
-fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::limits(&db).map_err(|e| e.to_string())
+fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
+    let mut cards = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        queries::limits(&db).map_err(|e| e.to_string())?
+    };
+    if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
+        if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
+            card.usage_resets_available = export.usage_resets_available;
+        }
+    }
+    Ok(cards)
 }
 
 /// Ask a `live` Source's Companion for a fresh reading (ADR-0019). This is the

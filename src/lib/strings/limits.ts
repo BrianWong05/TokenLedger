@@ -20,6 +20,10 @@ export const limits = {
     'limits.refreshing': 'Checking…',
     'limits.mode.left': 'Left',
     'limits.mode.used': 'Used',
+    'limits.usageReset.one': '{n} Usage Reset',
+    'limits.usageReset.many': '{n} Usage Resets',
+    'limits.usageReset.a11yOne': '{n} Usage Reset available',
+    'limits.usageReset.a11yMany': '{n} Usage Resets available',
 
     // Window labels. `five_hour`/`seven_day` are the two known Claude keys and
     // Codex classifies by duration; per-model windows are discovered from the
@@ -68,6 +72,10 @@ export const limits = {
     'limits.refreshing': '查詢中…',
     'limits.mode.left': '剩餘',
     'limits.mode.used': '已用',
+    'limits.usageReset.one': '{n} 次用量重置',
+    'limits.usageReset.many': '{n} 次用量重置',
+    'limits.usageReset.a11yOne': '可用的用量重置：{n} 次',
+    'limits.usageReset.a11yMany': '可用的用量重置：{n} 次',
 
     'limits.win.session': '時段',
     'limits.win.weekly': '每週',
