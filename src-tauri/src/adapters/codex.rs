@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 
 use super::ctx::{self, est};
-use super::{find_jsonl, unchanged};
+use super::{find_jsonl_by_file_identity, unchanged};
 use crate::db;
 use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
@@ -45,7 +45,7 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
 pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
-    find_jsonl(sessions_root, &mut files);
+    find_jsonl_by_file_identity(sessions_root, &mut files);
     for path in files {
         match scan_file(conn, &path) {
             Ok((inserted, skipped)) => {
@@ -345,6 +345,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
 mod tests {
     use super::*;
     use crate::db::open_db;
+    use crate::queries::{ctx_tools, Filters};
 
     fn fixture_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex")
@@ -554,6 +555,25 @@ mod tests {
             "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((est2, calls2), (est1, calls1), "re-parse replaced, not doubled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_counts_a_hard_linked_rollout_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let rollout = write_rollout(&root, "rollout-original.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        std::fs::hard_link(&rollout, root.join("rollout-alias.jsonl")).unwrap();
+
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let scan = scan_codex(&mut conn, &root);
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+
+        assert_eq!((scan.events_inserted, tools.len(), tools[0].calls), (1, 1, 1));
     }
 
     // ---- Limit Readings (#104 ingest rules) ----
