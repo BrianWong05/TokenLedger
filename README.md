@@ -98,13 +98,18 @@ three outbound requests, all fetches of public data: LiteLLM's price list and
 OpenRouter's model list for pricing, and the GitHub release manifest for
 updates. One optional feature reaches further and asks first: enabling **live
 limit checks** on the Limits tab runs a separate companion process that presents
-your sign-ins to their own vendors — Claude Code's to `api.anthropic.com`,
-Codex's to `chatgpt.com`, Antigravity's to Google — read-only, only when you open
-that page or press Refresh, never on a timer. Google sign-ins work on hourly
-passes, so the companion first gets a fresh pass from Google the same way
-Antigravity itself does; the pass is used once and never stored, and your saved
-sign-in is never altered. Until you press that button, no credential is read and
-no authenticated request exists
+the sign-in each tool already stores to its own vendor — Claude Code's to
+`api.anthropic.com`, Codex's to `chatgpt.com`, Grok's to `cli-chat-proxy.grok.com`,
+Antigravity's to Google — read-only, only when you open that page or press
+Refresh, never on a timer, to ask how much of each rolling window you have used.
+Until you press that button, no credential is read and no authenticated request
+exists, and **no companion ever writes your sign-in files.** Most present a
+still-valid token untouched. Two may need a fresh one first: Antigravity's Google
+sign-in works on hourly passes, so the companion mints one the way Antigravity
+itself does — used once, never stored, your saved sign-in unaltered; and Grok's
+short-lived token may be refreshed too, which — because xAI rotates refresh
+tokens — can leave the Grok CLI needing `grok login` again, the one cost of
+asking Grok live, accepted deliberately
 ([ADR-0019](docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md),
 [ADR-0020](docs/adr/0020-a-companion-may-exchange-a-google-refresh-token.md)).
 
@@ -116,7 +121,7 @@ no authenticated request exists
 | [Codex CLI](https://github.com/openai/codex) | OpenAI's CLI coding agent | `~/.codex/sessions/**/rollout-*.jsonl` |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google's CLI coding agent | `~/.gemini/tmp/*/chats/session-*.json` |
 | [Hermes](https://github.com/NousResearch/hermes-agent) | Nous Research's self-improving agent | `~/.hermes/state.db` (opened read-only) |
-| [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`) |
+| [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`), plus `$GROK_HOME/logs/unified.jsonl` for the credit-pool Limit |
 | [Google Antigravity](https://antigravity.google) | Google's agentic development platform | `~/.gemini/antigravity{,-cli}/conversations/*.db` |
 | [Goose](https://github.com/block/goose) | Block's local coding agent | `~/Library/Application Support/Block/goose/data/sessions/sessions.db` on macOS; `~/.local/share/goose/sessions/sessions.db` on Linux; `%APPDATA%\\Block\\goose\\data\\sessions\\sessions.db` on Windows; `$GOOSE_PATH_ROOT/data/sessions` when overridden (legacy `.jsonl` in the platform data directory) |
 | [OpenCode](https://github.com/sst/opencode) | OpenCode CLI | `~/.local/share/opencode/opencode.db` (or `$OPENCODE_DB`), `opencode-<channel>.db`, and legacy `~/.local/share/opencode/storage` (or `$OPENCODE_DATA_DIR`) |

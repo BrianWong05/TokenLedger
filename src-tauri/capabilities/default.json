@@ -32,6 +32,11 @@
           "name": "binaries/codex-limits",
           "sidecar": true,
           "args": false
+        },
+        {
+          "name": "binaries/grok-limits",
+          "sidecar": true,
+          "args": false
         }
       ]
     }

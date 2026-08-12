@@ -28,6 +28,10 @@ export const limits = {
     'limits.win.weekly': 'Weekly',
     'limits.win.weeklySub': 'Weekly',
     'limits.win.other': '{n} window',
+    // Grok's bar meters a shared credit pool rather than a rate-limit window:
+    // same geometry, different quantity, so the label says which (#126).
+    'limits.win.weeklyCredits': 'Weekly credits',
+    'limits.win.monthlyCredits': 'Monthly credits',
 
     // Pools. Antigravity meters two shared pools over the same two durations,
     // so the pool is part of the row label rather than a second card.
@@ -84,6 +88,8 @@ export const limits = {
     'limits.win.weekly': '每週',
     'limits.win.weeklySub': '每週',
     'limits.win.other': '{n} 窗口',
+    'limits.win.weeklyCredits': '每週額度',
+    'limits.win.monthlyCredits': '每月額度',
 
     'limits.pool.gemini': 'Gemini',
     'limits.pool.other': '其他模型',

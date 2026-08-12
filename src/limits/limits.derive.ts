@@ -131,16 +131,26 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
  * the first Source where the pool is a genuine second axis rather than a slot:
  * two pools share both durations, so the duration alone does not address a bar.
  * An unrecognised pool renders raw, mirroring the `seven_day_zephyr` rule.
+ *
+ * `source` is passed because one bar's *quantity* can be a fact about the Source
+ * rather than the window: Grok's weekly bar meters a credit pool, not a
+ * rate-limit window, and the same geometry at 80% means two different things
+ * (#126). It says "credits" so the two are not read as the same thing.
  */
 export function windowLabel(
   key: string,
+  source?: string,
 ):
-  | { kind: 'session' | 'weekly'; pool?: string; model?: undefined }
+  | { kind: 'session' | 'weekly' | 'weeklyCredits' | 'monthlyCredits'; pool?: string; model?: undefined }
   | { kind: 'model'; model: string; pool?: string }
   | { kind: 'other'; minutes: string; pool?: string } {
   const split = key.indexOf(':');
   if (split > 0) {
-    return { ...windowLabel(key.slice(split + 1)), pool: key.slice(0, split) };
+    return { ...windowLabel(key.slice(split + 1), source), pool: key.slice(0, split) };
+  }
+  if (source === 'grok') {
+    if (key === 'w10080') return { kind: 'weeklyCredits' };
+    if (key === 'w43200') return { kind: 'monthlyCredits' };
   }
   if (key === 'five_hour' || key === 'w300') return { kind: 'session' };
   if (key === 'seven_day' || key === 'w10080') return { kind: 'weekly' };

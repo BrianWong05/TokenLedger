@@ -59,7 +59,7 @@
   },
   "bundle": {
     "active": true,
-    "externalBin": ["binaries/antigravity-export", "binaries/antigravity-limits", "binaries/claude-limits", "binaries/codex-limits"],
+    "externalBin": ["binaries/antigravity-export", "binaries/antigravity-limits", "binaries/claude-limits", "binaries/codex-limits", "binaries/grok-limits"],
     "targets": ["app", "dmg", "nsis", "appimage"],
     "icon": [
       "icons/32x32.png",

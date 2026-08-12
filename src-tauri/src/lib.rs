@@ -815,6 +815,7 @@ mod tests {
             gemini_projects_json: dir.path().join("projects.json"),
             hermes_db: dir.path().join("state.db"),
             grok_sessions: dir.path().join("grok"),
+            grok_logs: dir.path().join("grok-logs"),
             antigravity_conversations: dir.path().join("antigravity"),
             antigravity_ide_conversations: dir.path().join("antigravity-ide"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
