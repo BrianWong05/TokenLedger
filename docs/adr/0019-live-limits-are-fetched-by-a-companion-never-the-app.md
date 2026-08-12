@@ -34,3 +34,21 @@ Bound 1 is narrowed — not repealed — for Google-family credentials by
 ADR-0020: their access tokens die in about an hour, and the refresh-token
 exchange provably cannot corrupt the Source's own session. Everything else
 here stands.
+
+Bound 1 is also **crossed, knowingly and against this ADR's own preference,
+for Grok** (`grok-limits`, on the branch that added the card). Grok's data is
+already captured passively from `~/.grok/logs/unified.jsonl`, so the log path
+honours this bound in full and remains the fallback; the live Companion exists
+only because the owner asked for fresh-on-demand readings after weighing the
+cost. Unlike Google's, xAI's refresh grant **rotates** — it mints a new refresh
+token server-side whether or not we keep the result — so a refresh here can
+leave the Grok CLI's stored token stale and force a `grok login`. This is not
+"provably safe" the way ADR-0020's exchange is; it is an accepted risk,
+recorded here so the crossing is greppable rather than buried. It is held as
+small as it can be: the Companion refreshes **only** when the stored token has
+expired (a valid token is presented untouched, and most checks never refresh),
+and it **never writes `~/.grok/auth.json`** — the "never writes a credential"
+half of bound 1 stands unbroken, and the residual cost is the same re-login the
+signed-out card already points at (bound 4). Bounds 2–4 stand. No secret is
+sent: xAI's is a public client. The full rationale lives in `grok-limits`'s
+module header.

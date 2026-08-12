@@ -125,6 +125,14 @@ describe('window labels', () => {
   it('keeps an unrecognised Codex duration as its raw minutes', () => {
     expect(windowLabel('w4321')).toEqual({ kind: 'other', minutes: '4321' });
   });
+
+  it('says "credits" where the bar meters a pool rather than a rate-limit window', () => {
+    // Same key, same geometry, different quantity: 80% of Grok's weekly credit
+    // pool is not 80% of the way to a rate limit (#126).
+    expect(windowLabel('w10080', 'grok')).toEqual({ kind: 'weeklyCredits' });
+    expect(windowLabel('w43200', 'grok')).toEqual({ kind: 'monthlyCredits' });
+    expect(windowLabel('w10080', 'codex')).toEqual({ kind: 'weekly' });
+  });
 });
 
 describe('the plan pill', () => {
@@ -147,9 +155,9 @@ describe('framing', () => {
   });
 });
 
-// A fabricated `logs` Source: the shipped catalog holds only `live` ones now,
-// and the logs rules must outlive that coincidence — a post-v1 Source may well
-// be logs-only again.
+// A fabricated `logs` Source. No shipped Source is `logs`-only now (Grok gained
+// a live Companion), so the logs rules are pinned here independently of the
+// catalog rather than against a real card.
 const LOGS_SOURCE = {
   meta: {
     key: 'faketool', label: 'FakeTool', source: 'FakeTool', color: '#000000',
@@ -162,15 +170,17 @@ const LOGS_SOURCE = {
 describe('catalog gating', () => {
   it('yields a card only for a Source declaring a limits capability', () => {
     const keys = limitsSources().map((s) => s.meta.key);
-    expect(keys).toEqual(['claude', 'codex']);
-    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live']);
+    expect(keys).toEqual(['claude', 'codex', 'grok']);
+    // Grok gained a live Companion (the billing endpoint) on top of its passive
+    // log capture, mirroring Codex — so it is `live`, behind the opt-in.
+    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live']);
   });
 
   it('gives a Source without the capability no card, even holding Readings', () => {
     // Nothing writes Readings for an uncatalogued Source, but if history ever
     // held some, the enum still decides what the page shows.
     const views = cards([held('gemini', [win()])], NOW, 'left');
-    expect(views.map((v) => v.source)).toEqual(['claude', 'codex']);
+    expect(views.map((v) => v.source)).toEqual(['claude', 'codex', 'grok']);
   });
 });
 

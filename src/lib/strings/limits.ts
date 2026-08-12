@@ -28,6 +28,10 @@ export const limits = {
     'limits.win.weekly': 'Weekly',
     'limits.win.weeklySub': 'Weekly',
     'limits.win.other': '{n} window',
+    // Grok's bar meters a shared credit pool rather than a rate-limit window:
+    // same geometry, different quantity, so the label says which (#126).
+    'limits.win.weeklyCredits': 'Weekly credits',
+    'limits.win.monthlyCredits': 'Monthly credits',
 
     'limits.pctLeft': '{pct}% left',
     'limits.pctUsed': '{pct}% used',
@@ -73,6 +77,8 @@ export const limits = {
     'limits.win.weekly': '每週',
     'limits.win.weeklySub': '每週',
     'limits.win.other': '{n} 窗口',
+    'limits.win.weeklyCredits': '每週額度',
+    'limits.win.monthlyCredits': '每月額度',
 
     'limits.pctLeft': '剩 {pct}%',
     'limits.pctUsed': '已用 {pct}%',

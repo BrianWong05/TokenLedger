@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import { buildSidecars } from './build-sidecar.mjs';
 
-const COMPANIONS = ['antigravity-export', 'claude-limits', 'codex-limits'];
+const COMPANIONS = ['antigravity-export', 'claude-limits', 'codex-limits', 'grok-limits'];
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'tokenledger-sidecars-'));
@@ -55,6 +55,8 @@ test('dev builds all companions once, then skips an unchanged build', (t) => {
     'claude-limits',
     '--bin',
     'codex-limits',
+    '--bin',
+    'grok-limits',
     '--manifest-path',
     join(root, 'src-tauri', 'Cargo.toml'),
   ]);

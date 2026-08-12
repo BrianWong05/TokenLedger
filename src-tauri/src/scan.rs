@@ -33,6 +33,10 @@ pub struct SourceRoots {
     pub gemini_projects_json: PathBuf,
     pub hermes_db: PathBuf,
     pub grok_sessions: PathBuf,
+    /// The CLI's own unified log, where every credits snapshot it fetches lands.
+    /// A separate artifact from the sessions above, discovered and failing
+    /// independently of them (ADR-0015).
+    pub grok_logs: PathBuf,
     // The IDE writes under either `antigravity/` or `antigravity-ide/` depending
     // on its `--app_data_dir`, and the CLI under `antigravity-cli/`. All three
     // share one SQLite schema, and all three are scanned — a dir left out is a
@@ -157,6 +161,8 @@ impl SourceRoots {
                 .join(source_catalog::artifact_filename("hermes", "state")),
             grok_sessions: grok_home_for(home, grok_home)
                 .join(source_catalog::artifact_filename("grok", "sessions")),
+            grok_logs: grok_home_for(home, grok_home)
+                .join(catalog_artifact_tail("grok", "logs")),
             antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
             antigravity_ide_conversations: catalog_root(home, "antigravity", "ide-conversations"),
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
@@ -428,11 +434,21 @@ fn grok_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
     home.join(catalog_artifact_parent("grok", "sessions"))
 }
 
-fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
-    let path = source_catalog::artifact(source, artifact)
+fn catalog_artifact_path(source: &str, artifact: &str) -> &'static str {
+    source_catalog::artifact(source, artifact)
         .and_then(|artifact| artifact.path.as_deref())
-        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
-    Path::new(path)
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"))
+}
+
+/// The catalog path with its home-relative root removed — precisely the part a
+/// `$..._HOME` override replaces. `.grok/logs/unified.jsonl` → `logs/unified.jsonl`,
+/// so an artifact nested deeper than one level still resolves under an override.
+fn catalog_artifact_tail(source: &str, artifact: &str) -> PathBuf {
+    Path::new(catalog_artifact_path(source, artifact)).iter().skip(1).collect()
+}
+
+fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
+    Path::new(catalog_artifact_path(source, artifact))
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -533,7 +549,9 @@ fn run_scan_sources(
                     scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
                 }),
                 "hermes" => run_one(&source.key, || scan_hermes(conn, &roots.hermes_db)),
-                "grok" => run_one(&source.key, || scan_grok(conn, &roots.grok_sessions)),
+                "grok" => {
+                    run_one(&source.key, || scan_grok(conn, &roots.grok_sessions, &roots.grok_logs))
+                }
                 "antigravity" => run_one(&source.key, || {
                     scan_antigravity(
                         conn,
@@ -765,6 +783,7 @@ mod tests {
                 ("gemini", "projects", ".gemini/projects.json"),
                 ("hermes", "state", ".hermes/state.db"),
                 ("grok", "sessions", ".grok/sessions"),
+                ("grok", "logs", ".grok/logs/unified.jsonl"),
                 ("antigravity", "conversations", ".gemini/antigravity/conversations"),
                 ("antigravity", "ide-conversations", ".gemini/antigravity-ide/conversations"),
                 ("antigravity", "cli-conversations", ".gemini/antigravity-cli/conversations"),
@@ -1200,6 +1219,12 @@ mod tests {
             overridden.grok_sessions,
             home.path().join("configured-grok/sessions")
         );
+        // The unified log sits a level deeper, so the override has to replace the
+        // home-relative root rather than just the last component.
+        assert_eq!(
+            overridden.grok_logs,
+            home.path().join("configured-grok/logs/unified.jsonl")
+        );
 
         let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home.path(),
@@ -1220,6 +1245,7 @@ mod tests {
             None,
         );
         assert_eq!(absent.grok_sessions, home.path().join(".grok/sessions"));
+        assert_eq!(absent.grok_logs, home.path().join(".grok/logs/unified.jsonl"));
     }
 
     #[test]
@@ -1557,6 +1583,7 @@ mod tests {
             gemini_projects_json: tmp.path().join("gemini/projects.json"),
             hermes_db: tmp.path().join("hermes/state.db"),
             grok_sessions: tmp.path().join("grok"),
+            grok_logs: tmp.path().join("grok-logs"),
             antigravity_conversations: tmp.path().join("antigravity"),
             antigravity_ide_conversations: tmp.path().join("antigravity-ide"),
             antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
@@ -1620,6 +1647,7 @@ mod tests {
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
@@ -2000,6 +2028,7 @@ mod tests {
             gemini_projects_json: gemini_projects,
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
@@ -2157,6 +2186,7 @@ mod tests {
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
@@ -2326,6 +2356,7 @@ mod tests {
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
