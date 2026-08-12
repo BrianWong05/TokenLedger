@@ -406,3 +406,29 @@ append-only, a new valid Reading never replacing an old one, with cards
 presenting the newest valid Reading and the stored series feeding the
 forecast. A refused fetch is not a Reading.
 _Avoid_: Observation, sample, snapshot, measurement
+
+**Limit Evidence Partition**:
+The exact identity under which a series of Limit Readings can be compared:
+Source, a proven privacy-safe account identity, plan and metering regime,
+stable vendor or adapter-proven Limit identity, reset epoch, and explicit Model
+scope. Every component is evidence, not an assumption; an absent or changed
+component starts no match. A Source-wide partition has no Model filter, while a
+model-scoped partition maps explicitly to raw logged Models.
+_Avoid_: Bucket, assumed account, display-name match
+
+**Limit Evidence Interval**:
+Two consecutive, distinct, increasing Limit Readings in one Limit Evidence
+Partition, together with the matching Usage Records after the earlier Reading
+and through the later one. It is candidate local correlation, not proof that
+the Records caused the whole percentage movement, and exists only when Source
+completeness and every identity component are proven. Resets, saturation,
+known external activity, or potentially matching Unattributed Usage in a
+model-scoped interval make it ineligible rather than zero.
+_Avoid_: Causal interval, exact conversion, inferred zero
+
+**Limit Token Estimate**:
+An approximate token equivalent inferred from a sufficient, consistent set of
+Limit Evidence Intervals. It expresses tokens per percentage point and the
+selected used or remaining share, and is withheld when the local evidence is
+insufficient; it is never a vendor-reported token quota.
+_Avoid_: Token quota, token allowance, exact token count
