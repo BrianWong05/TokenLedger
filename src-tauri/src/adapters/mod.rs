@@ -59,7 +59,12 @@ pub(crate) fn find_jsonl_by_file_identity(
 ) {
     let mut files = Vec::new();
     find_jsonl(dir, &mut files);
-    files.sort();
+    // A symlink and its target share one identity, so only their order decides
+    // which spelling wins — and the winner's file stem keys every event the
+    // rollout mints (codex.rs:287), so a change of winner mints a permanent
+    // second copy of the Session. Sort links last so the real file always wins
+    // and the key cannot move when someone drops a link beside it.
+    files.sort_by(|a, b| a.is_symlink().cmp(&b.is_symlink()).then_with(|| a.cmp(b)));
     for path in files {
         // Insert outside the match guard: a guard only borrows what it binds,
         // and FileIdentity is a PathBuf off unix, so moving it here would not
