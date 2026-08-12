@@ -853,7 +853,9 @@ pub struct LimitWindow {
     /// Opaque (never parsed for structure): Claude's own response key, Codex's
     /// `w{canonical minutes}`.
     pub window_key: String,
-    #[ts(optional, type = "number")]
+    /// Absent where the vendor never named the window's length: the card then
+    /// draws a bar with no time tick rather than inventing an axis.
+    #[ts(type = "number | null")]
     pub window_minutes: Option<i64>,
     /// The vendor's own figure, unconverted.
     pub used_pct: f64,

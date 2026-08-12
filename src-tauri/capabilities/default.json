@@ -17,6 +17,11 @@
           "name": "binaries/antigravity-export",
           "sidecar": true,
           "args": false
+        },
+        {
+          "name": "binaries/claude-limits",
+          "sidecar": true,
+          "args": false
         }
       ]
     }

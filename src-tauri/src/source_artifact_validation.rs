@@ -116,6 +116,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         codebuddy: missing.clone(),
         qoder_databases: vec![missing.clone()],
         qoder_cli_projects: vec![missing.clone()],
+        limit_exports: missing.clone(),
     };
 
     match source {

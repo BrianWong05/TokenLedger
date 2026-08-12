@@ -37,9 +37,9 @@ function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> }
     list: over.list ?? (() => Promise.resolve([])),
     checkLive:
       over.checkLive ??
-      ((source) => {
+      ((source: string): Promise<void> => {
         liveCalls.push(source);
-        return Promise.resolve([]);
+        return Promise.resolve();
       }),
     scan: over.scan ?? (() => Promise.resolve(null)),
     read: (k) => store[k] ?? null,

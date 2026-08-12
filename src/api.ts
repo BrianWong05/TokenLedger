@@ -88,12 +88,13 @@ export function fetchLimits(): Promise<SourceLimits[]> {
   return invoke('limits');
 }
 
-// Ask the Claude limits Companion for a live reading (ADR-0019): a separate
+// Ask a Source's limits Companion for a live reading (ADR-0019): a separate
 // process, started only because someone asked for it, that presents the sign-in
-// Claude Code already stores and asks Anthropic — read-only — how much of the
-// quota is used. Resolves with the Readings it fetched (also appended to the
-// durable series); rejects with the Companion's own failure line.
-export function checkClaudeLimits(source: string): Promise<SourceLimits[]> {
+// that Source's CLI already stores and asks the vendor — read-only — how much of
+// the quota is used. Its Readings land in the durable series, so the page reads
+// them back through `fetchLimits`; this rejects with the Companion's own failure
+// line, which the page classifies.
+export function checkLiveLimits(source: string): Promise<void> {
   return invoke('check_live_limits', { source });
 }
 

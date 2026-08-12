@@ -5,7 +5,12 @@ export type LimitWindow = {
  * Opaque (never parsed for structure): Claude's own response key, Codex's
  * `w{canonical minutes}`.
  */
-windowKey: string, windowMinutes?: number, 
+windowKey: string, 
+/**
+ * Absent where the vendor never named the window's length: the card then
+ * draws a bar with no time tick rather than inventing an axis.
+ */
+windowMinutes: number | null, 
 /**
  * The vendor's own figure, unconverted.
  */

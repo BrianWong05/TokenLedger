@@ -4,10 +4,10 @@
 //
 // `checkLive` is the one call that crosses ADR-0019's boundary, and it does so
 // the only sanctioned way: a person pressed something, and a separate Companion
-// process — never the app — presents the credential. It resolves with the
-// Readings the Companion fetched and rejects with the Companion's own failure
-// line, so the page can tell "not signed in" from "could not check".
-import { fetchLimits, checkClaudeLimits, scan } from '../api';
+// process — never the app — presents the credential. Its Readings land in the
+// durable series, so `list` is what renders them; it rejects with the Companion's
+// own failure line, so the page can tell "not signed in" from "could not check".
+import { fetchLimits, checkLiveLimits, scan } from '../api';
 import type { SourceLimits } from '../types';
 
 // The stored preference keys this page owns. Two booleans-worth of state, so
@@ -20,7 +20,7 @@ export interface LimitsPort {
   /** The current state of every Limit the Ledger holds Readings for. */
   list(): Promise<SourceLimits[]>;
   /** Run the Companion for one `live` Source. Rejects with its failure line. */
-  checkLive(source: string): Promise<SourceLimits[]>;
+  checkLive(source: string): Promise<void>;
   /** An ordinary scan — how a `logs` Source refreshes. */
   scan(): Promise<unknown>;
   /** Persisted page preferences. Swallows a storage that refuses to answer. */
@@ -30,7 +30,7 @@ export interface LimitsPort {
 
 export const tauriLimits: LimitsPort = {
   list: fetchLimits,
-  checkLive: checkClaudeLimits,
+  checkLive: checkLiveLimits,
   scan,
   read(key) {
     try {
