@@ -349,6 +349,28 @@ describe('card states', () => {
     expect(rows(codex)).toHaveLength(1);
   });
 
+  it('does not rehydrate a verdict older than the check currently in flight', async () => {
+    // The settle handlers only reach the tree that started the check, and a tab
+    // switch unmounts it. So a stamp saying "checking" must never sit beside a
+    // verdict from before that check began, or the remount inside the floor
+    // reports an outcome the running check has not reached yet.
+    const port = fakePort({
+      store: {
+        [LIVE_ENABLED_KEY]: 'true',
+        [lastFailureKey('codex')]: 'signed-out',
+        [lastCheckKey('codex')]: String(NOW_MS - 24 * HOUR * 1000),
+      },
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: () => new Promise<void>(() => {}),
+    });
+    await mount(port);
+
+    const second = await remount(port, NOW_MS + 2_000);
+    const codex = cardFor(second, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
   it('does not claim a sign-in lookup completed while the check is in flight', async () => {
     const c = await mount(fakePort({
       list: () => Promise.resolve([]),

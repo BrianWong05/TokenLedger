@@ -99,6 +99,12 @@ export default function LimitsPage({
       Promise.all(
         due.map((key) => {
           port.write(lastCheckKey(key), String(now()));
+          // Forget the old verdict as the check starts, not when it settles: the
+          // settle handlers only reach the mounted tree, and a tab switch made
+          // mid-check unmounts it. Without this, the stamp says "checking" while
+          // the verdict beside it still says whatever last failed, and every
+          // remount inside the floor rehydrates that older answer.
+          port.write(lastFailureKey(key), '');
           return Promise.resolve(port.checkLive(key)).then(
             () => {
               port.write(lastFailureKey(key), '');
