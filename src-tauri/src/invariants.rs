@@ -693,7 +693,7 @@ fn hermetic_sixteen_source_partition_invariants() {
 
     let roots = SourceRoots {
         claude: base.join("claude"),
-        codex: base.join("codex"),
+        codex_sessions: vec![base.join("codex")],
         gemini_tmp: base.join("gemini/tmp"),
         gemini_projects_json: base.join("gemini/projects.json"),
         hermes_db: base.join("hermes/state.db"),

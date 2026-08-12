@@ -747,7 +747,7 @@ mod tests {
         let conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
         let roots = SourceRoots {
             claude: dir.path().join("claude"),
-            codex: dir.path().join("codex"),
+            codex_sessions: vec![dir.path().join("codex")],
             gemini_tmp: dir.path().join("gemini"),
             gemini_projects_json: dir.path().join("projects.json"),
             hermes_db: dir.path().join("state.db"),
