@@ -2040,6 +2040,55 @@ mod tests {
         assert_eq!(src, "f2.jsonl");
     }
 
+    // The Codex Context clear is session-scoped, not file-scoped: a rollout that
+    // also lives under a second Session root is re-parsed under a different path,
+    // and the rows the other copy left behind belong to the same session, so a
+    // re-parse from byte 0 has to take them too or the drill-down doubles. Its
+    // reach stops at that session and at Codex: another session's rows, and any
+    // other Source's rows on the very same path, are none of its business.
+    #[test]
+    fn clearing_a_codex_session_reaches_every_copy_of_it_and_nothing_else() {
+        let (_dir, mut conn) = temp_db();
+        let ts = 1_782_907_200i64;
+        let codex_event = |dedup_key: &str, source_file: &str, session_id: &str| UsageEvent {
+            source: "codex".to_string(),
+            session_id: Some(session_id.to_string()),
+            ..sample_event(dedup_key, source_file)
+        };
+        add_ctx_tool_rows(&mut conn, "codex", "/a/rollout-x.jsonl", &[
+            ("shell".to_string(), 100, 1, ts),
+        ]).unwrap();
+        add_ctx_tool_rows(&mut conn, "codex", "/b/rollout-x.jsonl", &[
+            ("shell".to_string(), 100, 1, ts),
+        ]).unwrap();
+        add_ctx_tool_rows(&mut conn, "codex", "/c/rollout-y.jsonl", &[
+            ("shell".to_string(), 40, 1, ts),
+        ]).unwrap();
+        add_ctx_tool_rows(&mut conn, "claude", "/b/rollout-x.jsonl", &[
+            ("Bash".to_string(), 7, 1, ts),
+        ]).unwrap();
+        // Only events carry the session id, so the copies of a session are found
+        // through them and never through the path.
+        insert_events(&mut conn, &[
+            codex_event("codex:rollout-x:0", "/b/rollout-x.jsonl", "rollout-x"),
+            codex_event("codex:rollout-y:0", "/c/rollout-y.jsonl", "rollout-y"),
+        ]).unwrap();
+
+        clear_codex_ctx_tools_for_session(&conn, "/a/rollout-x.jsonl", "rollout-x").unwrap();
+
+        let left: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT source, source_file FROM ctx_tools ORDER BY source, source_file")
+                .unwrap();
+            let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(left, vec![
+            ("claude".to_string(), "/b/rollout-x.jsonl".to_string()),
+            ("codex".to_string(), "/c/rollout-y.jsonl".to_string()),
+        ]);
+    }
+
     #[test]
     fn pi_tool_owner_is_first_writer_wins_and_roundtrips() {
         let (_dir, mut conn) = temp_db();
