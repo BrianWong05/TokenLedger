@@ -4,7 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import LimitsPage from './LimitsPage';
-import { LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import { LIVE_ENABLED_KEY, MODE_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from './limits';
 import type { SourceLimits } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -328,6 +328,25 @@ describe('card states', () => {
     expect(checks).toBe(4);
     expect(trouble.querySelector('.title')?.textContent).toBe("Couldn't check");
     expect(trouble.querySelector('.hint')?.textContent).toBe('could not reach the vendor: timed out');
+  });
+
+  it('does not replay a failure from outside the live-check floor over held Readings', async () => {
+    // A verdict older than the floor says nothing about now, and this mount is
+    // already checking again. Replaying it would suppress the windows the
+    // Ledger holds today to show yesterday's blip as a current fact.
+    const c = await mount(fakePort({
+      store: {
+        [LIVE_ENABLED_KEY]: 'true',
+        [lastFailureKey('codex')]: 'signed-out',
+        [lastCheckKey('codex')]: String(NOW_MS - 24 * HOUR * 1000),
+      },
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: () => new Promise<void>(() => {}),
+    }));
+
+    const codex = cardFor(c, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
   });
 
   it('does not claim a sign-in lookup completed while the check is in flight', async () => {
