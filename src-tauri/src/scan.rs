@@ -676,15 +676,19 @@ mod tests {
         assert_eq!(cards[0].windows[0].window_key, "five_hour");
         assert_eq!(cards[0].windows[0].used_pct, 18.0);
 
-        // A `logs` Source has no export pass at all, so a corrupt file in that
-        // directory could never be blamed on one.
-        fs::write(
-            base.join("limits").join("codex.tokenledger-limits.json"),
-            "not json",
-        )
-        .unwrap();
+        // Codex is a `live` Source too, so its corrupt export surfaces on its own
+        // status — while a Source with no limits capability has no export pass at
+        // all, and a stray file named after it can never be blamed on one.
+        for key in ["codex", "gemini"] {
+            fs::write(
+                base.join("limits").join(format!("{key}.tokenledger-limits.json")),
+                "not json",
+            )
+            .unwrap();
+        }
         let again = run_scan(&mut conn, &roots);
-        assert!(find(&again, "codex").error.is_none());
+        assert!(find(&again, "codex").error.as_deref().is_some_and(|e| e.contains("unreadable")));
+        assert!(find(&again, "gemini").error.is_none());
     }
     const PI_SESSION: &str = include_str!("adapters/fixtures/pi/basic-session.jsonl");
 

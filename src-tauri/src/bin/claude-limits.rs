@@ -31,7 +31,6 @@
 //! (`SecItem`, the `keyring` crate) is the *governed* path and re-prompts per
 //! release on ad-hoc-signed builds; it must stay out of this codebase.
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,7 +38,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport};
+use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport, NOT_SIGNED_IN};
 use tokenledger_lib::time::iso_to_epoch;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -52,10 +51,6 @@ const EXIT_ITEM_NOT_FOUND: i32 = 44;
 /// The usage endpoint needs this scope. An absent or empty list is unknown
 /// rather than refused — credentials written before the field existed have none.
 const REQUIRED_SCOPE: &str = "user:profile";
-
-/// Prefix for the one failure the app must classify as an absence rather than an
-/// error. The app matches on it, so it is part of this tool's contract.
-const NOT_SIGNED_IN: &str = "not signed in";
 
 fn main() {
     match run() {
@@ -81,6 +76,15 @@ fn run() -> Result<String, String> {
     }
 
     let body = fetch(&credential.access_token)?;
+
+    // `--shape` is the hand-run diagnostic for when the vendor's payload moves:
+    // it prints the response's structure — keys, numbers, short enum-ish strings —
+    // with anything longer redacted, so a drifted shape can be diagnosed from a
+    // transcript without usage identifiers in it. The app can never pass this
+    // flag (its sidecar allowlist carries no args).
+    if std::env::args().skip(1).any(|a| a == "--shape") {
+        return Ok(limits_artifact::shape(&body));
+    }
     let export = LimitsExport {
         schema: limits_artifact::SCHEMA,
         source: "claude".to_string(),
@@ -88,7 +92,6 @@ fn run() -> Result<String, String> {
         plan: credential.plan,
         windows: windows(&body),
     };
-    let document = serde_json::to_string(&export).map_err(|e| e.to_string())?;
 
     // The durable Artifact is how the reading reaches the app at all — the scan
     // and the command both read the file, never this process's stdout (ADR-0019).
@@ -96,10 +99,10 @@ fn run() -> Result<String, String> {
     // having delivered nothing, and the card would show an absence rather than
     // the error that caused it. A hand run with no directory named just prints.
     if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
-        write_artifact(&PathBuf::from(dir), &document)
+        limits_artifact::write(&PathBuf::from(dir), &export)
             .map_err(|err| format!("could not write the export: {err}"))?;
     }
-    Ok(document)
+    serde_json::to_string(&export).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -263,15 +266,65 @@ fn fetch(access_token: &str) -> Result<Value, String> {
     }
 }
 
-/// The response's named windows. Discovered from the keys themselves, never a
-/// fixed list: a per-model window nobody has seen yet still has to render. Any
-/// object carrying a numeric `utilization` is a window, which also survives the
-/// figures being nested one level down.
+/// The response's windows. The modern shape carries a normalized `limits[]`
+/// list, and a per-model window arrives ONLY there — a Fable weekly is a
+/// `weekly_scoped` entry with `scope.model.display_name`, while the legacy
+/// `seven_day_<model>` keys sit null beside it. So the list wins when it says
+/// anything, and the named-key discovery below remains as the fallback for an
+/// older response shape.
 fn windows(body: &Value) -> Vec<WindowExport> {
+    let listed = limits_list(body);
+    if !listed.is_empty() {
+        return listed;
+    }
     let mut out = Vec::new();
     collect_windows(body, &mut out);
     out.sort_by(|a, b| a.key.cmp(&b.key));
     out
+}
+
+fn limits_list(body: &Value) -> Vec<WindowExport> {
+    let Some(items) = body.get("limits").and_then(|l| l.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<WindowExport> = items.iter().filter_map(list_window).collect();
+    out.sort_by(|a, b| a.window_minutes.cmp(&b.window_minutes).then(a.key.cmp(&b.key)));
+    out
+}
+
+/// One `limits[]` entry → a window. The keys are synthesized to match what the
+/// legacy shape called the same windows — `five_hour`, `seven_day`,
+/// `seven_day_<model>` — so a Reading from either response shape lands in the
+/// same stored series, and the page's label discovery needs no second grammar.
+/// `is_active` is not a gate: an inactive window still carries a real figure
+/// and a real reset. An entry with no reset has not started and is no window.
+fn list_window(item: &Value) -> Option<WindowExport> {
+    let used_pct = item.get("percent").and_then(|p| p.as_f64())?;
+    let resets_at = item
+        .get("resets_at")
+        .and_then(|r| r.as_i64().or_else(|| r.as_str().and_then(iso_to_epoch)))?;
+    let kind = item.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    let scoped_model = item
+        .pointer("/scope/model/display_name")
+        .and_then(|d| d.as_str());
+
+    let (key, window_minutes) = match (kind, scoped_model) {
+        ("session", _) => ("five_hour".to_string(), Some(300)),
+        ("weekly_all", _) => ("seven_day".to_string(), Some(10080)),
+        ("weekly_scoped", Some(model)) => (format!("seven_day_{}", slug(model)), Some(10080)),
+        // A kind nobody has seen still renders rather than vanishing: its kind
+        // is its (opaque) key, and with no known duration it draws no tick.
+        _ if !kind.is_empty() => (kind.to_string(), None),
+        _ => return None,
+    };
+    Some(WindowExport { key, window_minutes, used_pct, resets_at })
+}
+
+fn slug(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn collect_windows(node: &Value, out: &mut Vec<WindowExport>) {
@@ -321,23 +374,85 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Rename-write (ADR-0018): a reader never sees half a document, and a crash
-/// mid-write leaves the previous Artifact intact.
-fn write_artifact(dir: &std::path::Path, document: &str) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let final_path = limits_artifact::path_in(dir, "claude");
-    let staging = final_path.with_extension("json.part");
-    {
-        let mut file = std::fs::File::create(&staging)?;
-        file.write_all(document.as_bytes())?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&staging, &final_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The modern response shape, verbatim from a real `--shape` run (2026-08-12,
+    // Max 5x account): a normalized `limits[]` list beside the legacy named keys,
+    // the per-model Fable window ONLY in the list (`seven_day_*` all null), and
+    // an experiment field (`nimbus_quill`) that carries a `utilization` but no
+    // reset — the decoy the fallback walker must keep skipping.
+    const MODERN: &str = r#"{
+        "five_hour": {"utilization": 25.0, "resets_at": "2026-08-12T13:00:00.000000+00:00"},
+        "seven_day": {"utilization": 35.0, "resets_at": "2026-08-16T13:00:00.000000+00:00"},
+        "seven_day_opus": null, "seven_day_sonnet": null,
+        "nimbus_quill": {"utilization": 0.0, "resets_at": null},
+        "limits": [
+            {"kind": "session", "group": "session", "percent": 25, "is_active": false,
+             "resets_at": "2026-08-12T13:00:00.000000+00:00", "scope": null, "severity": "normal"},
+            {"kind": "weekly_all", "group": "weekly", "percent": 35, "is_active": true,
+             "resets_at": "2026-08-16T13:00:00.000000+00:00", "scope": null, "severity": "normal"},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 30, "is_active": false,
+             "resets_at": "2026-08-16T13:00:00.000000+00:00",
+             "scope": {"model": {"display_name": "Fable", "id": null}, "surface": null},
+             "severity": "normal"}
+        ],
+        "extra_usage": {"is_enabled": false, "utilization": null},
+        "spend": {"percent": 0, "severity": "normal"}
+    }"#;
+
+    #[test]
+    fn the_limits_list_wins_and_carries_the_scoped_model_window() {
+        let body: Value = serde_json::from_str(MODERN).unwrap();
+        let found = windows(&body);
+
+        assert_eq!(
+            found
+                .iter()
+                .map(|w| (w.key.as_str(), w.window_minutes, w.used_pct))
+                .collect::<Vec<_>>(),
+            vec![
+                ("five_hour", Some(300), 25.0),
+                ("seven_day", Some(10080), 35.0),
+                // The Fable window exists ONLY in the list; the key is
+                // synthesized to the legacy grammar so the page's label
+                // discovery renders it "Fable · Weekly" unchanged.
+                ("seven_day_fable", Some(10080), 30.0),
+            ],
+        );
+        // An inactive window still renders — `is_active` is not a gate — and the
+        // experiment decoy with no reset contributes nothing.
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[2].resets_at, iso_to_epoch("2026-08-16T13:00:00").unwrap());
+    }
+
+    #[test]
+    fn an_unseen_list_kind_still_renders_under_its_own_kind() {
+        let body: Value = serde_json::from_str(
+            r#"{"limits":[{"kind":"monthly_all","group":"monthly","percent":12,
+                "resets_at":"2026-09-01T00:00:00.000000+00:00"}]}"#,
+        )
+        .unwrap();
+        let found = windows(&body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "monthly_all", "the kind is the opaque key");
+        assert_eq!(found[0].window_minutes, None, "an unknown duration draws no tick");
+    }
+
+    #[test]
+    fn an_empty_or_unusable_list_falls_back_to_named_key_discovery() {
+        // Every list entry lacking a reset → nothing usable → the legacy walk
+        // still reads the named keys.
+        let body: Value = serde_json::from_str(
+            r#"{"limits":[{"kind":"session","percent":25,"resets_at":null}],
+                "five_hour":{"utilization":25.0,"resets_at":"2026-08-12T13:00:00Z"}}"#,
+        )
+        .unwrap();
+        let found = windows(&body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "five_hour");
+    }
 
     #[test]
     fn windows_are_discovered_from_the_response_keys() {
@@ -433,34 +548,4 @@ mod tests {
         assert!(names.iter().all(|n| !n.contains("-a ")));
     }
 
-    #[test]
-    fn a_written_artifact_round_trips_and_leaves_no_staging_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("limits");
-        let export = LimitsExport {
-            schema: limits_artifact::SCHEMA,
-            source: "claude".to_string(),
-            fetched_at: 1_786_492_800,
-            plan: Some("Team 5x".to_string()),
-            windows: vec![WindowExport {
-                key: "five_hour".to_string(),
-                window_minutes: Some(300),
-                used_pct: 18.0,
-                resets_at: 1_786_503_900,
-            }],
-        };
-        let document = serde_json::to_string(&export).unwrap();
-        write_artifact(&dir, &document).unwrap();
-
-        let written = std::fs::read_to_string(limits_artifact::path_in(&dir, "claude")).unwrap();
-        let read: LimitsExport = serde_json::from_str(&written).unwrap();
-        assert_eq!(read.source, "claude");
-        assert_eq!(read.windows[0].used_pct, 18.0);
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
-            .collect();
-        assert!(leftovers.is_empty(), "the staging file is renamed, not left behind");
-    }
 }

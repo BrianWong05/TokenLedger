@@ -147,11 +147,23 @@ describe('framing', () => {
   });
 });
 
+// A fabricated `logs` Source: the shipped catalog holds only `live` ones now,
+// and the logs rules must outlive that coincidence — a post-v1 Source may well
+// be logs-only again.
+const LOGS_SOURCE = {
+  meta: {
+    key: 'faketool', label: 'FakeTool', source: 'FakeTool', color: '#000000',
+    icon: 'generic', aliases: [], capabilities: { limits: 'logs' },
+    artifacts: [], platforms: ['all'], prerequisite: null,
+  },
+  via: 'logs' as const,
+};
+
 describe('catalog gating', () => {
   it('yields a card only for a Source declaring a limits capability', () => {
     const keys = limitsSources().map((s) => s.meta.key);
     expect(keys).toEqual(['claude', 'codex']);
-    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'logs']);
+    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live']);
   });
 
   it('gives a Source without the capability no card, even holding Readings', () => {
@@ -171,8 +183,8 @@ describe('card states', () => {
   });
 
   it('reads a logs Source with no Readings as nothing-recorded, not signed-out', () => {
-    const [, codex] = cards([], NOW, 'left');
-    expect(codex.state).toBe('nothing-recorded');
+    const [fake] = cards([], NOW, 'left', {}, [LOGS_SOURCE]);
+    expect(fake.state).toBe('nothing-recorded');
   });
 
   it('reads a live Source with no Readings as signed-out', () => {
@@ -212,11 +224,10 @@ describe('freshness', () => {
   });
 
   it('reports the age of the last request for a logs Source, amber past a day', () => {
-    const [, fresh] = cards([held('codex', [win({ observedAt: NOW - 3 * HOUR })])], NOW, 'left');
-    expect(freshness(fresh, NOW)?.key).toBe('observedAgo');
-
-    const [, old] = cards([held('codex', [win({ observedAt: NOW - 3 * DAY })])], NOW, 'left');
-    expect(freshness(old, NOW)?.key).toBe('observedOld');
+    const logsCard = (observedAt: number) =>
+      cards([held('faketool', [win({ observedAt })])], NOW, 'left', {}, [LOGS_SOURCE])[0];
+    expect(freshness(logsCard(NOW - 3 * HOUR), NOW)?.key).toBe('observedAgo');
+    expect(freshness(logsCard(NOW - 3 * DAY), NOW)?.key).toBe('observedOld');
   });
 
   it('has nothing to say without a reading', () => {

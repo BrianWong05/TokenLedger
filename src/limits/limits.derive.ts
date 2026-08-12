@@ -179,10 +179,13 @@ export function cards(
   nowSec: number,
   mode: Mode,
   failures: Record<string, 'signed-out' | { detail: string }> = {},
+  // Injectable so the `logs` rules stay testable while the shipped catalog
+  // happens to hold only `live` Sources.
+  sources: { meta: SourceMeta; via: LimitsVia }[] = limitsSources(),
 ): CardView[] {
   const bySource = new Map(stored.map((s) => [s.source, s]));
 
-  return limitsSources().map(({ meta, via }) => {
+  return sources.map(({ meta, via }) => {
     const held = bySource.get(meta.key);
     const windows = (held?.windows ?? []).map((w) => windowView(w, mode, nowSec));
     const observedAt = held?.windows.length

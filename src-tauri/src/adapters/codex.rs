@@ -6,34 +6,19 @@ use serde_json::Value;
 use super::ctx::{self, est};
 use super::unchanged;
 use crate::db;
+use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, LimitReading, SourceScanResult, UsageEvent};
-
-/// The durations Codex's own labeller recognises, matched within ±5% because
-/// upstream rounding drifts (#104). An unrecognised duration is kept as its raw
-/// minutes rather than treated as corrupt — the fifth value Codex may start
-/// reporting must render, not vanish.
-const CANONICAL_WINDOW_MINUTES: [i64; 5] = [300, 1440, 10080, 43200, 525600];
-
-/// `window_minutes` → the opaque `window_key` a Reading is stored under. Never
-/// the `primary`/`secondary` slot: the slot is a position, not a window — in the
-/// local corpus `primary` carries the 7-day window in 88% of observations and
-/// the 5-hour one in the rest (#104).
-fn window_key(window_minutes: i64) -> String {
-    let canonical = CANONICAL_WINDOW_MINUTES
-        .iter()
-        .find(|&&m| (window_minutes - m).abs() * 20 <= m)
-        .copied()
-        .unwrap_or(window_minutes);
-    format!("w{canonical}")
-}
 
 /// One `rate_limits` slot → a Reading, or None when that window does not exist.
 /// A null slot is an absent window, never a window at zero; a slot missing the
 /// duration or the reset instant cannot be keyed or placed on a time axis, so it
-/// is likewise no window. ponytail: `resets_in_seconds` (Codex ≤ 0.47) is not
-/// read — reading it as an epoch would date the window to 1970. Convert it here
-/// if pre-0.48 Artifacts ever turn up.
+/// is likewise no window. The key comes from the duration and never from the
+/// `primary`/`secondary` slot: the slot is a position, not a window — in the
+/// local corpus `primary` carries the 7-day window in 88% of observations and
+/// the 5-hour one in the rest (#104). ponytail: `resets_in_seconds` (Codex
+/// ≤ 0.47) is not read — reading it as an epoch would date the window to 1970.
+/// Convert it here if pre-0.48 Artifacts ever turn up.
 fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> Option<LimitReading> {
     let slot = slot.filter(|s| !s.is_null())?;
     let used_pct = slot.get("used_percent").and_then(|v| v.as_f64())?;
