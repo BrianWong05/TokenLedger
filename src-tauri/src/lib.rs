@@ -52,7 +52,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
     BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, SeriesPoint,
-    Summary, TrendPoint,
+    SourceLimits, Summary, TrendPoint,
 };
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
@@ -305,6 +305,15 @@ fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSki
 fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
+}
+
+/// The current state of every Limit the Ledger holds Readings for. Takes no
+/// Filters: the Limits page is *now*, not a range, and it ignores the Overview's
+/// date window and Source selection entirely.
+#[tauri::command(async)]
+fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::limits(&db).map_err(|e| e.to_string())
 }
 
 // Re-read both catalogs on demand from the Pricing tab. Deliberately ignores the
@@ -564,6 +573,7 @@ pub fn run() {
             ctx_tools,
             ctx_skills,
             ctx_exec,
+            limits,
             model_pricing,
             refresh_prices,
             set_model_override,

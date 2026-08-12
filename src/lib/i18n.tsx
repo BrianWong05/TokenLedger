@@ -4,14 +4,16 @@
 // components `t(key)` keyed to the current language (which comes from Settings).
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import { common } from './strings/common';
+import { limits } from './strings/limits';
 import { pricing } from './strings/pricing';
 import { settings } from './strings/settings';
 
 export type Lang = 'en' | 'zh-Hant';
 
-const EN = { ...common.en, ...pricing.en, ...settings.en };
+const EN = { ...common.en, ...limits.en, ...pricing.en, ...settings.en };
 const ZH: Partial<Record<keyof typeof EN, string>> = {
   ...common['zh-Hant'],
+  ...limits['zh-Hant'],
   ...pricing['zh-Hant'],
   ...settings['zh-Hant'],
 };

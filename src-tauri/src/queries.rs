@@ -101,7 +101,7 @@ pub struct BreakdownRow {
 }
 
 use std::collections::HashMap;
-use rusqlite::{params_from_iter, types::Value, Connection};
+use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
 use crate::pricing::RateMap;
 
 // Builds the dynamic WHERE fragment (empty vec = no constraint; end_ts exclusive).
@@ -846,12 +846,104 @@ pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecR
     rows.collect()
 }
 
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LimitWindow {
+    /// Opaque (never parsed for structure): Claude's own response key, Codex's
+    /// `w{canonical minutes}`.
+    pub window_key: String,
+    #[ts(optional, type = "number")]
+    pub window_minutes: Option<i64>,
+    /// The vendor's own figure, unconverted.
+    pub used_pct: f64,
+    #[ts(type = "number")]
+    pub resets_at: i64,
+    #[ts(type = "number")]
+    pub observed_at: i64,
+}
+
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct SourceLimits {
+    pub source: String,
+    /// `rateLimitTier` (Claude) / `plan_type` (Codex) as of the newest Reading.
+    pub plan: Option<String>,
+    pub windows: Vec<LimitWindow>,
+}
+
+/// A window's `resets_at` is not a stable epoch identity: within what is plainly
+/// one window it jitters by a median of 1 second and occasionally by up to ±117s
+/// (#104), because the server appears to recompute it per response. Two Readings
+/// whose stamps differ by a couple of minutes are the same epoch, so the newest
+/// epoch is a *band* below `MAX(resets_at)` rather than one exact value —
+/// otherwise the "current" figure would be whichever jittered row happened to
+/// name the largest stamp. Ten minutes is far wider than the observed wobble and
+/// far narrower than the shortest window Codex reports (300 minutes).
+const EPOCH_JITTER_SECS: i64 = 600;
+
+/// The current state of every Limit the Ledger holds Readings for: per
+/// (source, window_key) the newest epoch, and within it the highest `used_pct`
+/// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
+/// monotonic within an epoch (#104), so the highest is the latest.
+///
+/// This ignores the Overview's date window and Source selection entirely: the
+/// Limits page is *now*, not a range.
+pub fn limits(conn: &Connection) -> rusqlite::Result<Vec<SourceLimits>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
+                MAX(r.resets_at), MAX(r.observed_at) \
+         FROM limit_readings r \
+         JOIN (SELECT source, window_key, MAX(resets_at) AS newest FROM limit_readings \
+               GROUP BY source, window_key) e \
+           ON e.source = r.source AND e.window_key = r.window_key \
+         WHERE r.resets_at >= e.newest - ?1 \
+         GROUP BY r.source, r.window_key \
+         ORDER BY r.source, MAX(r.window_minutes), r.window_key",
+    )?;
+    let rows = stmt.query_map([EPOCH_JITTER_SECS], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            LimitWindow {
+                window_key: r.get(1)?,
+                window_minutes: r.get(2)?,
+                used_pct: r.get(3)?,
+                resets_at: r.get(4)?,
+                observed_at: r.get(5)?,
+            },
+        ))
+    })?;
+
+    let mut cards: Vec<SourceLimits> = Vec::new();
+    for row in rows {
+        let (source, window) = row?;
+        match cards.last_mut() {
+            Some(card) if card.source == source => card.windows.push(window),
+            _ => cards.push(SourceLimits { source, plan: None, windows: vec![window] }),
+        }
+    }
+
+    // The plan label as of the newest observation of that Source — one lookup
+    // rather than a column on every window, since a card shows one pill.
+    let mut plan_stmt = conn.prepare(
+        "SELECT plan FROM limit_readings WHERE source = ?1 AND plan IS NOT NULL \
+         ORDER BY observed_at DESC LIMIT 1",
+    )?;
+    for card in &mut cards {
+        card.plan = plan_stmt
+            .query_row([&card.source], |r| r.get(0))
+            .optional()?;
+    }
+    Ok(cards)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
     use crate::pricing::{self, OverrideRates};
-    use crate::types::UsageEvent;
+    use crate::types::{LimitReading, UsageEvent};
     use tempfile::tempdir;
 
     // 2026-07-01T12:00:00Z and 2026-07-02T12:00:00Z (event times)
@@ -1583,5 +1675,75 @@ mod tests {
 
         let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
         assert!(ctx_exec(&conn, &f2).unwrap().is_empty());
+    }
+
+    fn reading(
+        source: &str, window_key: &str, minutes: i64, used_pct: f64, resets_at: i64,
+        observed_at: i64, via: &str, plan: Option<&str>,
+    ) -> LimitReading {
+        LimitReading {
+            source: source.to_string(),
+            window_key: window_key.to_string(),
+            window_minutes: Some(minutes),
+            used_pct,
+            resets_at,
+            observed_at,
+            via: via.to_string(),
+            plan: plan.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn limits_takes_the_highest_percentage_of_the_newest_epoch() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(&mut conn, &[
+            // A finished epoch: its fill-curve stays in the table but must not
+            // be what the card shows.
+            reading("codex", "w10080", 10080, 90.0, 1_786_000_000, 1_785_900_000, "logs", Some("plus")),
+            // The newest epoch, with its curve out of order and jittered stamps —
+            // 1s of wobble is the same window, not a newer one (#104).
+            reading("codex", "w10080", 10080, 41.0, 1_786_879_486, 1_786_331_779, "logs", Some("plus")),
+            reading("codex", "w10080", 10080, 44.0, 1_786_879_485, 1_786_331_900, "logs", Some("plus")),
+            reading("codex", "w10080", 10080, 40.0, 1_786_879_487, 1_786_331_700, "logs", Some("plus")),
+            // A second window of the same Source, and a second Source.
+            reading("codex", "w300", 300, 12.0, 1_786_350_000, 1_786_331_900, "logs", Some("plus")),
+            reading("claude", "five_hour", 300, 18.0, 1_786_350_000, 1_786_340_000, "live", Some("Team 5x")),
+        ]).unwrap();
+
+        let cards = limits(&conn).unwrap();
+        assert_eq!(cards.len(), 2, "one card per Source holding Readings");
+
+        let claude = &cards[0];
+        assert_eq!(claude.source, "claude");
+        assert_eq!(claude.plan.as_deref(), Some("Team 5x"));
+        assert_eq!(claude.windows.len(), 1);
+
+        let codex = &cards[1];
+        assert_eq!(codex.plan.as_deref(), Some("plus"));
+        // Ordered by duration, so the session window precedes the weekly one.
+        assert_eq!(
+            codex.windows.iter().map(|w| w.window_key.as_str()).collect::<Vec<_>>(),
+            vec!["w300", "w10080"],
+        );
+        let weekly = &codex.windows[1];
+        assert_eq!(weekly.used_pct, 44.0, "the newest epoch's highest fill, not the older 90%");
+        assert_eq!(weekly.resets_at, 1_786_879_487, "the epoch's own reset instant");
+        assert_eq!(weekly.observed_at, 1_786_331_900, "and its newest observation");
+    }
+
+    #[test]
+    fn limits_is_empty_and_plan_free_without_readings() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        assert_eq!(limits(&conn).unwrap(), vec![]);
+
+        // A Source that only ever reported a null plan still gets its card.
+        db::insert_limit_readings(&mut conn, &[
+            reading("codex", "w10080", 10080, 5.0, 1_786_879_486, 1_786_331_779, "logs", None),
+        ]).unwrap();
+        let cards = limits(&conn).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].plan, None, "an absent plan is unknown, never guessed");
     }
 }

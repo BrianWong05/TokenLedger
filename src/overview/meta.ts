@@ -24,7 +24,9 @@ export interface SourceMeta {
   color: string;
   icon: string;
   aliases: string[];
-  capabilities: Record<string, boolean>;
+  // Mostly booleans, but `limits` is the acquisition enum ("logs" | "live"),
+  // absent on a Source with no vendor window to show.
+  capabilities: Record<string, boolean | string | undefined>;
   artifacts: SourceArtifact[];
   platforms: string[];
   prerequisite: string | null;
