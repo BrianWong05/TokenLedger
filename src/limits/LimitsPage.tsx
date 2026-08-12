@@ -179,11 +179,15 @@ export default function LimitsPage({
   );
 }
 
-// 401/403 and a missing credential are the same thing to the person reading the
-// card — their sign-in needs redoing. Every other failure is a failure, and must
-// not be dressed as this one.
+// A missing or refused credential is the one failure that reads as "sign in
+// again"; every other failure is a failure and must not wear that face. The
+// Companion is what can tell them apart — it knows a 401 on the token from a 403
+// the same token earns on one method while another succeeds — so it marks the
+// signed-out case with this prefix and the page trusts that, rather than
+// re-deriving it by grepping for a status code that also appears in the text of
+// a genuine error (e.g. "the vendor answered 403 … PERMISSION_DENIED").
 function signedOut(detail: string): boolean {
-  return /\bnot signed in\b|\b401\b|\b403\b/i.test(detail);
+  return /\bnot signed in\b/i.test(detail);
 }
 
 function Card({

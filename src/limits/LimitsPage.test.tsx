@@ -199,15 +199,38 @@ describe('card states', () => {
   });
 
   it('renders a refused credential as signed out, not as a failure', async () => {
+    // The Companion marks this case with the "not signed in" prefix; the page
+    // trusts that word, never the bare status code.
     const c = await mount(
       fakePort({
         list: () => Promise.resolve([]),
-        checkLive: () => Promise.reject(new Error('claude: 401 from the usage endpoint')),
+        checkLive: () =>
+          Promise.reject(new Error('not signed in: Claude rejected the saved sign-in (401/403)')),
       }),
     );
     expect(cardFor(c, 'Claude').querySelector('.tl-lim-trouble .title')?.textContent).toBe(
       'Not signed in',
     );
+  });
+
+  it('does not read a status code in an error message as being signed out', async () => {
+    // A 403 the same token earns on one method while another succeeds is not a
+    // sign-in problem — telling someone to re-authenticate a working login is
+    // the exact confusion this page must avoid. The number in the text must not
+    // flip the card.
+    const c = await mount(
+      fakePort({
+        list: () => Promise.resolve([]),
+        checkLive: () =>
+          Promise.reject(
+            new Error('the vendor answered 403 to retrieveUserQuotaSummary — PERMISSION_DENIED'),
+          ),
+      }),
+    );
+    const trouble = cardFor(c, 'Antigravity').querySelector('.tl-lim-trouble')!;
+    expect(trouble.className).toMatch(/error/);
+    expect(trouble.querySelector('.title')?.textContent).toBe("Couldn't check");
+    expect(trouble.querySelector('.hint')?.textContent).toContain('PERMISSION_DENIED');
   });
 
   it('reads a codex with nothing recorded as not signed in, naming its own CLI', async () => {
