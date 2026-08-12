@@ -824,6 +824,12 @@ pub fn clear_file_state(conn: &Connection, path: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Drops scan state for paths that have left disk. The Ledger is permanent, so
+/// events are never touched. From v15 this also drops the Codex Context rows
+/// keyed to those paths, which is how a rollout demoted to a physical alias
+/// stops contributing a second drill-down — the cost being that a Codex rollout
+/// the user really deletes takes its Context with it for good. Only Codex:
+/// every other Source's Context is unrecoverable once its Artifact is gone.
 pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     let paths: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM scanned_files")?;
