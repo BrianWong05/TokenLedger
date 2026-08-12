@@ -29,3 +29,8 @@ Four bounds, all load-bearing:
    floor between calls — never on a timer.
 4. A 401/403 renders the card unavailable and points at the Source's own CLI;
    the Companion never tries to repair a session it does not own.
+
+Bound 1 is narrowed — not repealed — for Google-family credentials by
+ADR-0020: their access tokens die in about an hour, and the refresh-token
+exchange provably cannot corrupt the Source's own session. Everything else
+here stands.
