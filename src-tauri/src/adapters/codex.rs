@@ -50,11 +50,20 @@ pub fn scan_codex(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceSca
     let mut result = SourceScanResult::default();
     let mut aliases = Vec::new();
     let mut seen = HashSet::new();
+    let mut seen_sessions = HashSet::new();
     let mut winners = HashSet::new();
     for (index, root) in session_roots.iter().enumerate() {
         let mut files = Vec::new();
         find_jsonl_by_file_identity(root, &mut files, &mut aliases, &mut seen);
         for path in files {
+            let session_id = path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !seen_sessions.insert(session_id) {
+                aliases.push(path);
+                continue;
+            }
             winners.insert(path.clone());
             match scan_file(conn, &path, index == 0) {
                 Ok((inserted, skipped)) => {
@@ -347,14 +356,15 @@ fn scan_file(
         return Ok((0, 0));
     }
 
-    // Codex re-parses changed or parser-versioned files in full.
-    db::clear_ctx_tools_for_file(conn, &path_str).map_err(|e| e.to_string())?;
-
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     let file_stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+
+    // Codex re-parses changed or parser-versioned files in full.
+    db::clear_codex_ctx_tools_for_session(conn, &path_str, &file_stem)
+        .map_err(|e| e.to_string())?;
 
     let parsed = parse_file(&content, &file_stem, &path_str);
 
@@ -376,7 +386,6 @@ fn scan_file(
 mod tests {
     use super::*;
     use crate::db::open_db;
-    #[cfg(unix)]
     use crate::queries::{ctx_tools, Filters};
 
     fn fixture_root() -> std::path::PathBuf {
@@ -617,6 +626,78 @@ mod tests {
         assert_eq!((est2, calls2), (est1, calls1), "re-parse replaced, not doubled");
     }
 
+    #[test]
+    fn codex_dedupes_copied_sessions_across_ordered_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let default_root = tmp.path().join("default/sessions");
+        let relocated_root = tmp.path().join("relocated/sessions");
+        let default_rollout = write_rollout(
+            &default_root,
+            "rollout-overlap.jsonl",
+            &[
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:16:17.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"pwd\"]}"}}"#,
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:16:18.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+                REAL_BLOCK,
+            ],
+        );
+        std::fs::create_dir_all(&relocated_root).unwrap();
+        std::fs::copy(
+            &default_rollout,
+            relocated_root.join("rollout-overlap.jsonl"),
+        )
+        .unwrap();
+        let relocated_limit = limits_line(
+            r#"{"limit_id":"codex","primary":{"used_percent":42.0,"window_minutes":10080,"resets_at":1786879486},"secondary":null,"plan_type":"plus"}"#,
+            "2026-08-10T03:20:19.385Z",
+        );
+        write_rollout(
+            &relocated_root,
+            "rollout-extra.jsonl",
+            &[
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:20:17.000Z","payload":{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:20:18.000Z","payload":{"type":"function_call_output","call_id":"c2","output":"done"}}"#,
+                &relocated_limit,
+            ],
+        );
+
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let scan = scan_codex(&mut conn, &[default_root, relocated_root]);
+        let summary = crate::queries::summary(&conn, &Filters::default()).unwrap();
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        let readings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM limit_readings WHERE source='codex'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!((scan.events_inserted, summary.requests), (2, 2));
+        assert_eq!((tools.len(), tools[0].calls), (1, 2));
+        assert_eq!(readings, 1);
+    }
+
+    #[test]
+    fn codex_missing_default_root_does_not_promote_relocated_limits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing_default = tmp.path().join("missing/sessions");
+        let relocated_root = tmp.path().join("relocated/sessions");
+        write_rollout(&relocated_root, "rollout-relocated.jsonl", &[REAL_BLOCK]);
+
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let scan = scan_codex(&mut conn, &[missing_default, relocated_root]);
+        let readings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM limit_readings WHERE source='codex'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(scan.events_inserted, 1);
+        assert_eq!(readings, 0);
+    }
+
     #[cfg(unix)]
     #[test]
     fn codex_counts_a_hard_linked_rollout_once() {
@@ -687,7 +768,7 @@ mod tests {
         std::fs::create_dir_all(&relocated_root).unwrap();
         std::fs::hard_link(
             &default_rollout,
-            relocated_root.join("rollout-overlap.jsonl"),
+            relocated_root.join("rollout-default.jsonl"),
         )
         .unwrap();
         let extra_limit = limits_line(
@@ -756,11 +837,28 @@ mod tests {
         assert_eq!(context_totals(&conn), context);
 
         std::fs::remove_file(&relocated_link).unwrap();
-        let after_disappearance = scan_codex(&mut conn, &roots);
+        let after_configured_disappearance = scan_codex(&mut conn, &roots);
         let durable = crate::queries::summary(&conn, &Filters::default()).unwrap();
-        assert!(after_disappearance.error.is_none());
+        assert!(after_configured_disappearance.error.is_none());
         assert_eq!((durable.total_tokens, durable.requests), (300, 2));
         assert_eq!(context_totals(&conn), context);
+
+        symlink(&relocated_root, &relocated_link).unwrap();
+        std::fs::remove_dir_all(&default_root).unwrap();
+        let after_default_disappearance = scan_codex(&mut conn, &roots);
+        let durable = crate::queries::summary(&conn, &Filters::default()).unwrap();
+        assert!(after_default_disappearance.error.is_none());
+        assert_eq!(after_default_disappearance.events_inserted, 0);
+        assert_eq!((durable.total_tokens, durable.requests), (300, 2));
+        assert_eq!(context_totals(&conn), context);
+        let readings_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM limit_readings WHERE source='codex'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(readings_after, readings);
     }
 
     // ---- Limit Readings (#104 ingest rules) ----
