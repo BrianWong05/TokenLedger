@@ -435,6 +435,14 @@ describe('card states', () => {
       checkLive: () => new Promise<void>(() => {}),
     }));
 
+    // The header is the one place the two frames differ — the empty settled card
+    // is byte-identical — so it carries the claim: while a check is outstanding
+    // the page says so rather than presenting the situation as concluded.
+    const busy = btn(c, 'Checking…');
+    expect(busy).toBeTruthy();
+    expect(busy.disabled).toBe(true);
+    // And the body stays imperative throughout: it tells the reader what to do,
+    // never that a lookup has been made and come back empty.
     expect(cardFor(c, 'Claude').querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
       'Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.',
     );
