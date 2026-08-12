@@ -128,6 +128,11 @@ For recursively scanned JSONL Sources, a configured root may itself be a
 symlink and JSONL file symlinks inside it are read, but directory symlinks
 inside it are not traversed; on Windows, this includes junctions.
 
+On macOS, a `CODEX_HOME` exported only in a shell profile is not visible to an
+app launched from Finder or the Dock. Run `launchctl setenv CODEX_HOME
+/path/to/home` before starting TokenLedger, or configure the variable in a
+LaunchAgent.
+
 Most paths above are under your home directory and are read passively. `GROK_HOME`
 and `GOOSE_PATH_ROOT` may point discovery at different roots. The
 database lives at `<app data dir>/tokenledger.db` in WAL

@@ -3,7 +3,7 @@
 Status as of 2026-08-13: Codex rollout parsing was already supported. Issue
 [#131](https://github.com/BrianWong05/TokenLedger/issues/131) verified a genuine
 relocated Codex home and this change expands discovery without changing the
-parser, Ledger schema, or Source-native event keys.
+parser, Ledger schema, or Source-native Usage Record identities.
 
 ## Upstream corroboration
 
@@ -30,6 +30,14 @@ those, 175 were shared hard links with the same device, inode, and basename;
 the relocated home contributed 32 unique rollouts and the default home two.
 No private path or rollout content is committed.
 
+Post-change validation against a genuine Codex Artifact passed on 2026-08-13:
+25,375 Usage Records and Requests, 2,879,405,101 total tokens, an unchanged
+second Scan, no Records from another Source, and schema fingerprint
+`sha256:5b43ce9fd8884a840522603dcbc82543a8cde481bd0b5c3067acfa11e2107459`.
+The existing Ledger held 1,739 Codex Limit Readings across two windows (810
+weekly and 929 five-hour); the synthetic two-root validation keeps the one
+default-root Reading and accepts none from the relocated root.
+
 ## Synthetic coverage
 
 The committed tests cover default-first root resolution, blank and equivalent
@@ -41,6 +49,14 @@ Limit Readings from non-default roots.
 ## Fidelity limitations
 
 Environment discovery only works when the TokenLedger process can see
-`CODEX_HOME`; desktop launches often do not inherit shell-only variables.
+`CODEX_HOME`; desktop launches often do not inherit shell-only variables. On
+macOS, set it for GUI launches with `launchctl setenv CODEX_HOME /path/to/home`
+before starting TokenLedger, or declare it in a LaunchAgent's
+`EnvironmentVariables` dictionary.
 Relocated roots contribute Usage and Context, but not Limit Readings, until a
 separate account-to-limits policy is agreed.
+
+On Windows, stable Rust does not yet expose volume/file-index metadata without
+the nightly-only `windows_by_handle` feature. Equivalent and symlinked paths
+are still collapsed by canonical path, but differently named hard links are a
+documented platform limitation until that API stabilises.
