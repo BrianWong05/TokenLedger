@@ -58,10 +58,15 @@ pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
         Err(_) => return,
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             find_jsonl(&path, out);
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+        } else if file_type.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+        {
             out.push(path);
         }
     }
@@ -194,6 +199,26 @@ pub(crate) fn claude_shaped_usage(message: &serde_json::Value) -> Option<ClaudeS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn jsonl_walk_follows_root_symlink_but_skips_nested_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        std::fs::create_dir(&sessions).unwrap();
+        std::fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+        symlink(".", sessions.join("loop")).unwrap();
+
+        let configured_root = temp.path().join("configured-sessions");
+        symlink(&sessions, &configured_root).unwrap();
+
+        let mut files = Vec::new();
+        find_jsonl(&configured_root, &mut files);
+
+        assert_eq!(files, vec![configured_root.join("session.jsonl")]);
+    }
 
     // A cwd is copied out of a log, so it is spelt the way the machine that
     // wrote it spells paths — which need not be the one now reading it.
