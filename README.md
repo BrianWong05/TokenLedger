@@ -128,8 +128,9 @@ For the JSONL Sources discovered by the shared recursive walk — Claude Code,
 Codex CLI, pi, Oh My Pi, WorkBuddy, CodeBuddy, Qoder — a configured root may
 itself be a symlink and JSONL file symlinks inside it are read, but directory
 symlinks inside it are not traversed; on Windows, this includes junctions.
-Grok Build is not one of them: it walks its own fixed two levels of workspace
-and session directories, and does traverse directory symlinks inside its root.
+Grok Build is walked differently: its own fixed two levels of workspace and
+session directories take a symlinked root and symlinked `updates.jsonl` the
+same way, but they do traverse directory symlinks inside the root.
 
 Most paths above are under your home directory and are read passively. `GROK_HOME`
 and `GOOSE_PATH_ROOT` may point discovery at different roots. The
