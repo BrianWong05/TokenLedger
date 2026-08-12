@@ -126,10 +126,20 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
  * duration classes are named; a per-model window is DISCOVERED from the key's
  * own tail, so a `seven_day_zephyr` nobody has seen renders as "Zephyr" rather
  * than disappearing.
+ *
+ * `source` is passed because one bar's *quantity* is a fact about the Source
+ * rather than about the window: Grok's weekly bar meters a credit pool, not a
+ * rate-limit window, and the same geometry at 80% means two different things
+ * (#126). It says "credits" so the two are not read as the same thing.
  */
 export function windowLabel(
   key: string,
-): { kind: 'session' | 'weekly'; model?: undefined } | { kind: 'model'; model: string } | { kind: 'other'; minutes: string } {
+  source?: string,
+): { kind: 'session' | 'weekly' | 'weeklyCredits' | 'monthlyCredits'; model?: undefined } | { kind: 'model'; model: string } | { kind: 'other'; minutes: string } {
+  if (source === 'grok') {
+    if (key === 'w10080') return { kind: 'weeklyCredits' };
+    if (key === 'w43200') return { kind: 'monthlyCredits' };
+  }
   if (key === 'five_hour' || key === 'w300') return { kind: 'session' };
   if (key === 'seven_day' || key === 'w10080') return { kind: 'weekly' };
   const model = key.startsWith('seven_day_') ? key.slice('seven_day_'.length) : null;

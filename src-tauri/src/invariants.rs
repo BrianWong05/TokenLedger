@@ -698,6 +698,7 @@ fn hermetic_sixteen_source_partition_invariants() {
         gemini_projects_json: base.join("gemini/projects.json"),
         hermes_db: base.join("hermes/state.db"),
         grok_sessions: base.join("grok"),
+        grok_logs: base.join("grok-logs"),
         antigravity_conversations: base.join("antigravity"),
         antigravity_ide_conversations: base.join("antigravity-ide"),
         // No CLI fixture: a missing root is scanned quietly (zero events, no error).

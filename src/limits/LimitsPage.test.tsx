@@ -93,6 +93,14 @@ const CLAUDE_LIVE: SourceLimits = {
   ],
 };
 
+const GROK_CREDITS: SourceLimits = {
+  source: 'grok',
+  plan: 'SuperGrok',
+  windows: [
+    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 16, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR },
+  ],
+};
+
 describe('the opt-in disclosure', () => {
   it('replaces the card area on first visit and reads no credential', async () => {
     const port = fakePort({ store: {}, list: () => Promise.resolve([CODEX_WEEKLY]) });
@@ -180,9 +188,8 @@ describe('card states', () => {
   });
 
   it('reads a codex with nothing recorded as not signed in, naming its own CLI', async () => {
-    // Codex is a `live` Source now; the nothing-recorded state is exercised at
-    // the derive level against an injected `logs` Source, since no shipped
-    // Source can currently reach it.
+    // Codex is a `live` Source, so an absence there means the credential, not
+    // the logs. Grok is the `logs` case, covered below.
     const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
     const codex = cardFor(c, 'Codex');
     expect(codex.className).toMatch(/off/);
@@ -192,11 +199,23 @@ describe('card states', () => {
     );
   });
 
+  it('reads a logs Source with nothing recorded as nothing recorded, never signed out', async () => {
+    // Grok has nothing to sign into from here: its Readings arrive when the CLI
+    // next runs, so the card says that rather than sending someone to re-auth.
+    const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
+    const grok = cardFor(c, 'Grok');
+    expect(grok.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      'No Grok activity recorded yet',
+    );
+    expect(grok.querySelector('.tl-lim-ghost')).toBeNull();
+  });
+
   it('gives every catalogued limits Source a card and nobody else one', async () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
     expect(cardEls(c).map((el) => el.querySelector('.tl-lim-name')?.textContent)).toEqual([
       'Claude',
       'Codex',
+      'Grok',
     ]);
   });
 });
@@ -221,6 +240,22 @@ describe('bars', () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) }));
     const model = rows(cardFor(c, 'Claude'))[2];
     expect(model.querySelector('.tl-lim-label')?.textContent).toBe('ZephyrWeekly');
+  });
+
+  it('names Grok\'s one bar for the pool it meters, not for a rate-limit window', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([GROK_CREDITS]) }));
+    const grok = cardFor(c, 'Grok');
+    const [credits] = rows(grok);
+
+    expect(rows(grok)).toHaveLength(1);
+    expect(credits.querySelector('.tl-lim-label')?.textContent).toBe('Weekly credits');
+    expect(credits.querySelector('.tl-lim-num')?.textContent).toBe('84%');
+    expect(grok.querySelector('.tl-lim-plan')?.textContent).toBe('SuperGrok');
+    // From the CLI's own log, so the freshness line is the age of the last
+    // request rather than the age of a fetch.
+    expect(grok.querySelector('.tl-lim-fresh')?.textContent).toBe(
+      'from your logs · last request 3h ago',
+    );
   });
 
   it('renders a used-up window as spent', async () => {

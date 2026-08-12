@@ -208,7 +208,7 @@ function Card({
       </div>
 
       {card.state === 'live' ? (
-        card.windows.map((w) => <Row key={w.key} w={w} mode={mode} t={t} />)
+        card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)
       ) : (
         <Trouble card={card} t={t} onRetry={onRetry} />
       )}
@@ -216,8 +216,8 @@ function Card({
   );
 }
 
-function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
-  const label = windowLabel(w.key);
+function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
+  const label = windowLabel(w.key, source);
   const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
   const spent = w.pctLeft <= 0;
 
@@ -238,6 +238,8 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
           <span className="tl-lim-label">
             {label.kind === 'session' && t('limits.win.session')}
             {label.kind === 'weekly' && t('limits.win.weekly')}
+            {label.kind === 'weeklyCredits' && t('limits.win.weeklyCredits')}
+            {label.kind === 'monthlyCredits' && t('limits.win.monthlyCredits')}
             {label.kind === 'other' && fill(t('limits.win.other'), { n: label.minutes })}
             {label.kind === 'model' && (
               <>
