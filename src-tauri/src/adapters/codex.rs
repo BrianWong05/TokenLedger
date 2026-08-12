@@ -842,6 +842,11 @@ mod tests {
         let summary = crate::queries::summary(&conn, &Filters::default()).unwrap();
         let tools = ctx_tools(&conn, &Filters::default()).unwrap();
         let context = context_totals(&conn);
+        // Absolute, not just self-consistent: the three legs below assert that
+        // Context does not move, which a fixture that stopped producing rows
+        // would satisfy vacuously. Two rows — the duplicated rollout's own
+        // call, and rollout-extra's.
+        assert_eq!(context, (2, 76));
         let (readings, used_pct): (i64, f64) = conn
             .query_row(
                 "SELECT COUNT(*), MAX(used_pct) FROM limit_readings WHERE source='codex'",
