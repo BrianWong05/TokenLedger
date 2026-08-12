@@ -64,9 +64,7 @@ pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         if file_type.is_dir() {
             find_jsonl(&path, out);
-        } else if file_type.is_file()
-            && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
-        {
+        } else if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             out.push(path);
         }
     }
@@ -202,13 +200,16 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn jsonl_walk_follows_root_symlink_but_skips_nested_symlinks() {
+    fn jsonl_walk_follows_root_and_file_symlinks_but_skips_nested_directory_symlinks() {
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
         let sessions = temp.path().join("sessions");
         std::fs::create_dir(&sessions).unwrap();
         std::fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+        let archived = temp.path().join("archived.jsonl");
+        std::fs::write(&archived, "{}\n").unwrap();
+        symlink(archived, sessions.join("linked.jsonl")).unwrap();
         symlink(".", sessions.join("loop")).unwrap();
 
         let configured_root = temp.path().join("configured-sessions");
@@ -216,8 +217,15 @@ mod tests {
 
         let mut files = Vec::new();
         find_jsonl(&configured_root, &mut files);
+        files.sort();
 
-        assert_eq!(files, vec![configured_root.join("session.jsonl")]);
+        assert_eq!(
+            files,
+            vec![
+                configured_root.join("linked.jsonl"),
+                configured_root.join("session.jsonl"),
+            ]
+        );
     }
 
     // A cwd is copied out of a log, so it is spelt the way the machine that
