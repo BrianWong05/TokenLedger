@@ -429,6 +429,10 @@ _Avoid_: Causal interval, exact conversion, inferred zero
 **Limit Token Estimate**:
 An approximate token equivalent inferred from a sufficient, consistent set of
 Limit Evidence Intervals. It expresses tokens per percentage point and the
-selected used or remaining share, and is withheld when the local evidence is
-insufficient; it is never a vendor-reported token quota.
-_Avoid_: Token quota, token allowance, exact token count
+selected used or remaining share. It is Ready — and visible — only while its
+evidence is sufficient, recent, and uniquely consistent; otherwise it is
+Gathering (not enough evidence yet), Unstable (enough evidence, but conflicting),
+Stale (formerly sufficient evidence has aged out), or Blocked (current identity
+or Source completeness is unproven). It returns automatically to Ready when its
+evidence does and is never a vendor-reported token quota.
+_Avoid_: Token quota, token allowance, exact token count, confidence score
