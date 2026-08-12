@@ -50,20 +50,17 @@ pub fn scan_codex(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceSca
     let mut result = SourceScanResult::default();
     let mut aliases = Vec::new();
     let mut seen = HashSet::new();
-    let mut seen_sessions = HashSet::new();
     let mut winners = HashSet::new();
     for (index, root) in session_roots.iter().enumerate() {
         let mut files = Vec::new();
         find_jsonl_by_file_identity(root, &mut files, &mut aliases, &mut seen);
+        // Every physical copy of a session is read, never just the first root's:
+        // same-stem copies mint the same dedup_key (`codex:{stem}:{offset}`), so
+        // Usage dedupes on content and not on root order, and the session-scoped
+        // Context clear in `scan_file` keeps ctx_tools single. Electing one copy
+        // by root position instead would let the frozen copy a `cp -a ~/.codex`
+        // leaves behind shadow the live session for good.
         for path in files {
-            let session_id = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if !seen_sessions.insert(session_id) {
-                aliases.push(path);
-                continue;
-            }
             winners.insert(path.clone());
             match scan_file(conn, &path, index == 0) {
                 Ok((inserted, skipped)) => {
@@ -765,6 +762,39 @@ mod tests {
         assert_eq!((scan.events_inserted, summary.requests), (2, 2));
         assert_eq!((tools.len(), tools[0].calls), (1, 2));
         assert_eq!(readings, 1);
+    }
+
+    #[test]
+    fn codex_reads_the_longer_copy_when_a_stale_same_named_rollout_sits_in_an_earlier_root() {
+        // `cp -a ~/.codex ~/codex-home` leaves a frozen copy of every session
+        // behind under the default root while the live rollout keeps growing
+        // under the relocated one. The two copies share a stem, so electing one
+        // per stem hands the session to whichever root is listed first and the
+        // live file is never opened again.
+        let tmp = tempfile::tempdir().unwrap();
+        let default_root = tmp.path().join("default/sessions");
+        let relocated_root = tmp.path().join("relocated/sessions");
+        let call = r#"{"type":"response_item","timestamp":"2026-08-11T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#;
+        let output = r#"{"type":"response_item","timestamp":"2026-08-11T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#;
+        let first_snapshot = r#"{"type":"event_msg","timestamp":"2026-08-11T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#;
+        let second_snapshot = r#"{"type":"event_msg","timestamp":"2026-08-11T09:05:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":90,"total_tokens":290}}}}"#;
+        write_rollout(&default_root, "rollout-live.jsonl", &[call, output, first_snapshot]);
+        write_rollout(
+            &relocated_root,
+            "rollout-live.jsonl",
+            &[call, output, first_snapshot, second_snapshot],
+        );
+
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let scan = scan_codex(&mut conn, &[default_root, relocated_root]);
+        let summary = crate::queries::summary(&conn, &Filters::default()).unwrap();
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+
+        assert!(scan.error.is_none());
+        assert_eq!((summary.requests, summary.total_tokens), (2, 290));
+        // Both copies replay the same call, and the session-scoped Context clear
+        // keeps the drill-down single rather than doubling it.
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
     }
 
     #[test]
