@@ -83,7 +83,7 @@
         { "id": "ide-conversations", "kind": "directory", "path": ".gemini/antigravity-ide/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
         { "id": "cli-conversations", "kind": "directory", "path": ".gemini/antigravity-cli/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },

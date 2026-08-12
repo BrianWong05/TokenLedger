@@ -93,6 +93,18 @@ const CLAUDE_LIVE: SourceLimits = {
   ],
 };
 
+// Two pools over the same two durations — the shape no other Source has.
+const ANTIGRAVITY_LIVE: SourceLimits = {
+  source: 'antigravity',
+  plan: 'Pro',
+  windows: [
+    { windowKey: '3p:w300', windowMinutes: 300, usedPct: 12, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120 },
+    { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 58, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120 },
+    { windowKey: '3p:w10080', windowMinutes: 10080, usedPct: 18, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120 },
+    { windowKey: 'gemini:w10080', windowMinutes: 10080, usedPct: 31, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120 },
+  ],
+};
+
 describe('the opt-in disclosure', () => {
   it('replaces the card area on first visit and reads no credential', async () => {
     const port = fakePort({ store: {}, list: () => Promise.resolve([CODEX_WEEKLY]) });
@@ -103,6 +115,24 @@ describe('the opt-in disclosure', () => {
     expect(port.liveCalls).toEqual([]);
     // The bounds are part of the disclosure, not a footnote to add later.
     expect(c.querySelector('.tl-lim-optin .bounds')?.textContent).toMatch(/never on a timer/);
+    // The bump orphans the old key, so an earlier yes is shown the new question
+    // rather than being stretched over one nobody was asked.
+    expect(c.querySelector('.tl-lim-optin .bounds')?.textContent).toMatch(
+      /uses it once, and never keeps it/,
+    );
+  });
+
+  it('asks again after the consent bump, and never reads the orphaned key', async () => {
+    // A user who accepted `.2` — whose disclosure promised a sign-in is never
+    // refreshed, which the Google exchange broke — sees the disclosure again.
+    const port = fakePort({
+      store: { 'tl.limits.liveEnabled.2': 'true' },
+      list: () => Promise.resolve([ANTIGRAVITY_LIVE]),
+    });
+    const c = await mount(port);
+
+    expect(c.querySelector('.tl-lim-optin')).not.toBeNull();
+    expect(port.liveCalls).toEqual([]);
   });
 
   it('enabling persists one boolean, checks live, and reveals the cards', async () => {
@@ -113,7 +143,8 @@ describe('the opt-in disclosure', () => {
     await settle();
 
     expect(port.store[LIVE_ENABLED_KEY]).toBe('true');
-    expect(port.liveCalls).toEqual(['claude', 'codex']);
+    expect(LIVE_ENABLED_KEY).toBe('tl.limits.liveEnabled.3');
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'antigravity']);
     expect(c.querySelector('.tl-lim-optin')).toBeNull();
     // Codex readings flowed from ordinary scans all along, so its card already
     // has history the moment the disclosure is dismissed.
@@ -197,6 +228,7 @@ describe('card states', () => {
     expect(cardEls(c).map((el) => el.querySelector('.tl-lim-name')?.textContent)).toEqual([
       'Claude',
       'Codex',
+      'Antigravity',
     ]);
   });
 });
@@ -221,6 +253,36 @@ describe('bars', () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) }));
     const model = rows(cardFor(c, 'Claude'))[2];
     expect(model.querySelector('.tl-lim-label')?.textContent).toBe('ZephyrWeekly');
+  });
+
+  it('names the pool on every Antigravity bar, since the duration alone addresses two', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([ANTIGRAVITY_LIVE]) }));
+    const card = cardFor(c, 'Antigravity');
+
+    expect(rows(card).map((r) => r.querySelector('.tl-lim-label')?.textContent)).toEqual([
+      'Other models · Session',
+      'Gemini · Session',
+      'Other models · Weekly',
+      'Gemini · Weekly',
+    ]);
+    // Same window, two pools, two different fill levels — which is the whole
+    // reason the pool is in the key.
+    expect(rows(card).map((r) => r.querySelector('.tl-lim-num')?.textContent)).toEqual([
+      '88%', '42%', '82%', '69%',
+    ]);
+    expect(card.querySelector('.tl-lim-plan')?.textContent).toBe('Pro');
+  });
+
+  it('renders a pool nobody has named without dropping its bar', async () => {
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([{
+        source: 'antigravity',
+        plan: null,
+        windows: [{ windowKey: 'zephyr:w300', windowMinutes: 300, usedPct: 10, resetsAt: NOW + HOUR, observedAt: NOW }],
+      }]),
+    }));
+    expect(rows(cardFor(c, 'Antigravity'))[0].querySelector('.tl-lim-label')?.textContent)
+      .toBe('zephyr · Session');
   });
 
   it('renders a used-up window as spent', async () => {
@@ -293,11 +355,11 @@ describe('fetch policy', () => {
     try {
       const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
       await mount(port);
-      expect(port.liveCalls).toEqual(['claude', 'codex']);
+      expect(port.liveCalls).toEqual(['claude', 'codex', 'antigravity']);
 
       // Nothing polls: time alone adds no calls, however much of it passes.
       await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60_000); });
-      expect(port.liveCalls).toEqual(['claude', 'codex']);
+      expect(port.liveCalls).toEqual(['claude', 'codex', 'antigravity']);
     } finally {
       vi.useRealTimers();
     }
@@ -308,17 +370,21 @@ describe('fetch policy', () => {
     // what permits a call at all, never what exempts it from the floor.
     const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
     const c = await mount(port);
-    expect(port.liveCalls).toEqual(['claude', 'codex']);
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'antigravity']);
 
     await act(async () => btn(c, 'Refresh').click());
     await settle();
-    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual(['claude', 'codex']);
+    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual([
+      'claude', 'codex', 'antigravity',
+    ]);
 
     // Past the floor, the same press does.
     clock = NOW_MS + 61_000;
     await act(async () => btn(c, 'Refresh').click());
     await settle();
-    expect(port.liveCalls).toEqual(['claude', 'codex', 'claude', 'codex']);
+    expect(port.liveCalls).toEqual([
+      'claude', 'codex', 'antigravity', 'claude', 'codex', 'antigravity',
+    ]);
   });
 
   it('keeps the floor across tab switches, which unmount the page', async () => {
@@ -327,13 +393,15 @@ describe('fetch policy', () => {
     // and back would fetch again immediately.
     const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
     await mount(port);
-    expect(port.liveCalls).toEqual(['claude', 'codex']);
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'antigravity']);
 
     await remount(port, NOW_MS + 30_000);
-    expect(port.liveCalls, 'still inside the floor').toEqual(['claude', 'codex']);
+    expect(port.liveCalls, 'still inside the floor').toEqual(['claude', 'codex', 'antigravity']);
 
     await remount(port, NOW_MS + 61_000);
-    expect(port.liveCalls, 'past it, a page open checks again').toEqual(['claude', 'codex', 'claude', 'codex']);
+    expect(port.liveCalls, 'past it, a page open checks again').toEqual([
+      'claude', 'codex', 'antigravity', 'claude', 'codex', 'antigravity',
+    ]);
   });
 
   it('runs an ordinary scan on Refresh, which is how a logs Source updates', async () => {

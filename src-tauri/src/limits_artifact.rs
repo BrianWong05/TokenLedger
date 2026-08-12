@@ -280,6 +280,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pool_keyed_export_files_each_pool_as_its_own_series() {
+        // Antigravity is the first Source whose pool is a genuine second axis:
+        // both pools share both durations, so a key of the duration alone would
+        // put two different quotas on one row and lose one of them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        write_file(
+            &dir,
+            &file_name("antigravity"),
+            r#"{"schema":1,"source":"antigravity","fetched_at":1786492800,"plan":"Pro","windows":[
+                {"key":"gemini:w300","window_minutes":300,"used_pct":58.0,"resets_at":1786547640},
+                {"key":"3p:w300","window_minutes":300,"used_pct":12.0,"resets_at":1786547640}]}"#,
+        );
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        assert_eq!(ingest(&mut conn, &dir, "antigravity"), Ok(()));
+        let rows: Vec<(String, f64, String)> = conn
+            .prepare(
+                "SELECT window_key, used_pct, via FROM limit_readings \
+                 WHERE source = 'antigravity' ORDER BY window_key",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "two pools sharing one duration are two rows");
+        assert_eq!(rows[0], ("3p:w300".to_string(), 12.0, "live".to_string()));
+        assert_eq!(rows[1].0, "gemini:w300");
+    }
+
+    #[test]
     fn an_unrecognised_schema_warns_instead_of_parsing() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");

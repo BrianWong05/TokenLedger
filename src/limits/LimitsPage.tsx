@@ -236,6 +236,7 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
       <div className="tl-lim-body">
         <div className="tl-lim-labels">
           <span className="tl-lim-label">
+            {poolPrefix(t, label.pool)}
             {label.kind === 'session' && t('limits.win.session')}
             {label.kind === 'weekly' && t('limits.win.weekly')}
             {label.kind === 'other' && fill(t('limits.win.other'), { n: label.minutes })}
@@ -323,6 +324,19 @@ function OptIn({ t, onEnable }: { t: T; onEnable: () => void }) {
       </button>
     </div>
   );
+}
+
+// A window key's pool, where it carries one. `3p` is named "Other models"
+// rather than "Claude" because what it really means is *non-Gemini* — the set
+// behind it changes, and a label naming today's members would rot. A pool
+// nobody has named renders raw, the way an unseen per-model window does.
+function poolPrefix(t: T, pool: string | undefined): string {
+  if (!pool) return '';
+  const named: Record<string, string> = {
+    gemini: t('limits.pool.gemini'),
+    '3p': t('limits.pool.other'),
+  };
+  return `${named[pool] ?? pool} · `;
 }
 
 // "1d 6h" — largest two units, in the reader's own language.

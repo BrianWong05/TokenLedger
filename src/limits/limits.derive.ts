@@ -126,10 +126,22 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
  * duration classes are named; a per-model window is DISCOVERED from the key's
  * own tail, so a `seven_day_zephyr` nobody has seen renders as "Zephyr" rather
  * than disappearing.
+ *
+ * A key may carry a **pool** ahead of a colon — `gemini:w300`. Antigravity is
+ * the first Source where the pool is a genuine second axis rather than a slot:
+ * two pools share both durations, so the duration alone does not address a bar.
+ * An unrecognised pool renders raw, mirroring the `seven_day_zephyr` rule.
  */
 export function windowLabel(
   key: string,
-): { kind: 'session' | 'weekly'; model?: undefined } | { kind: 'model'; model: string } | { kind: 'other'; minutes: string } {
+):
+  | { kind: 'session' | 'weekly'; pool?: string; model?: undefined }
+  | { kind: 'model'; model: string; pool?: string }
+  | { kind: 'other'; minutes: string; pool?: string } {
+  const split = key.indexOf(':');
+  if (split > 0) {
+    return { ...windowLabel(key.slice(split + 1)), pool: key.slice(0, split) };
+  }
   if (key === 'five_hour' || key === 'w300') return { kind: 'session' };
   if (key === 'seven_day' || key === 'w10080') return { kind: 'weekly' };
   const model = key.startsWith('seven_day_') ? key.slice('seven_day_'.length) : null;

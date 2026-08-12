@@ -97,13 +97,16 @@ Nothing about you leaves the machine by default. The app itself makes exactly
 three outbound requests, all fetches of public data: LiteLLM's price list and
 OpenRouter's model list for pricing, and the GitHub release manifest for
 updates. One optional feature reaches further and asks first: enabling **live
-limit checks** on the Limits tab runs a separate companion process per tool that
-presents the sign-in that tool already stores — Claude Code's to
-`api.anthropic.com`, Codex's to `chatgpt.com` — read-only, only when you open
-that page or press Refresh, never on a timer — to ask how much of each rolling
-window you have used. Until you press that button, no credential is read and no
-authenticated request exists. The companions never write or refresh your sign-ins
-([ADR-0019](docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md)).
+limit checks** on the Limits tab runs a separate companion process that presents
+your sign-ins to their own vendors — Claude Code's to `api.anthropic.com`,
+Codex's to `chatgpt.com`, Antigravity's to Google — read-only, only when you open
+that page or press Refresh, never on a timer. Google sign-ins work on hourly
+passes, so the companion first gets a fresh pass from Google the same way
+Antigravity itself does; the pass is used once and never stored, and your saved
+sign-in is never altered. Until you press that button, no credential is read and
+no authenticated request exists
+([ADR-0019](docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md),
+[ADR-0020](docs/adr/0020-a-companion-may-exchange-a-google-refresh-token.md)).
 
 ## Data sources
 
