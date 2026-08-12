@@ -141,13 +141,14 @@ fn run() -> Result<String, String> {
     // label.
     let assist = post(&access_token, "loadCodeAssist", json!({}))?;
 
-    // `--shape` is the hand-run diagnostic for when a payload moves: keys,
-    // numbers, and short enum-ish strings print, anything longer is redacted.
-    // Both calls are reported, and the second's failure does not hide the
-    // first's shape — the answer to "why did this stop working" is as often in
-    // the call before the one that failed. The app can never pass this flag (its
-    // sidecar allowlist carries no args).
-    let shape_only = std::env::args().skip(1).any(|a| a == "--shape");
+    // `--shape` is the hand-run diagnostic for when a payload moves — the app can
+    // never pass it (its sidecar allowlist carries no args). It dumps the calls
+    // that decide whether this account has a reachable Limit surface at all
+    // (#139), each answer's shape plus the vendor's own explanation prose in
+    // full, so the next step is read off facts rather than guessed.
+    if std::env::args().skip(1).any(|a| a == "--shape") {
+        return Ok(diagnose(&access_token, &assist));
+    }
 
     // The descriptor marks `project` REQUIRED, so it is passed whenever the
     // vendor named one. When it does not — an individual-tier account may have
@@ -165,20 +166,7 @@ fn run() -> Result<String, String> {
         Some(project) => json!({ "project": project }),
         None => json!({}),
     };
-    let summary = post(&access_token, "retrieveUserQuotaSummary", request);
-
-    if shape_only {
-        let summary = summary
-            .as_ref()
-            .map(limits_artifact::shape)
-            .unwrap_or_else(|err| format!("<failed: {err}>\n"));
-        return Ok(format!(
-            "--- loadCodeAssist ---\n{}--- retrieveUserQuotaSummary (project {}) ---\n{summary}",
-            limits_artifact::shape(&assist),
-            if project.is_some() { "sent" } else { "omitted" },
-        ));
-    }
-    let body = summary?;
+    let body = post(&access_token, "retrieveUserQuotaSummary", request)?;
 
     let export = LimitsExport {
         schema: limits_artifact::SCHEMA,
@@ -515,6 +503,54 @@ fn post_to(host: &str, access_token: &str, method: &str, body: &Value) -> Result
         }
         Err(err) => Err(format!("could not reach the vendor: {err}")),
     }
+}
+
+/// A hand-run dump of the calls that decide whether this account has a reachable
+/// Limit surface (#139): the summary RPC the spec chose, and `fetchAvailableModels`,
+/// which is what Antigravity's own client actually calls and which the research
+/// says embeds a per-model `quota_info`. Each answer's shape, plus every
+/// explanation string in full — those are the vendor's public error and tier
+/// prose (`reasonMessage`, `message`, `description`), never a credential, and
+/// they are the redacted `<str 180>` that `shape` alone hides.
+fn diagnose(access_token: &str, assist: &Value) -> String {
+    fn section(title: &str, body: &Value) -> String {
+        let prose: String = prose(body).iter().map(|line| format!("  \"{line}\"\n")).collect();
+        format!("--- {title} ---\n{}{prose}", limits_artifact::shape(body))
+    }
+    let mut out = section("loadCodeAssist", assist);
+    for method in ["fetchAvailableModels", "retrieveUserQuotaSummary"] {
+        out.push_str(&match post(access_token, method, json!({})) {
+            Ok(body) => section(method, &body),
+            Err(err) => format!("--- {method} ---\n<failed: {err}>\n"),
+        });
+    }
+    out
+}
+
+/// Every human-readable explanation in a payload, unredacted: the keys Google
+/// puts prose under. None is a credential — they are error text and tier names —
+/// and the redaction `shape` applies to long strings hides exactly the one
+/// (`UNSUPPORTED_CLIENT`'s 180-char reason) that says what the caller lacks.
+fn prose(node: &Value) -> Vec<String> {
+    fn walk(node: &Value, out: &mut Vec<String>) {
+        match node {
+            Value::Object(map) => {
+                for (key, value) in map {
+                    match (key.as_str(), value.as_str()) {
+                        ("reasonMessage" | "message" | "description", Some(text)) => {
+                            out.push(text.to_string())
+                        }
+                        _ => walk(value, out),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|value| walk(value, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(node, &mut out);
+    out
 }
 
 /// Google's own explanation for a refusal — `status`, `message`, and any
