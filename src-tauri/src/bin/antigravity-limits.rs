@@ -28,10 +28,14 @@
 //!    token" stays greppable rather than promised. (If a cache is ever added it
 //!    must bind to a one-way fingerprint of the refresh credential, or a logout
 //!    or account switch could serve the previous account's figures.)
-//! 3. The client id/secret pair is hardcoded. Google's installed-app model
-//!    ships them in every copy of each client: they identify the app, they are
-//!    not keys. A vendor rotating its id fails the exchange, and the card
-//!    degrades to signed-out pointing at Antigravity (ADR-0019 bound 4).
+//! 3. The client id/secret pair identifies *Antigravity*, not us. Google's
+//!    installed-app model ships both halves in every copy of each client: they
+//!    are public identifiers, not keys. The id is hardcoded because the scan
+//!    below needs a fixed thing to anchor on; the secret is read out of
+//!    Antigravity's own installed client at run time, so this repository holds
+//!    no copy of a vendor identifier that can go stale. Either one missing
+//!    means no exchange, and the card degrades to signed-out pointing at
+//!    Antigravity (ADR-0019 bound 4).
 //! 4. ADR-0019 bounds 2–4 stand. Bound 3's floor between calls is also an
 //!    obligation to Antigravity's own session, not only a consent rule: the
 //!    refresh grant is rate-limited per client, and this Companion shares
@@ -61,13 +65,20 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 /// as Antigravity — the same posture as `claude-limits` presenting Claude
 /// Code's own token, which ADR-0019 already accepts on this route.
 const CLIENT_ID: &str = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
-/// The other half of the same installed-app pair, which ships in every copy of
-/// Antigravity's `language_server`. Not a key (ADR-0020 bound 3) — but until it
-/// carries the real value the refresh grant answers 400, which this Companion
-/// would report as a signed-out card: a build error dressed as the user's
-/// problem. `the_client_secret_is_the_real_one` below fails while it is unset,
-/// so that can never ship quietly.
-const CLIENT_SECRET: &str = "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VER-BINARY";
+/// How Google spells the other half of an installed-app pair.
+const SECRET_PREFIX: &[u8] = b"GOCSPX-";
+
+/// Enough of the id to anchor the secret scan on — the account part, taken off
+/// `CLIENT_ID` rather than written out again, since a second copy could drift
+/// from the first. The `.apps.googleusercontent.com` tail is stored separately
+/// in some string tables, so anchoring on the whole id would miss.
+fn id_anchor() -> &'static [u8] {
+    CLIENT_ID
+        .split('.')
+        .next()
+        .unwrap_or(CLIENT_ID)
+        .as_bytes()
+}
 
 /// The Keychain item Antigravity writes. Here `-a` **is** used, unlike Claude's
 /// item: the account is the literal string `antigravity` rather than a user name
@@ -313,11 +324,12 @@ fn access_token(credential: &Credential, now: i64) -> Result<String, String> {
 }
 
 fn exchange(refresh_token: &str) -> Result<String, String> {
+    let client_secret = client_secret()?;
     let response = ureq::post(TOKEN_URL)
         .timeout(Duration::from_secs(15))
         .send_form(&[
             ("client_id", CLIENT_ID),
-            ("client_secret", CLIENT_SECRET),
+            ("client_secret", &client_secret),
             ("refresh_token", refresh_token),
             ("grant_type", "refresh_token"),
         ]);
@@ -347,6 +359,85 @@ fn exchange(refresh_token: &str) -> Result<String, String> {
         .filter(|t| !t.trim().is_empty())
         .map(str::to_string)
         .ok_or_else(|| "the sign-in service returned no access pass".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// The vendor's own half of the pair
+// ---------------------------------------------------------------------------
+
+/// The client secret, read out of Antigravity's installed client (ADR-0020
+/// bound 3). Only ever called on the exchange path, so a live stored pass costs
+/// nothing, and the ≥60s floor already bounds how often it runs.
+///
+/// Not cached to disk and not carried in this repository: it is the vendor's
+/// identifier, it can rotate, and a copy here would go stale silently — signing
+/// every user out until somebody noticed and edited a constant.
+fn client_secret() -> Result<String, String> {
+    let path = language_server().ok_or_else(|| {
+        "Antigravity is not installed where its sign-in could be renewed".to_string()
+    })?;
+    // ponytail: reads the whole image (~127MB) and scans it linearly, in a
+    // process that exits moments later. Chunk it or memory-map it if the spike
+    // or the ~1s ever shows up beside the network call it precedes.
+    let image = std::fs::read(&path)
+        .map_err(|err| format!("could not read Antigravity's client: {err}"))?;
+    secret_in(&image).ok_or_else(|| {
+        "Antigravity's installed client carries no sign-in pair this version knows".to_string()
+    })
+}
+
+/// Where Antigravity keeps the client. Both halves of the pair ship inside it —
+/// which is where they came from in the first place.
+fn language_server() -> Option<PathBuf> {
+    const BUNDLE: &str = "Antigravity.app/Contents/Resources/bin/language_server";
+    let mut candidates = vec![PathBuf::from("/Applications").join(BUNDLE)];
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Applications").join(BUNDLE));
+    }
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// The secret belonging to *our* client id: the nearest `GOCSPX-` string to the
+/// id itself. A binary carrying one pair has exactly one candidate and the
+/// distance never matters; one carrying several — a future build bundling
+/// another Google client — would otherwise be a coin toss, and Google's own
+/// codegen emits a pair's halves adjacent.
+///
+/// ponytail: proximity, not proof. If a build ever interleaves two clients'
+/// constants, anchor on the surrounding struct instead.
+fn secret_in(image: &[u8]) -> Option<String> {
+    let anchor = find(image, id_anchor())?;
+    let mut nearest: Option<(usize, String)> = None;
+    let mut at = 0;
+    while let Some(found) = find(&image[at..], SECRET_PREFIX) {
+        let start = at + found;
+        if let Some(secret) = secret_at(image, start) {
+            let closer = nearest
+                .as_ref()
+                .is_none_or(|(best, _)| start.abs_diff(anchor) < best.abs_diff(anchor));
+            if closer {
+                nearest = Some((start, secret));
+            }
+        }
+        at = start + SECRET_PREFIX.len();
+    }
+    nearest.map(|(_, secret)| secret)
+}
+
+/// The candidate starting at `at`, run out to the first byte that cannot belong
+/// to one. A bare prefix with nothing after it is a string table's leftover, not
+/// a secret.
+fn secret_at(image: &[u8], at: usize) -> Option<String> {
+    let end = image[at..]
+        .iter()
+        .position(|b| !(b.is_ascii_alphanumeric() || *b == b'-' || *b == b'_'))
+        .map_or(image.len(), |n| at + n);
+    let candidate = std::str::from_utf8(image.get(at..end)?).ok()?;
+    (candidate.len() >= SECRET_PREFIX.len() + 16).then(|| candidate.to_string())
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -647,16 +738,58 @@ mod tests {
         assert!(err.starts_with(NOT_SIGNED_IN), "{err}");
     }
 
+    // Fabricated stand-ins, built from the real prefix rather than written out
+    // as literals — a hand-typed `GOCSPX-…` in this file would read as a leaked
+    // secret to every scanner that ever looks at the repository, and would tie
+    // the fixtures to a spelling the constant could change out from under.
+    fn fake_secret(fill: char) -> String {
+        format!("{}{}", std::str::from_utf8(SECRET_PREFIX).unwrap(), fill.to_string().repeat(28))
+    }
+
+    fn id() -> String {
+        String::from_utf8(id_anchor().to_vec()).unwrap()
+    }
+
+    // A stand-in for the vendor's client: string-table noise around the two
+    // halves of the pair, the way a Go binary carries its constants.
+    fn image(body: &str) -> Vec<u8> {
+        format!("\0\0some.other.symbol\0{body}\0trailing.noise\0").into_bytes()
+    }
+
     #[test]
-    fn the_client_secret_is_the_real_one() {
-        // Shipping the placeholder would make every exchange answer 400, which
-        // this Companion reports as "not signed in" — sending someone to redo a
-        // login that is perfectly good. Read the pair out of Antigravity's own
-        // `language_server` binary; it is a public app identifier, not a key.
-        assert!(
-            !CLIENT_SECRET.contains("SET-ME"),
-            "the Antigravity client secret is still the placeholder",
-        );
+    fn the_secret_is_read_out_of_the_vendors_own_client() {
+        let secret = fake_secret('a');
+        let found = secret_in(&image(&format!("{}.apps.googleusercontent.com\0{secret}", id())));
+        assert_eq!(found.as_ref(), Some(&secret));
+    }
+
+    #[test]
+    fn a_second_google_client_in_the_same_binary_does_not_win() {
+        // A build bundling another Google client would otherwise be a coin
+        // toss. The pair's halves ship adjacent, so the nearest one is ours —
+        // here the far candidate sits first, so position alone would pick wrong.
+        let (theirs, ours) = (fake_secret('f'), fake_secret('n'));
+        let found = secret_in(&image(&format!(
+            "{theirs}{}{}\0{ours}",
+            "\0".repeat(32),
+            id(),
+        )));
+        assert_eq!(found.as_ref(), Some(&ours));
+    }
+
+    #[test]
+    fn a_client_carrying_no_usable_pair_yields_nothing_rather_than_a_guess() {
+        // No id, a bare prefix with nothing behind it, and an id with no secret
+        // anywhere: each is a client this version cannot renew a sign-in with,
+        // and none of them is an excuse to send Google something invented.
+        let prefix = std::str::from_utf8(SECRET_PREFIX).unwrap();
+        for body in [
+            fake_secret('a'),
+            format!("{}\0{prefix}", id()),
+            format!("{}\0no pair here", id()),
+        ] {
+            assert_eq!(secret_in(&image(&body)), None, "{body}");
+        }
     }
 
     #[test]
@@ -673,5 +806,38 @@ mod tests {
         // being truncated into something that means less.
         assert_eq!(tier_word("Enterprise"), "Enterprise");
         assert_eq!(plan(&serde_json::json!({})), None);
+    }
+}
+
+/// Opt-in, machine-dependent: the scan above against a real installed client,
+/// which is the only thing a fixture cannot stand in for. Ignored by default and
+/// quiet where Antigravity is not installed, following the same pattern as this
+/// crate's other real-data checks.
+///
+/// `cargo test --release --bin antigravity-limits real_client -- --ignored --nocapture`
+///
+/// It reports only *whether* a pair was found and how long the scan took —
+/// never the pair, which has no business in a terminal or a transcript.
+#[cfg(test)]
+mod real_client {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn the_installed_client_carries_a_pair_this_scan_can_find() {
+        let Some(path) = language_server() else {
+            println!("no installed client on this machine — nothing to check");
+            return;
+        };
+        let started = std::time::Instant::now();
+        let image = std::fs::read(&path).expect("the installed client must be readable");
+        let found = secret_in(&image);
+        println!(
+            "image {} MB · found: {} · {} ms",
+            image.len() / 1_000_000,
+            found.is_some(),
+            started.elapsed().as_millis(),
+        );
+        assert!(found.is_some(), "the scan found no pair in the installed client");
     }
 }
