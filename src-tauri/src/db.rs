@@ -879,6 +879,24 @@ pub fn clear_ctx_tools_for_file(conn: &Connection, source_file: &str) -> rusqlit
     Ok(())
 }
 
+pub fn clear_codex_ctx_tools_for_session(
+    conn: &Connection,
+    source_file: &str,
+    session_id: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM ctx_tools
+         WHERE source = 'codex'
+           AND (source_file = ?1 OR EXISTS (
+             SELECT 1 FROM events
+             WHERE events.source_file = ctx_tools.source_file
+               AND events.source = 'codex' AND events.session_id = ?2
+           ))",
+        params![source_file, session_id],
+    )?;
+    Ok(())
+}
+
 pub fn clear_ctx_skills_for_file(conn: &Connection, source_file: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM ctx_skills_usage WHERE source_file = ?1", [source_file])?;
     Ok(())
