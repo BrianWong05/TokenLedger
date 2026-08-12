@@ -18,6 +18,32 @@ use crate::types::{FileState, LimitReading};
 
 pub const SUFFIX: &str = ".tokenledger-limits.json";
 
+/// The one failure prefix the app classifies as an absence rather than an error
+/// (its regex also matches 401/403). Every Companion reports a missing or
+/// refused credential behind this prefix; anything else is a failure and must
+/// never borrow it — telling someone they are not signed in when the credential
+/// store was merely unreadable sends them to re-authenticate a login they
+/// already have.
+pub const NOT_SIGNED_IN: &str = "not signed in";
+
+/// The durations Codex's own labeller recognises, matched within ±5% because
+/// upstream rounding drifts (#104). An unrecognised duration keeps its raw
+/// minutes rather than being treated as corrupt.
+const CANONICAL_WINDOW_MINUTES: [i64; 5] = [300, 1440, 10080, 43200, 525600];
+
+/// Duration → the opaque `window_key` a Reading is stored under (`w300`,
+/// `w10080`). One grammar for every producer — the scan's log ingest and a
+/// Companion's live fetch must key the same window identically, or the two
+/// halves of one series would render as two bars.
+pub fn window_key(window_minutes: i64) -> String {
+    let canonical = CANONICAL_WINDOW_MINUTES
+        .iter()
+        .find(|&&m| (window_minutes - m).abs() * 20 <= m)
+        .copied()
+        .unwrap_or(window_minutes);
+    format!("w{canonical}")
+}
+
 /// Bump when the shape changes. An Artifact declaring a schema the reader does
 /// not know is a malformed instance of a supported shape (ADR-0015): it warns
 /// and is not read, rather than being guessed at.
@@ -87,6 +113,22 @@ pub fn path_in(dir: &Path, source: &str) -> PathBuf {
     dir.join(file_name(source))
 }
 
+/// Rename-write one Source's export (ADR-0018): a reader never sees half a
+/// document, and a crash mid-write leaves the previous Artifact intact. Shared
+/// by every Companion, so the write discipline cannot drift between them.
+pub fn write(dir: &Path, export: &LimitsExport) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let final_path = path_in(dir, &export.source);
+    let staging = final_path.with_extension("json.part");
+    {
+        let mut file = std::fs::File::create(&staging)?;
+        file.write_all(serde_json::to_string(export)?.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&staging, &final_path)
+}
+
 /// Read one Source's Limits export out of `dir` and append its Readings.
 /// Absent file → nothing to do, and not an error: a Source whose Companion has
 /// never run is not a Source in trouble.
@@ -146,7 +188,7 @@ mod tests {
     use super::*;
     use crate::db::open_db;
 
-    fn write(dir: &Path, name: &str, body: &str) {
+    fn write_file(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), body).unwrap();
     }
@@ -171,7 +213,7 @@ mod tests {
     fn an_export_parses_into_live_readings() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");
-        write(&dir, &file_name("claude"), EXPORT);
+        write_file(&dir, &file_name("claude"), EXPORT);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
 
         assert_eq!(ingest(&mut conn, &dir, "claude"), Ok(()));
@@ -212,7 +254,7 @@ mod tests {
     fn an_unrecognised_schema_warns_instead_of_parsing() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");
-        write(
+        write_file(
             &dir,
             &file_name("claude"),
             r#"{"schema":99,"source":"claude","fetched_at":1,"windows":[
@@ -232,11 +274,49 @@ mod tests {
     fn an_export_naming_another_source_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");
-        write(&dir, &file_name("claude"), &EXPORT.replace("\"claude\"", "\"codex\""));
+        write_file(&dir, &file_name("claude"), &EXPORT.replace("\"claude\"", "\"codex\""));
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
 
         let err = ingest(&mut conn, &dir, "claude").unwrap_err();
         assert!(err.contains("describes codex"), "{err}");
+    }
+
+    #[test]
+    fn a_written_artifact_round_trips_and_leaves_no_staging_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        let export = LimitsExport {
+            schema: SCHEMA,
+            source: "claude".to_string(),
+            fetched_at: 1_786_492_800,
+            plan: Some("Team 5x".to_string()),
+            windows: vec![WindowExport {
+                key: "five_hour".to_string(),
+                window_minutes: Some(300),
+                used_pct: 18.0,
+                resets_at: 1_786_503_900,
+            }],
+        };
+        write(&dir, &export).unwrap();
+
+        let raw = std::fs::read_to_string(path_in(&dir, "claude")).unwrap();
+        let read: LimitsExport = serde_json::from_str(&raw).unwrap();
+        assert_eq!(read.source, "claude");
+        assert_eq!(read.windows[0].used_pct, 18.0);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "the staging file is renamed, not left behind");
+    }
+
+    #[test]
+    fn one_key_grammar_serves_every_producer() {
+        assert_eq!(window_key(300), "w300");
+        assert_eq!(window_key(10080), "w10080");
+        assert_eq!(window_key(10081), "w10080", "upstream rounding drift is the same window");
+        assert_eq!(window_key(4321), "w4321", "an unrecognised duration is kept, not guessed");
     }
 
     #[test]

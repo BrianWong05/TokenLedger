@@ -12,7 +12,7 @@ import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const COMPANIONS = ['antigravity-export', 'claude-limits'];
+const COMPANIONS = ['antigravity-export', 'claude-limits', 'codex-limits'];
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const manifest = join(root, 'src-tauri', 'Cargo.toml');

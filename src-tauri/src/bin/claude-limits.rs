@@ -31,7 +31,6 @@
 //! (`SecItem`, the `keyring` crate) is the *governed* path and re-prompts per
 //! release on ad-hoc-signed builds; it must stay out of this codebase.
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -39,7 +38,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport};
+use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport, NOT_SIGNED_IN};
 use tokenledger_lib::time::iso_to_epoch;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -52,10 +51,6 @@ const EXIT_ITEM_NOT_FOUND: i32 = 44;
 /// The usage endpoint needs this scope. An absent or empty list is unknown
 /// rather than refused — credentials written before the field existed have none.
 const REQUIRED_SCOPE: &str = "user:profile";
-
-/// Prefix for the one failure the app must classify as an absence rather than an
-/// error. The app matches on it, so it is part of this tool's contract.
-const NOT_SIGNED_IN: &str = "not signed in";
 
 fn main() {
     match run() {
@@ -88,7 +83,6 @@ fn run() -> Result<String, String> {
         plan: credential.plan,
         windows: windows(&body),
     };
-    let document = serde_json::to_string(&export).map_err(|e| e.to_string())?;
 
     // The durable Artifact is how the reading reaches the app at all — the scan
     // and the command both read the file, never this process's stdout (ADR-0019).
@@ -96,10 +90,10 @@ fn run() -> Result<String, String> {
     // having delivered nothing, and the card would show an absence rather than
     // the error that caused it. A hand run with no directory named just prints.
     if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
-        write_artifact(&PathBuf::from(dir), &document)
+        limits_artifact::write(&PathBuf::from(dir), &export)
             .map_err(|err| format!("could not write the export: {err}"))?;
     }
-    Ok(document)
+    serde_json::to_string(&export).map_err(|e| e.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -321,20 +315,6 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Rename-write (ADR-0018): a reader never sees half a document, and a crash
-/// mid-write leaves the previous Artifact intact.
-fn write_artifact(dir: &std::path::Path, document: &str) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let final_path = limits_artifact::path_in(dir, "claude");
-    let staging = final_path.with_extension("json.part");
-    {
-        let mut file = std::fs::File::create(&staging)?;
-        file.write_all(document.as_bytes())?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&staging, &final_path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,34 +413,4 @@ mod tests {
         assert!(names.iter().all(|n| !n.contains("-a ")));
     }
 
-    #[test]
-    fn a_written_artifact_round_trips_and_leaves_no_staging_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("limits");
-        let export = LimitsExport {
-            schema: limits_artifact::SCHEMA,
-            source: "claude".to_string(),
-            fetched_at: 1_786_492_800,
-            plan: Some("Team 5x".to_string()),
-            windows: vec![WindowExport {
-                key: "five_hour".to_string(),
-                window_minutes: Some(300),
-                used_pct: 18.0,
-                resets_at: 1_786_503_900,
-            }],
-        };
-        let document = serde_json::to_string(&export).unwrap();
-        write_artifact(&dir, &document).unwrap();
-
-        let written = std::fs::read_to_string(limits_artifact::path_in(&dir, "claude")).unwrap();
-        let read: LimitsExport = serde_json::from_str(&written).unwrap();
-        assert_eq!(read.source, "claude");
-        assert_eq!(read.windows[0].used_pct, 18.0);
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
-            .collect();
-        assert!(leftovers.is_empty(), "the staging file is renamed, not left behind");
-    }
 }

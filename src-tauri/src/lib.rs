@@ -337,8 +337,9 @@ fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
 async fn check_live_limits(app: tauri::AppHandle, source: String) -> Result<(), String> {
     use tauri_plugin_shell::ShellExt;
 
-    // v1 has exactly one Companion; the catalog decides whether the Source asking
-    // is entitled to a live check at all.
+    // One Companion per `live` Source, named `<source>-limits` — the catalog
+    // decides whether the Source asking is entitled to a live check at all, and
+    // the name never comes from the frontend unchecked.
     if source_catalog::source(&source).and_then(|s| s.capabilities.limits.as_deref()) != Some("live")
     {
         return Err(format!("{source} has no live Limits to check"));
@@ -346,7 +347,7 @@ async fn check_live_limits(app: tauri::AppHandle, source: String) -> Result<(), 
     let dir = limit_exports_dir(&app);
     let output = app
         .shell()
-        .sidecar("claude-limits")
+        .sidecar(format!("{source}-limits"))
         .map_err(|e| format!("the limits companion is missing from this build: {e}"))?
         .env("TOKENLEDGER_LIMITS_DIR", dir.to_string_lossy().to_string())
         .output()

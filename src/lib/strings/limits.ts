@@ -52,7 +52,7 @@ export const limits = {
     // enabling does before any credential is read.
     'limits.optinTitle': 'See how much of your plan is left',
     'limits.optinBody':
-      'Each card shows a vendor window — how much of it is used and when it resets. Codex is read from logs already on this computer. Claude needs a live check: TokenLedger reads the sign-in Claude Code already stores for you and asks Anthropic — read-only — how much of each window you have used.',
+      'Each card shows a vendor window — how much of it is used and when it resets. Checking live keeps them current: TokenLedger reads the sign-ins Claude Code and Codex already store for you and asks each vendor — read-only — how much of each window you have used.',
     'limits.optinBounds':
       'Only when you open this page or press Refresh — never on a timer. Your sign-in is never changed, refreshed, or sent anywhere else.',
     'limits.optinButton': 'Enable live limit checks',
@@ -95,7 +95,7 @@ export const limits = {
 
     'limits.optinTitle': '看看方案還剩多少',
     'limits.optinBody':
-      '每張卡是一個供應商窗口——用了多少、幾時重置。Codex 直接讀這部機上已有的日誌。Claude 需要即時查詢：TokenLedger 會讀取 Claude Code 已為你儲存的登入，以唯讀方式向 Anthropic 查詢各窗口的使用量。',
+      '每張卡是一個供應商窗口——用了多少、幾時重置。即時查詢讓數字保持最新：TokenLedger 會讀取 Claude Code 與 Codex 已為你儲存的登入，以唯讀方式向各自的供應商查詢各窗口的使用量。',
     'limits.optinBounds':
       '只在開啟此頁或按「重新查詢」時查詢——絕不定時輪詢。你的登入不會被修改、續期或傳往其他地方。',
     'limits.optinButton': '啟用即時限額查詢',
