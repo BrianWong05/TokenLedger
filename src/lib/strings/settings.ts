@@ -77,7 +77,10 @@ export const settings = {
     'settings.firstRun.body':
       'Coding tools delete their local logs after about 30 days. TokenLedger starts at login and scans quietly, so your usage is saved before it disappears. Everything stays on this computer.',
     'settings.firstRun.launchCaption': 'Change anytime in Settings → Startup',
-    'settings.firstRun.footnote': 'Scans are local file reads — nothing is uploaded.',
+    // The second sentence is the honest half: one optional feature does reach a
+    // vendor, and burying that here would be the wrong kind of quiet.
+    'settings.firstRun.footnote':
+      'Scans are local file reads — nothing is uploaded. Live limit checks are separate, optional, and asked about on the Limits tab before anything runs.',
     'settings.firstRun.ok': 'OK',
   },
   'zh-Hant': {
@@ -145,7 +148,8 @@ export const settings = {
     'settings.firstRun.body':
       '編碼工具約 30 天後就會刪除本機記錄檔。TokenLedger 會在登入時啟動並在背景靜默掃描，讓你的用量在消失前先被保存。所有資料都留在這台電腦。',
     'settings.firstRun.launchCaption': '隨時可在「設定 → 啟動」變更',
-    'settings.firstRun.footnote': '掃描只是本機檔案讀取 — 不會上傳任何東西。',
+    'settings.firstRun.footnote':
+      '掃描只是本機檔案讀取 — 不會上傳任何東西。即時限額查詢是另一回事：可選，且會在「限額」分頁先徵求同意才執行。',
     'settings.firstRun.ok': '確定',
   },
 };

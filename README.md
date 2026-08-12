@@ -93,10 +93,16 @@ What the database does hold:
   [ADR-0011](docs/adr/0011-the-ledger-persists-names-never-content.md) for the
   trade-off and its bounds.
 
-Nothing about you leaves the machine. The app makes exactly three outbound
-requests, all of them fetches of public data: LiteLLM's price list and
+Nothing about you leaves the machine by default. The app itself makes exactly
+three outbound requests, all fetches of public data: LiteLLM's price list and
 OpenRouter's model list for pricing, and the GitHub release manifest for
-updates.
+updates. One optional feature reaches further and asks first: enabling **live
+limit checks** on the Limits tab runs a separate companion process that presents
+your Claude Code sign-in to `api.anthropic.com` — read-only, only when you open
+that page or press Refresh, never on a timer — to ask how much of your quota is
+used. Until you press that button, no credential is read and no authenticated
+request exists. The companion never writes or refreshes your sign-in
+([ADR-0019](docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md)).
 
 ## Data sources
 
