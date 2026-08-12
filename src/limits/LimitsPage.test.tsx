@@ -309,7 +309,7 @@ describe('card states', () => {
   it('keeps a Companion failure across tab switches inside the live-check floor', async () => {
     let checks = 0;
     const port = fakePort({
-      list: () => Promise.resolve([]),
+      list: () => Promise.resolve([CODEX_WEEKLY]),
       checkLive: (source) => {
         checks += 1;
         return source === 'claude'
@@ -328,6 +328,31 @@ describe('card states', () => {
     expect(checks).toBe(4);
     expect(trouble.querySelector('.title')?.textContent).toBe("Couldn't check");
     expect(trouble.querySelector('.hint')?.textContent).toBe('could not reach the vendor: timed out');
+    // The failure is remembered per Source, so the three that answered thirty
+    // seconds ago keep their own cards — one vendor being unreachable is not
+    // evidence about any other.
+    const codex = cardFor(second, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
+  it('keeps a sign-in failure across tab switches inside the live-check floor', async () => {
+    // The other half of #133. A credential failure has to survive the remount
+    // exactly as a network one does: without it the card quietly falls back to
+    // the Readings the Ledger already held and forgets the sign-in problem the
+    // page had just reported.
+    const port = fakePort({
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: (source) => (source === 'codex'
+        ? Promise.reject(new Error('not signed in: no Codex sign-in found on this computer'))
+        : Promise.resolve()),
+    });
+    await mount(port);
+
+    const second = await remount(port, NOW_MS + 30_000);
+    const codex = cardFor(second, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Sign-in unavailable');
+    expect(rows(codex)).toHaveLength(0);
   });
 
   it('does not replay a failure from outside the live-check floor over held Readings', async () => {
@@ -345,6 +370,39 @@ describe('card states', () => {
     }));
 
     const codex = cardFor(c, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
+  it('does not let a straggling check leave a verdict the check after it disproved', async () => {
+    // A check that is still running when the floor lifts can settle *after* its
+    // successor started — the only way a stale verdict now reaches storage. The
+    // successor succeeding is what has to clear it, or every remount inside the
+    // floor replays a sign-in failure the app has since confirmed working.
+    const codexChecks: { resolve: () => void; reject: (e: Error) => void }[] = [];
+    const port = fakePort({
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: (source) => (source === 'codex'
+        ? new Promise<void>((resolve, reject) => { codexChecks.push({ resolve, reject }); })
+        : Promise.resolve()),
+    });
+    await mount(port);
+
+    // The user flips away mid-check and comes back past the floor, so a second
+    // check starts while the first is still out.
+    await remount(port, NOW_MS + 61_000);
+    expect(codexChecks).toHaveLength(2);
+
+    // The user signed in between the two, so the straggler fails and its
+    // successor succeeds.
+    await act(async () => codexChecks[0].reject(new Error('not signed in: no Codex sign-in found on this computer')));
+    await settle();
+    await act(async () => codexChecks[1].resolve());
+    await settle();
+
+    expect(port.store[lastFailureKey('codex')]).toBe('');
+    const third = await remount(port, NOW_MS + 70_000);
+    const codex = cardFor(third, 'Codex');
     expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
     expect(rows(codex)).toHaveLength(1);
   });
