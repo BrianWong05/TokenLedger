@@ -201,11 +201,15 @@ export default function LimitsPage({
   );
 }
 
-// 401/403 and a missing credential are the same thing to the person reading the
-// card — their sign-in needs redoing. Every other failure is a failure, and must
-// not be dressed as this one.
+// A missing or refused credential is the one failure that reads as "sign in
+// again"; every other failure is a failure and must not wear that face. The
+// Companion is what can tell them apart — it knows a 401 on the token from a 403
+// the same token earns on one method while another succeeds — so it marks the
+// signed-out case with this prefix and the page trusts that, rather than
+// re-deriving it by grepping for a status code that also appears in the text of
+// a genuine error (e.g. "the vendor answered 403 … PERMISSION_DENIED").
 function signedOut(detail: string): boolean {
-  return /\bnot signed in\b|\b401\b|\b403\b/i.test(detail);
+  return /\bnot signed in\b/i.test(detail);
 }
 
 function Card({
@@ -220,6 +224,25 @@ function Card({
         {icon ? <img src={icon} alt="" width={18} height={18} /> : <span className="tl-lim-nomark" />}
         <span className="tl-lim-name">{card.meta.label}</span>
         {card.plan && <span className="tl-lim-plan">{planLabel(card.plan)}</span>}
+        {card.usageResetsAvailable !== null && (
+          <span
+            className={'tl-lim-usage-resets' + (card.usageResetsAvailable === 0 ? ' zero' : '')}
+            aria-label={fill(
+              t(card.usageResetsAvailable === 1
+                ? 'limits.usageReset.a11yOne'
+                : 'limits.usageReset.a11yMany'),
+              { n: card.usageResetsAvailable },
+            )}
+          >
+            <span aria-hidden="true">↻</span>
+            {fill(
+              t(card.usageResetsAvailable === 1
+                ? 'limits.usageReset.one'
+                : 'limits.usageReset.many'),
+              { n: card.usageResetsAvailable },
+            )}
+          </span>
+        )}
         {fresh && (
           <span className={'tl-lim-fresh' + (fresh.key === 'observedOld' ? ' old' : '')}>
             {fresh.key === 'checkedNow'
@@ -230,7 +253,7 @@ function Card({
       </div>
 
       {card.state === 'live' ? (
-        card.windows.map((w) => <Row key={w.key} w={w} mode={mode} t={t} />)
+        card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)
       ) : (
         <Trouble card={card} t={t} onRetry={onRetry} />
       )}
@@ -238,8 +261,8 @@ function Card({
   );
 }
 
-function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
-  const label = windowLabel(w.key);
+function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
+  const label = windowLabel(w.key, source);
   const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
   const spent = w.pctLeft <= 0;
 
@@ -258,8 +281,11 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
       <div className="tl-lim-body">
         <div className="tl-lim-labels">
           <span className="tl-lim-label">
+            {poolPrefix(t, label.pool)}
             {label.kind === 'session' && t('limits.win.session')}
             {label.kind === 'weekly' && t('limits.win.weekly')}
+            {label.kind === 'weeklyCredits' && t('limits.win.weeklyCredits')}
+            {label.kind === 'monthlyCredits' && t('limits.win.monthlyCredits')}
             {label.kind === 'other' && fill(t('limits.win.other'), { n: label.minutes })}
             {label.kind === 'model' && (
               <>
@@ -345,6 +371,19 @@ function OptIn({ t, onEnable }: { t: T; onEnable: () => void }) {
       </button>
     </div>
   );
+}
+
+// A window key's pool, where it carries one. `3p` is named "Other models"
+// rather than "Claude" because what it really means is *non-Gemini* — the set
+// behind it changes, and a label naming today's members would rot. A pool
+// nobody has named renders raw, the way an unseen per-model window does.
+function poolPrefix(t: T, pool: string | undefined): string {
+  if (!pool) return '';
+  const named: Record<string, string> = {
+    gemini: t('limits.pool.gemini'),
+    '3p': t('limits.pool.other'),
+  };
+  return `${named[pool] ?? pool} · `;
 }
 
 // "1d 6h" — largest two units, in the reader's own language.

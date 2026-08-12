@@ -5,4 +5,9 @@ export type SourceLimits = { source: string,
 /**
  * `rateLimitTier` (Claude) / `plan_type` (Codex) as of the newest Reading.
  */
-plan: string | null, windows: Array<LimitWindow>, };
+plan: string | null,
+/**
+ * Current Codex Usage Reset count; filled from the live Artifact by the
+ * command layer because it is state, not Reading history.
+ */
+usageResetsAvailable: number | null, windows: Array<LimitWindow>, };

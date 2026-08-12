@@ -100,6 +100,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
         gemini_projects_json: missing.clone(),
         hermes_db: missing.clone(),
         grok_sessions: missing.clone(),
+        grok_logs: missing.clone(),
         antigravity_conversations: missing.clone(),
         antigravity_ide_conversations: missing.clone(),
         antigravity_cli_conversations: missing.clone(),

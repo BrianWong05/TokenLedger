@@ -65,9 +65,10 @@
       "color": "#c3c8d2",
       "icon": "grok",
       "artifacts": [
-        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
+        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "logs", "kind": "file", "path": ".grok/logs/unified.jsonl", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },
@@ -83,7 +84,7 @@
         { "id": "ide-conversations", "kind": "directory", "path": ".gemini/antigravity-ide/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
         { "id": "cli-conversations", "kind": "directory", "path": ".gemini/antigravity-cli/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },

@@ -28,6 +28,17 @@ describe('strings', () => {
     }
   });
 
+  // The translator falls back to English for a missing key, so a half-added
+  // string is invisible in English and silently bilingual for everyone else.
+  // Every dictionary carries the same key universe in both languages.
+  it('says everything in both languages', () => {
+    for (const [name, dict] of Object.entries(DICTS)) {
+      const en = Object.keys((dict as Record<string, object>).en).sort();
+      const zh = Object.keys((dict as Record<string, object>)['zh-Hant']).sort();
+      expect(zh, name).toEqual(en);
+    }
+  });
+
   // CONTEXT.md's entry for *Limit* carries an _Avoid_ list, and docs/agents/
   // domain.md makes it binding: a glossary term must not be swapped for a synonym
   // the glossary rejects. The Limits copy reached for "quota" anyway, in both
