@@ -19,15 +19,19 @@ import {
   cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
   type CardView, type Mode, type WindowView,
 } from './limits.derive';
-import { tauriLimits, lastCheckKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import {
+  tauriLimits, lastCheckKey, lastFailureKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort,
+} from './limits';
 
 type T = ReturnType<typeof useT>['t'];
+type LiveFailure = 'signed-out' | { detail: string };
 
 // Decision 5's floor: at most one live check per Source per minute, however often
 // the page is opened. The last-check stamp is *stored* rather than held in a ref
 // because the shell unmounts this page on every tab switch — a ref would reset
 // with it, and flipping away and back would fetch again immediately.
 const LIVE_FLOOR_MS = 60_000;
+const ERROR_FAILURE_PREFIX = 'error:';
 
 export default function LimitsPage({
   ports,
@@ -42,7 +46,17 @@ export default function LimitsPage({
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
   const [liveEnabled, setLiveEnabled] = useState(() => port.read(LIVE_ENABLED_KEY) === 'true');
-  const [failures, setFailures] = useState<Record<string, 'signed-out' | { detail: string }>>({});
+  const [failures, setFailures] = useState<Record<string, LiveFailure>>(() => {
+    const remembered: Record<string, LiveFailure> = {};
+    for (const { meta } of limitsSources()) {
+      const value = port.read(lastFailureKey(meta.key));
+      if (value === 'signed-out') remembered[meta.key] = 'signed-out';
+      else if (value?.startsWith(ERROR_FAILURE_PREFIX)) {
+        remembered[meta.key] = { detail: value.slice(ERROR_FAILURE_PREFIX.length) };
+      }
+    }
+    return remembered;
+  });
   // In-flight checks, counted rather than boolean: a Refresh runs a scan and a
   // live check concurrently, and whichever finishes first must not re-enable the
   // button under the other.
@@ -81,15 +95,23 @@ export default function LimitsPage({
         due.map((key) => {
           port.write(lastCheckKey(key), String(now()));
           return Promise.resolve(port.checkLive(key)).then(
-            () => setFailures((f) => {
-              const { [key]: _gone, ...rest } = f;
-              return rest;
-            }),
+            () => {
+              port.write(lastFailureKey(key), '');
+              setFailures((f) => {
+                const { [key]: _gone, ...rest } = f;
+                return rest;
+              });
+            },
             (err: unknown) => {
               const detail = String((err as { message?: string })?.message ?? err ?? '');
+              const failure: LiveFailure = signedOut(detail) ? 'signed-out' : { detail };
+              port.write(
+                lastFailureKey(key),
+                failure === 'signed-out' ? failure : ERROR_FAILURE_PREFIX + failure.detail,
+              );
               setFailures((f) => ({
                 ...f,
-                [key]: signedOut(detail) ? 'signed-out' : { detail },
+                [key]: failure,
               }));
             },
           );

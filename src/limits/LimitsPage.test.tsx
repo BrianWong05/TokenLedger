@@ -146,7 +146,7 @@ describe('card states', () => {
       'Sign-in unavailable',
     );
     expect(claude.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      "TokenLedger couldn't use a claude sign-in. Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.",
+      'Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.',
     );
     expect(claude.querySelector('.tl-lim-plan')).toBeNull();
     expect(btn(claude, 'Check again')).toBeTruthy();
@@ -194,7 +194,42 @@ describe('card states', () => {
       'Sign-in unavailable',
     );
     expect(codex.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      "TokenLedger couldn't use a codex sign-in. Run codex once to sign in or renew it, or check where codex stores its sign-in, then check again.",
+      'Run codex once to sign in or renew it, or check where codex stores its sign-in, then check again.',
+    );
+  });
+
+  it('keeps a Companion failure across tab switches inside the live-check floor', async () => {
+    let checks = 0;
+    const port = fakePort({
+      list: () => Promise.resolve([]),
+      checkLive: (source) => {
+        checks += 1;
+        return source === 'claude'
+          ? Promise.reject(new Error('could not reach the vendor: timed out'))
+          : Promise.resolve();
+      },
+    });
+
+    const first = await mount(port);
+    expect(cardFor(first, 'Claude').querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      "Couldn't check",
+    );
+
+    const second = await remount(port, NOW_MS + 30_000);
+    const trouble = cardFor(second, 'Claude').querySelector('.tl-lim-trouble')!;
+    expect(checks).toBe(2);
+    expect(trouble.querySelector('.title')?.textContent).toBe("Couldn't check");
+    expect(trouble.querySelector('.hint')?.textContent).toBe('could not reach the vendor: timed out');
+  });
+
+  it('does not claim a sign-in lookup completed while the check is in flight', async () => {
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([]),
+      checkLive: () => new Promise<void>(() => {}),
+    }));
+
+    expect(cardFor(c, 'Claude').querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
+      'Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.',
     );
   });
 

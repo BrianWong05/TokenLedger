@@ -42,7 +42,7 @@ export const limits = {
 
     'limits.signedOut': 'Sign-in unavailable',
     'limits.signedOutHint':
-      "TokenLedger couldn't use a {cli} sign-in. Run {cli} once to sign in or renew it, or check where {cli} stores its sign-in, then check again.",
+      'Run {cli} once to sign in or renew it, or check where {cli} stores its sign-in, then check again.',
     'limits.checkAgain': 'Check again',
     'limits.error': "Couldn't check",
     'limits.retry': 'Retry',
@@ -88,7 +88,7 @@ export const limits = {
 
     'limits.signedOut': '無法使用登入',
     'limits.signedOutHint':
-      'TokenLedger 無法使用 {cli} 的登入。請執行一次 {cli} 以登入或更新登入狀態，或檢查 {cli} 將登入資料儲存在哪裡，然後再查詢一次。',
+      '請執行一次 {cli} 以登入或更新登入狀態，或檢查 {cli} 將登入資料儲存在哪裡，然後再查詢一次。',
     'limits.checkAgain': '再查詢',
     'limits.error': '查詢失敗',
     'limits.retry': '重試',
