@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -45,7 +46,8 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
 pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
-    find_jsonl_by_file_identity(sessions_root, &mut files);
+    let mut seen = HashSet::new();
+    find_jsonl_by_file_identity(sessions_root, &mut files, &mut seen);
     for path in files {
         match scan_file(conn, &path) {
             Ok((inserted, skipped)) => {
@@ -562,18 +564,23 @@ mod tests {
     fn codex_counts_a_hard_linked_rollout_once() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
-        let rollout = write_rollout(&root, "rollout-original.jsonl", &[
+        let rollout = write_rollout(&root, "rollout-b.jsonl", &[
             r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
             r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
             r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
         ]);
-        std::fs::hard_link(&rollout, root.join("rollout-alias.jsonl")).unwrap();
+        let alias = root.join("rollout-a.jsonl");
+        std::fs::hard_link(&rollout, &alias).unwrap();
 
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
         let scan = scan_codex(&mut conn, &root);
         let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        let source_file: String = conn
+            .query_row("SELECT source_file FROM events WHERE source='codex'", [], |row| row.get(0))
+            .unwrap();
 
         assert_eq!((scan.events_inserted, tools.len(), tools[0].calls), (1, 1, 1));
+        assert_eq!(source_file, alias.to_string_lossy());
     }
 
     // ---- Limit Readings (#104 ingest rules) ----

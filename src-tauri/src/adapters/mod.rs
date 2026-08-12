@@ -48,18 +48,28 @@ pub(crate) fn upsert_events_count(
 }
 
 pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
-    find_jsonl_inner(dir, out, None);
+    find_jsonl_inner(dir, out);
 }
 
-pub(crate) fn find_jsonl_by_file_identity(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut seen = HashSet::new();
-    find_jsonl_inner(dir, out, Some(&mut seen));
+pub(crate) fn find_jsonl_by_file_identity(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    seen: &mut HashSet<FileIdentity>,
+) {
+    let mut files = Vec::new();
+    find_jsonl(dir, &mut files);
+    files.sort();
+    out.extend(
+        files
+            .into_iter()
+            .filter(|path| file_identity(path).map_or(true, |identity| seen.insert(identity))),
+    );
 }
 
 #[cfg(unix)]
-type FileIdentity = (u64, u64);
+pub(crate) type FileIdentity = (u64, u64);
 #[cfg(not(unix))]
-type FileIdentity = PathBuf;
+pub(crate) type FileIdentity = PathBuf;
 
 #[cfg(unix)]
 fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
@@ -76,19 +86,7 @@ fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
     path.canonicalize()
 }
 
-fn find_jsonl_inner(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    mut seen: Option<&mut HashSet<FileIdentity>>,
-) {
-    if let Some(seen) = seen.as_deref_mut() {
-        let Ok(identity) = file_identity(dir) else {
-            return;
-        };
-        if !seen.insert(identity) {
-            return;
-        }
-    }
+fn find_jsonl_inner(dir: &Path, out: &mut Vec<PathBuf>) {
     if dir.is_file() {
         if dir.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             out.push(dir.to_path_buf());
@@ -105,17 +103,11 @@ fn find_jsonl_inner(
         };
         let path = entry.path();
         if file_type.is_dir() {
-            find_jsonl_inner(&path, out, seen.as_deref_mut());
+            find_jsonl_inner(&path, out);
         } else if file_type.is_file()
             && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
         {
-            let unseen = match seen.as_deref_mut() {
-                Some(seen) => file_identity(&path).map_or(true, |identity| seen.insert(identity)),
-                None => true,
-            };
-            if unseen {
-                out.push(path);
-            }
+            out.push(path);
         }
     }
 }
