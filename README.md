@@ -7,8 +7,8 @@ and estimated cost across the AI coding agents and assistants on your machine �
 normalized SQLite ledger.
 
 **Status: 0.1.0.** Driven daily on macOS. Windows and Linux build and pass the
-full test suite in CI on every push, but have had no real-world use yet — expect
-rough edges there, and please report them.
+full test suite in CI (run on demand), but have had no real-world use yet —
+expect rough edges there, and please report them.
 
 ![TokenLedger's Overview](docs/screenshot.png)
 

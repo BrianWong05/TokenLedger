@@ -1,10 +1,13 @@
-# CI: every push and PR runs both suites on the three platforms TokenLedger
-# has to work on. The scan, adapter, and fixture tests thereby cover real path
-# and filesystem behaviour on Windows and Linux with no new test code.
+# CI: manual-only. Run it from the Actions tab or `gh workflow run ci` when a
+# cross-platform check is wanted — both suites on the three platforms
+# TokenLedger has to work on, so the scan, adapter, and fixture tests cover
+# real path and filesystem behaviour on Windows and Linux with no new test
+# code. It used to fire on every push and PR (twice, on PR branches); the
+# owner turned that off 2026-08-12 — local suites are the everyday gate.
 
 name: ci
 
-on: [push, pull_request]
+on: [workflow_dispatch]
 
 # a newer push to the same ref makes the in-flight run pointless
 concurrency:
