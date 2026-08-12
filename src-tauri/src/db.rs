@@ -1945,6 +1945,16 @@ mod tests {
         // The ledger is permanent: an event referencing the missing file must survive.
         insert_events(&mut conn, &[sample_event("claude:x:1", "/nonexistent/gone.jsonl")]).unwrap();
 
+        // Context is rebuildable, but only Codex rebuilds it from the file alone.
+        // A vanished Claude session can never be re-read, so its drill-down must
+        // outlive the file the way its events do.
+        // (ctx_tools is unique on (source_file, name, day), so the two rows need
+        // distinct tool names to coexist on the one vanished path.)
+        let codex_row = [("shell".to_string(), 10i64, 1i64, 1_700_000_000i64)];
+        let claude_row = [("Bash".to_string(), 10i64, 1i64, 1_700_000_000i64)];
+        add_ctx_tool_rows(&mut conn, "codex", "/nonexistent/gone.jsonl", &codex_row).unwrap();
+        add_ctx_tool_rows(&mut conn, "claude", "/nonexistent/gone.jsonl", &claude_row).unwrap();
+
         let removed = prune_missing_files(&conn).unwrap();
         assert_eq!(removed, 1);
 
@@ -1956,6 +1966,12 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(events, 1);
+        let tools: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT source FROM ctx_tools ORDER BY source").unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(tools, vec!["claude".to_string()], "only Codex Context follows the file out");
     }
 
     #[test]
