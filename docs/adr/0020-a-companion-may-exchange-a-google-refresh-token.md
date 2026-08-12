@@ -34,11 +34,25 @@ refresh token to mint an access token, under bounds of its own:
    introduced, it must bind to a one-way fingerprint of the current refresh
    credential (openusage binds to SHA-256 of the refresh token) so a logout
    or account switch can never serve the previous account's quota.
-3. The OAuth client id/secret pairs ride hardcoded in the Companion source.
-   Google's installed-app model ships them in every copy of each client —
-   they identify the app, they are not keys. A vendor rotating its client id
-   fails the exchange, and the card degrades per ADR-0019 bound 4:
-   unavailable, pointing at the Source's own CLI.
+3. The OAuth client id/secret pair identifies the *vendor's* app, not ours.
+   Google's installed-app model ships both halves in every copy of each
+   client — they are public identifiers, not keys. The **id is hardcoded**,
+   because the Companion needs a fixed thing to look for; the **secret is
+   read at run time out of the vendor's own installed client**, which is
+   where it ships and the only copy of it this project ever handles. If the
+   client cannot be found, or carries no pair, the exchange does not happen
+   and the card degrades per ADR-0019 bound 4: unavailable, pointing at the
+   Source's own CLI. The same follows if a vendor rotates its id.
+
+   *Amended when the Antigravity Companion was built.* This bound first read
+   "the pairs ride hardcoded in the Companion source", which is safe for the
+   reason above but copies a rotating vendor identifier into this repository
+   and dates it: a rotation would silently sign every user out until someone
+   noticed and edited a constant. Reading the secret from the installed
+   client keeps the same posture — we present ourselves as the vendor's app,
+   which this ADR already sanctions — while staying current by construction
+   and holding no copy of the vendor's identifier at rest. Hardcoding remains
+   acceptable where a vendor ships no discoverable client.
 4. ADR-0019 bounds 2–4 stand unchanged. Bound 3's person-initiated floor is
    also an obligation to the tool's session, not only a consent rule: the
    refresh grant is rate-limited per client, and the Companion shares each

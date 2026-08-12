@@ -126,6 +126,16 @@ describe('window labels', () => {
     expect(windowLabel('w4321')).toEqual({ kind: 'other', minutes: '4321' });
   });
 
+  it('splits a pool off the front of the key, and never guesses at an unknown one', () => {
+    // Antigravity's two pools share both durations, so the pool is part of the
+    // key rather than a second card.
+    expect(windowLabel('gemini:w300')).toEqual({ kind: 'session', pool: 'gemini' });
+    expect(windowLabel('3p:w10080')).toEqual({ kind: 'weekly', pool: '3p' });
+    // A pool nobody has named still renders, the way an unseen per-model
+    // window does — it is carried through raw rather than dropped.
+    expect(windowLabel('zephyr:w300')).toEqual({ kind: 'session', pool: 'zephyr' });
+  });
+
   it('says "credits" where the bar meters a pool rather than a rate-limit window', () => {
     // Same key, same geometry, different quantity: 80% of Grok's weekly credit
     // pool is not 80% of the way to a rate limit (#126).
@@ -170,17 +180,17 @@ const LOGS_SOURCE = {
 describe('catalog gating', () => {
   it('yields a card only for a Source declaring a limits capability', () => {
     const keys = limitsSources().map((s) => s.meta.key);
-    expect(keys).toEqual(['claude', 'codex', 'grok']);
-    // Grok gained a live Companion (the billing endpoint) on top of its passive
-    // log capture, mirroring Codex — so it is `live`, behind the opt-in.
-    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live']);
+    // All four shipped Sources are `live` now — Codex and Grok each pair a live
+    // Companion with passive log capture; Claude and Antigravity are live-only.
+    expect(keys).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live', 'live']);
   });
 
   it('gives a Source without the capability no card, even holding Readings', () => {
     // Nothing writes Readings for an uncatalogued Source, but if history ever
     // held some, the enum still decides what the page shows.
     const views = cards([held('gemini', [win()])], NOW, 'left');
-    expect(views.map((v) => v.source)).toEqual(['claude', 'codex', 'grok']);
+    expect(views.map((v) => v.source)).toEqual(['claude', 'codex', 'grok', 'antigravity']);
   });
 });
 

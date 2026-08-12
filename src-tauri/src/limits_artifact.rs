@@ -1,7 +1,7 @@
-// The Limits Export Artifact — the one contract between the `claude-limits`
-// Companion, which writes these files, and the scan, which reads them like any
-// other file (ADR-0019). Both sides use these types, so a field can never be
-// spelled one way by the writer and another by the reader.
+// The Limits Export Artifact — the one contract between the Companions, which
+// write these files, and the scan, which reads them like any other file
+// (ADR-0019). Both sides use these types, so a field can never be spelled one
+// way by the writer and another by the reader.
 //
 // One Artifact per `live` Source, named `<source>.tokenledger-limits.json`, in a
 // directory the app owns. It carries Limit Readings — never tokens, never usage —
@@ -118,8 +118,13 @@ pub struct LimitsExport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowExport {
-    /// The vendor's own response key, verbatim and opaque: `five_hour`,
-    /// `seven_day`, `seven_day_opus`, or one nobody has seen yet.
+    /// How the Reading's window is addressed: the vendor's own response key
+    /// where there is one (`five_hour`, `seven_day_opus`, or one nobody has seen
+    /// yet), or a key this side builds where the vendor's does not identify a
+    /// window uniquely — `w{minutes}` from a duration, and a `pool:` prefix
+    /// where a Source meters more than one pool over the same durations. The
+    /// page splits on the colon and classifies the remainder; nothing else
+    /// reads inside it.
     pub key: String,
     /// The window's length, where the key names one. Absent means unknown — the
     /// card then draws a bar with no time tick rather than inventing an axis.
@@ -331,6 +336,38 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn a_pool_keyed_export_files_each_pool_as_its_own_series() {
+        // Antigravity is the first Source whose pool is a genuine second axis:
+        // both pools share both durations, so a key of the duration alone would
+        // put two different pools' Limits on one row and lose one of them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        write_file(
+            &dir,
+            &file_name("antigravity"),
+            r#"{"schema":1,"source":"antigravity","fetched_at":1786492800,"plan":"Pro","windows":[
+                {"key":"gemini:w300","window_minutes":300,"used_pct":58.0,"resets_at":1786547640},
+                {"key":"3p:w300","window_minutes":300,"used_pct":12.0,"resets_at":1786547640}]}"#,
+        );
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        assert_eq!(ingest(&mut conn, &dir, "antigravity"), Ok(()));
+        let rows: Vec<(String, f64, String)> = conn
+            .prepare(
+                "SELECT window_key, used_pct, via FROM limit_readings \
+                 WHERE source = 'antigravity' ORDER BY window_key",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "two pools sharing one duration are two rows");
+        assert_eq!(rows[0], ("3p:w300".to_string(), 12.0, "live".to_string()));
+        assert_eq!(rows[1].0, "gemini:w300");
     }
 
     #[test]

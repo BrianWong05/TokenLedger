@@ -179,11 +179,15 @@ export default function LimitsPage({
   );
 }
 
-// 401/403 and a missing credential are the same thing to the person reading the
-// card — their sign-in needs redoing. Every other failure is a failure, and must
-// not be dressed as this one.
+// A missing or refused credential is the one failure that reads as "sign in
+// again"; every other failure is a failure and must not wear that face. The
+// Companion is what can tell them apart — it knows a 401 on the token from a 403
+// the same token earns on one method while another succeeds — so it marks the
+// signed-out case with this prefix and the page trusts that, rather than
+// re-deriving it by grepping for a status code that also appears in the text of
+// a genuine error (e.g. "the vendor answered 403 … PERMISSION_DENIED").
 function signedOut(detail: string): boolean {
-  return /\bnot signed in\b|\b401\b|\b403\b/i.test(detail);
+  return /\bnot signed in\b/i.test(detail);
 }
 
 function Card({
@@ -236,6 +240,7 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
       <div className="tl-lim-body">
         <div className="tl-lim-labels">
           <span className="tl-lim-label">
+            {poolPrefix(t, label.pool)}
             {label.kind === 'session' && t('limits.win.session')}
             {label.kind === 'weekly' && t('limits.win.weekly')}
             {label.kind === 'weeklyCredits' && t('limits.win.weeklyCredits')}
@@ -325,6 +330,19 @@ function OptIn({ t, onEnable }: { t: T; onEnable: () => void }) {
       </button>
     </div>
   );
+}
+
+// A window key's pool, where it carries one. `3p` is named "Other models"
+// rather than "Claude" because what it really means is *non-Gemini* — the set
+// behind it changes, and a label naming today's members would rot. A pool
+// nobody has named renders raw, the way an unseen per-model window does.
+function poolPrefix(t: T, pool: string | undefined): string {
+  if (!pool) return '';
+  const named: Record<string, string> = {
+    gemini: t('limits.pool.gemini'),
+    '3p': t('limits.pool.other'),
+  };
+  return `${named[pool] ?? pool} · `;
 }
 
 // "1d 6h" — largest two units, in the reader's own language.

@@ -13,12 +13,15 @@ import type { SourceLimits } from '../types';
 // The stored preference keys this page owns. Two booleans-worth of state, so
 // they live in web storage rather than growing the Settings contract: neither is
 // read by Rust, the tray, or any other page.
-// The `.2` is a consent version, not clutter: the disclosure this boolean
-// records acceptance of originally named only Claude Code's sign-in, and it now
-// covers Codex's too. Widening what enabling does means asking again — the old
-// key is deliberately orphaned so nobody's earlier yes is stretched over a
-// question they were never shown.
-export const LIVE_ENABLED_KEY = 'tl.limits.liveEnabled.2';
+// The `.3` is a consent version, not clutter: the disclosure this boolean
+// records acceptance of named only Claude Code's sign-in at `.1`, gained
+// Codex's at `.2`, and now covers Antigravity's — whose Google sign-in works on
+// hourly passes, so checking it means asking Google for a fresh one (ADR-0020).
+// That broke the `.2` promise that a sign-in is "never refreshed", so the
+// question changed and has to be asked again. The old key is deliberately
+// orphaned — no migration — so nobody's earlier yes is stretched over a question
+// they were never shown.
+export const LIVE_ENABLED_KEY = 'tl.limits.liveEnabled.3';
 export const MODE_KEY = 'tl.limits.mode';
 
 // When a Source was last checked live, as epoch millis. Stored rather than kept
