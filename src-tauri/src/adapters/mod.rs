@@ -207,6 +207,9 @@ mod tests {
         let sessions = temp.path().join("sessions");
         std::fs::create_dir(&sessions).unwrap();
         std::fs::write(sessions.join("session.jsonl"), "{}\n").unwrap();
+        // A plain non-JSONL file, so the extension half of the predicate is
+        // pinned too: without it the walk would hand adapters any regular file.
+        std::fs::write(sessions.join("notes.md"), "x\n").unwrap();
         let archived = temp.path().join("archived.jsonl");
         std::fs::write(&archived, "{}\n").unwrap();
         symlink(archived, sessions.join("linked.jsonl")).unwrap();
