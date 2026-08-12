@@ -1679,6 +1679,7 @@ mod tests {
         assert!(ctx_exec(&conn, &f2).unwrap().is_empty());
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn reading(
         source: &str, window_key: &str, minutes: i64, used_pct: f64, resets_at: i64,
         observed_at: i64, via: &str, plan: Option<&str>,

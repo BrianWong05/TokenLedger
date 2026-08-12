@@ -53,7 +53,7 @@ export interface CardView {
 }
 
 /** A Source's acquisition mode, or null when it has no vendor window to show. */
-export function limitsVia(meta: SourceMeta): LimitsVia | null {
+function limitsVia(meta: SourceMeta): LimitsVia | null {
   const via = meta.capabilities.limits;
   return via === 'logs' || via === 'live' ? via : null;
 }
@@ -150,6 +150,24 @@ export function windowLabel(
 function capitalize(s: string): string {
   const spaced = s.replace(/[_-]+/g, ' ');
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/**
+ * The plan pill's text. Vendors report an internal identifier here —
+ * `default_claude_max_5x`, `plus` — and printing one verbatim reads as a bug
+ * rather than as honesty, so the wrapper words come off and the rest is
+ * title-cased. The stored Reading keeps the vendor's own string untouched; this
+ * is a label, and only a label.
+ */
+export function planLabel(plan: string | null): string | null {
+  if (!plan) return null;
+  const words = plan
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w !== 'default' && w !== 'claude');
+  if (!words.length) return plan;
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
 /**

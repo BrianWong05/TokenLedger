@@ -9,22 +9,24 @@
 // Refresh only, never on the scan timer and never in the background (a floor of
 // LIVE_FLOOR_MS between live checks per Source enforces it against a fast tab
 // flipper).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import './limits.css';
 import { useT } from '../lib/i18n';
 import { fill } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
-  cards, durationParts, freshness, limitsSources, windowLabel,
+  cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
   type CardView, type Mode, type WindowView,
 } from './limits.derive';
-import { tauriLimits, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import { tauriLimits, lastCheckKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
 
 type T = ReturnType<typeof useT>['t'];
 
 // Decision 5's floor: at most one live check per Source per minute, however often
-// the page is opened.
+// the page is opened. The last-check stamp is *stored* rather than held in a ref
+// because the shell unmounts this page on every tab switch — a ref would reset
+// with it, and flipping away and back would fetch again immediately.
 const LIVE_FLOOR_MS = 60_000;
 
 export default function LimitsPage({
@@ -45,7 +47,6 @@ export default function LimitsPage({
   // The clock the ticks and the freshness line read. Re-read on every render pass
   // the page triggers; nothing here polls.
   const [nowSec, setNowSec] = useState(() => Math.floor(now() / 1000));
-  const lastLive = useRef<Record<string, number>>({});
 
   const reload = useCallback(() => {
     setNowSec(Math.floor(now() / 1000));
@@ -64,13 +65,13 @@ export default function LimitsPage({
       const due = limitsSources()
         .filter(({ via }) => via === 'live')
         .map(({ meta }) => meta.key)
-        .filter((key) => force || now() - (lastLive.current[key] ?? 0) >= LIVE_FLOOR_MS);
+        .filter((key) => force || now() - Number(port.read(lastCheckKey(key)) ?? 0) >= LIVE_FLOOR_MS);
       if (!due.length) return;
 
       setChecking(true);
       Promise.all(
         due.map((key) => {
-          lastLive.current[key] = now();
+          port.write(lastCheckKey(key), String(now()));
           return Promise.resolve(port.checkLive(key)).then(
             () => setFailures((f) => {
               const { [key]: _gone, ...rest } = f;
@@ -178,7 +179,7 @@ function Card({
       <div className="tl-lim-head">
         {icon ? <img src={icon} alt="" width={18} height={18} /> : <span className="tl-lim-nomark" />}
         <span className="tl-lim-name">{card.meta.label}</span>
-        {card.plan && <span className="tl-lim-plan">{card.plan}</span>}
+        {card.plan && <span className="tl-lim-plan">{planLabel(card.plan)}</span>}
         {fresh && (
           <span className={'tl-lim-fresh' + (fresh.key === 'observedOld' ? ' old' : '')}>
             {fresh.key === 'checkedNow'

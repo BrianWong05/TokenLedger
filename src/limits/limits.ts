@@ -16,6 +16,13 @@ import type { SourceLimits } from '../types';
 export const LIVE_ENABLED_KEY = 'tl.limits.liveEnabled';
 export const MODE_KEY = 'tl.limits.mode';
 
+// When a Source was last checked live, as epoch millis. Stored rather than kept
+// in memory so the floor between calls survives the page being unmounted — which
+// the shell does on every tab switch.
+export function lastCheckKey(source: string): string {
+  return `tl.limits.lastCheck.${source}`;
+}
+
 export interface LimitsPort {
   /** The current state of every Limit the Ledger holds Readings for. */
   list(): Promise<SourceLimits[]>;

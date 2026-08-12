@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
 import {
-  cards, durationParts, framedPct, freshness, limitsSources, tone, windowLabel, windowView,
+  cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
+  windowView,
 } from './limits.derive';
 
 // 2026-08-12T00:00:00Z
@@ -120,6 +121,19 @@ describe('window labels', () => {
 
   it('keeps an unrecognised Codex duration as its raw minutes', () => {
     expect(windowLabel('w4321')).toEqual({ kind: 'other', minutes: '4321' });
+  });
+});
+
+describe('the plan pill', () => {
+  it('reads the vendor identifier as a label', () => {
+    // What this machine's own credential actually carries.
+    expect(planLabel('default_claude_max_5x')).toBe('Max 5x');
+    expect(planLabel('plus')).toBe('Plus');
+    expect(planLabel('Team 5x')).toBe('Team 5x');
+    expect(planLabel('self_serve_business_prolite')).toBe('Self Serve Business Prolite');
+    expect(planLabel(null)).toBeNull();
+    // A tier that is nothing but wrapper words keeps what the vendor said.
+    expect(planLabel('default')).toBe('default');
   });
 });
 

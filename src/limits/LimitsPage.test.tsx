@@ -290,6 +290,25 @@ describe('fetch policy', () => {
     }
   });
 
+  it('keeps the floor across tab switches, which unmount the page', async () => {
+    // The shell mounts this page on demand, so "page open" is a fresh mount.
+    // A floor held in component state would reset with it, and flipping away
+    // and back would fetch again immediately.
+    const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
+    await mount(port);
+    expect(port.liveCalls).toEqual(['claude']);
+
+    for (const r of roots.splice(0)) act(() => r.unmount());
+    await mount(port);
+    expect(port.liveCalls).toEqual(['claude']);
+
+    // Refresh is a person asking, so it goes through regardless.
+    const c = document.body.querySelector('.tl-page-limits') as HTMLElement;
+    await act(async () => btn(c, 'Refresh').click());
+    await settle();
+    expect(port.liveCalls).toEqual(['claude', 'claude']);
+  });
+
   it('runs an ordinary scan on Refresh, which is how a logs Source updates', async () => {
     let scans = 0;
     const port = fakePort({
