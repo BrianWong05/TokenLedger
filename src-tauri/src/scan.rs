@@ -71,7 +71,7 @@ impl SourceRoots {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session_dir = pi_environment_value("session-dir");
         let agent_dir = pi_environment_value("agent-dir");
-        Self::from_home_and_pi_env(
+        Self::from_home_and_overrides(
             &home,
             environment_value("codex", "home").as_deref(),
             session_dir.as_deref(),
@@ -79,7 +79,7 @@ impl SourceRoots {
         )
     }
 
-    fn from_home_and_pi_env(
+    fn from_home_and_overrides(
         home: &Path,
         codex_home: Option<&OsStr>,
         session_dir: Option<&OsStr>,
@@ -702,7 +702,7 @@ mod tests {
         // the only Readings in play are the export's.
         let roots = SourceRoots {
             limit_exports: exports,
-            ..SourceRoots::from_home_and_pi_env(&base.join("home"), None, None, None)
+            ..SourceRoots::from_home_and_overrides(&base.join("home"), None, None, None)
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
@@ -1020,7 +1020,7 @@ mod tests {
         use std::ffi::OsStr;
 
         let home = tempfile::tempdir().unwrap();
-        let roots = SourceRoots::from_home_and_pi_env(
+        let roots = SourceRoots::from_home_and_overrides(
             home.path(),
             None,
             Some(OsStr::new("~/custom-sessions")),
@@ -1042,7 +1042,7 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         assert_eq!(
-            SourceRoots::from_home_and_pi_env(
+            SourceRoots::from_home_and_overrides(
                 home.path(),
                 Some(OsStr::new("~/relocated-codex")),
                 None,
@@ -1055,7 +1055,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            SourceRoots::from_home_and_pi_env(
+            SourceRoots::from_home_and_overrides(
                 home.path(),
                 Some(OsStr::new("  ")),
                 None,
@@ -1065,7 +1065,7 @@ mod tests {
             vec![home.path().join(".codex/sessions")]
         );
         assert_eq!(
-            SourceRoots::from_home_and_pi_env(
+            SourceRoots::from_home_and_overrides(
                 home.path(),
                 Some(home.path().join(".codex").as_os_str()),
                 None,

@@ -140,6 +140,11 @@ Grok Build is walked differently: its own fixed two levels of workspace and
 session directories take a symlinked root and symlinked `updates.jsonl` the
 same way, but they do traverse directory symlinks inside the root.
 
+On macOS, a `CODEX_HOME` exported only in a shell profile is not visible to an
+app launched from Finder or the Dock. Run `launchctl setenv CODEX_HOME
+/path/to/home` before starting TokenLedger, or configure the variable in a
+LaunchAgent.
+
 Most paths above are under your home directory and are read passively. `GROK_HOME`
 and `GOOSE_PATH_ROOT` may point discovery at different roots. The
 database lives at `<app data dir>/tokenledger.db` in WAL
