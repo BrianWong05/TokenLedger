@@ -113,6 +113,35 @@ pub fn path_in(dir: &Path, source: &str) -> PathBuf {
     dir.join(file_name(source))
 }
 
+/// A vendor response's structure, values mostly redacted — every Companion's
+/// `--shape` diagnostic. Keys, numbers, booleans, and short enum-ish strings
+/// print; anything longer (tokens, uuids, prose) reduces to its length, so a
+/// drifted payload can be diagnosed from a pasted transcript without usage
+/// identifiers in it.
+pub fn shape(node: &serde_json::Value) -> String {
+    fn walk(node: &serde_json::Value, path: &str, out: &mut String) {
+        use serde_json::Value;
+        match node {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    walk(value, &format!("{path}.{key}"), out);
+                }
+            }
+            Value::Array(items) => {
+                out.push_str(&format!("{path}: [{} items]\n", items.len()));
+                for (i, value) in items.iter().take(3).enumerate() {
+                    walk(value, &format!("{path}[{i}]"), out);
+                }
+            }
+            Value::String(s) if s.len() > 24 => out.push_str(&format!("{path}: <str {}>\n", s.len())),
+            other => out.push_str(&format!("{path}: {other}\n")),
+        }
+    }
+    let mut out = String::new();
+    walk(node, "", &mut out);
+    out
+}
+
 /// Rename-write one Source's export (ADR-0018): a reader never sees half a
 /// document, and a crash mid-write leaves the previous Artifact intact. Shared
 /// by every Companion, so the write discipline cannot drift between them.

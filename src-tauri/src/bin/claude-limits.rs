@@ -76,6 +76,15 @@ fn run() -> Result<String, String> {
     }
 
     let body = fetch(&credential.access_token)?;
+
+    // `--shape` is the hand-run diagnostic for when the vendor's payload moves:
+    // it prints the response's structure — keys, numbers, short enum-ish strings —
+    // with anything longer redacted, so a drifted shape can be diagnosed from a
+    // transcript without usage identifiers in it. The app can never pass this
+    // flag (its sidecar allowlist carries no args).
+    if std::env::args().skip(1).any(|a| a == "--shape") {
+        return Ok(limits_artifact::shape(&body));
+    }
     let export = LimitsExport {
         schema: limits_artifact::SCHEMA,
         source: "claude".to_string(),
@@ -257,15 +266,65 @@ fn fetch(access_token: &str) -> Result<Value, String> {
     }
 }
 
-/// The response's named windows. Discovered from the keys themselves, never a
-/// fixed list: a per-model window nobody has seen yet still has to render. Any
-/// object carrying a numeric `utilization` is a window, which also survives the
-/// figures being nested one level down.
+/// The response's windows. The modern shape carries a normalized `limits[]`
+/// list, and a per-model window arrives ONLY there — a Fable weekly is a
+/// `weekly_scoped` entry with `scope.model.display_name`, while the legacy
+/// `seven_day_<model>` keys sit null beside it. So the list wins when it says
+/// anything, and the named-key discovery below remains as the fallback for an
+/// older response shape.
 fn windows(body: &Value) -> Vec<WindowExport> {
+    let listed = limits_list(body);
+    if !listed.is_empty() {
+        return listed;
+    }
     let mut out = Vec::new();
     collect_windows(body, &mut out);
     out.sort_by(|a, b| a.key.cmp(&b.key));
     out
+}
+
+fn limits_list(body: &Value) -> Vec<WindowExport> {
+    let Some(items) = body.get("limits").and_then(|l| l.as_array()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<WindowExport> = items.iter().filter_map(list_window).collect();
+    out.sort_by(|a, b| a.window_minutes.cmp(&b.window_minutes).then(a.key.cmp(&b.key)));
+    out
+}
+
+/// One `limits[]` entry → a window. The keys are synthesized to match what the
+/// legacy shape called the same windows — `five_hour`, `seven_day`,
+/// `seven_day_<model>` — so a Reading from either response shape lands in the
+/// same stored series, and the page's label discovery needs no second grammar.
+/// `is_active` is not a gate: an inactive window still carries a real figure
+/// and a real reset. An entry with no reset has not started and is no window.
+fn list_window(item: &Value) -> Option<WindowExport> {
+    let used_pct = item.get("percent").and_then(|p| p.as_f64())?;
+    let resets_at = item
+        .get("resets_at")
+        .and_then(|r| r.as_i64().or_else(|| r.as_str().and_then(iso_to_epoch)))?;
+    let kind = item.get("kind").and_then(|k| k.as_str()).unwrap_or("");
+    let scoped_model = item
+        .pointer("/scope/model/display_name")
+        .and_then(|d| d.as_str());
+
+    let (key, window_minutes) = match (kind, scoped_model) {
+        ("session", _) => ("five_hour".to_string(), Some(300)),
+        ("weekly_all", _) => ("seven_day".to_string(), Some(10080)),
+        ("weekly_scoped", Some(model)) => (format!("seven_day_{}", slug(model)), Some(10080)),
+        // A kind nobody has seen still renders rather than vanishing: its kind
+        // is its (opaque) key, and with no known duration it draws no tick.
+        _ if !kind.is_empty() => (kind.to_string(), None),
+        _ => return None,
+    };
+    Some(WindowExport { key, window_minutes, used_pct, resets_at })
+}
+
+fn slug(name: &str) -> String {
+    name.to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
 }
 
 fn collect_windows(node: &Value, out: &mut Vec<WindowExport>) {
@@ -318,6 +377,82 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The modern response shape, verbatim from a real `--shape` run (2026-08-12,
+    // Max 5x account): a normalized `limits[]` list beside the legacy named keys,
+    // the per-model Fable window ONLY in the list (`seven_day_*` all null), and
+    // an experiment field (`nimbus_quill`) that carries a `utilization` but no
+    // reset — the decoy the fallback walker must keep skipping.
+    const MODERN: &str = r#"{
+        "five_hour": {"utilization": 25.0, "resets_at": "2026-08-12T13:00:00.000000+00:00"},
+        "seven_day": {"utilization": 35.0, "resets_at": "2026-08-16T13:00:00.000000+00:00"},
+        "seven_day_opus": null, "seven_day_sonnet": null,
+        "nimbus_quill": {"utilization": 0.0, "resets_at": null},
+        "limits": [
+            {"kind": "session", "group": "session", "percent": 25, "is_active": false,
+             "resets_at": "2026-08-12T13:00:00.000000+00:00", "scope": null, "severity": "normal"},
+            {"kind": "weekly_all", "group": "weekly", "percent": 35, "is_active": true,
+             "resets_at": "2026-08-16T13:00:00.000000+00:00", "scope": null, "severity": "normal"},
+            {"kind": "weekly_scoped", "group": "weekly", "percent": 30, "is_active": false,
+             "resets_at": "2026-08-16T13:00:00.000000+00:00",
+             "scope": {"model": {"display_name": "Fable", "id": null}, "surface": null},
+             "severity": "normal"}
+        ],
+        "extra_usage": {"is_enabled": false, "utilization": null},
+        "spend": {"percent": 0, "severity": "normal"}
+    }"#;
+
+    #[test]
+    fn the_limits_list_wins_and_carries_the_scoped_model_window() {
+        let body: Value = serde_json::from_str(MODERN).unwrap();
+        let found = windows(&body);
+
+        assert_eq!(
+            found
+                .iter()
+                .map(|w| (w.key.as_str(), w.window_minutes, w.used_pct))
+                .collect::<Vec<_>>(),
+            vec![
+                ("five_hour", Some(300), 25.0),
+                ("seven_day", Some(10080), 35.0),
+                // The Fable window exists ONLY in the list; the key is
+                // synthesized to the legacy grammar so the page's label
+                // discovery renders it "Fable · Weekly" unchanged.
+                ("seven_day_fable", Some(10080), 30.0),
+            ],
+        );
+        // An inactive window still renders — `is_active` is not a gate — and the
+        // experiment decoy with no reset contributes nothing.
+        assert_eq!(found.len(), 3);
+        assert_eq!(found[2].resets_at, iso_to_epoch("2026-08-16T13:00:00").unwrap());
+    }
+
+    #[test]
+    fn an_unseen_list_kind_still_renders_under_its_own_kind() {
+        let body: Value = serde_json::from_str(
+            r#"{"limits":[{"kind":"monthly_all","group":"monthly","percent":12,
+                "resets_at":"2026-09-01T00:00:00.000000+00:00"}]}"#,
+        )
+        .unwrap();
+        let found = windows(&body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "monthly_all", "the kind is the opaque key");
+        assert_eq!(found[0].window_minutes, None, "an unknown duration draws no tick");
+    }
+
+    #[test]
+    fn an_empty_or_unusable_list_falls_back_to_named_key_discovery() {
+        // Every list entry lacking a reset → nothing usable → the legacy walk
+        // still reads the named keys.
+        let body: Value = serde_json::from_str(
+            r#"{"limits":[{"kind":"session","percent":25,"resets_at":null}],
+                "five_hour":{"utilization":25.0,"resets_at":"2026-08-12T13:00:00Z"}}"#,
+        )
+        .unwrap();
+        let found = windows(&body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "five_hour");
+    }
 
     #[test]
     fn windows_are_discovered_from_the_response_keys() {
