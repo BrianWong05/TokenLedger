@@ -416,6 +416,14 @@ component starts no match. A Source-wide partition has no Model filter, while a
 model-scoped partition maps explicitly to raw logged Models.
 _Avoid_: Bucket, assumed account, display-name match
 
+**Limit Evidence Series**:
+The cross-epoch calibration grouping for a Limit Token Estimate: sibling Limit
+Evidence Partitions whose Source, proven account identity, plan, metering
+regime, Limit identity, and Model scope are equal and which differ only by
+reset epoch. Completed epochs are compared only inside one Series; a change to
+any other identity field starts a new Series.
+_Avoid_: Cross-account history, global calibration, assumed continuity
+
 **Limit Evidence Interval**:
 Two consecutive, distinct, increasing Limit Readings in one Limit Evidence
 Partition, together with the matching Usage Records after the earlier Reading
