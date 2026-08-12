@@ -52,13 +52,22 @@ use serde_json::{json, Value};
 
 use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport, NOT_SIGNED_IN};
 
-/// Production only. The `daily-` canary resolves and answers, but it is a
-/// release-channel frontend onto the *same* registered service — its own error
-/// bodies name `cloudcode-pa.googleapis.com` — so it cannot return different
-/// numbers, and reaching for it first (as openusage does) risks a canary 401
-/// short-circuiting into a signed-out card for a perfectly good session.
-const CLOUD_CODE: &str = "https://cloudcode-pa.googleapis.com/v1internal";
+/// Both release-channel frontends, `daily-` first — because that is the one
+/// Antigravity's own client actually calls. Its logs on this machine show
+/// ~13,000 requests to `daily-` against four to production, which overturns the
+/// research's reading (inferred from a 1:5 ratio of string occurrences in the
+/// binary, and wrong: the plain host is the rarity).
+///
+/// Both are tried, and **a refusal is never a reason to stop trying** — that is
+/// openusage's documented bug, where a canary 401 short-circuits the whole list
+/// and reports a signed-out card for a perfectly good session. Here the first
+/// success wins and the last failure is what gets reported.
+const CLOUD_CODE_HOSTS: [&str; 2] = [
+    "https://daily-cloudcode-pa.googleapis.com/v1internal",
+    "https://cloudcode-pa.googleapis.com/v1internal",
+];
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+const USER_AGENT: &str = concat!("TokenLedger-limits/", env!("CARGO_PKG_VERSION"));
 
 /// Antigravity's own installed-app client, verified verbatim in its
 /// `language_server` binary. Presenting it means presenting ourselves to Google
@@ -128,32 +137,48 @@ fn run() -> Result<String, String> {
     let fetched_at = now();
     let access_token = access_token(&credential, fetched_at)?;
 
-    // One call, two needs: the project the summary endpoint marks REQUIRED, and
-    // the plan label.
+    // One call, two needs: the project the summary request names, and the plan
+    // label.
     let assist = post(&access_token, "loadCodeAssist", json!({}))?;
-    // The summary request marks this REQUIRED. Sending an empty string instead
-    // would be the silent-fallthrough failure this call exists to avoid — the
-    // server would answer something, and nobody would know which account it was
-    // about. No project, no reading.
+
+    // `--shape` is the hand-run diagnostic for when a payload moves: keys,
+    // numbers, and short enum-ish strings print, anything longer is redacted.
+    // Both calls are reported, and the second's failure does not hide the
+    // first's shape — the answer to "why did this stop working" is as often in
+    // the call before the one that failed. The app can never pass this flag (its
+    // sidecar allowlist carries no args).
+    let shape_only = std::env::args().skip(1).any(|a| a == "--shape");
+
+    // The descriptor marks `project` REQUIRED, so it is passed whenever the
+    // vendor named one. When it does not — an individual-tier account may have
+    // no companion project at all — the field is **omitted rather than sent
+    // empty**. An empty string is a value the server would be entitled to answer
+    // about, which is the silent-fallthrough this argument exists to prevent; an
+    // absent field lets the server apply its own default, which is what the
+    // prior art relies on. Refusing outright would be worse than either: it
+    // would deny a card to an account whose Limits the server may answer for
+    // perfectly well.
     let project = field(&assist, "cloudaicompanionProject")
         .and_then(|p| p.as_str())
-        .filter(|p| !p.trim().is_empty())
-        .ok_or_else(|| {
-            "the vendor named no project for this account, so its Limits cannot be asked for"
-                .to_string()
-        })?;
-    let body = post(
-        &access_token,
-        "retrieveUserQuotaSummary",
-        json!({ "project": project }),
-    )?;
+        .filter(|p| !p.trim().is_empty());
+    let request = match project {
+        Some(project) => json!({ "project": project }),
+        None => json!({}),
+    };
+    let summary = post(&access_token, "retrieveUserQuotaSummary", request);
 
-    // `--shape` is the hand-run diagnostic for when the payload moves: keys,
-    // numbers, and short enum-ish strings print, anything longer is redacted.
-    // The app can never pass this flag (its sidecar allowlist carries no args).
-    if std::env::args().skip(1).any(|a| a == "--shape") {
-        return Ok(limits_artifact::shape(&body));
+    if shape_only {
+        let summary = summary
+            .as_ref()
+            .map(limits_artifact::shape)
+            .unwrap_or_else(|err| format!("<failed: {err}>\n"));
+        return Ok(format!(
+            "--- loadCodeAssist ---\n{}--- retrieveUserQuotaSummary (project {}) ---\n{summary}",
+            limits_artifact::shape(&assist),
+            if project.is_some() { "sent" } else { "omitted" },
+        ));
     }
+    let body = summary?;
 
     let export = LimitsExport {
         schema: limits_artifact::SCHEMA,
@@ -445,10 +470,28 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // ---------------------------------------------------------------------------
 
 fn post(access_token: &str, method: &str, body: Value) -> Result<Value, String> {
-    let response = ureq::post(&format!("{CLOUD_CODE}:{method}"))
+    let mut last = String::new();
+    for host in CLOUD_CODE_HOSTS {
+        match post_to(host, access_token, method, &body) {
+            Ok(answer) => return Ok(answer),
+            Err(err) => last = err,
+        }
+    }
+    Err(last)
+}
+
+fn post_to(host: &str, access_token: &str, method: &str, body: &Value) -> Result<Value, String> {
+    let response = ureq::post(&format!("{host}:{method}"))
         .set("Authorization", &format!("Bearer {access_token}"))
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
+        // Say who is actually asking, rather than arriving as an HTTP library's
+        // default. This is deliberately *not* an impersonation: the client id on
+        // the token already tells Google which app's quota is being asked about,
+        // and inventing a vendor version string here would be a guess dressed as
+        // a fact. If the surface ever gates on the client beyond that, the
+        // refusal below now says so in Google's own words.
+        .set("User-Agent", USER_AGENT)
         .timeout(Duration::from_secs(15))
         .send_string(&body.to_string());
     match response {
@@ -457,11 +500,51 @@ fn post(access_token: &str, method: &str, body: Value) -> Result<Value, String> 
             .map_err(|e| e.to_string())
             .and_then(|body| serde_json::from_str::<Value>(&body).map_err(|e| e.to_string()))
             .map_err(|e| format!("the vendor's answer could not be read: {e}")),
-        Err(ureq::Error::Status(401 | 403, _)) => Err(format!(
-            "{NOT_SIGNED_IN}: Google rejected the saved Antigravity sign-in (401/403)"
-        )),
-        Err(ureq::Error::Status(code, _)) => Err(format!("the vendor answered {code} to {method}")),
+        // A refusal carries Google's own reason, and throwing it away is how a
+        // diagnosable failure becomes "it doesn't work". A 401 answered to ONE
+        // method while another succeeds on the same token is not a sign-in
+        // problem at all, so the reason is what decides which card to draw.
+        Err(ureq::Error::Status(code, response)) => {
+            let reason = refusal(response);
+            if matches!(code, 401 | 403) && reason.is_empty() {
+                return Err(format!(
+                    "{NOT_SIGNED_IN}: Google rejected the saved Antigravity sign-in ({code})"
+                ));
+            }
+            Err(format!("the vendor answered {code} to {method}{reason}"))
+        }
         Err(err) => Err(format!("could not reach the vendor: {err}")),
+    }
+}
+
+/// Google's own explanation for a refusal — `status`, `message`, and any
+/// `details[].reason` — which is structure and prose, never a credential. The
+/// message is capped: it is a hint for a card and a bug report, not a log.
+fn refusal(response: ureq::Response) -> String {
+    let Some(body) = response.into_string().ok() else {
+        return String::new();
+    };
+    let Ok(body) = serde_json::from_str::<Value>(&body) else {
+        return String::new();
+    };
+    let error = body.get("error").unwrap_or(&body);
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(status) = error.get("status").and_then(|s| s.as_str()) {
+        parts.push(status.to_string());
+    }
+    if let Some(reason) = error
+        .pointer("/details/0/reason")
+        .and_then(|r| r.as_str())
+    {
+        parts.push(reason.to_string());
+    }
+    if let Some(message) = error.get("message").and_then(|m| m.as_str()) {
+        parts.push(message.chars().take(200).collect());
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" — {}", parts.join(": "))
     }
 }
 
