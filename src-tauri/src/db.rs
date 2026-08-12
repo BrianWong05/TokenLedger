@@ -1,5 +1,5 @@
 use crate::adapters::ctx::Composition;
-use crate::types::{FileState, UsageEvent};
+use crate::types::{FileState, LimitReading, UsageEvent};
 use chrono::{DateTime, Local, LocalResult, TimeZone, Utc};
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V14 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V15 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 13;
+const CURRENT_USER_VERSION: i64 = 14;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -300,6 +300,36 @@ CREATE INDEX IF NOT EXISTS idx_events_first_cw
   WHERE cache_write_5m_tokens + cache_write_1h_tokens > 0 AND session_id IS NOT NULL;
 PRAGMA user_version = 13;";
 
+// v14: Limit Readings — one observation of one rolling-window vendor quota
+// (CONTEXT.md). They hold no tokens, so they live beside the Ledger in their own
+// table rather than in `events`. The PRIMARY KEY is the reading's *content*
+// (#108), so with INSERT OR IGNORE an epoch stores its whole fill-curve at
+// integer resolution while re-scans, per-request repeats at an unchanged
+// percentage, and fork replays all collapse onto the row already there.
+// `used_pct` keeps the vendor's own figure unconverted. `window_key` is opaque
+// TEXT — Claude's response key, Codex's `w{canonical minutes}`, and one day
+// perhaps a pool prefix — never parsed for structure.
+// Clearing scanned_files is the established backfill pattern (V2-V5, V12): the
+// next scan re-parses every log once and Codex limit history back-fills
+// retroactively. Ingest is idempotent by the PK, so re-running the migration
+// (or running it from an intermediate dev build) can never consume the backfill.
+// No BEGIN/COMMIT here: migrate() runs the batches inside its own
+// BEGIN IMMEDIATE transaction.
+const SCHEMA_V14: &str = "\
+CREATE TABLE IF NOT EXISTS limit_readings (
+  source         TEXT NOT NULL,
+  window_key     TEXT NOT NULL,
+  window_minutes INTEGER,
+  used_pct       REAL NOT NULL,
+  resets_at      INTEGER NOT NULL,
+  observed_at    INTEGER NOT NULL,
+  via            TEXT NOT NULL,
+  plan           TEXT,
+  PRIMARY KEY (source, window_key, resets_at, used_pct)
+);
+DELETE FROM scanned_files;
+PRAGMA user_version = 14;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -526,6 +556,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if version < 13 {
             conn.execute_batch(SCHEMA_V13)?;
         }
+        if version < 14 {
+            conn.execute_batch(SCHEMA_V14)?;
+        }
         Ok(())
     };
     match apply() {
@@ -609,6 +642,39 @@ fn set_wal(conn: &Connection) -> rusqlite::Result<()> {
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Append Limit Readings. The PK is the reading's content, so INSERT OR IGNORE
+/// is the whole dedup rule: a re-scan, a per-request repeat at an unchanged
+/// percentage, and a fork replay of the same block all land on the stored row.
+/// Returns the number of genuinely new rows.
+pub fn insert_limit_readings(
+    conn: &mut Connection,
+    readings: &[LimitReading],
+) -> rusqlite::Result<u64> {
+    let tx = conn.transaction()?;
+    let mut inserted = 0u64;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR IGNORE INTO limit_readings \
+             (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for r in readings {
+            inserted += stmt.execute(params![
+                r.source,
+                r.window_key,
+                r.window_minutes,
+                r.used_pct,
+                r.resets_at,
+                r.observed_at,
+                r.via,
+                r.plan,
+            ])? as u64;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
 }
 
 pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<u64> {
@@ -1088,7 +1154,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, CURRENT_USER_VERSION);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts"] {
+        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "limit_readings"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -1283,6 +1349,82 @@ mod tests {
             !SCHEMA_V9.contains("scanned_files"),
             "the price-catalog migration must not clear scan state",
         );
+    }
+
+    #[test]
+    fn v13_db_migrates_to_v14_creating_limit_readings_and_clearing_scan_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // A genuine v13 database: every batch up to V13 and nothing after.
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                 cache_write_1h_tokens, source_file) \
+                 VALUES ('codex:old:1','codex',1,'gpt-5.4',NULL,1,10,20,0,0,0,'f')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let mut conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 14);
+        // Scan state cleared, so the next scan re-parses every log once and Codex
+        // limit history back-fills retroactively.
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 0);
+        // The Ledger is untouched by it.
+        let input: i64 = conn
+            .query_row("SELECT input_tokens FROM events WHERE dedup_key='codex:old:1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(input, 10);
+
+        // The table exists and its PK is the reading's content.
+        let reading = |used_pct: f64, resets_at: i64| LimitReading {
+            source: "codex".to_string(),
+            window_key: "w10080".to_string(),
+            window_minutes: Some(10080),
+            used_pct,
+            resets_at,
+            observed_at: 1_786_331_779,
+            via: "logs".to_string(),
+            plan: Some("plus".to_string()),
+        };
+        assert_eq!(
+            insert_limit_readings(&mut conn, &[reading(40.0, 100), reading(40.0, 100)]).unwrap(),
+            1,
+            "identical content is one row",
+        );
+        assert_eq!(
+            insert_limit_readings(&mut conn, &[reading(41.0, 100), reading(40.0, 200)]).unwrap(),
+            2,
+            "a new percentage and a new epoch are each their own row",
+        );
+
+        // Re-running the migration is safe: nothing here is a one-shot backfill,
+        // so an intermediate dev build against the real database cannot consume it.
+        conn.execute_batch(SCHEMA_V14).unwrap();
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 3);
     }
 
     #[test]
