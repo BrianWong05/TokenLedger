@@ -24,7 +24,7 @@ use serde_json::Value;
 use super::claude_ctx::{content_bytes, est};
 use super::{file_state_of, percent_decode, unchanged};
 use crate::db::{insert_limit_readings, replace_file_events, set_file_state};
-use crate::limits_artifact::window_key;
+use crate::limits_artifact::grok_credit_window;
 use crate::time::iso_to_epoch;
 use crate::types::{CtxTokens, FileState, LimitReading, SourceScanResult, UsageEvent};
 
@@ -140,10 +140,10 @@ fn capture_limits(conn: &mut Connection, unified_log: &Path, result: &mut Source
 }
 
 /// One logged credits reading → a Limit Reading, or None when it names no window
-/// this card can place. The window is keyed off the vendor's own period *type*
-/// rather than off the measured duration: a 28-day February falls outside the
-/// canonical 43200 ±5% band, so classifying by duration would split one card's
-/// history into two keys once a year.
+/// this card can place. The window maths lives in `limits_artifact::grok_credit_window`,
+/// shared with the live Companion because both see the identical `config` shape;
+/// this path adds only what the log envelope carries — the observation time, the
+/// plan, and the `logs` provenance.
 fn billing_reading(line: &str) -> Option<LimitReading> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v.get("msg").and_then(Value::as_str) != Some(BILLING_MSG) {
@@ -151,52 +151,17 @@ fn billing_reading(line: &str) -> Option<LimitReading> {
     }
     let ctx = v.get("ctx")?;
     let config = ctx.get("config")?;
-    let period = config.get("currentPeriod");
 
     // The envelope stamp, never a filename date: this is when the CLI was told.
     let observed_at = v.get("ts").and_then(Value::as_str).and_then(iso_to_epoch)?;
-    // The payload is proto3 serialised as JSON, which omits zero-valued scalars,
-    // so an ABSENT percentage is 0% used — not a schema change. Reading it as
-    // malformed would silently drop the start of every window (7 of 24 rows in
-    // the corpus this was read against).
-    let used_pct = config
-        .get("creditUsagePercent")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    // `billingPeriodEnd` is the deprecated mirror, identical on every observed
-    // row. It covers a period that states its type but not its end; a payload
-    // carrying *only* the mirror names no period type, and an unnameable window
-    // cannot be keyed however well its reset is known.
-    let resets_at = period
-        .and_then(|p| p.get("end"))
-        .or_else(|| config.get("billingPeriodEnd"))
-        .and_then(Value::as_str)
-        .and_then(iso_to_epoch)?;
-    let canonical_minutes = match period.and_then(|p| p.get("type")).and_then(Value::as_str)? {
-        "USAGE_PERIOD_TYPE_WEEKLY" => 10_080,
-        "USAGE_PERIOD_TYPE_MONTHLY" => 43_200,
-        // A period type nobody has seen is not guessed into a lane it may not
-        // belong to; an absent window is unknown, never zero.
-        _ => return None,
-    };
-    // The bar's time axis, measured where the payload states both bounds — a
-    // calendar month is not 43200 minutes, and the tick would sit wrong.
-    let window_minutes = period
-        .and_then(|p| p.get("start"))
-        .and_then(Value::as_str)
-        .and_then(iso_to_epoch)
-        .map(|start| (resets_at - start) / 60)
-        .filter(|&minutes| minutes > 0)
-        .unwrap_or(canonical_minutes);
+    let window = grok_credit_window(config)?;
 
     Some(LimitReading {
         source: "grok".to_string(),
-        // Through the shared grammar, so a key here and a key from any other
-        // producer of the same window are spelled identically.
-        window_key: window_key(canonical_minutes),
-        window_minutes: Some(window_minutes),
-        used_pct,
-        resets_at,
+        window_key: window.key,
+        window_minutes: window.window_minutes,
+        used_pct: window.used_pct,
+        resets_at: window.resets_at,
         observed_at,
         via: "logs".to_string(),
         // The CLI merges the plan in from its cached settings before logging, so

@@ -36,13 +36,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use tokenledger_lib::limits_artifact::{self, window_key, LimitsExport, WindowExport, NOT_SIGNED_IN};
+use tokenledger_lib::limits_artifact::{self, grok_credit_window, LimitsExport, NOT_SIGNED_IN};
 use tokenledger_lib::time::iso_to_epoch;
 
-/// The CLI's own quota surface. `?format=credits` is load-bearing: it selects the
-/// modern `creditUsagePercent`/`currentPeriod` shape; bare `/v1/billing` returns
-/// the deprecated monthly meter. Overridable for self-hosted proxies, which the
-/// CLI supports through the same variable.
+/// The CLI's own billing surface — the credits reading it shows in `/usage`.
+/// `?format=credits` is load-bearing: it selects the modern
+/// `creditUsagePercent`/`currentPeriod` shape; bare `/v1/billing` returns the
+/// deprecated monthly meter. Overridable for self-hosted proxies, which the CLI
+/// supports through the same variable.
 const DEFAULT_BASE: &str = "https://cli-chat-proxy.grok.com/v1";
 const BASE_ENV: &str = "GROK_CLI_CHAT_PROXY_BASE_URL";
 /// xAI's token endpoint. The CLI discovers this from the issuer's
@@ -86,7 +87,10 @@ fn run() -> Result<String, String> {
     }
 
     let config = billing.get("config").unwrap_or(&billing);
-    let windows = window(config).into_iter().collect::<Vec<_>>();
+    // Same mapper the scan's log ingest uses — the live `config` and the logged
+    // `ctx.config` are the identical shape, so a live reading and a logged one of
+    // the same window land in the same series.
+    let windows = grok_credit_window(config).into_iter().collect::<Vec<_>>();
     if windows.is_empty() {
         return Err(format!(
             "the vendor's answer carried no usable credit window (fields: {})",
@@ -145,8 +149,9 @@ fn credential() -> Result<Credential, String> {
 
 /// `auth.json` is a **map** keyed by `{issuer}::{client_id}` — a machine may hold
 /// several, so the entries are iterated rather than one assumed. The first entry
-/// carrying an access token (`key`) and a refresh token is taken; the client id
-/// is the entry's own `oidc_client_id`, falling back to the tail of the map key.
+/// carrying an access token (`key`) is taken; its refresh token, if any, is kept
+/// for the on-expiry refresh, and the client id is the entry's own
+/// `oidc_client_id`, falling back to the tail of the map key.
 fn parse_credential(raw: &str) -> Result<Credential, String> {
     let v: Value = serde_json::from_str(raw)
         .map_err(|_| "the stored Grok sign-in could not be read".to_string())?;
@@ -258,6 +263,11 @@ fn fetch(url: &str, access_token: &str, user_id: Option<&str>) -> Result<Value, 
     if let Some(user_id) = user_id {
         request = request.set("x-userid", user_id);
     }
+    // The CLI also sends `x-grok-client-version`, but it is deliberately omitted:
+    // openusage omits it and works, server enforcement is unconfirmed (the
+    // research could not determine it), and we have no honest version to send —
+    // the CLI's own changes with each release, and a stale guess risks a spurious
+    // reject. ponytail: if a 400 ever traces to it, read `~/.grok/version.json`.
     match request.call() {
         Ok(response) => response
             .into_string()
@@ -284,40 +294,6 @@ fn plan(base: &str, access_token: &str, user_id: Option<&str>) -> Option<String>
         .map(str::to_string)
 }
 
-/// The one credit window this card draws. Keyed off the vendor's own period
-/// *type*, never the measured duration (a 28-day February would fall outside the
-/// canonical 43200 ±5% band and split one card's history), and through the shared
-/// `window_key` grammar so a live reading and a logged one of the same window
-/// land in the same series. An absent `creditUsagePercent` is 0% used — the
-/// payload is proto3-as-JSON, which omits zero-valued scalars.
-fn window(config: &Value) -> Option<WindowExport> {
-    let period = config.get("currentPeriod");
-    let used_pct = config.get("creditUsagePercent").and_then(|p| p.as_f64()).unwrap_or(0.0);
-    let resets_at = period
-        .and_then(|p| p.get("end"))
-        .or_else(|| config.get("billingPeriodEnd"))
-        .and_then(|e| e.as_str())
-        .and_then(iso_to_epoch)?;
-    let canonical_minutes = match period.and_then(|p| p.get("type")).and_then(|t| t.as_str())? {
-        "USAGE_PERIOD_TYPE_WEEKLY" => 10_080,
-        "USAGE_PERIOD_TYPE_MONTHLY" => 43_200,
-        _ => return None,
-    };
-    let window_minutes = period
-        .and_then(|p| p.get("start"))
-        .and_then(|s| s.as_str())
-        .and_then(iso_to_epoch)
-        .map(|start| (resets_at - start) / 60)
-        .filter(|&m| m > 0)
-        .unwrap_or(canonical_minutes);
-    Some(WindowExport {
-        key: window_key(canonical_minutes),
-        window_minutes: Some(window_minutes),
-        used_pct,
-        resets_at,
-    })
-}
-
 /// Top-level field names — structure only, for the no-window error.
 fn field_names(config: &Value) -> Vec<String> {
     config
@@ -337,58 +313,9 @@ fn now() -> i64 {
 mod tests {
     use super::*;
 
-    // A real credits response's `config`, weekly pool. `creditUsagePercent` is an
-    // integer on the wire (0,1,12,…) — proto3 omits it entirely at 0%.
-    const CONFIG: &str = r#"{
-        "creditUsagePercent": 16,
-        "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY",
-            "start": "2026-07-05T00:00:00.000000+00:00",
-            "end": "2026-07-12T00:00:00.000000+00:00"},
-        "billingPeriodEnd": "2026-07-12T00:00:00.000000+00:00",
-        "isUnifiedBillingUser": true
-    }"#;
-
-    #[test]
-    fn the_weekly_pool_becomes_one_window_keyed_through_the_shared_grammar() {
-        let found = window(&serde_json::from_str(CONFIG).unwrap()).unwrap();
-        assert_eq!(found.key, "w10080", "same key the log path stores, so one series");
-        assert_eq!(found.window_minutes, Some(10_080));
-        assert_eq!(found.used_pct, 16.0);
-        assert_eq!(found.resets_at, iso_to_epoch("2026-07-12T00:00:00").unwrap());
-    }
-
-    #[test]
-    fn an_absent_percent_is_zero_used_not_a_missing_window() {
-        // proto3 omits zero-valued scalars, so the start of every window has no
-        // `creditUsagePercent` — dropping it would lose exactly those readings.
-        let config: Value = serde_json::from_str(
-            r#"{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-07-12T00:00:00Z"}}"#,
-        )
-        .unwrap();
-        assert_eq!(window(&config).unwrap().used_pct, 0.0);
-    }
-
-    #[test]
-    fn a_period_this_card_cannot_place_yields_no_window() {
-        // No reset, and a period type nobody has seen: neither can be placed, and
-        // an unnameable window is unknown rather than guessed.
-        for config in [
-            r#"{"creditUsagePercent":10,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"}}"#,
-            r#"{"creditUsagePercent":10,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_FORTNIGHTLY","end":"2026-07-12T00:00:00Z"}}"#,
-        ] {
-            assert!(window(&serde_json::from_str(config).unwrap()).is_none(), "{config}");
-        }
-    }
-
-    #[test]
-    fn the_deprecated_reset_mirror_is_the_fallback() {
-        let config: Value = serde_json::from_str(
-            r#"{"creditUsagePercent":5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"},
-                "billingPeriodEnd":"2026-07-12T00:00:00Z"}"#,
-        )
-        .unwrap();
-        assert_eq!(window(&config).unwrap().resets_at, iso_to_epoch("2026-07-12T00:00:00").unwrap());
-    }
+    // The `config` → window mapping is shared with the log path and tested in
+    // `limits_artifact` (grok_credit_window). What is specific to this Companion —
+    // the credential document and the token gate — is what is tested here.
 
     #[test]
     fn the_credential_is_read_from_the_first_entry_carrying_a_token() {
