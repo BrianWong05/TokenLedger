@@ -828,8 +828,10 @@ pub fn clear_file_state(conn: &Connection, path: &str) -> rusqlite::Result<()> {
 /// events are never touched. From v15 this also drops the Codex Context rows
 /// keyed to those paths, which is how a rollout demoted to a physical alias
 /// stops contributing a second drill-down — the cost being that a Codex rollout
-/// the user really deletes takes its Context with it for good. Only Codex:
-/// every other Source's Context is unrecoverable once its Artifact is gone.
+/// the user really deletes takes its Context with it for good. Codex only: its
+/// Context is keyed to whichever physical alias won discovery, so a path that
+/// leaves disk must not keep a drill-down alive under a name nothing scans any
+/// more. Every other Source keeps its Context, on the same rule as events.
 pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     let paths: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM scanned_files")?;

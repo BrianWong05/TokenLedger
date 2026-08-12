@@ -64,8 +64,12 @@ pub(crate) fn find_jsonl_by_file_identity(
     // rollout mints (codex.rs:287), so a change of winner mints a permanent
     // second copy of the Session. Sort links last so the real file always wins
     // and the key cannot move when someone drops a link beside it.
-    files.sort_by(|a, b| a.is_symlink().cmp(&b.is_symlink()).then_with(|| a.cmp(b)));
-    for path in files {
+    // Decorated so the flag costs one `symlink_metadata` per path rather than
+    // one per comparison: this pass runs on every scan, including the no-op
+    // ones where nothing is re-parsed.
+    let mut files: Vec<(bool, PathBuf)> = files.into_iter().map(|p| (p.is_symlink(), p)).collect();
+    files.sort();
+    for (_, path) in files {
         // Insert outside the match guard: a guard only borrows what it binds,
         // and FileIdentity is a PathBuf off unix, so moving it here would not
         // compile there (E0507).
