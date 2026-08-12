@@ -146,7 +146,7 @@ describe('card states', () => {
       'Sign-in unavailable',
     );
     expect(claude.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      "TokenLedger couldn't find a usable claude sign-in. Check where claude stores its sign-in, then try again.",
+      "TokenLedger couldn't use a claude sign-in. Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.",
     );
     expect(claude.querySelector('.tl-lim-plan')).toBeNull();
     expect(btn(claude, 'Check again')).toBeTruthy();
@@ -183,7 +183,7 @@ describe('card states', () => {
 
   it('does not call a Codex home-specific credential failure a machine-wide sign-out', async () => {
     const c = await mount(fakePort({
-      list: () => Promise.resolve([]),
+      list: () => Promise.resolve([CODEX_WEEKLY]),
       checkLive: (source) => source === 'codex'
         ? Promise.reject(new Error('not signed in: no Codex sign-in found on this computer'))
         : Promise.resolve(),
@@ -194,7 +194,7 @@ describe('card states', () => {
       'Sign-in unavailable',
     );
     expect(codex.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      "TokenLedger couldn't find a usable codex sign-in. Check where codex stores its sign-in, then try again.",
+      "TokenLedger couldn't use a codex sign-in. Run codex once to sign in or renew it, or check where codex stores its sign-in, then check again.",
     );
   });
 
