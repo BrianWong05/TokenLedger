@@ -61,9 +61,21 @@ pub(crate) fn find_jsonl_by_file_identity(
     find_jsonl(dir, &mut files);
     files.sort();
     for path in files {
+        // Insert outside the match guard: a guard only borrows what it binds,
+        // and FileIdentity is a PathBuf off unix, so moving it here would not
+        // compile there (E0507).
         match file_identity(&path) {
-            Ok(identity) if !seen.insert(identity) => aliases.push(path),
-            _ => out.push(path),
+            Ok(identity) => {
+                if seen.insert(identity) {
+                    out.push(path);
+                } else {
+                    aliases.push(path);
+                }
+            }
+            // An unreadable identity is never an alias: a transient stat
+            // failure must not send a real rollout through the cleanup loop
+            // that erases its scan state and Context.
+            Err(_) => out.push(path),
         }
     }
 }
