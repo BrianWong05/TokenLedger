@@ -54,16 +54,18 @@ pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
 pub(crate) fn find_jsonl_by_file_identity(
     dir: &Path,
     out: &mut Vec<PathBuf>,
+    aliases: &mut Vec<PathBuf>,
     seen: &mut HashSet<FileIdentity>,
 ) {
     let mut files = Vec::new();
     find_jsonl(dir, &mut files);
     files.sort();
-    out.extend(
-        files
-            .into_iter()
-            .filter(|path| file_identity(path).map_or(true, |identity| seen.insert(identity))),
-    );
+    for path in files {
+        match file_identity(&path) {
+            Ok(identity) if !seen.insert(identity) => aliases.push(path),
+            _ => out.push(path),
+        }
+    }
 }
 
 #[cfg(unix)]

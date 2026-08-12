@@ -330,12 +330,15 @@ CREATE TABLE IF NOT EXISTS limit_readings (
 DELETE FROM scanned_files;
 PRAGMA user_version = 14;";
 
-// v15: physical aliases could make one Codex rollout contribute multiple
-// path-keyed ctx_tools rows. They are derived scan state, so discard and
-// rebuild them after discovery starts collapsing aliases by file identity.
-// The Ledger is permanent and remains untouched.
+// v15: physical aliases could make one Source Artifact contribute multiple
+// path-keyed Context rows. They are derived scan state, so discard and rebuild
+// them with pi's ownership map after discovery starts collapsing aliases by
+// file identity. The Ledger is permanent and remains untouched.
 const SCHEMA_V15: &str = "\
 DELETE FROM ctx_tools;
+DELETE FROM ctx_exec;
+DELETE FROM ctx_skills_usage;
+DELETE FROM pi_tool_owner;
 DELETE FROM scanned_files;
 DELETE FROM session_ctx;
 PRAGMA user_version = 15;";
@@ -816,6 +819,11 @@ pub fn set_file_state(conn: &Connection, path: &str, state: FileState) -> rusqli
     Ok(())
 }
 
+pub fn clear_file_state(conn: &Connection, path: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM scanned_files WHERE path = ?1", [path])?;
+    Ok(())
+}
+
 pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     let paths: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM scanned_files")?;
@@ -825,7 +833,11 @@ pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     let mut removed = 0u64;
     for p in paths {
         if !std::path::Path::new(&p).exists() {
-            conn.execute("DELETE FROM scanned_files WHERE path = ?1", [&p])?;
+            conn.execute(
+                "DELETE FROM ctx_tools WHERE source = 'codex' AND source_file = ?1",
+                [&p],
+            )?;
+            clear_file_state(conn, &p)?;
             removed += 1;
         }
     }
@@ -1441,7 +1453,7 @@ mod tests {
     }
 
     #[test]
-    fn v14_db_migrates_to_v15_rebuilding_context_tool_rows() {
+    fn v14_db_migrates_to_v15_rebuilding_context_rows() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         {
@@ -1467,7 +1479,29 @@ mod tests {
             .unwrap();
             conn.execute(
                 "INSERT INTO ctx_tools (source, source_file, name, day, est_tokens, calls) \
-                 VALUES ('codex', 'rollout.jsonl', 'shell', '2026-05-03', 10, 2)",
+                 VALUES ('codex', 'rollout.jsonl', 'shell', '2026-05-03', 10, 2), \
+                        ('claude', 'missing.jsonl', 'Bash', '2026-05-03', 10, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ctx_exec \
+                 (source, source_file, day, kind, exe, cmd, est_tokens, calls) \
+                 VALUES ('claude', 'missing.jsonl', '2026-05-03', 'test', 'cargo', \
+                         'cargo test', 10, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ctx_skills_usage \
+                 (source, source_file, name, day, est_tokens, uses) \
+                 VALUES ('claude', 'missing.jsonl', 'tdd', '2026-05-03', 10, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pi_tool_owner (ident, source_file) \
+                 VALUES ('tool-entry', 'missing.jsonl')",
                 [],
             )
             .unwrap();
@@ -1479,8 +1513,16 @@ mod tests {
         let files: i64 =
             conn.query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0)).unwrap();
         let tools: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_tools", [], |r| r.get(0)).unwrap();
+        let exec: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_exec", [], |r| r.get(0)).unwrap();
+        let skills: i64 =
+            conn.query_row("SELECT COUNT(*) FROM ctx_skills_usage", [], |r| r.get(0)).unwrap();
+        let owners: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pi_tool_owner", [], |r| r.get(0)).unwrap();
 
-        assert_eq!((version, events, files, tools), (15, 1, 0, 0));
+        assert_eq!(
+            (version, events, files, tools, exec, skills, owners),
+            (CURRENT_USER_VERSION, 1, 0, 0, 0, 0, 0)
+        );
     }
 
     #[test]

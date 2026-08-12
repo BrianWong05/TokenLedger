@@ -46,8 +46,9 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
 pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
+    let mut aliases = Vec::new();
     let mut seen = HashSet::new();
-    find_jsonl_by_file_identity(sessions_root, &mut files, &mut seen);
+    find_jsonl_by_file_identity(sessions_root, &mut files, &mut aliases, &mut seen);
     for path in files {
         match scan_file(conn, &path) {
             Ok((inserted, skipped)) => {
@@ -55,6 +56,14 @@ pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResu
                 result.lines_skipped += skipped;
             }
             Err(e) => result.error = Some(e),
+        }
+    }
+    for path in aliases {
+        let source_file = path.to_string_lossy();
+        if let Err(error) = db::clear_file_state(conn, &source_file)
+            .and_then(|_| db::clear_ctx_tools_for_file(conn, &source_file))
+        {
+            result.error = Some(error.to_string());
         }
     }
     result
@@ -347,6 +356,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
 mod tests {
     use super::*;
     use crate::db::open_db;
+    #[cfg(unix)]
     use crate::queries::{ctx_tools, Filters};
 
     fn fixture_root() -> std::path::PathBuf {
@@ -581,6 +591,34 @@ mod tests {
 
         assert_eq!((scan.events_inserted, tools.len(), tools[0].calls), (1, 1, 1));
         assert_eq!(source_file, alias.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_replaces_context_when_alias_winner_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let rollout = write_rollout(&root, "rollout-b.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        scan_codex(&mut conn, &root);
+        let alias = root.join("rollout-a.jsonl");
+        std::fs::hard_link(&rollout, &alias).unwrap();
+        scan_codex(&mut conn, &root);
+
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
+
+        std::fs::remove_file(alias).unwrap();
+        scan_codex(&mut conn, &root);
+        db::prune_missing_files(&conn).unwrap();
+
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
     }
 
     // ---- Limit Readings (#104 ingest rules) ----
