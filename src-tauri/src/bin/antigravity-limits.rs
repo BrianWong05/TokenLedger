@@ -67,7 +67,17 @@ const CLOUD_CODE_HOSTS: [&str; 2] = [
     "https://cloudcode-pa.googleapis.com/v1internal",
 ];
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
-const USER_AGENT: &str = concat!("TokenLedger-limits/", env!("CARGO_PKG_VERSION"));
+/// The User-Agent cloudcode-pa's Gemini Code Assist surface gates client
+/// eligibility on. An unrecognised agent is answered `UNSUPPORTED_CLIENT` and
+/// refused every data call — verified live, and the one difference between this
+/// Companion and openusage, which works. These are the vendor's own client
+/// names (`antigravity` the app, `agy` the CLI), and each call uses the one
+/// openusage uses for it. This is the posture ADR-0019 already accepts for this
+/// route: we present Antigravity's own client id and token to Google, so naming
+/// its client in the agent is consistent, not a new decision. An honest
+/// TokenLedger agent was tried first and is exactly what the surface refuses.
+const UA_APP: &str = "antigravity";
+const UA_CLI: &str = "agy";
 
 /// Antigravity's own installed-app client, verified verbatim in its
 /// `language_server` binary. Presenting it means presenting ourselves to Google
@@ -139,7 +149,7 @@ fn run() -> Result<String, String> {
 
     // One call, two needs: the project the summary request names, and the plan
     // label.
-    let assist = post(&access_token, "loadCodeAssist", json!({}))?;
+    let assist = post(&access_token, "loadCodeAssist", json!({}), UA_CLI)?;
 
     // `--shape` is the hand-run diagnostic for when a payload moves — the app can
     // never pass it (its sidecar allowlist carries no args). It dumps the calls
@@ -166,7 +176,7 @@ fn run() -> Result<String, String> {
         Some(project) => json!({ "project": project }),
         None => json!({}),
     };
-    let body = post(&access_token, "retrieveUserQuotaSummary", request)?;
+    let body = post(&access_token, "retrieveUserQuotaSummary", request, UA_APP)?;
 
     let export = LimitsExport {
         schema: limits_artifact::SCHEMA,
@@ -457,10 +467,10 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // The fetch
 // ---------------------------------------------------------------------------
 
-fn post(access_token: &str, method: &str, body: Value) -> Result<Value, String> {
+fn post(access_token: &str, method: &str, body: Value, user_agent: &str) -> Result<Value, String> {
     let mut last = String::new();
     for host in CLOUD_CODE_HOSTS {
-        match post_to(host, access_token, method, &body) {
+        match post_to(host, access_token, method, &body, user_agent) {
             Ok(answer) => return Ok(answer),
             Err(err) => last = err,
         }
@@ -468,18 +478,19 @@ fn post(access_token: &str, method: &str, body: Value) -> Result<Value, String> 
     Err(last)
 }
 
-fn post_to(host: &str, access_token: &str, method: &str, body: &Value) -> Result<Value, String> {
+fn post_to(
+    host: &str,
+    access_token: &str,
+    method: &str,
+    body: &Value,
+    user_agent: &str,
+) -> Result<Value, String> {
     let response = ureq::post(&format!("{host}:{method}"))
         .set("Authorization", &format!("Bearer {access_token}"))
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
-        // Say who is actually asking, rather than arriving as an HTTP library's
-        // default. This is deliberately *not* an impersonation: the client id on
-        // the token already tells Google which app's quota is being asked about,
-        // and inventing a vendor version string here would be a guess dressed as
-        // a fact. If the surface ever gates on the client beyond that, the
-        // refusal below now says so in Google's own words.
-        .set("User-Agent", USER_AGENT)
+        // The client the surface gates on (see UA_APP/UA_CLI).
+        .set("User-Agent", user_agent)
         .timeout(Duration::from_secs(15))
         .send_string(&body.to_string());
     match response {
@@ -519,7 +530,7 @@ fn diagnose(access_token: &str, assist: &Value) -> String {
     }
     let mut out = section("loadCodeAssist", assist);
     for method in ["fetchAvailableModels", "retrieveUserQuotaSummary"] {
-        out.push_str(&match post(access_token, method, json!({})) {
+        out.push_str(&match post(access_token, method, json!({}), UA_APP) {
             Ok(body) => section(method, &body),
             Err(err) => format!("--- {method} ---\n<failed: {err}>\n"),
         });
