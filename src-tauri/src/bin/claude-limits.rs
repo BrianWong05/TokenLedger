@@ -40,6 +40,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport};
+use tokenledger_lib::time::iso_to_epoch;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -58,8 +59,9 @@ const NOT_SIGNED_IN: &str = "not signed in";
 
 fn main() {
     match run() {
-        // stdout is the Artifact document itself: the app parses it, and the
-        // page has its figures without waiting for a scan.
+        // stdout echoes the Artifact for a hand run and for inspection. It is not
+        // the ingest path — the app reads the file, per ADR-0019 — so this is an
+        // echo, not a contract.
         Ok(report) => println!("{report}"),
         Err(err) => {
             eprintln!("claude-limits: {err}");
@@ -88,13 +90,14 @@ fn run() -> Result<String, String> {
     };
     let document = serde_json::to_string(&export).map_err(|e| e.to_string())?;
 
-    // The durable Artifact the scan reads like any other file (ADR-0019). The
-    // app names the directory; a hand run just prints. Writing it is not allowed
-    // to cost the reading, so a failure here is narrated and moves on.
+    // The durable Artifact is how the reading reaches the app at all — the scan
+    // and the command both read the file, never this process's stdout (ADR-0019).
+    // So a failed write is a failed run: exiting 0 here would report success
+    // having delivered nothing, and the card would show an absence rather than
+    // the error that caused it. A hand run with no directory named just prints.
     if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
-        if let Err(err) = write_artifact(&PathBuf::from(dir), &document) {
-            eprintln!("claude-limits: could not write the export: {err}");
-        }
+        write_artifact(&PathBuf::from(dir), &document)
+            .map_err(|err| format!("could not write the export: {err}"))?;
     }
     Ok(document)
 }
@@ -309,27 +312,6 @@ fn window_minutes(key: &str) -> Option<i64> {
         return Some(10080);
     }
     None
-}
-
-/// ISO-8601 UTC → unix seconds. Deliberately not a date library: the vendor's
-/// stamp is `YYYY-MM-DDTHH:MM:SS…Z`, and this is the same arithmetic the scan
-/// uses on Codex's envelope timestamps.
-fn iso_to_epoch(s: &str) -> Option<i64> {
-    if s.len() < 19 {
-        return None;
-    }
-    let n = |range: std::ops::Range<usize>| -> Option<i64> { s.get(range)?.parse().ok() };
-    let (year, month, day) = (n(0..4)?, n(5..7)?, n(8..10)?);
-    let (hour, min, sec) = (n(11..13)?, n(14..16)?, n(17..19)?);
-
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if month > 2 { month - 3 } else { month + 9 };
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + hour * 3600 + min * 60 + sec)
 }
 
 fn now() -> i64 {

@@ -1,4 +1,4 @@
-// Limits tab: one card per Source with a vendor quota — how much of each rolling
+// Limits tab: one card per Source with a vendor Limit — how much of each rolling
 // window is used, when it resets, and whether the pace is comfortable. It ignores
 // the Overview's date window and Source selection entirely: this page is *now*,
 // not a range.
@@ -61,11 +61,16 @@ export default function LimitsPage({
   // per Source and kept distinct: exit 44 or a refused credential is "not signed
   // in", anything else is "couldn't check" with the Companion's own line.
   const checkLive = useCallback(
-    (force: boolean) => {
+    () => {
+      // The floor has no override, not even a button: it is a promise to the
+      // vendor's endpoint (whose budget is shared with the Source's own CLI), so
+      // "a person asked" is what permits a call at all, never what exempts it.
+      // Refresh still always runs a scan, which is how a `logs` Source updates,
+      // so the button is never inert.
       const due = limitsSources()
         .filter(({ via }) => via === 'live')
         .map(({ meta }) => meta.key)
-        .filter((key) => force || now() - Number(port.read(lastCheckKey(key)) ?? 0) >= LIVE_FLOOR_MS);
+        .filter((key) => now() - Number(port.read(lastCheckKey(key)) ?? 0) >= LIVE_FLOOR_MS);
       if (!due.length) return;
 
       setChecking(true);
@@ -100,20 +105,20 @@ export default function LimitsPage({
   // disclosure has been accepted. No credential is read before that.
   useEffect(() => {
     reload();
-    if (liveEnabled) checkLive(false);
+    if (liveEnabled) checkLive();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page-open only, by design
   }, []);
 
   const refresh = () => {
     // For a `logs` Source, Refresh is just an ordinary scan.
     Promise.resolve(port.scan()).catch(() => {}).finally(reload);
-    if (liveEnabled) checkLive(true);
+    if (liveEnabled) checkLive();
   };
 
   const enableLive = () => {
     port.write(LIVE_ENABLED_KEY, 'true');
     setLiveEnabled(true);
-    checkLive(true);
+    checkLive();
   };
 
   const pick = (next: Mode) => {
@@ -151,7 +156,7 @@ export default function LimitsPage({
       {liveEnabled ? (
         <div className="tl-lim-grid">
           {views.map((card) => (
-            <Card key={card.source} card={card} mode={mode} nowSec={nowSec} t={t} onRetry={() => checkLive(true)} />
+            <Card key={card.source} card={card} mode={mode} nowSec={nowSec} t={t} onRetry={() => checkLive()} />
           ))}
         </div>
       ) : (
@@ -205,10 +210,16 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
 
   return (
     <div className="tl-lim-row">
-      <span className={'tl-lim-num ' + w.tone} aria-hidden={spent}>
-        {Math.round(w.pct)}
-        <span className="pct">%</span>
-      </span>
+      {/* A used-up window replaces its figures rather than reading "0% left" —
+          the column keeps its width so the bars below stay aligned. */}
+      {spent ? (
+        <span className="tl-lim-num" aria-hidden="true" />
+      ) : (
+        <span className={'tl-lim-num ' + w.tone}>
+          {Math.round(w.pct)}
+          <span className="pct">%</span>
+        </span>
+      )}
       <div className="tl-lim-body">
         <div className="tl-lim-labels">
           <span className="tl-lim-label">
@@ -222,10 +233,8 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
               </>
             )}
           </span>
-          <span className="tl-lim-resets">
-            {spent
-              ? resets && fill(t('limits.spent'), { t: resets })
-              : resets && fill(t('limits.resetsIn'), { t: resets })}
+          <span className={'tl-lim-resets' + (spent ? ' spent' : '')}>
+            {resets && fill(t(spent ? 'limits.spent' : 'limits.resetsIn'), { t: resets })}
           </span>
         </div>
         <div
@@ -237,7 +246,7 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
         >
           <div className="fill" style={{ width: `${w.pct}%` }} />
           {/* the tick is TIME (where "now" sits in the window), so it stays
-              neutral — never tinted by the quota tones around it */}
+              neutral — never tinted by the scarcity tones around it */}
           {w.tickPct !== null && resets && (
             <div
               className="tick"

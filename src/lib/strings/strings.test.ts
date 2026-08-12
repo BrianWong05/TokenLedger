@@ -27,4 +27,18 @@ describe('strings', () => {
       }
     }
   });
+
+  // CONTEXT.md's entry for *Limit* carries an _Avoid_ list, and docs/agents/
+  // domain.md makes it binding: a glossary term must not be swapped for a synonym
+  // the glossary rejects. The Limits copy reached for "quota" anyway, in both
+  // languages, in the very paragraph that discloses what the feature does — so
+  // the rule is a test now rather than a comment. The domain word is "window".
+  it('uses the Limits vocabulary, not the synonyms CONTEXT.md rejects', () => {
+    const rejected = /\bquota\b|配額|\ballowance\b|\bthrottl|\brate limit/i;
+    for (const [lang, entries] of Object.entries(limits)) {
+      for (const [key, value] of Object.entries(entries as Record<string, string>)) {
+        expect(value, `limits.${lang}.${key}`).not.toMatch(rejected);
+      }
+    }
+  });
 });

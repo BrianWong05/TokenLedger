@@ -8,7 +8,9 @@ mod queries;
 mod scan;
 mod settings;
 mod source_catalog;
-mod time;
+// Public so the companion binaries share the crate's own time arithmetic rather
+// than each re-deriving it.
+pub mod time;
 mod tray;
 mod types;
 mod updater;
@@ -321,9 +323,12 @@ fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
 /// only place the app reaches a vendor with a credential, and it stays honest
 /// about the boundary the same three ways `export_antigravity` does: a person has
 /// to ask for it, it happens in a separate process, and the scan itself never
-/// calls it. The Companion writes an Export Artifact and prints it; this ingests
-/// what it printed so the page has its figures without waiting for a scan, and a
-/// later scan re-reading the same Artifact is a no-op.
+/// calls it. The Companion writes an Export Artifact; this reads that file
+/// through the same schema-checked path the scan uses, so the page has its
+/// figures without waiting for a scan and a later scan re-reading the file is a
+/// no-op. The Companion's stdout is an echo for inspection, never the ingest
+/// path — which is why a Companion that cannot write its Artifact exits non-zero
+/// rather than reporting success having delivered nothing.
 ///
 /// Errs with the Companion's own failure line, which the page classifies: a
 /// missing or refused credential reads as "not signed in", anything else as

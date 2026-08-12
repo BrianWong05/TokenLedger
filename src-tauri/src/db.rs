@@ -300,8 +300,8 @@ CREATE INDEX IF NOT EXISTS idx_events_first_cw
   WHERE cache_write_5m_tokens + cache_write_1h_tokens > 0 AND session_id IS NOT NULL;
 PRAGMA user_version = 13;";
 
-// v14: Limit Readings — one observation of one rolling-window vendor quota
-// (CONTEXT.md). They hold no tokens, so they live beside the Ledger in their own
+// v14: Limit Readings — one observation of one Limit, the rolling window with a
+// ceiling that a Source's vendor imposes on the subscription (CONTEXT.md). They hold no tokens, so they live beside the Ledger in their own
 // table rather than in `events`. The PRIMARY KEY is the reading's *content*
 // (#108), so with INSERT OR IGNORE an epoch stores its whole fill-curve at
 // integer resolution while re-scans, per-request repeats at an unchanged

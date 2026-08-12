@@ -47,14 +47,25 @@ function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> }
   };
 }
 
-async function mount(port: LimitsPort) {
+// A clock the test drives, so the fetch floor can be walked past deliberately
+// rather than waited out.
+let clock = NOW_MS;
+
+async function mount(port: LimitsPort, at = NOW_MS) {
+  clock = at;
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () => root.render(<LimitsPage ports={{ limits: port }} now={() => NOW_MS} />));
+  await act(async () => root.render(<LimitsPage ports={{ limits: port }} now={() => clock} />));
   await settle();
   return container;
+}
+
+// Same page, same stored preferences, fresh mount — what a tab switch does.
+async function remount(port: LimitsPort, at = clock) {
+  for (const r of roots.splice(0)) act(() => r.unmount());
+  return mount(port, at);
 }
 
 const cardEls = (c: HTMLElement) => Array.from(c.querySelectorAll('.tl-lim-card')) as HTMLElement[];
@@ -220,8 +231,12 @@ describe('bars', () => {
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }));
     const row = rows(cardFor(c, 'Codex'))[0];
-    expect(row.querySelector('.tl-lim-num')?.className).toMatch(/dry/);
-    expect(row.querySelector('.tl-lim-resets')?.textContent).toBe('used up · resets in 1h');
+    // The figures are REPLACED, not annotated: no "0% left" anywhere on the row.
+    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
+    expect(row.textContent).not.toMatch(/0\s*%/);
+    const spent = row.querySelector('.tl-lim-resets')!;
+    expect(spent.textContent).toBe('used up · resets in 1h');
+    expect(spent.className).toMatch(/spent/);
   });
 
   it('renders an expired epoch as full and unused', async () => {
@@ -271,23 +286,37 @@ describe('the Left/Used toggle', () => {
 });
 
 describe('fetch policy', () => {
-  it('checks live on page open and on Refresh, never on a timer', async () => {
+  it('never checks live on a timer', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
-      const c = await mount(port);
+      await mount(port);
       expect(port.liveCalls).toEqual(['claude']);
 
-      // Nothing polls: time alone adds no calls.
-      await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+      // Nothing polls: time alone adds no calls, however much of it passes.
+      await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60_000); });
       expect(port.liveCalls).toEqual(['claude']);
-
-      await act(async () => btn(c, 'Refresh').click());
-      await settle();
-      expect(port.liveCalls).toEqual(['claude', 'claude']);
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('holds the floor against Refresh, which no button may override', async () => {
+    // The floor is a promise to the vendor's endpoint, so "a person asked" is
+    // what permits a call at all, never what exempts it from the floor.
+    const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
+    const c = await mount(port);
+    expect(port.liveCalls).toEqual(['claude']);
+
+    await act(async () => btn(c, 'Refresh').click());
+    await settle();
+    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual(['claude']);
+
+    // Past the floor, the same press does.
+    clock = NOW_MS + 61_000;
+    await act(async () => btn(c, 'Refresh').click());
+    await settle();
+    expect(port.liveCalls).toEqual(['claude', 'claude']);
   });
 
   it('keeps the floor across tab switches, which unmount the page', async () => {
@@ -298,15 +327,11 @@ describe('fetch policy', () => {
     await mount(port);
     expect(port.liveCalls).toEqual(['claude']);
 
-    for (const r of roots.splice(0)) act(() => r.unmount());
-    await mount(port);
-    expect(port.liveCalls).toEqual(['claude']);
+    await remount(port, NOW_MS + 30_000);
+    expect(port.liveCalls, 'still inside the floor').toEqual(['claude']);
 
-    // Refresh is a person asking, so it goes through regardless.
-    const c = document.body.querySelector('.tl-page-limits') as HTMLElement;
-    await act(async () => btn(c, 'Refresh').click());
-    await settle();
-    expect(port.liveCalls).toEqual(['claude', 'claude']);
+    await remount(port, NOW_MS + 61_000);
+    expect(port.liveCalls, 'past it, a page open checks again').toEqual(['claude', 'claude']);
   });
 
   it('runs an ordinary scan on Refresh, which is how a logs Source updates', async () => {

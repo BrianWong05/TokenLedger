@@ -35,7 +35,8 @@ pub struct CtxTokens {
     pub skills: Option<i64>,
 }
 
-/// One observation of one Limit — a rolling-window vendor quota (CONTEXT.md).
+/// One observation of one Limit — a rolling window with a ceiling that fills and
+/// resets, imposed by a Source's vendor (CONTEXT.md).
 /// A Limit Reading holds no tokens and never enters the Ledger; it is stored
 /// verbatim, with `used_pct` carrying the vendor's own figure unconverted.
 #[derive(Debug, Clone, PartialEq)]

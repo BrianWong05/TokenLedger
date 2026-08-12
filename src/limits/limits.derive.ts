@@ -91,25 +91,19 @@ export function framedPct(pctLeft: number, mode: Mode): number {
  * no tick — there is no axis to place "now" on.
  *
  * An expired epoch renders full/unused rather than stale: nothing could have
- * been used since without a request being logged. Its tick comes from the next
- * reset the window's own period implies.
+ * been used since without a request being logged. It gets no tick — #107 allows
+ * one derived from the next reset only "when the window is periodic", and
+ * nothing in a Reading says whether it is. A Claude session window is anchored
+ * to when its session started, so projecting `resets_at + n·duration` for it
+ * would draw exactly the forecast that ticket removed. Drawing none is the
+ * honest branch; the card's freshness line is what explains the age.
  */
 export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowView {
   const durationMin = w.windowMinutes ?? null;
   const expired = w.resetsAt <= nowSec;
   const pctLeft = expired ? 100 : Math.max(0, Math.min(100, 100 - w.usedPct));
 
-  // Project an expired epoch forward by whole periods to the next reset. With no
-  // period there is nothing to project, which is also the no-scheduled-reset
-  // case (a session window whose session has ended).
-  let resetsInMin: number | null = null;
-  if (!expired) {
-    resetsInMin = (w.resetsAt - nowSec) / 60;
-  } else if (durationMin && durationMin > 0) {
-    const period = durationMin * 60;
-    const next = w.resetsAt + Math.ceil((nowSec - w.resetsAt) / period) * period;
-    resetsInMin = Math.max(0, (next - nowSec) / 60);
-  }
+  const resetsInMin = expired ? null : (w.resetsAt - nowSec) / 60;
 
   const timeLeftPct =
     resetsInMin !== null && durationMin && durationMin > 0

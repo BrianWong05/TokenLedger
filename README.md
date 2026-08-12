@@ -99,9 +99,9 @@ OpenRouter's model list for pricing, and the GitHub release manifest for
 updates. One optional feature reaches further and asks first: enabling **live
 limit checks** on the Limits tab runs a separate companion process that presents
 your Claude Code sign-in to `api.anthropic.com` — read-only, only when you open
-that page or press Refresh, never on a timer — to ask how much of your quota is
-used. Until you press that button, no credential is read and no authenticated
-request exists. The companion never writes or refreshes your sign-in
+that page or press Refresh, never on a timer — to ask how much of each rolling
+window you have used. Until you press that button, no credential is read and no
+authenticated request exists. The companion never writes or refreshes your sign-in
 ([ADR-0019](docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md)).
 
 ## Data sources

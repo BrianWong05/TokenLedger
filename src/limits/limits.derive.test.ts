@@ -90,18 +90,21 @@ describe('an expired epoch', () => {
     expect(used.pct).toBe(0);
   });
 
-  it('takes its tick from the next reset the window period implies', () => {
-    // A 5-hour window that rolled 1 hour ago rolls again in 4.
+  it('gets no tick, even knowing the window length', () => {
+    // #107 allows a projected tick only "when the window is periodic", and a
+    // Reading says nothing about which kind it is: a Claude session window is
+    // anchored to when its session started, so `resets_at + n·duration` would be
+    // exactly the forecast that ticket removed. Drawing none is the honest branch.
     const w = windowView(
       win({ windowKey: 'five_hour', windowMinutes: 300, resetsAt: NOW - HOUR }),
       'left',
       NOW,
     );
-    expect(w.resetsInMin).toBeCloseTo(4 * 60, 6);
-    expect(w.tickPct).toBeCloseTo(80, 6);
+    expect(w.resetsInMin).toBeNull();
+    expect(w.tickPct).toBeNull();
   });
 
-  it('has no tick when no period is known', () => {
+  it('has no tick when no period is known either', () => {
     const w = windowView(win({ windowMinutes: null, resetsAt: NOW - HOUR }), 'left', NOW);
     expect(w.resetsInMin).toBeNull();
     expect(w.tickPct).toBeNull();

@@ -179,6 +179,11 @@
   font-size: 10.5px;
   color: var(--text-tertiary);
 }
+/* A used-up window says so here, in place of the figure it replaced. */
+.tl-lim-resets.spent {
+  color: var(--danger-text);
+  font-weight: 550;
+}
 
 /* ── the bar ── */
 .tl-lim-bar {
@@ -203,7 +208,7 @@
   background: var(--danger);
 }
 /* Time, not a warning: the tick marks where "now" sits in the window, so it
-   stays neutral and is never tinted by the quota tones around it. */
+   stays neutral and is never tinted by the scarcity tones around it. */
 .tl-lim-bar .tick {
   position: absolute;
   top: -3px;
