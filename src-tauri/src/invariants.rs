@@ -715,6 +715,7 @@ fn hermetic_sixteen_source_partition_invariants() {
         codebuddy: base.join("codebuddy"),
         qoder_databases: vec![base.join("qoder/local.db"), base.join("qoder-edition/local.db")],
         qoder_cli_projects: vec![base.join("qoder-cli/projects")],
+        limit_exports: base.join("limits"),
     };
 
     let mut conn = open_db(&base.join("ledger.db")).unwrap();

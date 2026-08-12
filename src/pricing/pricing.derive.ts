@@ -108,7 +108,6 @@ export function fmtRate(perTok: number | null): string {
   return '$' + (v < 0.1 ? v.toFixed(3) : v.toFixed(2));
 }
 
-// Interpolate {name} tokens in a translated string.
-export function fill(s: string, vars: Record<string, string | number>): string {
-  return s.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? String(vars[k]) : `{${k}}`));
-}
+// Re-exported so the Pricing tab's existing imports stay put; the function is
+// shared with the Limits tab and lives in lib/format.ts.
+export { fill } from '../lib/format';

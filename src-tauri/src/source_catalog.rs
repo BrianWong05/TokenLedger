@@ -46,6 +46,13 @@ pub struct Capabilities {
     pub session: bool,
     pub token_categories: bool,
     pub context: bool,
+    /// How this Source's Limits are acquired: `"logs"` (captured passively from
+    /// an Artifact the scan already walks) or `"live"` (fetched by a Companion,
+    /// ADR-0019, and so gated behind the opt-in). Absent means the Source has no
+    /// vendor window to show and gets no card at all. Vendor URLs stay in the
+    /// Companion — never in this data file.
+    #[serde(default)]
+    pub limits: Option<String>,
 }
 
 pub fn catalog() -> &'static Catalog {

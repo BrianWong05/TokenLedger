@@ -7,7 +7,53 @@ use super::ctx::{self, est};
 use super::unchanged;
 use crate::db;
 use crate::time::iso_to_epoch;
-use crate::types::{FileState, SourceScanResult, UsageEvent};
+use crate::types::{FileState, LimitReading, SourceScanResult, UsageEvent};
+
+/// The durations Codex's own labeller recognises, matched within ±5% because
+/// upstream rounding drifts (#104). An unrecognised duration is kept as its raw
+/// minutes rather than treated as corrupt — the fifth value Codex may start
+/// reporting must render, not vanish.
+const CANONICAL_WINDOW_MINUTES: [i64; 5] = [300, 1440, 10080, 43200, 525600];
+
+/// `window_minutes` → the opaque `window_key` a Reading is stored under. Never
+/// the `primary`/`secondary` slot: the slot is a position, not a window — in the
+/// local corpus `primary` carries the 7-day window in 88% of observations and
+/// the 5-hour one in the rest (#104).
+fn window_key(window_minutes: i64) -> String {
+    let canonical = CANONICAL_WINDOW_MINUTES
+        .iter()
+        .find(|&&m| (window_minutes - m).abs() * 20 <= m)
+        .copied()
+        .unwrap_or(window_minutes);
+    format!("w{canonical}")
+}
+
+/// One `rate_limits` slot → a Reading, or None when that window does not exist.
+/// A null slot is an absent window, never a window at zero; a slot missing the
+/// duration or the reset instant cannot be keyed or placed on a time axis, so it
+/// is likewise no window. ponytail: `resets_in_seconds` (Codex ≤ 0.47) is not
+/// read — reading it as an epoch would date the window to 1970. Convert it here
+/// if pre-0.48 Artifacts ever turn up.
+fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> Option<LimitReading> {
+    let slot = slot.filter(|s| !s.is_null())?;
+    let used_pct = slot.get("used_percent").and_then(|v| v.as_f64())?;
+    let window_minutes = slot.get("window_minutes").and_then(|v| v.as_i64())?;
+    // Absolute unix seconds since Codex 0.48; a 0.48.0 pre-release wrote the
+    // same field as an RFC3339 string.
+    let resets_at = slot
+        .get("resets_at")
+        .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(iso_to_epoch)))?;
+    Some(LimitReading {
+        source: "codex".to_string(),
+        window_key: window_key(window_minutes),
+        window_minutes: Some(window_minutes),
+        used_pct,
+        resets_at,
+        observed_at,
+        via: "logs".to_string(),
+        plan: plan.map(str::to_string),
+    })
+}
 
 /// Scan all `*.jsonl` rollout files under `sessions_root` (recursively).
 /// Missing directory → zero events, no error.
@@ -51,6 +97,7 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
 struct ParsedCodexFile {
     events: Vec<UsageEvent>,
     tool_rows: Vec<(String, i64, i64, i64)>,
+    readings: Vec<LimitReading>,
     skipped: u64,
 }
 
@@ -60,9 +107,16 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
     let mut call_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     let mut events: Vec<UsageEvent> = Vec::new();
+    let mut readings: Vec<LimitReading> = Vec::new();
     let mut skipped: u64 = 0;
     let mut model = String::from("unknown");
     let mut cwd: Option<String> = None;
+    // Forked and subagent rollouts replay their parent's history under rewritten
+    // envelope timestamps (#104), so a replayed window could present itself as
+    // current. The content-keyed PK absorbs the duplicate rows; this guard is
+    // what keeps `observed_at` honest. Usage events are unaffected — they have
+    // always been read from these files.
+    let mut replay = false;
     // Previous cumulative snapshot (raw, unclamped).
     let mut prev_input: i64 = 0;
     let mut prev_cached: i64 = 0;
@@ -97,6 +151,10 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                 if let Some(c) = v.pointer("/payload/cwd").and_then(|c| c.as_str()) {
                     cwd = Some(c.to_string());
                 }
+                replay = v.pointer("/payload/forked_from_id").is_some_and(|f| !f.is_null())
+                    || v.pointer("/payload/parent_thread_id").is_some_and(|p| !p.is_null())
+                    || v.pointer("/payload/thread_source").and_then(|s| s.as_str())
+                        == Some("subagent");
             }
             "turn_context" => {
                 if let Some(m) = v.pointer("/payload/model").and_then(|m| m.as_str()) {
@@ -149,6 +207,34 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                 if payload.get("type").and_then(|t| t.as_str()) != Some("token_count") {
                     continue;
                 }
+
+                // `rate_limits` is a sibling of `info`, so it must be read before
+                // any of the token-count skips below: a snapshot whose token
+                // deltas are all zero still carries a perfectly good Limit
+                // Reading, and the `info: null` control lines carry them too.
+                if !replay {
+                    if let Some(limits) = payload.get("rate_limits").filter(|l| !l.is_null()) {
+                        // A `limit_id` other than "codex" is a different
+                        // entitlement: `"premium"` is the fingerprint of a
+                        // refused 429 carrying an empty snapshot (#104), and
+                        // taking it as "the newest reading" would blank a gauge
+                        // that had good data one line earlier.
+                        if limits.get("limit_id").and_then(|i| i.as_str()) == Some("codex") {
+                            let observed_at = v
+                                .get("timestamp")
+                                .and_then(|t| t.as_str())
+                                .and_then(iso_to_epoch)
+                                .unwrap_or(0);
+                            let plan = limits.get("plan_type").and_then(|p| p.as_str());
+                            readings.extend(
+                                [limits.get("primary"), limits.get("secondary")]
+                                    .into_iter()
+                                    .flat_map(|slot| slot_reading(slot, observed_at, plan)),
+                            );
+                        }
+                    }
+                }
+
                 // Skip info:null control lines.
                 let info = match payload.get("info") {
                     Some(i) if !i.is_null() => i,
@@ -244,7 +330,7 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
         }
     }
 
-    ParsedCodexFile { events, tool_rows, skipped }
+    ParsedCodexFile { events, tool_rows, readings, skipped }
 }
 
 /// Returns (events_inserted, lines_skipped) for one file.
@@ -276,6 +362,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     let parsed = parse_file(&content, &file_stem, &path_str);
 
     let inserted = db::insert_events(conn, &parsed.events).map_err(|e| e.to_string())?;
+    db::insert_limit_readings(conn, &parsed.readings).map_err(|e| e.to_string())?;
     db::add_ctx_tool_rows(conn, "codex", &path_str, &parsed.tool_rows).map_err(|e| e.to_string())?;
     db::set_file_state(
         conn,
@@ -503,6 +590,148 @@ mod tests {
             "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((est2, calls2), (est1, calls1), "re-parse replaced, not doubled");
+    }
+
+    // ---- Limit Readings (#104 ingest rules) ----
+
+    // The real nine-field block, verbatim from a local rollout (2026-08-10,
+    // cli_version 0.147.0-alpha.6.5): one weekly window in `primary`, a null
+    // `secondary`, and the credit state the whole corpus carries.
+    const REAL_BLOCK: &str = r#"{"type":"event_msg","timestamp":"2026-08-10T03:16:19.385Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}},"rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":100.0,"window_minutes":10080,"resets_at":1786879486},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"individual_limit":null,"spend_control_reached":null,"plan_type":"plus","rate_limit_reached_type":null}}}"#;
+
+    fn limits_line(rate_limits: &str, ts: &str) -> String {
+        format!(
+            r#"{{"type":"event_msg","timestamp":"{ts}","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}}}},"rate_limits":{rate_limits}}}}}"#
+        )
+    }
+
+    fn readings_of(content: &str) -> Vec<LimitReading> {
+        parse_file(content, "rollout", "/p/rollout.jsonl").readings
+    }
+
+    #[test]
+    fn the_real_block_yields_one_reading_per_window_that_exists() {
+        let readings = readings_of(&format!("{REAL_BLOCK}\n"));
+        assert_eq!(readings.len(), 1, "a null `secondary` is a window that does not exist");
+        assert_eq!(
+            readings[0],
+            LimitReading {
+                source: "codex".to_string(),
+                window_key: "w10080".to_string(),
+                window_minutes: Some(10080),
+                used_pct: 100.0,
+                resets_at: 1_786_879_486,
+                // The envelope timestamp, never the filename date: 123 of 212
+                // local files have a name-date that differs from it (#104).
+                observed_at: 1_786_331_779,
+                via: "logs".to_string(),
+                plan: Some("plus".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn a_premium_record_yields_no_readings() {
+        // The fingerprint of a refused 429: an empty snapshot against a limit
+        // family whose usage the server does not report (#104).
+        let content = limits_line(
+            r#"{"limit_id":"premium","limit_name":null,"primary":null,"secondary":null,"plan_type":"plus"}"#,
+            "2026-07-03T10:16:42.271Z",
+        ) + "\n";
+        assert_eq!(readings_of(&content), vec![]);
+    }
+
+    #[test]
+    fn windows_are_classified_by_duration_not_by_slot() {
+        // Both slots populated, the 5-hour window in `secondary` — the slot
+        // carries no window meaning, so the key comes from the duration alone.
+        let content = limits_line(
+            r#"{"limit_id":"codex","primary":{"used_percent":80.0,"window_minutes":10080,"resets_at":1786879486},"secondary":{"used_percent":61.0,"window_minutes":300,"resets_at":1783537868},"plan_type":"plus"}"#,
+            "2026-08-10T03:16:19.385Z",
+        ) + "\n";
+        let keys: Vec<String> = readings_of(&content).into_iter().map(|r| r.window_key).collect();
+        assert_eq!(keys, vec!["w10080", "w300"]);
+    }
+
+    #[test]
+    fn durations_snap_to_the_canonical_set_within_five_percent() {
+        let key = |minutes: i64| {
+            let content = limits_line(
+                &format!(
+                    r#"{{"limit_id":"codex","primary":{{"used_percent":1.0,"window_minutes":{minutes},"resets_at":1786879486}},"secondary":null}}"#
+                ),
+                "2026-08-10T03:16:19.385Z",
+            ) + "\n";
+            readings_of(&content).remove(0).window_key
+        };
+        assert_eq!(key(300), "w300");
+        assert_eq!(key(10080), "w10080");
+        assert_eq!(key(10081), "w10080", "upstream rounding drift is the same window");
+        assert_eq!(key(4321), "w4321", "an unrecognised duration is kept, not treated as corrupt");
+    }
+
+    #[test]
+    fn a_zero_delta_snapshot_still_carries_its_reading() {
+        // The token-count skips must not swallow the limits block: `info: null`
+        // control lines and duplicate snapshots both carry one.
+        let content = [
+            r#"{"type":"event_msg","timestamp":"2026-08-10T03:16:19.385Z","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"codex","primary":{"used_percent":42.0,"window_minutes":10080,"resets_at":1786879486},"secondary":null}}}"#,
+        ]
+        .join("\n") + "\n";
+        let parsed = parse_file(&content, "rollout", "/p/rollout.jsonl");
+        assert_eq!(parsed.events.len(), 0, "an info:null line is still no usage event");
+        assert_eq!(parsed.readings.len(), 1, "but it is a Limit Reading");
+        assert_eq!(parsed.readings[0].used_pct, 42.0);
+    }
+
+    #[test]
+    fn a_subagent_replay_contributes_no_readings() {
+        let content = [
+            r#"{"type":"session_meta","timestamp":"2026-07-03T06:37:20.985Z","payload":{"id":"019f26b2","parent_thread_id":"019f2681","thread_source":"subagent","cwd":"/p"}}"#,
+            REAL_BLOCK,
+        ]
+        .join("\n") + "\n";
+        let parsed = parse_file(&content, "rollout", "/p/rollout.jsonl");
+        assert_eq!(parsed.readings, vec![], "a replay must not donate a fresh observed_at");
+        assert_eq!(parsed.events.len(), 1, "its usage is read as it always was");
+    }
+
+    #[test]
+    fn readings_dedup_on_content_across_scans_and_repeats() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        // Two requests at the same used_percent in the same epoch, then a third
+        // that advanced the fill.
+        let window = |pct: &str, ts: &str| {
+            limits_line(
+                &format!(
+                    r#"{{"limit_id":"codex","primary":{{"used_percent":{pct},"window_minutes":10080,"resets_at":1786879486}},"secondary":null,"plan_type":"plus"}}"#
+                ),
+                ts,
+            )
+        };
+        let lines = [
+            window("40.0", "2026-08-10T03:16:19.385Z"),
+            window("40.0", "2026-08-10T03:17:19.385Z"),
+            window("41.0", "2026-08-10T03:18:19.385Z"),
+        ];
+        write_rollout(
+            &root,
+            "rollout-2026-08-10-lim.jsonl",
+            &lines.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        scan_codex(&mut conn, &root);
+        let rows = |conn: &Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(rows(&conn), 2, "the repeat at an unchanged percentage costs no row");
+
+        // Re-scanning the same file — after clearing scan state, so the parse
+        // genuinely re-runs — inserts nothing new.
+        conn.execute("DELETE FROM scanned_files", []).unwrap();
+        scan_codex(&mut conn, &root);
+        assert_eq!(rows(&conn), 2, "a re-parse is absorbed by the content-keyed PK");
     }
 
     // ---- pure parse_file core (no DB) ----

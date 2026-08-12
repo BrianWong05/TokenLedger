@@ -10,6 +10,8 @@ export type { CtxBuckets } from './bindings/CtxBuckets';
 export type { CtxToolRow } from './bindings/CtxToolRow';
 export type { CtxSkillRow } from './bindings/CtxSkillRow';
 export type { CtxExecRow } from './bindings/CtxExecRow';
+export type { LimitWindow } from './bindings/LimitWindow';
+export type { SourceLimits } from './bindings/SourceLimits';
 export type { SourceStatus } from './bindings/SourceStatus';
 export type { SourceUnreadable } from './bindings/SourceUnreadable';
 export type { ScanStatus } from './bindings/ScanStatus';

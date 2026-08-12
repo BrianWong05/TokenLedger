@@ -35,6 +35,27 @@ pub struct CtxTokens {
     pub skills: Option<i64>,
 }
 
+/// One observation of one Limit — a rolling window with a ceiling that fills and
+/// resets, imposed by a Source's vendor (CONTEXT.md).
+/// A Limit Reading holds no tokens and never enters the Ledger; it is stored
+/// verbatim, with `used_pct` carrying the vendor's own figure unconverted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LimitReading {
+    pub source: String,
+    /// Opaque: Claude's own response key (`five_hour`, `seven_day_opus`),
+    /// Codex's `w{canonical minutes}`. Never parsed for structure — it may one
+    /// day carry a pool prefix.
+    pub window_key: String,
+    pub window_minutes: Option<i64>,
+    pub used_pct: f64,
+    pub resets_at: i64,
+    pub observed_at: i64,
+    /// 'logs' (read from an Artifact the scan already walks) | 'live' (fetched
+    /// by a Companion, ADR-0019).
+    pub via: String,
+    pub plan: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct FileState {
     pub size: i64,

@@ -5,6 +5,7 @@ export const common = {
   en: {
     'nav.overview': 'Overview',
     'nav.pricing': 'Pricing',
+    'nav.limits': 'Limits',
     'nav.settings': 'Settings',
     'header.rescan': 'Rescan',
     'header.scanning': 'Scanning…',
@@ -14,6 +15,7 @@ export const common = {
   'zh-Hant': {
     'nav.overview': '總覽',
     'nav.pricing': '價格',
+    'nav.limits': '限額',
     'nav.settings': '設定',
     'header.rescan': '重新掃描',
     'header.scanning': '掃描中…',

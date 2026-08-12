@@ -17,9 +17,11 @@ import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
 import { tauriSettings, type SettingsPort } from './settings/settings';
 import type { PricingPort } from './pricing/pricing';
+import type { LimitsPort } from './limits/limits';
 import './App.css';
 
 const PricingPage = lazy(() => import('./pricing/PricingPage'));
+const LimitsPage = lazy(() => import('./limits/LimitsPage'));
 const SettingsPage = lazy(() => import('./settings/SettingsPage'));
 
 export interface AppPorts {
@@ -27,13 +29,15 @@ export interface AppPorts {
   clock?: ClockPort;
   settings?: SettingsPort;
   pricing?: PricingPort;
+  limits?: LimitsPort;
 }
 
-type Tab = 'overview' | 'pricing' | 'settings';
+type Tab = 'overview' | 'pricing' | 'limits' | 'settings';
 
-// Icons are the design's inline lucide-style marks (layout / circle-percent / gear);
-// they inherit color from the button so the nav states can tint them via CSS.
-const TABS: { key: Tab; strKey: 'nav.overview' | 'nav.pricing' | 'nav.settings'; icon: ReactNode }[] = [
+// Icons are the design's inline lucide-style marks (layout / circle-percent /
+// gauge / gear); they inherit color from the button so the nav states can tint
+// them via CSS.
+const TABS: { key: Tab; strKey: 'nav.overview' | 'nav.pricing' | 'nav.limits' | 'nav.settings'; icon: ReactNode }[] = [
   {
     key: 'overview',
     strKey: 'nav.overview',
@@ -55,6 +59,16 @@ const TABS: { key: Tab; strKey: 'nav.overview' | 'nav.pricing' | 'nav.settings';
         <path d="M15 6h1v4" />
         <path d="m6.134 14.768.866-.5 2 3.464" />
         <circle cx="16" cy="8" r="6" />
+      </svg>
+    ),
+  },
+  {
+    key: 'limits',
+    strKey: 'nav.limits',
+    icon: (
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m12 14 4-4" />
+        <path d="M3.34 19a10 10 0 1 1 17.32 0" />
       </svg>
     ),
   },
@@ -149,6 +163,9 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
           {tab === 'pricing' && (
             <PricingPage ports={{ pricing: ports?.pricing, ledger, settings: settingsPort }} />
           )}
+          {/* Remounted on every visit by design: opening the page is one of the
+              two moments a live limit check is allowed to happen. */}
+          {tab === 'limits' && <LimitsPage ports={{ limits: ports?.limits }} />}
           {tab === 'settings' && <SettingsPage port={settingsPort} />}
         </Suspense>
       </main>

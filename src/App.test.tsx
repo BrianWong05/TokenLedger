@@ -141,8 +141,8 @@ describe('App shell', () => {
     const nav = () =>
       Array.from(container.querySelectorAll('.tl-nav button')) as HTMLButtonElement[];
 
-    // Three tabs, Overview active by default and showing its data.
-    expect(nav().map((b) => b.textContent)).toEqual(['Overview', 'Pricing', 'Settings']);
+    // Four tabs, Overview active by default and showing its data.
+    expect(nav().map((b) => b.textContent)).toEqual(['Overview', 'Pricing', 'Limits', 'Settings']);
     expect(nav()[0].classList.contains('active')).toBe(true);
     const overviewTab = container.querySelector('.tl-tab') as HTMLElement;
     expect(overviewTab.hidden).toBe(false);
@@ -160,13 +160,21 @@ describe('App shell', () => {
     expect(overviewTab.hidden).toBe(true);
     expect(container.querySelector('.tt-toolcards')).not.toBeNull(); // still in the DOM
 
-    // Switch to Settings.
+    // Switch to Limits: it mounts on demand like Pricing.
     await act(async () => {
       nav()[2].click();
+      await import('./limits/LimitsPage');
+    });
+    expect(container.querySelector('.tl-page-limits')).not.toBeNull();
+    expect(container.querySelector('.tl-page-pricing')).toBeNull();
+
+    // Switch to Settings.
+    await act(async () => {
+      nav()[3].click();
       await import('./settings/SettingsPage');
     });
     expect(container.querySelector('.tl-page-settings')).not.toBeNull();
-    expect(container.querySelector('.tl-page-pricing')).toBeNull();
+    expect(container.querySelector('.tl-page-limits')).toBeNull();
 
     // Back to Overview: no remount, no re-scan, data intact.
     await act(async () => nav()[0].click());

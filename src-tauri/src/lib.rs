@@ -1,13 +1,16 @@
 mod adapters;
 mod db;
 pub mod export_artifact;
+pub mod limits_artifact;
 mod pricing;
 pub mod proto;
 mod queries;
 mod scan;
 mod settings;
 mod source_catalog;
-mod time;
+// Public so the companion binaries share the crate's own time arithmetic rather
+// than each re-deriving it.
+pub mod time;
 mod tray;
 mod types;
 mod updater;
@@ -52,7 +55,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
     BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, SeriesPoint,
-    Summary, TrendPoint,
+    SourceLimits, Summary, TrendPoint,
 };
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
@@ -307,6 +310,72 @@ fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecR
     queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
 }
 
+/// The current state of every Limit the Ledger holds Readings for. Takes no
+/// Filters: the Limits page is *now*, not a range, and it ignores the Overview's
+/// date window and Source selection entirely.
+#[tauri::command(async)]
+fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    queries::limits(&db).map_err(|e| e.to_string())
+}
+
+/// Ask a `live` Source's Companion for a fresh reading (ADR-0019). This is the
+/// only place the app reaches a vendor with a credential, and it stays honest
+/// about the boundary the same three ways `export_antigravity` does: a person has
+/// to ask for it, it happens in a separate process, and the scan itself never
+/// calls it. The Companion writes an Export Artifact; this reads that file
+/// through the same schema-checked path the scan uses, so the page has its
+/// figures without waiting for a scan and a later scan re-reading the file is a
+/// no-op. The Companion's stdout is an echo for inspection, never the ingest
+/// path — which is why a Companion that cannot write its Artifact exits non-zero
+/// rather than reporting success having delivered nothing.
+///
+/// Errs with the Companion's own failure line, which the page classifies: a
+/// missing or refused credential reads as "not signed in", anything else as
+/// "couldn't check". The two must never collapse into one another.
+#[tauri::command]
+async fn check_live_limits(app: tauri::AppHandle, source: String) -> Result<(), String> {
+    use tauri_plugin_shell::ShellExt;
+
+    // v1 has exactly one Companion; the catalog decides whether the Source asking
+    // is entitled to a live check at all.
+    if source_catalog::source(&source).and_then(|s| s.capabilities.limits.as_deref()) != Some("live")
+    {
+        return Err(format!("{source} has no live Limits to check"));
+    }
+    let dir = limit_exports_dir(&app);
+    let output = app
+        .shell()
+        .sidecar("claude-limits")
+        .map_err(|e| format!("the limits companion is missing from this build: {e}"))?
+        .env("TOKENLEDGER_LIMITS_DIR", dir.to_string_lossy().to_string())
+        .output()
+        .await
+        .map_err(|e| format!("could not run the limits companion: {e}"))?;
+
+    if !output.status.success() {
+        let failure = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if failure.is_empty() {
+            "the limits companion failed without saying why".to_string()
+        } else {
+            failure
+        });
+    }
+
+    // The Artifact it just wrote, read through the same schema-checked path the
+    // scan uses — one reader, so the two can never drift.
+    let state = app.state::<AppState>();
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
+    limits_artifact::ingest(&mut db, &dir, &source)
+}
+
+fn limit_exports_dir(app: &AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join("limits"))
+        .unwrap_or_default()
+}
+
 // Re-read both catalogs on demand from the Pricing tab. Deliberately ignores the
 // price_lookups guard that rate-limits the automatic trigger: asking explicitly is
 // the one case where retrying a Model we already tried this run is the point. The
@@ -482,7 +551,13 @@ pub fn run() {
             let conn = db::open_db(&data_dir.join("tokenledger.db"))?;
             app.manage(AppState {
                 db: Mutex::new(conn),
-                roots: SourceRoots::default_roots(),
+                // The Companions' output directory is the app's own, not
+                // something to find under home — so it is filled in here, where
+                // the data dir is already resolved.
+                roots: SourceRoots {
+                    limit_exports: data_dir.join("limits"),
+                    ..SourceRoots::default_roots()
+                },
                 scan_lock: Mutex::new(()),
                 price_lookups: Mutex::new(Default::default()),
                 last_scan: AtomicI64::new(0),
@@ -564,6 +639,8 @@ pub fn run() {
             ctx_tools,
             ctx_skills,
             ctx_exec,
+            limits,
+            check_live_limits,
             model_pricing,
             refresh_prices,
             set_model_override,
@@ -690,6 +767,7 @@ mod tests {
             codebuddy: dir.path().join("codebuddy"),
             qoder_databases: vec![dir.path().join("qoder.db")],
             qoder_cli_projects: vec![dir.path().join("qoder-cli")],
+            limit_exports: dir.path().join("limits"),
         };
         let state = AppState {
             db: Mutex::new(conn),

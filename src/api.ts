@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   ScanStatus,
+  SourceLimits,
   SourceUnreadable,
   Summary,
   SeriesPoint,
@@ -77,6 +78,24 @@ export function fetchCtxSkills(filters: Filters): Promise<CtxSkillRow[]> {
 
 export function fetchCtxExec(filters: Filters): Promise<CtxExecRow[]> {
   return invoke('ctx_exec', { filters });
+}
+
+// ---- Limits ----
+
+// The current state of every Limit the Ledger holds Readings for. Takes no
+// Filters: the Limits page is *now*, not a range.
+export function fetchLimits(): Promise<SourceLimits[]> {
+  return invoke('limits');
+}
+
+// Ask a Source's limits Companion for a live reading (ADR-0019): a separate
+// process, started only because someone asked for it, that presents the sign-in
+// that Source's CLI already stores and asks the vendor — read-only — how much of
+// each window is used. Its Readings land in the durable series, so the page reads
+// them back through `fetchLimits`; this rejects with the Companion's own failure
+// line, which the page classifies.
+export function checkLiveLimits(source: string): Promise<void> {
+  return invoke('check_live_limits', { source });
 }
 
 // ---- Pricing ----

@@ -10,7 +10,7 @@
       "artifacts": [
         { "id": "projects", "kind": "directory", "path": ".claude/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },
@@ -24,7 +24,7 @@
       "artifacts": [
         { "id": "sessions", "kind": "directory", "path": ".codex/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "logs" },
       "platforms": ["all"],
       "prerequisite": null
     },

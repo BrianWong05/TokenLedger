@@ -22,6 +22,7 @@ use crate::adapters::qoder::scan_qoder;
 use crate::adapters::workbuddy::scan_workbuddy;
 use crate::adapters::zed::scan_zed;
 use crate::db::prune_missing_files;
+use crate::limits_artifact;
 use crate::source_catalog;
 use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 
@@ -54,6 +55,11 @@ pub struct SourceRoots {
     // transcript roots are one Qoder Source.
     pub qoder_databases: Vec<PathBuf>,
     pub qoder_cli_projects: Vec<PathBuf>,
+    /// Where a Companion leaves its Limits Export Artifacts (ADR-0019). Owned by
+    /// the app rather than found under home, so the shell overrides this with its
+    /// own data directory; empty means no Companion has ever been given a place
+    /// to write, and a missing directory is not an error.
+    pub limit_exports: PathBuf,
 }
 
 impl SourceRoots {
@@ -170,6 +176,9 @@ impl SourceRoots {
                 .iter()
                 .map(|artifact| catalog_root(home, "qoder", artifact))
                 .collect(),
+            // The shell fills this in from its own data directory; a bare
+            // SourceRoots has no Companion output to read.
+            limit_exports: PathBuf::new(),
         }
     }
 }
@@ -564,7 +573,7 @@ fn run_scan_sources(
                 },
             },
         };
-        sources.push(status);
+        sources.push(merge_limit_exports(conn, roots, source, status));
     }
 
     // Ledger hygiene only: drops scanned_files rows for vanished paths.
@@ -585,6 +594,28 @@ fn run_scan_sources(
         sources,
         scanned_at,
     }
+}
+
+/// A `live` Source additionally reads the Limit Readings its Companion exported —
+/// ordinary Artifacts, read like any other file (ADR-0019). Catalog-driven, so
+/// no Source is named here; the Readings carry no tokens, so they change no
+/// count on the status, only its error line.
+fn merge_limit_exports(
+    conn: &mut Connection,
+    roots: &SourceRoots,
+    source: &source_catalog::SourceDefinition,
+    mut status: SourceStatus,
+) -> SourceStatus {
+    if source.capabilities.limits.as_deref() != Some("live") || roots.limit_exports.as_os_str().is_empty() {
+        return status;
+    }
+    if let Err(error) = limits_artifact::ingest(conn, &roots.limit_exports, &source.key) {
+        status.error = Some(match status.error {
+            Some(previous) => format!("{previous}; {error}"),
+            None => error,
+        });
+    }
+    status
 }
 
 fn unavailable_source_status(source: &str, error: String) -> SourceStatus {
@@ -610,6 +641,51 @@ mod tests {
     // Minimal Claude assistant line (non-zero usage → one event ingested).
     // Shape matches real ~/.claude/projects/**/*.jsonl assistant records.
     const CLAUDE_LINE: &str = r#"{"type":"assistant","requestId":"req_test1","timestamp":"2026-07-01T10:00:00.000Z","cwd":"/Users/dev/projects/alpha","message":{"id":"msg_test1","model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":10,"cache_creation_input_tokens":20,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":0}}}}"#;
+
+    #[test]
+    fn an_ordinary_scan_reads_a_companions_limits_export() {
+        // ADR-0019's route end to end: the Companion leaves an Artifact, and the
+        // scan reads it like any other file — no Source is named in the scanner,
+        // the catalog's `limits: "live"` is what selects the pass.
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let exports = base.join("limits");
+        fs::create_dir_all(&exports).unwrap();
+        fs::write(
+            exports.join("claude.tokenledger-limits.json"),
+            r#"{"schema":1,"source":"claude","fetched_at":1786492800,"plan":"Team 5x",
+                "windows":[{"key":"five_hour","window_minutes":300,"used_pct":18.0,
+                            "resets_at":1786503900}]}"#,
+        )
+        .unwrap();
+
+        // An empty home, so no Source on this machine contributes anything and
+        // the only Readings in play are the export's.
+        let roots = SourceRoots {
+            limit_exports: exports,
+            ..SourceRoots::from_home_and_pi_env(&base.join("home"), None, None)
+        };
+        let mut conn = open_db(&base.join("ledger.db")).unwrap();
+        let status = run_scan(&mut conn, &roots);
+        assert!(find(&status, "claude").error.is_none());
+
+        let cards = queries::limits(&conn).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].source, "claude");
+        assert_eq!(cards[0].plan.as_deref(), Some("Team 5x"));
+        assert_eq!(cards[0].windows[0].window_key, "five_hour");
+        assert_eq!(cards[0].windows[0].used_pct, 18.0);
+
+        // A `logs` Source has no export pass at all, so a corrupt file in that
+        // directory could never be blamed on one.
+        fs::write(
+            base.join("limits").join("codex.tokenledger-limits.json"),
+            "not json",
+        )
+        .unwrap();
+        let again = run_scan(&mut conn, &roots);
+        assert!(find(&again, "codex").error.is_none());
+    }
     const PI_SESSION: &str = include_str!("adapters/fixtures/pi/basic-session.jsonl");
 
     fn find<'a>(status: &'a ScanStatus, source: &str) -> &'a SourceStatus {
@@ -1493,6 +1569,7 @@ mod tests {
             codebuddy: tmp.path().join("no-codebuddy"),
             qoder_databases: vec![tmp.path().join("no-qoder")],
             qoder_cli_projects: vec![tmp.path().join("no-qoder-cli")],
+            limit_exports: tmp.path().join("limits"),
         };
         let mut claude = crate::source_catalog::source("claude").unwrap().clone();
         claude.prerequisite = Some("Claude service".to_string());
@@ -1555,6 +1632,7 @@ mod tests {
             codebuddy: base.join("no-codebuddy"),
             qoder_databases: vec![base.join("no-qoder")],
             qoder_cli_projects: vec![base.join("no-qoder-cli")],
+            limit_exports: base.join("limits"),
         };
 
         let db_path = base.join("ledger.db");
@@ -1934,6 +2012,7 @@ mod tests {
             codebuddy: base.join("no-codebuddy"),
             qoder_databases: vec![base.join("no-qoder")],
             qoder_cli_projects: vec![base.join("no-qoder-cli")],
+            limit_exports: base.join("limits"),
         };
 
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
@@ -2090,6 +2169,7 @@ mod tests {
             codebuddy: base.join("no-codebuddy"),
             qoder_databases: vec![base.join("no-qoder")],
             qoder_cli_projects: vec![base.join("no-qoder-cli")],
+            limit_exports: base.join("limits"),
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
@@ -2258,6 +2338,7 @@ mod tests {
             codebuddy: base.join("no-codebuddy"),
             qoder_databases: vec![base.join("no-qoder")],
             qoder_cli_projects: vec![base.join("no-qoder-cli")],
+            limit_exports: base.join("limits"),
         };
         let mut ledger = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut ledger, &roots);

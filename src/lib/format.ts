@@ -84,6 +84,13 @@ export function basename(p: string): string {
   return p.split('/').filter(Boolean).pop() ?? p;
 }
 
+// Interpolate {name} tokens in a translated string. Lives here rather than in a
+// page's derive module so more than one lazy chunk can reach it without pulling
+// another page's derivation along.
+export function fill(s: string, vars: Record<string, string | number>): string {
+  return s.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? String(vars[k]) : `{${k}}`));
+}
+
 export function fmtDate(d: Date): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
