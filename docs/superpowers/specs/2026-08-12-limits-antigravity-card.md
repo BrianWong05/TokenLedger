@@ -48,6 +48,38 @@ card, no new presentation primitives:
 - Everything else — scarcity tones, time tick, Left/Used, freshness line,
   signed-out/error states — is v1 machinery, untouched.
 
+## Post-build amendments (verified live 2026-08-13)
+
+This spec was written from the vendor's descriptors and unauthenticated probes —
+the furthest research could go without spending the credential. Building it and
+running it against a real Google AI Pro account (PR #137) corrected three points
+below. The body is left as written for its reasoning; where it conflicts with
+this section, this section is what shipped.
+
+1. **User-Agent is a client-eligibility gate — send the vendor's own** (`antigravity`
+   for the summary/models calls, `agy` for `loadCodeAssist`). This spec never
+   mentioned a User-Agent; an honest `TokenLedger-limits` one earns
+   `UNSUPPORTED_CLIENT` and `403 PERMISSION_DENIED` on *every* data call. This was
+   the whole blocker, and the sole reason openusage works where a first honest cut
+   did not. It stays within ADR-0019's sanctioned "present as the vendor" posture
+   (we already send the vendor's client id and token).
+2. **Try `daily-cloudcode-pa.googleapis.com` first, then production** — the reverse
+   of §Fetch below. The vendor's own logs on the build machine showed ~13,000 calls
+   to `daily-` against 4 to the plain host; §6's "drop it" reading was inferred from
+   a string-count ratio in the binary and is backwards. Both are tried, and a
+   refusal never short-circuits the list (openusage's documented bug).
+3. **The client secret is read from the installed client at runtime, not hardcoded**
+   at build time (§2 below). This is the amendment recorded in ADR-0020 bound 3:
+   the id anchors the scan, the secret is the nearest `GOCSPX-` string to it, and
+   nothing of the vendor's identifier lives in this repository.
+
+Not a correction, but confirmed: the summary answers with `project` **omitted** when
+`loadCodeAssist` names no `cloudaicompanionProject` (the individual-tier path) — an
+empty string is not sent, and this returns real buckets rather than the silent
+fall-through §3 feared. `loadCodeAssist` on this path returns no `currentTier`, so
+there is no plan pill; openusage reads the plan from a language-server RPC this
+Companion does not call.
+
 ## Acquisition: the `antigravity-limits` Companion
 
 A new bin on the `claude-limits.rs` template (`src-tauri/src/bin/`), wired the

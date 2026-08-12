@@ -169,7 +169,7 @@ fn run() -> Result<String, String> {
     // prior art relies on. Refusing outright would be worse than either: it
     // would deny a card to an account whose Limits the server may answer for
     // perfectly well.
-    let project = field(&assist, "cloudaicompanionProject")
+    let project = wire_field(&assist, "cloudaicompanionProject")
         .and_then(|p| p.as_str())
         .filter(|p| !p.trim().is_empty());
     let request = match project {
@@ -623,7 +623,7 @@ fn tier_word(name: &str) -> String {
 /// entries say and what openusage decodes — but the proto field names are
 /// snake_case, and a server configured to emit those would otherwise drop every
 /// bucket silently and leave an empty card with nothing to diagnose.
-fn field<'a>(node: &'a Value, camel: &str) -> Option<&'a Value> {
+fn wire_field<'a>(node: &'a Value, camel: &str) -> Option<&'a Value> {
     node.get(camel).or_else(|| {
         let mut snake = String::with_capacity(camel.len() + 2);
         for c in camel.chars() {
@@ -664,27 +664,36 @@ fn windows(body: &Value) -> Vec<WindowExport> {
     out
 }
 
+/// A bucket that carries a remaining *count* (`remainingAmount`) and no
+/// fraction: a figure with no denominator, so no bar (a v2 question). Named so
+/// the one wire change that would silently empty the card is a tested fact, not
+/// just a branch — it is logged, and the log fires exactly when this is true.
+fn reports_an_amount(bucket: &Value) -> bool {
+    wire_field(bucket, "remainingFraction").and_then(|f| f.as_f64()).is_none()
+        && wire_field(bucket, "remainingAmount").is_some()
+}
+
 fn bucket_window(bucket: &Value) -> Option<WindowExport> {
-    let id = field(bucket, "bucketId").and_then(|b| b.as_str())?;
+    let id = wire_field(bucket, "bucketId").and_then(|b| b.as_str())?;
     let Some((_, key, minutes)) = BUCKETS.iter().find(|(known, _, _)| *known == id) else {
         eprintln!("antigravity-limits: skipping unrecognised bucket {id}");
         return None;
     };
-    if field(bucket, "disabled").and_then(|d| d.as_bool()) == Some(true) {
+    if wire_field(bucket, "disabled").and_then(|d| d.as_bool()) == Some(true) {
         return None;
     }
-    let Some(remaining) = field(bucket, "remainingFraction").and_then(|f| f.as_f64()) else {
+    let Some(remaining) = wire_field(bucket, "remainingFraction").and_then(|f| f.as_f64()) else {
         // The one wire change that would silently empty the card, so it is said
         // out loud rather than dropped: a count with no denominator cannot be a
         // bar, and inventing one would be worse than the blank.
-        if field(bucket, "remainingAmount").is_some() {
+        if reports_an_amount(bucket) {
             eprintln!(
                 "antigravity-limits: bucket {id} reports a remaining amount rather than a fraction — no bar can be drawn from a count with no total"
             );
         }
         return None;
     };
-    let resets_at = field(bucket, "resetTime")
+    let resets_at = wire_field(bucket, "resetTime")
         .and_then(|r| r.as_str())
         .and_then(rfc3339_to_epoch)?;
 
@@ -775,6 +784,24 @@ mod tests {
             let body: Value =
                 serde_json::from_str(&format!(r#"{{"groups":[{{"buckets":[{bucket}]}}]}}"#)).unwrap();
             assert!(windows(&body).is_empty(), "{bucket}");
+        }
+    }
+
+    #[test]
+    fn only_the_amount_bucket_is_flagged_as_a_countable_with_no_denominator() {
+        // The spec's one stderr obligation: the remaining-amount case must be
+        // recognised distinctly (it is the wire change that would empty the card
+        // silently), and none of the other no-bar cases may borrow that note.
+        let amount: Value =
+            serde_json::from_str(r#"{"bucketId":"gemini-5h","remainingAmount":"420"}"#).unwrap();
+        assert!(reports_an_amount(&amount));
+        for other in [
+            r#"{"bucketId":"gemini-5h","remainingFraction":0.5}"#,
+            r#"{"bucketId":"gemini-5h"}"#,
+            // A bucket carrying both is a real fraction, not an amount-only figure.
+            r#"{"bucketId":"gemini-5h","remainingFraction":0.5,"remainingAmount":"420"}"#,
+        ] {
+            assert!(!reports_an_amount(&serde_json::from_str(other).unwrap()), "{other}");
         }
     }
 
