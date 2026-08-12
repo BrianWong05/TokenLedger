@@ -95,7 +95,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
     let missing = missing.to_path_buf();
     let mut roots = SourceRoots {
         claude: missing.clone(),
-        codex: missing.clone(),
+        codex_sessions: vec![missing.clone()],
         gemini_tmp: missing.clone(),
         gemini_projects_json: missing.clone(),
         hermes_db: missing.clone(),
@@ -122,7 +122,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
 
     match source {
         "claude" => roots.claude = artifact.to_path_buf(),
-        "codex" => roots.codex = artifact.to_path_buf(),
+        "codex" => roots.codex_sessions = vec![artifact.to_path_buf()],
         "gemini" => {
             roots.gemini_tmp = artifact.to_path_buf();
             roots.gemini_projects_json = sibling_projects_json(artifact, &missing);
@@ -482,7 +482,7 @@ mod tests {
 
         assert_eq!(roots.pi_sessions, vec![artifact]);
         assert_eq!(roots.claude, missing);
-        assert_eq!(roots.codex, missing);
+        assert_eq!(roots.codex_sessions, vec![missing]);
     }
 
     #[test]

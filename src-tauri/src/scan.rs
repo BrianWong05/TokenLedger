@@ -28,7 +28,7 @@ use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 
 pub struct SourceRoots {
     pub claude: PathBuf,
-    pub codex: PathBuf,
+    pub codex_sessions: Vec<PathBuf>,
     pub gemini_tmp: PathBuf,
     pub gemini_projects_json: PathBuf,
     pub hermes_db: PathBuf,
@@ -71,11 +71,17 @@ impl SourceRoots {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session_dir = pi_environment_value("session-dir");
         let agent_dir = pi_environment_value("agent-dir");
-        Self::from_home_and_pi_env(&home, session_dir.as_deref(), agent_dir.as_deref())
+        Self::from_home_and_pi_env(
+            &home,
+            environment_value("codex", "home").as_deref(),
+            session_dir.as_deref(),
+            agent_dir.as_deref(),
+        )
     }
 
     fn from_home_and_pi_env(
         home: &Path,
+        codex_home: Option<&OsStr>,
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
@@ -83,6 +89,7 @@ impl SourceRoots {
             home,
             session_dir,
             agent_dir,
+            codex_home,
             std::env::var_os("HERMES_HOME").as_deref(),
             gemini_environment_value().as_deref(),
             grok_environment_value().as_deref(),
@@ -105,6 +112,7 @@ impl SourceRoots {
             home,
             session_dir,
             agent_dir,
+            None,
             hermes_home,
             gemini_home,
             grok_home,
@@ -118,6 +126,7 @@ impl SourceRoots {
         home: &Path,
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
+        codex_home: Option<&OsStr>,
         hermes_home: Option<&OsStr>,
         gemini_home: Option<&OsStr>,
         grok_home: Option<&OsStr>,
@@ -153,7 +162,7 @@ impl SourceRoots {
         );
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
-            codex: catalog_root(home, "codex", "sessions"),
+            codex_sessions: codex_session_roots(home, codex_home),
             gemini_tmp: gemini_home.join(source_catalog::artifact_filename("gemini", "tmp")),
             gemini_projects_json: gemini_home
                 .join(source_catalog::artifact_filename("gemini", "projects")),
@@ -271,6 +280,17 @@ fn environment_value(source: &str, artifact: &str) -> Option<OsString> {
         .and_then(|artifact| artifact.environment.as_deref())
         .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} environment"));
     std::env::var_os(environment)
+}
+
+fn codex_session_roots(home: &Path, value: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut roots = vec![catalog_root(home, "codex", "sessions")];
+    let suffix = source_catalog::artifact("codex", "home")
+        .and_then(|artifact| artifact.suffix.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define codex.home suffix"));
+    if let Some(root) = value.and_then(|value| visible_path(home, value)) {
+        push_unique_root(&mut roots, root.join(suffix));
+    }
+    roots
 }
 
 fn pi_environment_value(artifact: &str) -> Option<OsString> {
@@ -544,7 +564,7 @@ fn run_scan_sources(
             Err(error) => unavailable_source_status(&source.key, error),
             Ok(()) => match source.key.as_str() {
                 "claude" => run_one(&source.key, || scan_claude(conn, &roots.claude)),
-                "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex)),
+                "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex_sessions)),
                 "gemini" => run_one(&source.key, || {
                     scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
                 }),
@@ -682,7 +702,7 @@ mod tests {
         // the only Readings in play are the export's.
         let roots = SourceRoots {
             limit_exports: exports,
-            ..SourceRoots::from_home_and_pi_env(&base.join("home"), None, None)
+            ..SourceRoots::from_home_and_pi_env(&base.join("home"), None, None, None)
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
@@ -845,6 +865,21 @@ mod tests {
             .iter()
             .any(|artifact| artifact.path.as_deref() == Some(".claude/projects")));
 
+        let codex = crate::source_catalog::source("codex").unwrap();
+        assert_eq!(
+            codex
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sessions", "home"]
+        );
+        assert_eq!(
+            codex.artifacts[1].environment.as_deref(),
+            Some("CODEX_HOME")
+        );
+        assert_eq!(codex.artifacts[1].suffix.as_deref(), Some("sessions"));
+
         let hermes = crate::source_catalog::source("hermes").unwrap();
         assert_eq!(
             hermes.artifacts[0].path.as_deref(),
@@ -987,6 +1022,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let roots = SourceRoots::from_home_and_pi_env(
             home.path(),
+            None,
             Some(OsStr::new("~/custom-sessions")),
             Some(OsStr::new("~/custom-agent")),
         );
@@ -997,6 +1033,46 @@ mod tests {
                 home.path().join("custom-sessions"),
                 home.path().join("custom-agent/sessions"),
             ],
+        );
+    }
+
+    #[test]
+    fn codex_roots_include_default_then_visible_home_override() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            SourceRoots::from_home_and_pi_env(
+                home.path(),
+                Some(OsStr::new("~/relocated-codex")),
+                None,
+                None,
+            )
+            .codex_sessions,
+            vec![
+                home.path().join(".codex/sessions"),
+                home.path().join("relocated-codex/sessions"),
+            ]
+        );
+        assert_eq!(
+            SourceRoots::from_home_and_pi_env(
+                home.path(),
+                Some(OsStr::new("  ")),
+                None,
+                None,
+            )
+            .codex_sessions,
+            vec![home.path().join(".codex/sessions")]
+        );
+        assert_eq!(
+            SourceRoots::from_home_and_pi_env(
+                home.path(),
+                Some(home.path().join(".codex").as_os_str()),
+                None,
+                None,
+            )
+            .codex_sessions,
+            vec![home.path().join(".codex/sessions")]
         );
     }
 
@@ -1324,7 +1400,7 @@ mod tests {
         let r = SourceRoots::default_roots();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         assert!(r.claude.ends_with(".claude/projects"));
-        assert!(r.codex.ends_with(".codex/sessions"));
+        assert!(r.codex_sessions[0].ends_with(".codex/sessions"));
         assert!(r.gemini_tmp.ends_with(".gemini/tmp"));
         assert!(r.gemini_projects_json.ends_with(".gemini/projects.json"));
         assert!(r.hermes_db.ends_with(".hermes/state.db"));
@@ -1579,7 +1655,7 @@ mod tests {
         .unwrap();
         let roots = SourceRoots {
             claude: root,
-            codex: tmp.path().join("codex"),
+            codex_sessions: vec![tmp.path().join("codex")],
             gemini_tmp: tmp.path().join("gemini/tmp"),
             gemini_projects_json: tmp.path().join("gemini/projects.json"),
             hermes_db: tmp.path().join("hermes/state.db"),
@@ -1643,7 +1719,7 @@ mod tests {
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
@@ -2024,7 +2100,7 @@ mod tests {
         // unsupported Kilo database above.
         let roots = SourceRoots {
             claude: claude_root,
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
             gemini_tmp: gemini_root,
             gemini_projects_json: gemini_projects,
             hermes_db: base.join("no-hermes.db"),
@@ -2182,7 +2258,7 @@ mod tests {
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
@@ -2352,7 +2428,7 @@ mod tests {
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),

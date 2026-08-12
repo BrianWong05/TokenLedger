@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use serde_json::Value;
@@ -43,24 +43,32 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
     })
 }
 
-/// Scan all `*.jsonl` rollout files under `sessions_root` (recursively).
-/// Missing directory → zero events, no error.
-pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
+/// Scan all `*.jsonl` rollout files under the ordered Session roots.
+/// Missing directories → zero events, no error. Only the default root donates
+/// Limit Readings; later roots donate Usage and Context only.
+pub fn scan_codex(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceScanResult {
     let mut result = SourceScanResult::default();
-    let mut files = Vec::new();
     let mut aliases = Vec::new();
     let mut seen = HashSet::new();
-    find_jsonl_by_file_identity(sessions_root, &mut files, &mut aliases, &mut seen);
-    for path in files {
-        match scan_file(conn, &path) {
-            Ok((inserted, skipped)) => {
-                result.events_inserted += inserted;
-                result.lines_skipped += skipped;
+    let mut winners = HashSet::new();
+    for (index, root) in session_roots.iter().enumerate() {
+        let mut files = Vec::new();
+        find_jsonl_by_file_identity(root, &mut files, &mut aliases, &mut seen);
+        for path in files {
+            winners.insert(path.clone());
+            match scan_file(conn, &path, index == 0) {
+                Ok((inserted, skipped)) => {
+                    result.events_inserted += inserted;
+                    result.lines_skipped += skipped;
+                }
+                Err(e) => result.error = Some(e),
             }
-            Err(e) => result.error = Some(e),
         }
     }
     for path in aliases {
+        if winners.contains(&path) {
+            continue;
+        }
         let source_file = path.to_string_lossy();
         if let Err(error) = db::clear_file_state(conn, &source_file)
             .and_then(|_| db::clear_ctx_tools_for_file(conn, &source_file))
@@ -319,7 +327,11 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
 }
 
 /// Returns (events_inserted, lines_skipped) for one file.
-fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
+fn scan_file(
+    conn: &mut Connection,
+    path: &Path,
+    include_limit_readings: bool,
+) -> Result<(u64, u64), String> {
     let path_str = path.to_string_lossy().to_string();
     let parser_repair = db::get_file_state(conn, &path_str)
         .map_err(|e| e.to_string())?
@@ -360,7 +372,9 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     } else {
         db::insert_events(conn, &parsed.events).map_err(|e| e.to_string())?
     };
-    db::insert_limit_readings(conn, &parsed.readings).map_err(|e| e.to_string())?;
+    if include_limit_readings {
+        db::insert_limit_readings(conn, &parsed.readings).map_err(|e| e.to_string())?;
+    }
     db::add_ctx_tool_rows(conn, "codex", &path_str, &parsed.tool_rows).map_err(|e| e.to_string())?;
     db::set_file_state(conn, &path_str, state).map_err(|e| e.to_string())?;
     Ok((inserted, parsed.skipped))
@@ -382,7 +396,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
 
-        let r = scan_codex(&mut conn, &fixture_root());
+        let r = scan_codex(&mut conn, &[fixture_root()]);
         assert_eq!(r.error, None, "no error expected");
         assert_eq!(r.events_inserted, 2, "info:null + duplicate snapshot dropped");
         assert_eq!(r.lines_skipped, 0, "no malformed lines");
@@ -420,7 +434,7 @@ mod tests {
         assert_eq!(max_ts, 1777122215);
 
         // Re-scan is idempotent: unchanged file inserts nothing, totals stable.
-        let r2 = scan_codex(&mut conn, &fixture_root());
+        let r2 = scan_codex(&mut conn, &[fixture_root()]);
         assert_eq!(r2.events_inserted, 0, "unchanged file skipped");
         let n2: i64 = conn
             .query_row("SELECT COUNT(*) FROM events WHERE source='codex'", [], |r| r.get(0))
@@ -444,7 +458,7 @@ mod tests {
         )
         .unwrap();
 
-        let repaired = scan_codex(&mut conn, &fixture_root());
+        let repaired = scan_codex(&mut conn, &[fixture_root()]);
         assert_eq!(repaired.events_inserted, 2);
         let (rows, unknown): (i64, i64) = conn
             .query_row(
@@ -505,7 +519,7 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-04-23T12:23:35.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":60,"output_tokens":90,"reasoning_output_tokens":25,"total_tokens":290}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        let r = scan_codex(&mut conn, &root);
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(r.events_inserted, 2);
 
         let rows: Vec<(Option<String>, Option<i64>)> = {
@@ -578,7 +592,7 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-04-25T09:00:10.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"output_tokens":80,"reasoning_output_tokens":30,"total_tokens":230}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        let r = scan_codex(&mut conn, &root);
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(r.events_inserted, 2, "reasoning-only line still skipped as an event");
         let total: i64 = conn
             .query_row(
@@ -598,7 +612,7 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-04-24T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":50,"total_tokens":150}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        let r = scan_codex(&mut conn, &root);
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(r.events_inserted, 1);
         let (rt, model): (Option<i64>, Option<String>) = conn
             .query_row(
@@ -626,7 +640,7 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:04.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":50,"total_tokens":950}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        let r = scan_codex(&mut conn, &root);
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(r.events_inserted, 1);
 
         let (cm, cs, cr, ct, ca): (i64, Option<i64>, i64, i64, Option<i64>) = conn
@@ -655,7 +669,7 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-05-02T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":0,"output_tokens":10,"total_tokens":510}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         let cr: i64 = conn
             .query_row("SELECT ctx_reasoning FROM events WHERE source='codex'", [], |r| r.get(0))
             .unwrap();
@@ -672,7 +686,7 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         let (est1, calls1): (i64, i64) = conn.query_row(
             "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -686,7 +700,7 @@ mod tests {
             let mut f = std::fs::OpenOptions::new().append(true).open(&fp).unwrap();
             writeln!(f, r#"{{"type":"event_msg","timestamp":"2026-05-03T09:00:03.000Z","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":150,"cached_input_tokens":0,"output_tokens":20,"total_tokens":170}}}}}}}}"#).unwrap();
         }
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         let (est2, calls2): (i64, i64) = conn.query_row(
             "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -707,7 +721,7 @@ mod tests {
         std::fs::hard_link(&rollout, &alias).unwrap();
 
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        let scan = scan_codex(&mut conn, &root);
+        let scan = scan_codex(&mut conn, std::slice::from_ref(&root));
         let tools = ctx_tools(&conn, &Filters::default()).unwrap();
         let source_file: String = conn
             .query_row("SELECT source_file FROM events WHERE source='codex'", [], |row| row.get(0))
@@ -767,20 +781,114 @@ mod tests {
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
 
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         let alias = root.join("rollout-a.jsonl");
         std::fs::hard_link(&rollout, &alias).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
 
         let tools = ctx_tools(&conn, &Filters::default()).unwrap();
         assert_eq!((tools.len(), tools[0].calls), (1, 1));
 
         std::fs::remove_file(alias).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         db::prune_missing_files(&conn).unwrap();
 
         let tools = ctx_tools(&conn, &Filters::default()).unwrap();
         assert_eq!((tools.len(), tools[0].calls), (1, 1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_scans_ordered_roots_without_duplicate_usage_or_extra_limits() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let default_root = tmp.path().join("default/sessions");
+        let relocated_root = tmp.path().join("relocated/sessions");
+        let relocated_link = tmp.path().join("configured-sessions");
+
+        let default_rollout = write_rollout(
+            &default_root,
+            "rollout-default.jsonl",
+            &[REAL_BLOCK],
+        );
+        std::fs::create_dir_all(&relocated_root).unwrap();
+        std::fs::hard_link(
+            &default_rollout,
+            relocated_root.join("rollout-overlap.jsonl"),
+        )
+        .unwrap();
+        let extra_limit = limits_line(
+            r#"{"limit_id":"codex","primary":{"used_percent":42.0,"window_minutes":10080,"resets_at":1786879486},"secondary":null,"plan_type":"plus"}"#,
+            "2026-08-10T03:20:19.385Z",
+        );
+        write_rollout(
+            &relocated_root,
+            "rollout-extra.jsonl",
+            &[
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:20:17.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"pwd\"]}"}}"#,
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:20:18.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+                &extra_limit,
+                "not json",
+            ],
+        );
+        symlink(&relocated_root, &relocated_link).unwrap();
+
+        let roots = vec![
+            default_root.clone(),
+            default_root.clone(),
+            relocated_link.clone(),
+        ];
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let context_totals = |conn: &Connection| -> (i64, i64) {
+            conn.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(est_tokens), 0) FROM ctx_tools WHERE source='codex'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        let first = scan_codex(&mut conn, &roots);
+        let summary = crate::queries::summary(&conn, &Filters::default()).unwrap();
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        let context = context_totals(&conn);
+        let (readings, used_pct): (i64, f64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(used_pct) FROM limit_readings WHERE source='codex'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let source_file: String = conn
+            .query_row(
+                "SELECT source_file FROM events WHERE session_id='rollout-default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!((first.events_inserted, first.lines_skipped), (2, 1));
+        assert!(first.error.is_none());
+        assert_eq!((summary.total_tokens, summary.requests), (300, 2));
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
+        assert_eq!((readings, used_pct), (1, 100.0));
+        assert_eq!(source_file, default_rollout.to_string_lossy());
+
+        let second = scan_codex(&mut conn, &roots);
+        let second_summary = crate::queries::summary(&conn, &Filters::default()).unwrap();
+        assert_eq!(second.events_inserted, 0);
+        assert_eq!(
+            (second_summary.total_tokens, second_summary.requests),
+            (summary.total_tokens, summary.requests)
+        );
+        assert_eq!(context_totals(&conn), context);
+
+        std::fs::remove_file(&relocated_link).unwrap();
+        let after_disappearance = scan_codex(&mut conn, &roots);
+        let durable = crate::queries::summary(&conn, &Filters::default()).unwrap();
+        assert!(after_disappearance.error.is_none());
+        assert_eq!((durable.total_tokens, durable.requests), (300, 2));
+        assert_eq!(context_totals(&conn), context);
     }
 
     // ---- Limit Readings (#104 ingest rules) ----
@@ -936,7 +1044,7 @@ mod tests {
             &lines.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         let rows = |conn: &Connection| -> i64 {
             conn.query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0)).unwrap()
         };
@@ -945,7 +1053,7 @@ mod tests {
         // Re-scanning the same file — after clearing scan state, so the parse
         // genuinely re-runs — inserts nothing new.
         conn.execute("DELETE FROM scanned_files", []).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(rows(&conn), 2, "a re-parse is absorbed by the content-keyed PK");
     }
 

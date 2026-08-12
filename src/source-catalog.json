@@ -22,7 +22,8 @@
       "color": "#6e50f2",
       "icon": "codex",
       "artifacts": [
-        { "id": "sessions", "kind": "directory", "path": ".codex/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+        { "id": "sessions", "kind": "directory", "path": ".codex/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "home", "kind": "directory", "path": null, "environment": "CODEX_HOME", "suffix": "sessions", "platforms": ["all"], "prerequisite": null }
       ],
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
       "platforms": ["all"],

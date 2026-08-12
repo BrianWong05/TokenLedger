@@ -118,7 +118,7 @@ asking Grok live, accepted deliberately
 | Tool | What it is | Logs read |
 |---|---|---|
 | [Claude Code](https://claude.com/claude-code) | Anthropic's CLI coding agent | `~/.claude/projects/**/*.jsonl` |
-| [Codex CLI](https://github.com/openai/codex) | OpenAI's CLI coding agent | `~/.codex/sessions/**/rollout-*.jsonl` |
+| [Codex CLI](https://github.com/openai/codex) | OpenAI's CLI coding agent | `~/.codex/sessions/**/rollout-*.jsonl`, plus `$CODEX_HOME/sessions/**/rollout-*.jsonl` when visible |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google's CLI coding agent | `~/.gemini/tmp/*/chats/session-*.json` |
 | [Hermes](https://github.com/NousResearch/hermes-agent) | Nous Research's self-improving agent | `~/.hermes/state.db` (opened read-only) |
 | [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`), plus `$GROK_HOME/logs/unified.jsonl` for the credit-pool Limit |
