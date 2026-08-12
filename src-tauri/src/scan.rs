@@ -434,21 +434,21 @@ fn grok_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
     home.join(catalog_artifact_parent("grok", "sessions"))
 }
 
+fn catalog_artifact_path(source: &str, artifact: &str) -> &'static str {
+    source_catalog::artifact(source, artifact)
+        .and_then(|artifact| artifact.path.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"))
+}
+
 /// The catalog path with its home-relative root removed — precisely the part a
 /// `$..._HOME` override replaces. `.grok/logs/unified.jsonl` → `logs/unified.jsonl`,
 /// so an artifact nested deeper than one level still resolves under an override.
 fn catalog_artifact_tail(source: &str, artifact: &str) -> PathBuf {
-    let path = source_catalog::artifact(source, artifact)
-        .and_then(|artifact| artifact.path.as_deref())
-        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
-    Path::new(path).iter().skip(1).collect()
+    Path::new(catalog_artifact_path(source, artifact)).iter().skip(1).collect()
 }
 
 fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
-    let path = source_catalog::artifact(source, artifact)
-        .and_then(|artifact| artifact.path.as_deref())
-        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
-    Path::new(path)
+    Path::new(catalog_artifact_path(source, artifact))
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| {

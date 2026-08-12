@@ -24,6 +24,7 @@ use serde_json::Value;
 use super::claude_ctx::{content_bytes, est};
 use super::{file_state_of, percent_decode, unchanged};
 use crate::db::{insert_limit_readings, replace_file_events, set_file_state};
+use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
 use crate::types::{CtxTokens, FileState, LimitReading, SourceScanResult, UsageEvent};
 
@@ -33,10 +34,6 @@ use crate::types::{CtxTokens, FileState, LimitReading, SourceScanResult, UsageEv
 const PARSER_VERSION: i64 = 1;
 
 const MALFORMED_ARTIFACT_WARNING: &str = "grok: malformed or unsupported Source Artifact";
-/// The log artifact fails on its own terms (ADR-0015): the sessions it never
-/// touches keep scanning either way, and conflating the two would blame the
-/// wrong file.
-const MALFORMED_LOG_WARNING: &str = "grok: unified log carried no readable credits snapshot";
 const SUPPORTED_UPDATE_KINDS: &[&str] = &[
     "agent_message_chunk",
     "agent_thought_chunk",
@@ -99,14 +96,23 @@ pub fn scan_grok(conn: &mut Connection, sessions_root: &Path, unified_log: &Path
 // Limit Readings — the weekly credit pool, out of the CLI's own log (#126)
 // ---------------------------------------------------------------------------
 
-/// Grok Build writes every quota snapshot it fetches into
+/// The log line that carries one. Every other message kind in this file is
+/// somebody else's telemetry.
+const BILLING_MSG: &str = "billing: fetched credits config";
+
+/// Grok Build writes every credits reading it fetches into
 /// `~/.grok/logs/unified.jsonl`, so its Limit is passive like Codex's: no
 /// credential is read, no request is made, and ADR-0019's Companion machinery is
 /// never invoked. That is not only the cheaper path but the safe one — xAI
 /// rotates refresh tokens and serialises the rotation under its own lock, so an
 /// exchange would corrupt the CLI's own session. Bound 1's hazard, real here.
-const BILLING_MSG: &str = "billing: fetched credits config";
-
+///
+/// A line this cannot read is skipped rather than counted against the artifact,
+/// and a log that yields nothing at all leaves the card empty — the ordinary
+/// absent-Source path, since there is nothing here to sign into and nothing to
+/// explain. Two things make quiet the right answer rather than the lazy one: the
+/// log is written through a staging file, so a truncated final line is ordinary;
+/// and it is a shared telemetry log, so most of it was never ours to parse.
 fn capture_limits(conn: &mut Connection, unified_log: &Path, result: &mut SourceScanResult) {
     let state = file_state_of(unified_log);
     if unchanged(conn, unified_log, &state) {
@@ -116,36 +122,28 @@ fn capture_limits(conn: &mut Connection, unified_log: &Path, result: &mut Source
         return; // a log we cannot read is not a Source in trouble
     };
 
-    // Every other message kind in this file is somebody else's telemetry, so a
-    // line that is not a credits snapshot is skipped rather than counted against
-    // the artifact. Re-reading the whole log is free: the content-keyed PK
-    // absorbs every repeat, and the file only rewrites on rotation.
-    let mut snapshots = 0u64;
+    // Re-reading the whole log is free: the content-keyed PK absorbs every
+    // repeat, and the file only rewrites on rotation.
     let readings: Vec<LimitReading> = content
         .lines()
         .filter(|line| line.contains(BILLING_MSG))
-        .inspect(|_| snapshots += 1)
         .filter_map(billing_reading)
         .collect();
 
-    // Snapshots that yield nothing is the one drift the card would show as an
-    // absence rather than as trouble — the shape moved under us.
-    if snapshots > 0 && readings.is_empty() {
-        result.error = Some(MALFORMED_LOG_WARNING.to_string());
-        return;
-    }
-    if insert_limit_readings(conn, &readings).is_err() {
-        result.error = Some(MALFORMED_LOG_WARNING.to_string());
+    // A write that fails says so in its own words — reporting it as an
+    // unreadable log would blame the file for the database's trouble.
+    if let Err(error) = insert_limit_readings(conn, &readings) {
+        result.error = Some(format!("grok: could not record Limit Readings: {error}"));
         return;
     }
     let _ = set_file_state(conn, &unified_log.to_string_lossy(), state);
 }
 
-/// One logged credits snapshot → a Reading, or None when it names no window this
-/// card can place. The window is keyed off the vendor's own period *type* rather
-/// than off the measured duration: a 28-day February falls outside the canonical
-/// 43200 ±5% band, so classifying by duration would split one card's history into
-/// two keys once a year.
+/// One logged credits reading → a Limit Reading, or None when it names no window
+/// this card can place. The window is keyed off the vendor's own period *type*
+/// rather than off the measured duration: a 28-day February falls outside the
+/// canonical 43200 ±5% band, so classifying by duration would split one card's
+/// history into two keys once a year.
 fn billing_reading(line: &str) -> Option<LimitReading> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v.get("msg").and_then(Value::as_str) != Some(BILLING_MSG) {
@@ -165,16 +163,18 @@ fn billing_reading(line: &str) -> Option<LimitReading> {
         .get("creditUsagePercent")
         .and_then(Value::as_f64)
         .unwrap_or(0.0);
-    // `billingPeriodEnd` is the deprecated mirror — identical on every observed
-    // row, and the only reset instant a payload predating `currentPeriod` has.
+    // `billingPeriodEnd` is the deprecated mirror, identical on every observed
+    // row. It covers a period that states its type but not its end; a payload
+    // carrying *only* the mirror names no period type, and an unnameable window
+    // cannot be keyed however well its reset is known.
     let resets_at = period
         .and_then(|p| p.get("end"))
         .or_else(|| config.get("billingPeriodEnd"))
         .and_then(Value::as_str)
         .and_then(iso_to_epoch)?;
-    let (window_key, canonical_minutes) = match period.and_then(|p| p.get("type")).and_then(Value::as_str)? {
-        "USAGE_PERIOD_TYPE_WEEKLY" => ("w10080", 10_080),
-        "USAGE_PERIOD_TYPE_MONTHLY" => ("w43200", 43_200),
+    let canonical_minutes = match period.and_then(|p| p.get("type")).and_then(Value::as_str)? {
+        "USAGE_PERIOD_TYPE_WEEKLY" => 10_080,
+        "USAGE_PERIOD_TYPE_MONTHLY" => 43_200,
         // A period type nobody has seen is not guessed into a lane it may not
         // belong to; an absent window is unknown, never zero.
         _ => return None,
@@ -191,7 +191,9 @@ fn billing_reading(line: &str) -> Option<LimitReading> {
 
     Some(LimitReading {
         source: "grok".to_string(),
-        window_key: window_key.to_string(),
+        // Through the shared grammar, so a key here and a key from any other
+        // producer of the same window are spelled identically.
+        window_key: window_key(canonical_minutes),
         window_minutes: Some(window_minutes),
         used_pct,
         resets_at,
@@ -694,10 +696,19 @@ mod tests {
         dir.join("updates.jsonl")
     }
 
+    // The sessions half on its own: a Source with no unified log beside it.
+    fn no_log(root: &Path) -> PathBuf {
+        root.join("no-such-log.jsonl")
+    }
+
+    fn scan_sessions(conn: &mut Connection, root: &Path) -> SourceScanResult {
+        scan_grok(conn, root, &no_log(root))
+    }
+
     fn scan(root: &Path) -> (tempfile::TempDir, rusqlite::Connection, SourceScanResult) {
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
-        let res = scan_grok(&mut conn, root, &root.join("no-such-log.jsonl"));
+        let res = scan_sessions(&mut conn, root);
         (app, conn, res)
     }
 
@@ -864,11 +875,11 @@ mod tests {
 
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
-        let first = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let first = scan_sessions(&mut conn, tmp.path());
         assert_eq!(first.events_inserted, 1);
 
         // Same content → skipped entirely.
-        let second = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let second = scan_sessions(&mut conn, tmp.path());
         assert_eq!(second.events_inserted, 0);
 
         // Session grows (new turn, distinct mtime via size change) → rescan
@@ -880,7 +891,7 @@ mod tests {
         content.push('\n');
         std::fs::write(&updates, content).unwrap();
 
-        let third = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let third = scan_sessions(&mut conn, tmp.path());
         assert_eq!(third.events_inserted, 2);
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
@@ -934,11 +945,11 @@ mod tests {
 
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
-        let first = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let first = scan_sessions(&mut conn, tmp.path());
         assert_eq!(first.events_inserted, 1);
 
         std::fs::write(&updates, "not json\n").unwrap();
-        let second = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let second = scan_sessions(&mut conn, tmp.path());
         assert_eq!(second.events_inserted, 0);
         assert!(second.error.is_some());
         assert_eq!(
@@ -1012,10 +1023,10 @@ mod tests {
 
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
-        assert_eq!(scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl")).events_inserted, 1);
+        assert_eq!(scan_sessions(&mut conn, tmp.path()).events_inserted, 1);
 
         std::fs::write(updates.parent().unwrap().join("summary.json"), "not json").unwrap();
-        let summary_result = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let summary_result = scan_sessions(&mut conn, tmp.path());
         assert!(summary_result.error.is_some());
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
@@ -1029,7 +1040,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(updates.parent().unwrap().join("signals.json"), "not json").unwrap();
-        let signals_result = scan_grok(&mut conn, tmp.path(), &tmp.path().join("no-such-log.jsonl"));
+        let signals_result = scan_sessions(&mut conn, tmp.path());
         assert!(signals_result.error.is_some());
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
@@ -1095,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn credits_snapshots_become_weekly_readings_and_an_absent_percent_is_zero() {
+    fn logged_credits_become_weekly_readings_and_an_absent_percent_is_zero() {
         // proto3 omits zero-valued scalars, so the 0% row arrives with no
         // `creditUsagePercent` at all — the start of every window looks like this.
         let (_tmp, conn, res) = scan_log(&[
@@ -1106,7 +1117,7 @@ mod tests {
         assert!(res.error.is_none());
 
         let rows = readings(&conn);
-        assert_eq!(rows.len(), 2, "one row per distinct figure; the other line is not a snapshot");
+        assert_eq!(rows.len(), 2, "one row per distinct figure; the other line is not one");
         assert_eq!(rows[0].0, "w10080");
         assert_eq!(rows[0].1, Some(10_080), "the axis is measured from the period's own bounds");
         assert_eq!(rows[0].2, 0.0, "an absent percentage is 0% used, never malformed");
@@ -1142,10 +1153,10 @@ mod tests {
     }
 
     #[test]
-    fn a_period_this_card_cannot_place_yields_no_reading_and_says_so() {
+    fn a_period_this_card_cannot_place_yields_no_reading_and_no_trouble() {
         // No reset instant, and a period type nobody has seen: neither can be put
-        // on a bar, and a snapshot that yields nothing is the one drift that would
-        // read as an absence rather than as trouble.
+        // on a bar. An honest blank beats a mislabelled bar, and there is nothing
+        // here for a person to fix, so the card stays quiet rather than alarmed.
         for payload in [
             // Neither the current period nor its deprecated mirror names an end.
             r#"{"ts":"2026-07-10T20:49:57.123Z","lvl":"info","msg":"billing: fetched credits config",
@@ -1155,13 +1166,13 @@ mod tests {
             billing_line("2026-07-10T20:49:57.123Z", Some("14"), r#""currentPeriod":{"type":"USAGE_PERIOD_TYPE_FORTNIGHTLY","start":"2026-07-05T00:00:00.000000+00:00","end":"2026-07-19T00:00:00.000000+00:00"},"#),
         ] {
             let (_tmp, conn, res) = scan_log(&[payload]);
-            assert_eq!(res.error.as_deref(), Some(MALFORMED_LOG_WARNING));
+            assert_eq!(res.error, None);
             assert!(readings(&conn).is_empty());
         }
     }
 
     #[test]
-    fn a_snapshot_falls_back_to_the_deprecated_reset_mirror() {
+    fn a_reading_falls_back_to_the_deprecated_reset_mirror() {
         let (_tmp, conn, _res) = scan_log(&[billing_line(
             "2026-07-10T20:49:57.123Z",
             Some("14"),
@@ -1192,9 +1203,9 @@ mod tests {
     }
 
     #[test]
-    fn the_log_and_the_sessions_fail_independently() {
-        // ADR-0015: a log whose shape moved must not stop sessions being counted,
-        // and a missing log is not a Source in trouble.
+    fn the_log_and_the_sessions_are_read_independently() {
+        // ADR-0015: a log this cannot read must not stop the sessions beside it
+        // being counted, and neither one's absence is a Source in trouble.
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
@@ -1208,13 +1219,17 @@ mod tests {
             None,
         );
         let log = tmp.path().join("unified.jsonl");
-        std::fs::write(&log, billing_line("2026-07-10T20:49:57.123Z", Some("14"), "") + "\n").unwrap();
+        // A truncated final line is ordinary here — the log is written through a
+        // staging file — so it must cost the sessions nothing.
+        std::fs::write(&log, weekly("2026-07-10T20:49:57.123Z", Some("14")) + "\n{\"ts\":\"2026").unwrap();
 
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
         let res = scan_grok(&mut conn, tmp.path(), &log);
-        assert_eq!(res.error.as_deref(), Some(MALFORMED_LOG_WARNING));
+        assert_eq!(res.error, None);
         assert_eq!(res.events_inserted, 1, "the sessions still counted");
+        assert_eq!(readings(&conn).len(), 1, "and the whole line before it still read");
     }
 }
+
 
