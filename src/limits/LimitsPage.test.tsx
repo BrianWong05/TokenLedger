@@ -137,14 +137,16 @@ describe('card states', () => {
     );
   });
 
-  it('reads a live Source with nothing recorded as not signed in', async () => {
+  it('reads a live Source with no usable sign-in as unavailable', async () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CODEX_WEEKLY]) }));
     const claude = cardFor(c, 'Claude');
 
     expect(claude.className).toMatch(/off/);
-    expect(claude.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Not signed in');
+    expect(claude.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      'Sign-in unavailable',
+    );
     expect(claude.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      'Sign in with the claude CLI, then check again.',
+      "TokenLedger couldn't find a usable claude sign-in. Check where claude stores its sign-in, then try again.",
     );
     expect(claude.querySelector('.tl-lim-plan')).toBeNull();
     expect(btn(claude, 'Check again')).toBeTruthy();
@@ -167,7 +169,7 @@ describe('card states', () => {
     expect(btn(claude, 'Retry')).toBeTruthy();
   });
 
-  it('renders a refused credential as signed out, not as a failure', async () => {
+  it('renders a refused credential as sign-in unavailable, not as a failure', async () => {
     const c = await mount(
       fakePort({
         list: () => Promise.resolve([]),
@@ -175,20 +177,24 @@ describe('card states', () => {
       }),
     );
     expect(cardFor(c, 'Claude').querySelector('.tl-lim-trouble .title')?.textContent).toBe(
-      'Not signed in',
+      'Sign-in unavailable',
     );
   });
 
-  it('reads a codex with nothing recorded as not signed in, naming its own CLI', async () => {
-    // Codex is a `live` Source now; the nothing-recorded state is exercised at
-    // the derive level against an injected `logs` Source, since no shipped
-    // Source can currently reach it.
-    const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
+  it('does not call a Codex home-specific credential failure a machine-wide sign-out', async () => {
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([]),
+      checkLive: (source) => source === 'codex'
+        ? Promise.reject(new Error('not signed in: no Codex sign-in found on this computer'))
+        : Promise.resolve(),
+    }));
     const codex = cardFor(c, 'Codex');
     expect(codex.className).toMatch(/off/);
-    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Not signed in');
+    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      'Sign-in unavailable',
+    );
     expect(codex.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      'Sign in with the codex CLI, then check again.',
+      "TokenLedger couldn't find a usable codex sign-in. Check where codex stores its sign-in, then try again.",
     );
   });
 

@@ -40,8 +40,9 @@ export const limits = {
     'limits.observedAgo': 'from your logs · last request {t} ago',
     'limits.observedOld': 'no requests in {t} — figures are that old',
 
-    'limits.signedOut': 'Not signed in',
-    'limits.signedOutHint': 'Sign in with the {cli} CLI, then check again.',
+    'limits.signedOut': 'Sign-in unavailable',
+    'limits.signedOutHint':
+      "TokenLedger couldn't find a usable {cli} sign-in. Check where {cli} stores its sign-in, then try again.",
     'limits.checkAgain': 'Check again',
     'limits.error': "Couldn't check",
     'limits.retry': 'Retry',
@@ -85,8 +86,9 @@ export const limits = {
     'limits.observedAgo': '來自本機日誌 · 最後請求於 {t}前',
     'limits.observedOld': '{t}沒有請求 — 數字也是那時的',
 
-    'limits.signedOut': '未登入',
-    'limits.signedOutHint': '請先在 {cli} CLI 登入，再查詢一次。',
+    'limits.signedOut': '無法使用登入',
+    'limits.signedOutHint':
+      'TokenLedger 找不到可用的 {cli} 登入。請檢查 {cli} 將登入資料儲存在哪裡，然後再試。',
     'limits.checkAgain': '再查詢',
     'limits.error': '查詢失敗',
     'limits.retry': '重試',
