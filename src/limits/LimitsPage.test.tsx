@@ -336,15 +336,27 @@ describe('fetch policy', () => {
 
   it('runs an ordinary scan on Refresh, which is how a logs Source updates', async () => {
     let scans = 0;
+    let finish!: () => void;
     const port = fakePort({
       list: () => Promise.resolve([CODEX_WEEKLY]),
-      scan: () => { scans += 1; return Promise.resolve(null); },
+      scan: () => {
+        scans += 1;
+        return new Promise((r) => { finish = () => r(null); });
+      },
     });
     const c = await mount(port);
     expect(scans).toBe(0);
 
     await act(async () => btn(c, 'Refresh').click());
+    // The scan shows as one: inside the live floor this is the button's only
+    // feedback, and without it an unchanged logs card made Refresh look broken.
+    const busy = btn(c, 'Checking…');
+    expect(busy).toBeTruthy();
+    expect(busy.disabled).toBe(true);
+
+    await act(async () => finish());
     await settle();
     expect(scans).toBe(1);
+    expect(btn(c, 'Refresh')).toBeTruthy();
   });
 });

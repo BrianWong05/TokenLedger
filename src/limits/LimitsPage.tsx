@@ -43,7 +43,10 @@ export default function LimitsPage({
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
   const [liveEnabled, setLiveEnabled] = useState(() => port.read(LIVE_ENABLED_KEY) === 'true');
   const [failures, setFailures] = useState<Record<string, 'signed-out' | { detail: string }>>({});
-  const [checking, setChecking] = useState(false);
+  // In-flight checks, counted rather than boolean: a Refresh runs a scan and a
+  // live check concurrently, and whichever finishes first must not re-enable the
+  // button under the other.
+  const [checking, setChecking] = useState(0);
   // The clock the ticks and the freshness line read. Re-read on every render pass
   // the page triggers; nothing here polls.
   const [nowSec, setNowSec] = useState(() => Math.floor(now() / 1000));
@@ -73,7 +76,7 @@ export default function LimitsPage({
         .filter((key) => now() - Number(port.read(lastCheckKey(key)) ?? 0) >= LIVE_FLOOR_MS);
       if (!due.length) return;
 
-      setChecking(true);
+      setChecking((n) => n + 1);
       Promise.all(
         due.map((key) => {
           port.write(lastCheckKey(key), String(now()));
@@ -94,7 +97,7 @@ export default function LimitsPage({
       )
         .catch(() => {})
         .finally(() => {
-          setChecking(false);
+          setChecking((n) => n - 1);
           reload();
         });
     },
@@ -110,8 +113,18 @@ export default function LimitsPage({
   }, []);
 
   const refresh = () => {
-    // For a `logs` Source, Refresh is just an ordinary scan.
-    Promise.resolve(port.scan()).catch(() => {}).finally(reload);
+    // For a `logs` Source, Refresh is just an ordinary scan — and it shows as
+    // one. Without this bracket the button gave no feedback at all inside the
+    // live floor, and an unchanged Codex card made Refresh look broken rather
+    // than honest (its figures can never be fresher than the last request the
+    // logs hold).
+    setChecking((n) => n + 1);
+    Promise.resolve(port.scan())
+      .catch(() => {})
+      .finally(() => {
+        setChecking((n) => n - 1);
+        reload();
+      });
     if (liveEnabled) checkLive();
   };
 
@@ -148,8 +161,8 @@ export default function LimitsPage({
             </button>
           ))}
         </div>
-        <button type="button" className="tl-lim-refresh" onClick={refresh} disabled={checking}>
-          {t(checking ? 'limits.refreshing' : 'limits.refresh')}
+        <button type="button" className="tl-lim-refresh" onClick={refresh} disabled={checking > 0}>
+          {t(checking > 0 ? 'limits.refreshing' : 'limits.refresh')}
         </button>
       </div>
 
