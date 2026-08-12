@@ -790,10 +790,17 @@ mod tests {
         let relocated_root = tmp.path().join("relocated/sessions");
         let relocated_link = tmp.path().join("configured-sessions");
 
+        // The duplicated rollout carries a toolcall of its own: it is both a
+        // winner and an identity alias here, so it is the only fixture that can
+        // tell the alias cleanup and the session-scoped Context clear apart.
         let default_rollout = write_rollout(
             &default_root,
             "rollout-default.jsonl",
-            &[REAL_BLOCK],
+            &[
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:16:17.000Z","payload":{"type":"function_call","call_id":"c2","name":"shell","arguments":"{\"command\":[\"pwd\"]}"}}"#,
+                r#"{"type":"response_item","timestamp":"2026-08-10T03:16:18.000Z","payload":{"type":"function_call_output","call_id":"c2","output":"done"}}"#,
+                REAL_BLOCK,
+            ],
         );
         std::fs::create_dir_all(&relocated_root).unwrap();
         std::fs::hard_link(
@@ -853,7 +860,7 @@ mod tests {
         assert_eq!((first.events_inserted, first.lines_skipped), (2, 1));
         assert!(first.error.is_none());
         assert_eq!((summary.total_tokens, summary.requests), (300, 2));
-        assert_eq!((tools.len(), tools[0].calls), (1, 1));
+        assert_eq!((tools.len(), tools[0].calls), (1, 2));
         assert_eq!((readings, used_pct), (1, 100.0));
         assert_eq!(source_file, default_rollout.to_string_lossy());
 
