@@ -121,7 +121,7 @@ describe('the opt-in disclosure', () => {
     await settle();
 
     expect(port.store[LIVE_ENABLED_KEY]).toBe('true');
-    expect(port.liveCalls).toEqual(['claude', 'codex']);
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok']);
     expect(c.querySelector('.tl-lim-optin')).toBeNull();
     // Codex readings flowed from ordinary scans all along, so its card already
     // has history the moment the disclosure is dismissed.
@@ -187,9 +187,9 @@ describe('card states', () => {
     );
   });
 
-  it('reads a codex with nothing recorded as not signed in, naming its own CLI', async () => {
-    // Codex is a `live` Source, so an absence there means the credential, not
-    // the logs. Grok is the `logs` case, covered below.
+  it('reads a live Source with nothing recorded as not signed in, naming its own CLI', async () => {
+    // Every shipped Source is `live` now, so an absence means the credential.
+    // The nothing-recorded (`logs`) state is exercised at the derive level.
     const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
     const codex = cardFor(c, 'Codex');
     expect(codex.className).toMatch(/off/);
@@ -197,17 +197,12 @@ describe('card states', () => {
     expect(codex.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
       'Sign in with the codex CLI, then check again.',
     );
-  });
-
-  it('reads a logs Source with nothing recorded as nothing recorded, never signed out', async () => {
-    // Grok has nothing to sign into from here: its Readings arrive when the CLI
-    // next runs, so the card says that rather than sending someone to re-auth.
-    const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
+    // Grok is live too now — an empty card points at its own CLI, not a blank.
     const grok = cardFor(c, 'Grok');
-    expect(grok.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
-      'No Grok activity recorded yet',
+    expect(grok.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Not signed in');
+    expect(grok.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
+      'Sign in with the grok CLI, then check again.',
     );
-    expect(grok.querySelector('.tl-lim-ghost')).toBeNull();
   });
 
   it('gives every catalogued limits Source a card and nobody else one', async () => {
@@ -251,11 +246,10 @@ describe('bars', () => {
     expect(credits.querySelector('.tl-lim-label')?.textContent).toBe('Weekly credits');
     expect(credits.querySelector('.tl-lim-num')?.textContent).toBe('84%');
     expect(grok.querySelector('.tl-lim-plan')?.textContent).toBe('SuperGrok');
-    // From the CLI's own log, so the freshness line is the age of the last
-    // request rather than the age of a fetch.
-    expect(grok.querySelector('.tl-lim-fresh')?.textContent).toBe(
-      'from your logs · last request 3h ago',
-    );
+    // Grok is a `live` Source now, so the freshness line reads as a fetch age —
+    // the reading may be the Companion's or the last logged one, but the card is
+    // labelled live either way (the Codex model).
+    expect(grok.querySelector('.tl-lim-fresh')?.textContent).toBe('checked 3h ago');
   });
 
   it('renders a used-up window as spent', async () => {
@@ -328,11 +322,11 @@ describe('fetch policy', () => {
     try {
       const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
       await mount(port);
-      expect(port.liveCalls).toEqual(['claude', 'codex']);
+      expect(port.liveCalls).toEqual(['claude', 'codex', 'grok']);
 
       // Nothing polls: time alone adds no calls, however much of it passes.
       await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60_000); });
-      expect(port.liveCalls).toEqual(['claude', 'codex']);
+      expect(port.liveCalls).toEqual(['claude', 'codex', 'grok']);
     } finally {
       vi.useRealTimers();
     }
@@ -343,17 +337,17 @@ describe('fetch policy', () => {
     // what permits a call at all, never what exempts it from the floor.
     const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
     const c = await mount(port);
-    expect(port.liveCalls).toEqual(['claude', 'codex']);
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok']);
 
     await act(async () => btn(c, 'Refresh').click());
     await settle();
-    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual(['claude', 'codex']);
+    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual(['claude', 'codex', 'grok']);
 
     // Past the floor, the same press does.
     clock = NOW_MS + 61_000;
     await act(async () => btn(c, 'Refresh').click());
     await settle();
-    expect(port.liveCalls).toEqual(['claude', 'codex', 'claude', 'codex']);
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok', 'claude', 'codex', 'grok']);
   });
 
   it('keeps the floor across tab switches, which unmount the page', async () => {
@@ -362,13 +356,13 @@ describe('fetch policy', () => {
     // and back would fetch again immediately.
     const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
     await mount(port);
-    expect(port.liveCalls).toEqual(['claude', 'codex']);
+    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok']);
 
     await remount(port, NOW_MS + 30_000);
-    expect(port.liveCalls, 'still inside the floor').toEqual(['claude', 'codex']);
+    expect(port.liveCalls, 'still inside the floor').toEqual(['claude', 'codex', 'grok']);
 
     await remount(port, NOW_MS + 61_000);
-    expect(port.liveCalls, 'past it, a page open checks again').toEqual(['claude', 'codex', 'claude', 'codex']);
+    expect(port.liveCalls, 'past it, a page open checks again').toEqual(['claude', 'codex', 'grok', 'claude', 'codex', 'grok']);
   });
 
   it('runs an ordinary scan on Refresh, which is how a logs Source updates', async () => {

@@ -68,7 +68,7 @@
         { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null },
         { "id": "logs", "kind": "file", "path": ".grok/logs/unified.jsonl", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "logs" },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },

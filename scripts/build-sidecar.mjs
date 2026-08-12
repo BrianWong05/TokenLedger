@@ -21,7 +21,7 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const COMPANIONS = ['antigravity-export', 'claude-limits', 'codex-limits'];
+const COMPANIONS = ['antigravity-export', 'claude-limits', 'codex-limits', 'grok-limits'];
 const CACHE_VERSION = 1;
 const DEFAULT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 

@@ -99,10 +99,14 @@ OpenRouter's model list for pricing, and the GitHub release manifest for
 updates. One optional feature reaches further and asks first: enabling **live
 limit checks** on the Limits tab runs a separate companion process per tool that
 presents the sign-in that tool already stores — Claude Code's to
-`api.anthropic.com`, Codex's to `chatgpt.com` — read-only, only when you open
-that page or press Refresh, never on a timer — to ask how much of each rolling
-window you have used. Until you press that button, no credential is read and no
-authenticated request exists. The companions never write or refresh your sign-ins
+`api.anthropic.com`, Codex's to `chatgpt.com`, Grok's to `cli-chat-proxy.grok.com`
+— read-only, only when you open that page or press Refresh, never on a timer — to
+ask how much of each rolling window you have used. Until you press that button, no
+credential is read and no authenticated request exists. No companion ever writes
+your sign-in files. Most present a still-valid token untouched; Grok's is the one
+that may refresh a short-lived token to get a current reading, and because xAI
+rotates refresh tokens that refresh can leave the Grok CLI needing `grok login`
+again — the cost of asking Grok live, accepted deliberately
 ([ADR-0019](docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md)).
 
 ## Data sources

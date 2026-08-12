@@ -155,9 +155,9 @@ describe('framing', () => {
   });
 });
 
-// A fabricated `logs` Source. Grok is a real one, but this stays fabricated so
-// the logs rules are pinned independently of which Sources the catalog happens
-// to carry.
+// A fabricated `logs` Source. No shipped Source is `logs`-only now (Grok gained
+// a live Companion), so the logs rules are pinned here independently of the
+// catalog rather than against a real card.
 const LOGS_SOURCE = {
   meta: {
     key: 'faketool', label: 'FakeTool', source: 'FakeTool', color: '#000000',
@@ -171,9 +171,9 @@ describe('catalog gating', () => {
   it('yields a card only for a Source declaring a limits capability', () => {
     const keys = limitsSources().map((s) => s.meta.key);
     expect(keys).toEqual(['claude', 'codex', 'grok']);
-    // Grok's Readings come out of the CLI's own log, so it is `logs` like Codex
-    // once was — no Companion, no credential, nothing behind the opt-in (#126).
-    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'logs']);
+    // Grok gained a live Companion (the billing endpoint) on top of its passive
+    // log capture, mirroring Codex — so it is `live`, behind the opt-in.
+    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live']);
   });
 
   it('gives a Source without the capability no card, even holding Readings', () => {
