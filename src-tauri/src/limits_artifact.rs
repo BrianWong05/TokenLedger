@@ -1,7 +1,7 @@
-// The Limits Export Artifact — the one contract between the `claude-limits`
-// Companion, which writes these files, and the scan, which reads them like any
-// other file (ADR-0019). Both sides use these types, so a field can never be
-// spelled one way by the writer and another by the reader.
+// The Limits Export Artifact — the one contract between the Companions, which
+// write these files, and the scan, which reads them like any other file
+// (ADR-0019). Both sides use these types, so a field can never be spelled one
+// way by the writer and another by the reader.
 //
 // One Artifact per `live` Source, named `<source>.tokenledger-limits.json`, in a
 // directory the app owns. It carries Limit Readings — never tokens, never usage —
@@ -66,8 +66,13 @@ pub struct LimitsExport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowExport {
-    /// The vendor's own response key, verbatim and opaque: `five_hour`,
-    /// `seven_day`, `seven_day_opus`, or one nobody has seen yet.
+    /// How the Reading's window is addressed: the vendor's own response key
+    /// where there is one (`five_hour`, `seven_day_opus`, or one nobody has seen
+    /// yet), or a key this side builds where the vendor's does not identify a
+    /// window uniquely — `w{minutes}` from a duration, and a `pool:` prefix
+    /// where a Source meters more than one pool over the same durations. The
+    /// page splits on the colon and classifies the remainder; nothing else
+    /// reads inside it.
     pub key: String,
     /// The window's length, where the key names one. Absent means unknown — the
     /// card then draws a bar with no time tick rather than inventing an axis.
@@ -283,7 +288,7 @@ mod tests {
     fn a_pool_keyed_export_files_each_pool_as_its_own_series() {
         // Antigravity is the first Source whose pool is a genuine second axis:
         // both pools share both durations, so a key of the duration alone would
-        // put two different quotas on one row and lose one of them.
+        // put two different pools' Limits on one row and lose one of them.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");
         write_file(

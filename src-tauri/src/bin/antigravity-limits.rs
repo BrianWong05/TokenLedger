@@ -27,7 +27,7 @@
 //!    never a file, never the Keychain — so "TokenLedger never writes a Google
 //!    token" stays greppable rather than promised. (If a cache is ever added it
 //!    must bind to a one-way fingerprint of the refresh credential, or a logout
-//!    or account switch could serve the previous account's quota.)
+//!    or account switch could serve the previous account's figures.)
 //! 3. The client id/secret pair is hardcoded. Google's installed-app model
 //!    ships them in every copy of each client: they identify the app, they are
 //!    not keys. A vendor rotating its id fails the exchange, and the card
@@ -91,7 +91,7 @@ const EXIT_ITEM_NOT_FOUND: i32 = 44;
 ///
 /// The key carries the pool because Antigravity is the first Source where the
 /// pool is a genuine second axis rather than a slot: two pools share both
-/// durations, so `w300` alone addresses two different quotas with two different
+/// durations, so `w300` alone addresses two different pools with two different
 /// fill levels, and one would overwrite the other in the content-keyed PK.
 const BUCKETS: [(&str, &str, i64); 4] = [
     ("gemini-5h", "gemini:w300", 300),
@@ -120,11 +120,17 @@ fn run() -> Result<String, String> {
     // One call, two needs: the project the summary endpoint marks REQUIRED, and
     // the plan label.
     let assist = post(&access_token, "loadCodeAssist", json!({}))?;
-    let project = assist
-        .get("cloudaicompanionProject")
+    // The summary request marks this REQUIRED. Sending an empty string instead
+    // would be the silent-fallthrough failure this call exists to avoid — the
+    // server would answer something, and nobody would know which account it was
+    // about. No project, no reading.
+    let project = field(&assist, "cloudaicompanionProject")
         .and_then(|p| p.as_str())
-        .unwrap_or_default()
-        .to_string();
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| {
+            "the vendor named no project for this account, so its Limits cannot be asked for"
+                .to_string()
+        })?;
     let body = post(
         &access_token,
         "retrieveUserQuotaSummary",
@@ -208,8 +214,14 @@ fn keystore_read() -> Result<String, String> {
         ));
     }
 
-    // Claude Code's own stderr taxonomy, so a locked keystore says it is locked
-    // rather than being reported as an absence.
+    // The same stderr taxonomy `claude-limits` classifies by, so a locked
+    // keystore says it is locked rather than being reported as an absence.
+    // ponytail: deliberately duplicated rather than shared. The one library both
+    // Companions already import is compiled into the app, and ADR-0019's whole
+    // guarantee is that the always-running process never touches credential
+    // machinery — checkable by grep. Hoisting this there would put keystore
+    // vocabulary in the app to save twenty lines in two tools that are separate
+    // processes on purpose.
     let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
     let reason = if stderr.contains("locked") || stderr.contains("unlock") {
         "the login keystore is locked — unlock it and check again"
@@ -218,6 +230,11 @@ fn keystore_read() -> Result<String, String> {
         "the credential store refused to answer without user interaction"
     } else if stderr.contains("cancel") {
         "the credential read was cancelled"
+    } else if stderr.contains("authorization")
+        || stderr.contains("authentication")
+        || stderr.contains("name or passphrase")
+    {
+        "the credential store refused authorization"
     } else {
         "the credential store could not be read"
     };
@@ -273,12 +290,18 @@ fn rfc3339_to_epoch(s: &str) -> Option<i64> {
 // The token
 // ---------------------------------------------------------------------------
 
+/// Whether the stored pass still has life in it. A minute of headroom: one
+/// expiring while the request is in flight would 401, and the exchange is the
+/// cheaper branch to take early. Split out from the fetch so the gate itself is
+/// testable — everything past it needs Google.
+fn stored_pass_holds(credential: &Credential, now: i64) -> bool {
+    credential.expiry > now + 60 && !credential.access_token.is_empty()
+}
+
 /// The stored access token while it lives, a freshly minted one after that.
 /// Nothing is written anywhere in either case (ADR-0020 bounds 1 and 2).
 fn access_token(credential: &Credential, now: i64) -> Result<String, String> {
-    // A minute of headroom: a token expiring while the request is in flight
-    // would 401, and the exchange is the cheaper branch to take early.
-    if credential.expiry > now + 60 && !credential.access_token.is_empty() {
+    if stored_pass_holds(credential, now) {
         return Ok(credential.access_token.clone());
     }
     if credential.refresh_token.is_empty() {
@@ -374,9 +397,29 @@ fn tier_word(name: &str) -> String {
     }
 }
 
-/// The summary's buckets → Readings. `groups[].buckets[]` is the live shape;
-/// the top-level `buckets[]` is marked deprecated in the descriptor and is read
-/// only when the groups say nothing.
+/// A field under either spelling the wire may use. Google's JSON transcoding
+/// emits lowerCamelCase by default, which is what the descriptors' `json_name`
+/// entries say and what openusage decodes — but the proto field names are
+/// snake_case, and a server configured to emit those would otherwise drop every
+/// bucket silently and leave an empty card with nothing to diagnose.
+fn field<'a>(node: &'a Value, camel: &str) -> Option<&'a Value> {
+    node.get(camel).or_else(|| {
+        let mut snake = String::with_capacity(camel.len() + 2);
+        for c in camel.chars() {
+            if c.is_ascii_uppercase() {
+                snake.push('_');
+                snake.push(c.to_ascii_lowercase());
+            } else {
+                snake.push(c);
+            }
+        }
+        node.get(&snake)
+    })
+}
+
+/// The summary's buckets → Readings, read from `groups[].buckets[]`. The
+/// top-level `buckets[]` is marked deprecated in the descriptor and is
+/// deliberately not read: the spec asks for the summary shape and nothing else.
 ///
 /// **No row, no bar** in four cases, all of them v1's "an absent Capability is
 /// unknown, never zero": a bucket with no `resetTime` is a rolling window that
@@ -386,51 +429,41 @@ fn tier_word(name: &str) -> String {
 /// `disabled` is a pool that exists but is off for this account; and an
 /// unrecognised `bucketId` is not guessed into a pool it may not belong to.
 fn windows(body: &Value) -> Vec<WindowExport> {
-    let grouped: Vec<&Value> = body
+    let mut out: Vec<WindowExport> = body
         .get("groups")
         .and_then(|g| g.as_array())
-        .map(|groups| groups.iter().flat_map(bucket_list).collect())
-        .unwrap_or_default();
-    let buckets = if grouped.is_empty() {
-        bucket_list(body)
-    } else {
-        grouped
-    };
-
-    let mut out: Vec<WindowExport> = buckets.into_iter().filter_map(bucket_window).collect();
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|group| group.get("buckets").and_then(|b| b.as_array()))
+        .flatten()
+        .filter_map(bucket_window)
+        .collect();
     out.sort_by(|a, b| a.window_minutes.cmp(&b.window_minutes).then(a.key.cmp(&b.key)));
     out
 }
 
-fn bucket_list(node: &Value) -> Vec<&Value> {
-    node.get("buckets")
-        .and_then(|b| b.as_array())
-        .map(|b| b.iter().collect())
-        .unwrap_or_default()
-}
-
 fn bucket_window(bucket: &Value) -> Option<WindowExport> {
-    let id = bucket.get("bucketId").and_then(|b| b.as_str())?;
+    let id = field(bucket, "bucketId").and_then(|b| b.as_str())?;
     let Some((_, key, minutes)) = BUCKETS.iter().find(|(known, _, _)| *known == id) else {
         eprintln!("antigravity-limits: skipping unrecognised bucket {id}");
         return None;
     };
-    if bucket.get("disabled").and_then(|d| d.as_bool()) == Some(true) {
+    if field(bucket, "disabled").and_then(|d| d.as_bool()) == Some(true) {
         return None;
     }
-    let Some(remaining) = bucket.get("remainingFraction").and_then(|f| f.as_f64()) else {
+    let Some(remaining) = field(bucket, "remainingFraction").and_then(|f| f.as_f64()) else {
         // The one wire change that would silently empty the card, so it is said
         // out loud rather than dropped: a count with no denominator cannot be a
         // bar, and inventing one would be worse than the blank.
-        if bucket.get("remainingAmount").is_some() {
+        if field(bucket, "remainingAmount").is_some() {
             eprintln!(
                 "antigravity-limits: bucket {id} reports a remaining amount rather than a fraction — no bar can be drawn from a count with no total"
             );
         }
         return None;
     };
-    let resets_at = bucket
-        .get("resetTime")
+    let resets_at = field(bucket, "resetTime")
         .and_then(|r| r.as_str())
         .and_then(rfc3339_to_epoch)?;
 
@@ -525,31 +558,33 @@ mod tests {
     }
 
     #[test]
-    fn the_deprecated_top_level_buckets_are_read_only_when_the_groups_say_nothing() {
+    fn the_deprecated_top_level_buckets_are_not_read() {
+        // Field 1 is marked deprecated in the descriptor and field 2 (`groups`)
+        // is the live one. Reading both would double-count a server that sends
+        // both, and the spec asks for the summary shape and nothing else.
         let body: Value = serde_json::from_str(
             r#"{"buckets":[{"bucketId":"gemini-weekly","remainingFraction":0.5,
                 "resetTime":"2026-08-16T02:00:00Z"}]}"#,
         )
         .unwrap();
-        assert_eq!(windows(&body).len(), 1);
-
-        // Where both are present the live shape wins outright.
-        let both: Value = serde_json::from_str(
-            r#"{"groups":[{"buckets":[{"bucketId":"gemini-5h","remainingFraction":0.9,
-                 "resetTime":"2026-08-12T15:14:00Z"}]}],
-                "buckets":[{"bucketId":"gemini-weekly","remainingFraction":0.5,
-                 "resetTime":"2026-08-16T02:00:00Z"}]}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            both_keys(&both),
-            vec!["gemini:w300"],
-            "the deprecated list is not merged in",
-        );
+        assert!(windows(&body).is_empty());
     }
 
-    fn both_keys(body: &Value) -> Vec<String> {
-        windows(body).into_iter().map(|w| w.key).collect()
+    #[test]
+    fn a_snake_case_payload_reads_the_same_as_a_camel_case_one() {
+        // The descriptors' `json_name` entries say camelCase and that is what
+        // Google's transcoding emits — but the proto names are snake_case, and
+        // the failure mode if the wire ever used them is an empty card with
+        // nothing to diagnose. Both spellings are the same bucket.
+        let body: Value = serde_json::from_str(
+            r#"{"groups":[{"buckets":[{"bucket_id":"gemini-5h","remaining_fraction":0.42,
+                "reset_time":"2026-08-12T15:14:00Z"}]}]}"#,
+        )
+        .unwrap();
+        let found = windows(&body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, "gemini:w300");
+        assert_eq!(found[0].used_pct, 58.0);
     }
 
     #[test]
@@ -582,16 +617,33 @@ mod tests {
 
     #[test]
     fn a_live_stored_token_is_used_as_is_and_only_an_expired_one_is_exchanged() {
-        let credential = |expiry| Credential {
-            access_token: "ya29-stored".to_string(),
+        let credential = |expiry, access: &str| Credential {
+            access_token: access.to_string(),
             expiry,
+            refresh_token: "1//refresh".to_string(),
+        };
+        // Comfortably alive: presented as-is, nothing is exchanged and Google is
+        // never reached at all (ADR-0020 bound 1).
+        assert!(stored_pass_holds(&credential(2_000, "ya29-stored"), 1_000));
+        assert_eq!(
+            access_token(&credential(2_000, "ya29-stored"), 1_000).as_deref(),
+            Ok("ya29-stored"),
+        );
+        // Expired, and also within the minute of headroom — a pass dying while
+        // the request is in flight would come back a 401.
+        assert!(!stored_pass_holds(&credential(1_000, "ya29-stored"), 2_000));
+        assert!(!stored_pass_holds(&credential(1_030, "ya29-stored"), 1_000));
+        // An envelope holding only a refresh token has nothing to present.
+        assert!(!stored_pass_holds(&credential(9_999, ""), 1_000));
+
+        // Past it with nothing to exchange, the card says signed out rather than
+        // presenting a dead token and reading the 401 back.
+        let spent = Credential {
+            access_token: "ya29-stored".to_string(),
+            expiry: 1_000,
             refresh_token: String::new(),
         };
-        // In the future: presented as-is, nothing is exchanged (ADR-0020 bound 1).
-        assert_eq!(access_token(&credential(2_000), 1_000).as_deref(), Ok("ya29-stored"));
-        // Past it, with no refresh token to spend, the card says signed out
-        // rather than presenting a dead token and reading the 401 back.
-        let err = access_token(&credential(1_000), 2_000).expect_err("must not be usable");
+        let err = access_token(&spent, 2_000).expect_err("must not be usable");
         assert!(err.starts_with(NOT_SIGNED_IN), "{err}");
     }
 
