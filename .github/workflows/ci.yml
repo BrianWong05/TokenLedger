@@ -61,7 +61,7 @@ jobs:
 
       - run: npm test
 
-      # Like dist/ above: the export companion is a declared externalBin, and
+      # Like dist/ above: the companions are declared externalBins, and
       # tauri-build refuses to compile the crate while one is missing. The
       # binary is gitignored (it is a build artifact), so a fresh checkout has
       # to produce it before any cargo command, not just before bundling.

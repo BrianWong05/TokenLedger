@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.brianwong.tokenledger",
   "build": {
-    "beforeDevCommand": "npm run sidecar && npm run dev",
+    "beforeDevCommand": "npm run sidecar:dev && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run sidecar && npm run build",
     "frontendDist": "../dist"

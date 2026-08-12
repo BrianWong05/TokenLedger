@@ -9,10 +9,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/build-sidecar.node.mjs",
     "perf": "cargo test --manifest-path src-tauri/Cargo.toml --release performance_standard_large_ledger -- --ignored --nocapture --test-threads=1",
     "bindings": "cd src-tauri && cargo test export_bindings",
-    "sidecar": "node scripts/build-sidecar.mjs"
+    "sidecar": "node scripts/build-sidecar.mjs",
+    "sidecar:dev": "node scripts/build-sidecar.mjs --if-needed"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
