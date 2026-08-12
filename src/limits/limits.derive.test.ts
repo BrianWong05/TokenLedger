@@ -21,8 +21,13 @@ function win(over: Partial<LimitWindow> = {}): LimitWindow {
   };
 }
 
-function held(source: string, windows: LimitWindow[], plan: string | null = 'Plus'): SourceLimits {
-  return { source, plan, windows };
+function held(
+  source: string,
+  windows: LimitWindow[],
+  plan: string | null = 'Plus',
+  usageResetsAvailable: number | null = null,
+): SourceLimits {
+  return { source, plan, usageResetsAvailable, windows };
 }
 
 describe('scarcity tone', () => {
@@ -196,9 +201,10 @@ describe('catalog gating', () => {
 
 describe('card states', () => {
   it('is live when the Source holds windows', () => {
-    const [, codex] = cards([held('codex', [win({ windowKey: 'w10080' })])], NOW, 'left');
+    const [, codex] = cards([held('codex', [win({ windowKey: 'w10080' })], 'Plus', 1)], NOW, 'left');
     expect(codex.state).toBe('live');
     expect(codex.plan).toBe('Plus');
+    expect(codex.usageResetsAvailable).toBe(1);
     expect(codex.windows).toHaveLength(1);
   });
 
@@ -229,6 +235,7 @@ describe('card states', () => {
       claude: { detail: 'network unreachable' },
     });
     expect(claude.plan).toBeNull();
+    expect(claude.usageResetsAvailable).toBeNull();
     expect(claude.windows).toEqual([]);
   });
 });

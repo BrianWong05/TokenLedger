@@ -78,6 +78,7 @@ const btn = (c: HTMLElement, text: string) =>
 const CODEX_WEEKLY: SourceLimits = {
   source: 'codex',
   plan: 'plus',
+  usageResetsAvailable: 1,
   windows: [
     { windowKey: 'w10080', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR },
   ],
@@ -86,6 +87,7 @@ const CODEX_WEEKLY: SourceLimits = {
 const CLAUDE_LIVE: SourceLimits = {
   source: 'claude',
   plan: 'Team 5x',
+  usageResetsAvailable: null,
   windows: [
     { windowKey: 'five_hour', windowMinutes: 300, usedPct: 18, resetsAt: NOW + 185 * 60, observedAt: NOW - 12 },
     { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12 },
@@ -174,6 +176,24 @@ describe('card states', () => {
     expect(cardFor(c, 'Codex').querySelector('.tl-lim-fresh')?.textContent).toBe(
       'checked 3h ago',
     );
+    const resets = cardFor(c, 'Codex').querySelector('.tl-lim-usage-resets')!;
+    expect(resets.textContent).toBe('↻1 Usage Reset');
+    expect(resets.getAttribute('aria-label')).toBe('1 Usage Reset available');
+    expect(claude.querySelector('.tl-lim-usage-resets')).toBeNull();
+  });
+
+  it('pluralises positive counts and shows zero neutrally', async () => {
+    const source = (usageResetsAvailable: number): SourceLimits => ({
+      ...CODEX_WEEKLY,
+      usageResetsAvailable,
+    });
+    const plural = await mount(fakePort({ list: () => Promise.resolve([source(2)]) }));
+    expect(cardFor(plural, 'Codex').querySelector('.tl-lim-usage-resets')?.textContent).toBe('↻2 Usage Resets');
+
+    const zero = await remount(fakePort({ list: () => Promise.resolve([source(0)]) }));
+    const badge = cardFor(zero, 'Codex').querySelector('.tl-lim-usage-resets')!;
+    expect(badge.textContent).toBe('↻0 Usage Resets');
+    expect(badge.className).toMatch(/zero/);
   });
 
   it('reads a live Source with nothing recorded as not signed in', async () => {
@@ -345,6 +365,7 @@ describe('bars', () => {
     const dry: SourceLimits = {
       source: 'codex',
       plan: 'plus',
+      usageResetsAvailable: null,
       windows: [
         { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW + HOUR, observedAt: NOW - 60 },
       ],
@@ -363,6 +384,7 @@ describe('bars', () => {
     const stale: SourceLimits = {
       source: 'codex',
       plan: 'plus',
+      usageResetsAvailable: null,
       windows: [
         { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW - HOUR, observedAt: NOW - 2 * HOUR },
       ],

@@ -1,13 +1,15 @@
 # Live Limits are fetched by a Companion, never by the app
 
-Codex writes its Limit state into the logs the scan already reads, but
-Claude's lives only with its vendor: a live Claude gauge means presenting
-Claude Code's stored OAuth token to `api.anthropic.com`. ADR-0013 forbids the
-app to handle credentials or fetch private usage remotely — its only remote
-calls today are unauthenticated public catalog fetches — so the fetch moves
-out of the app entirely, into a Companion: run because a person asked, it
-reads the credential document, asks the vendor, and writes an Export Artifact
-carrying Limit Readings that the scan reads like any other file.
+Codex writes Limit state into the logs the scan already reads, while Claude's
+lives only with its vendor. A current gauge for either Source means presenting
+the Source CLI's stored OAuth token to its vendor. ADR-0013 forbids the app to
+handle credentials or fetch private usage remotely — its only remote calls
+today are unauthenticated public catalog fetches — so the fetch moves out of
+the app entirely, into a Companion: run because a person asked, it reads the
+credential document, asks the vendor, and writes an Export Artifact carrying
+live Limit state. Window observations are ingested as Limit Readings; current
+source-level state such as Codex's Usage Reset count is read from that same
+Artifact without becoming Reading history.
 
 This deliberately reaches further than ADR-0018's precedent, and says so
 rather than pretending otherwise: `antigravity-export` asks an

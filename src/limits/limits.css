@@ -118,6 +118,25 @@
   color: var(--text-accent);
   border: 1px solid var(--accent-border);
 }
+.tl-lim-usage-resets {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  color: var(--success);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.tl-lim-usage-resets.zero {
+  border-color: var(--border-subtle);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
+}
 .tl-lim-fresh {
   margin-left: auto;
   font-size: 11px;

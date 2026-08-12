@@ -399,10 +399,17 @@ _Avoid_: Rate limit, quota, allowance, cap, throttle
 
 **Limit Reading**:
 One observation of a Limit at a moment — how much of the window is used, and
-when it resets — parsed from a Source's own logs (Codex) or fetched by a
-Companion (Claude, ADR-0019). Not a Usage Record: it holds no tokens, and the
+when it resets — parsed from a Source's own logs or fetched by a Companion
+(ADR-0019). Not a Usage Record: it holds no tokens, and the
 Ledger holds Usage Records only, so Readings persist beside the Ledger —
 append-only, a new valid Reading never replacing an old one, with cards
 presenting the newest valid Reading and the stored series feeding the
 forecast. A refused fetch is not a Reading.
 _Avoid_: Observation, sample, snapshot, measurement
+
+**Usage Reset**:
+A vendor-granted, expiring entitlement that a person can redeem to restore
+eligible Codex Limits before their windows reset normally. Its available count
+is current state, not a Limit Reading or history; an unreported count is unknown,
+never zero.
+_Avoid_: Manual reset, reset credit, reset

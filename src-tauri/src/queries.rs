@@ -872,6 +872,10 @@ pub struct SourceLimits {
     pub source: String,
     /// `rateLimitTier` (Claude) / `plan_type` (Codex) as of the newest Reading.
     pub plan: Option<String>,
+    /// Current Codex Usage Reset count; filled from the live Artifact by the
+    /// command layer because it is state, not Reading history.
+    #[ts(type = "number | null")]
+    pub usage_resets_available: Option<u64>,
     pub windows: Vec<LimitWindow>,
 }
 
@@ -922,7 +926,12 @@ pub fn limits(conn: &Connection) -> rusqlite::Result<Vec<SourceLimits>> {
         let (source, window) = row?;
         match cards.last_mut() {
             Some(card) if card.source == source => card.windows.push(window),
-            _ => cards.push(SourceLimits { source, plan: None, windows: vec![window] }),
+            _ => cards.push(SourceLimits {
+                source,
+                plan: None,
+                usage_resets_available: None,
+                windows: vec![window],
+            }),
         }
     }
 
