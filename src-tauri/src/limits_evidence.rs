@@ -35,6 +35,12 @@ pub enum ReasonCode {
     ZeroLocalUsage,
     KnownExternalActivity,
     UnattributedModelUsage,
+    NoQualifyingRun,
+    AmbiguousGreatestRun,
+    InsufficientRecentEpochs,
+    QuantizationRangesDisjoint,
+    RatioSpreadExceeded,
+    CompetingStableCores,
 }
 
 impl ReasonCode {
@@ -55,6 +61,12 @@ impl ReasonCode {
             ReasonCode::ZeroLocalUsage => "zero-local-usage",
             ReasonCode::KnownExternalActivity => "known-external-activity",
             ReasonCode::UnattributedModelUsage => "unattributed-model-usage",
+            ReasonCode::NoQualifyingRun => "no-qualifying-run",
+            ReasonCode::AmbiguousGreatestRun => "ambiguous-greatest-run",
+            ReasonCode::InsufficientRecentEpochs => "insufficient-recent-epochs",
+            ReasonCode::QuantizationRangesDisjoint => "quantization-ranges-disjoint",
+            ReasonCode::RatioSpreadExceeded => "ratio-spread-exceeded",
+            ReasonCode::CompetingStableCores => "competing-stable-cores",
         }
     }
 }
@@ -138,6 +150,9 @@ impl Interval {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartitionEvidence {
     pub series: SeriesKey,
+    /// The window's own length, where the vendor names one — six of them is the
+    /// recency horizon when that is longer than seven days.
+    pub window_minutes: Option<i64>,
     /// The reset instant the Partition is identified by — the earliest stamp of
     /// the jitter band the Readings agreed on.
     pub epoch: i64,
@@ -184,6 +199,10 @@ fn displayed(reading: &LimitReading) -> Result<i64, NonFinitePercentage> {
 /// settled. `None` is a Reading that proves too little to belong anywhere.
 type Placement = Option<(SeriesKey, i64)>;
 
+/// What one Partition accumulates as the walk goes: the window length its own
+/// Readings name, and the intervals they bounded.
+type Accumulated = BTreeMap<(SeriesKey, i64), (Option<i64>, Vec<Interval>)>;
+
 /// Derive every eligible interval from stored Readings and the current Ledger.
 ///
 /// `usage` is every Record that can participate at all — one that names its own
@@ -194,7 +213,8 @@ pub fn derive(
     usage: &[MatchingRecord],
 ) -> Result<Evidence, NonFinitePercentage> {
     let mut evidence = Evidence::default();
-    let mut intervals: BTreeMap<(SeriesKey, i64), Vec<Interval>> = BTreeMap::new();
+    // Per Partition: the window length its own Readings carry, and its intervals.
+    let mut intervals: Accumulated = BTreeMap::new();
 
     // One timeline per Limit as the card addresses it. `window_key` is the only
     // address every Reading has, provable or not, and it is used here for that
@@ -219,9 +239,11 @@ pub fn derive(
         walk(&timeline, &placed, usage, &mut evidence, &mut intervals)?;
     }
 
-    for ((series, epoch), intervals) in intervals {
+    for ((series, epoch), (window_minutes, intervals)) in intervals {
         if !intervals.is_empty() {
-            evidence.partitions.push(PartitionEvidence { series, epoch, intervals });
+            evidence
+                .partitions
+                .push(PartitionEvidence { series, epoch, window_minutes, intervals });
         }
     }
     Ok(evidence)
@@ -292,7 +314,7 @@ fn walk(
     placed: &[Placement],
     usage: &[MatchingRecord],
     evidence: &mut Evidence,
-    out: &mut BTreeMap<(SeriesKey, i64), Vec<Interval>>,
+    out: &mut Accumulated,
 ) -> Result<(), NonFinitePercentage> {
     let mut anchor: Option<(&LimitReading, &(SeriesKey, i64), ModelScope)> = None;
     // A fact carried by a Reading the walk passed over still sits inside the
@@ -352,7 +374,13 @@ fn walk(
             Err,
         );
         match candidate {
-            Ok(interval) => out.entry(here.clone()).or_default().push(interval),
+            Ok(interval) => {
+                let partition = out.entry(here.clone()).or_default();
+                // The window this Partition's own Readings name; they agree,
+                // being Readings of one Limit in one epoch.
+                partition.0 = partition.0.or(reading.window_minutes);
+                partition.1.push(interval);
+            }
             Err(reason) => evidence.refuse(reason),
         }
         anchor = anchored(reading, here, evidence);
@@ -932,6 +960,36 @@ mod tests {
             assert!(only_intervals(&evidence).is_empty());
             assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 1);
         }
+    }
+
+    #[test]
+    fn a_partition_takes_its_window_length_from_its_own_readings() {
+        // Two Limits of one Source whose windows happen to reset at the same
+        // instant. The weekly Partition must keep the weekly length: its
+        // recency horizon is six windows long, and borrowing the five-hour
+        // one's would age out candidates that are not old.
+        let five_hour = |used_pct: f64, observed_at: i64| {
+            let mut r = reading(used_pct, observed_at);
+            r.window_key = "w300".to_string();
+            r.window_minutes = Some(300);
+            r.provenance.limit_id = Some("codex:w300".to_string());
+            r
+        };
+        let evidence = derived(
+            &[
+                five_hour(10.0, T0),
+                five_hour(20.0, T0 + 300),
+                reading(40.0, T0 + 600),
+                reading(50.0, T0 + 900),
+            ],
+            &[usage(T0 + 100, 500), usage(T0 + 700, 1_000)],
+        );
+        let weekly = evidence
+            .partitions
+            .iter()
+            .find(|p| p.series.limit_id == "codex:w10080")
+            .expect("the weekly Partition has a movement of its own");
+        assert_eq!(weekly.window_minutes, Some(10_080));
     }
 
     #[test]
