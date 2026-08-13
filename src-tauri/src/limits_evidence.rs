@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use rusqlite::{params, Connection};
 
+use crate::queries;
 use crate::types::{LimitReading, ModelScope, ReadingProvenance};
 
 /// Why evidence was refused. The backend returns codes and values, never
@@ -94,11 +95,12 @@ impl SeriesKey {
     }
 }
 
-/// One Usage Record, reduced to what membership and canonical tokens need.
+/// A Usage Record reduced to what membership and canonical tokens need — the
+/// spec's "matching Usage Records", the ones an interval may count.
 /// It names its own Source and account because one read serves every Partition,
 /// and a Partition must never count tokens that were never its own.
 #[derive(Debug, Clone)]
-pub struct UsageFact {
+pub struct MatchingRecord {
     pub source: String,
     /// Proven account identity. A Record that cannot name its account cannot
     /// participate at all, so it never becomes one of these.
@@ -178,10 +180,9 @@ fn displayed(reading: &LimitReading) -> Result<i64, NonFinitePercentage> {
     Ok(reading.used_pct.clamp(0.0, 100.0).round() as i64)
 }
 
-/// A reset stamp jitters by up to ±117s within what is plainly one epoch (#104),
-/// so Readings agree on an epoch when their stamps sit inside one ten-minute
-/// band — the same band the Limits page groups by.
-const EPOCH_JITTER_SECS: i64 = 600;
+/// Which Partition a Reading belongs to, once its Series and its epoch are both
+/// settled. `None` is a Reading that proves too little to belong anywhere.
+type Placement = Option<(SeriesKey, i64)>;
 
 /// Derive every eligible interval from stored Readings and the current Ledger.
 ///
@@ -190,33 +191,35 @@ const EPOCH_JITTER_SECS: i64 = 600;
 /// whose Source and account are its own.
 pub fn derive(
     readings: &[LimitReading],
-    usage: &[UsageFact],
+    usage: &[MatchingRecord],
 ) -> Result<Evidence, NonFinitePercentage> {
     let mut evidence = Evidence::default();
+    let mut intervals: BTreeMap<(SeriesKey, i64), Vec<Interval>> = BTreeMap::new();
 
-    // Partition: Series identity plus reset epoch. A Reading that cannot prove
-    // its Series is not evidence, and says which fact it lacked.
-    let mut partitions: BTreeMap<(SeriesKey, i64), Vec<LimitReading>> = BTreeMap::new();
+    // One timeline per Limit as the card addresses it. `window_key` is the only
+    // address every Reading has, provable or not, and it is used here for that
+    // alone — to notice that something happened between two Readings — never as
+    // identity, which is the Series' job.
+    let mut timelines: BTreeMap<(&str, &str), Vec<&LimitReading>> = BTreeMap::new();
     for reading in readings {
-        match SeriesKey::of(reading) {
-            Ok(series) => {
-                let epoch = epoch_of(&mut partitions, &series, reading.resets_at);
-                partitions.entry((series, epoch)).or_default().push(reading.clone());
-            }
-            Err(missing) => evidence.refuse(missing),
-        }
+        timelines
+            .entry((reading.source.as_str(), reading.window_key.as_str()))
+            .or_default()
+            .push(reading);
     }
 
-    count_partition_breaks(readings, &mut evidence);
+    for mut timeline in timelines.into_values() {
+        // Observation order only. `source_order` could break a tie, but it is a
+        // byte offset with no Artifact identity beside it, so it cannot prove
+        // that two Readings of one instant are even comparable — and a run that
+        // trusted it to sort would be trusting what the interval rule below
+        // refuses to trust to bound.
+        timeline.sort_by_key(|r| r.observed_at);
+        let placed = place(&timeline, &mut evidence)?;
+        walk(&timeline, &placed, usage, &mut evidence, &mut intervals)?;
+    }
 
-    for ((series, epoch), mut group) in partitions {
-        // Observation order, and the source order that settles a shared instant.
-        group.sort_by(|a, b| {
-            a.observed_at
-                .cmp(&b.observed_at)
-                .then(a.provenance.source_order.cmp(&b.provenance.source_order))
-        });
-        let intervals = walk(&group, usage, &series, &mut evidence)?;
+    for ((series, epoch), intervals) in intervals {
         if !intervals.is_empty() {
             evidence.partitions.push(PartitionEvidence { series, epoch, intervals });
         }
@@ -224,89 +227,114 @@ pub fn derive(
     Ok(evidence)
 }
 
-/// Count the movements that a change of identity or a reset took out of reach:
-/// the Readings are consecutive on the card, but they belong to different
-/// evidence, and saying so is what tells Gathering from Blocked.
-fn count_partition_breaks(readings: &[LimitReading], evidence: &mut Evidence) {
-    let mut by_limit: BTreeMap<(&str, &str), Vec<&LimitReading>> = BTreeMap::new();
-    for reading in readings {
-        by_limit
-            .entry((reading.source.as_str(), reading.window_key.as_str()))
-            .or_default()
-            .push(reading);
-    }
-    for mut group in by_limit.into_values() {
-        group.sort_by_key(|r| r.observed_at);
-        for pair in group.windows(2) {
-            let (Ok(before), Ok(after)) = (SeriesKey::of(pair[0]), SeriesKey::of(pair[1])) else {
+/// Place each Reading of one timeline in its Partition.
+///
+/// A reset stamp jitters inside what is plainly one window (#104), so stamps
+/// within one band are one epoch — but only while banding them introduces no
+/// decrease. A fall inside a band is the signature of a reset the jitter hid,
+/// and the specification rejects an ambiguous grouping rather than guessing at
+/// it, so the band ends there and a new epoch begins. Two Readings sharing an
+/// exact stamp are one epoch whatever their percentages do: that is not a
+/// grouping question, and the decrease between them is the walk's to refuse.
+fn place(
+    timeline: &[&LimitReading],
+    evidence: &mut Evidence,
+) -> Result<Vec<Placement>, NonFinitePercentage> {
+    // Per Series: the epoch being accumulated and the highest percentage in it.
+    let mut open: BTreeMap<SeriesKey, (i64, i64)> = BTreeMap::new();
+    let mut placed = Vec::with_capacity(timeline.len());
+
+    for reading in timeline {
+        let series = match SeriesKey::of(reading) {
+            Ok(series) => series,
+            Err(missing) => {
+                evidence.refuse(missing);
+                placed.push(None);
                 continue;
-            };
-            if before != after {
-                evidence.refuse(ReasonCode::IdentityChange);
-            } else if (pair[1].resets_at - pair[0].resets_at).abs() > EPOCH_JITTER_SECS {
-                evidence.refuse(ReasonCode::ResetBoundary);
             }
-        }
+        };
+        let pct = displayed(reading)?;
+        let epoch = match open.get(&series) {
+            Some(&(epoch, highest)) => {
+                let same_stamp = reading.resets_at == epoch;
+                let banded = (reading.resets_at - epoch).abs() <= queries::EPOCH_JITTER_SECS;
+                if same_stamp || (banded && pct >= highest) {
+                    epoch
+                } else {
+                    reading.resets_at
+                }
+            }
+            None => reading.resets_at,
+        };
+        let highest = match open.get(&series) {
+            Some(&(open_epoch, highest)) if open_epoch == epoch => highest.max(pct),
+            _ => pct,
+        };
+        open.insert(series.clone(), (epoch, highest));
+        placed.push(Some((series, epoch)));
     }
+    Ok(placed)
 }
 
-/// The epoch a reset stamp joins: an existing band of the same Series within the
-/// jitter window, or a new one at this stamp.
-fn epoch_of(
-    partitions: &mut BTreeMap<(SeriesKey, i64), Vec<LimitReading>>,
-    series: &SeriesKey,
-    resets_at: i64,
-) -> i64 {
-    partitions
-        .keys()
-        .find(|(key, epoch)| key == series && (resets_at - *epoch).abs() <= EPOCH_JITTER_SECS)
-        .map(|(_, epoch)| *epoch)
-        .unwrap_or(resets_at)
-}
-
-/// Walk one Partition's Readings, emitting an interval at each positive movement
-/// the evidence supports and counting every refusal.
+/// Walk one Limit's whole timeline, emitting an interval at each positive
+/// movement the evidence supports and counting every refusal.
 ///
 /// Repeated Readings at one percentage do not make zero-movement intervals:
-/// tokens keep accumulating from the last anchor until the percentage moves. A
-/// decrease, saturation, or a fact that spoils the stretch ends that
-/// accumulation, and the Reading that ended it becomes the next anchor — a later
-/// clean Reading may start a new run.
+/// tokens keep accumulating from the last anchor until the percentage moves.
+/// Anything that interrupts the run ends that accumulation — a decrease, a
+/// saturation, a fact that spoils the stretch, and equally a Reading of another
+/// Partition or of none at all standing between the anchor and the movement.
+/// That last case is why the walk sees the whole timeline rather than one
+/// Partition's Readings: a run cannot step over a Reading that says the account,
+/// the meter, the Limit or the window changed in the middle of it.
 fn walk(
-    group: &[LimitReading],
-    usage: &[UsageFact],
-    series: &SeriesKey,
+    timeline: &[&LimitReading],
+    placed: &[Placement],
+    usage: &[MatchingRecord],
     evidence: &mut Evidence,
-) -> Result<Vec<Interval>, NonFinitePercentage> {
-    let mut intervals = Vec::new();
-    let mut anchor: Option<&LimitReading> = None;
-    // A fact carried by a Reading the walk passed over — one at an unchanged
-    // percentage — still sits inside the movement being accumulated, and spoils
-    // it. The anchor's own fact does not: it describes the stretch that ended
-    // there, which is the previous interval's business.
+    out: &mut BTreeMap<(SeriesKey, i64), Vec<Interval>>,
+) -> Result<(), NonFinitePercentage> {
+    let mut anchor: Option<(&LimitReading, &(SeriesKey, i64), ModelScope)> = None;
+    // A fact carried by a Reading the walk passed over still sits inside the
+    // movement being accumulated. The anchor's own does not: it describes the
+    // stretch that ended there, which is the previous interval's business.
     let mut spoiled: Option<ReasonCode> = None;
 
-    for reading in group {
-        let to_pct = displayed(reading)?;
-        let Some(from) = anchor else {
-            anchor = Some(reading);
+    for (reading, placement) in timeline.iter().zip(placed) {
+        let Some(here) = placement else {
+            // A Reading that proves too little to be placed is still a Reading
+            // of this Limit, and a run cannot see past it.
+            anchor = None;
             spoiled = None;
             continue;
         };
-        let from_pct = displayed(from)?;
+        let Some((from, was, scope)) = &anchor else {
+            anchor = anchored(reading, here, evidence);
+            spoiled = None;
+            continue;
+        };
 
+        if *was != here {
+            evidence.refuse(if was.0 == here.0 {
+                ReasonCode::ResetBoundary
+            } else {
+                ReasonCode::IdentityChange
+            });
+            anchor = anchored(reading, here, evidence);
+            spoiled = None;
+            continue;
+        }
+
+        let (from_pct, to_pct) = (displayed(from)?, displayed(reading)?);
         if reading.provenance.external_activity.is_some() {
             spoiled = Some(ReasonCode::KnownExternalActivity);
         }
-
         if to_pct == from_pct {
-            // The same percentage again: the anchor stands and its tokens keep
-            // accumulating toward the next movement.
             continue;
         }
         if to_pct < from_pct {
             evidence.refuse(ReasonCode::PercentageDecrease);
-            anchor = Some(reading);
+            anchor = anchored(reading, here, evidence);
             spoiled = None;
             continue;
         }
@@ -314,22 +342,41 @@ fn walk(
             // Saturation: the window is full, and what filled the last points of
             // it cannot be told from what would have overflowed.
             evidence.refuse(ReasonCode::PercentageSaturation);
-            anchor = Some(reading);
+            anchor = anchored(reading, here, evidence);
             spoiled = None;
             continue;
         }
 
-        match spoiled.map_or_else(
-            || interval(from, reading, from_pct, to_pct, usage, series),
+        let candidate = spoiled.map_or_else(
+            || interval(from, reading, from_pct, to_pct, usage, &here.0, scope),
             Err,
-        ) {
-            Ok(interval) => intervals.push(interval),
+        );
+        match candidate {
+            Ok(interval) => out.entry(here.clone()).or_default().push(interval),
             Err(reason) => evidence.refuse(reason),
         }
-        anchor = Some(reading);
+        anchor = anchored(reading, here, evidence);
         spoiled = None;
     }
-    Ok(intervals)
+    Ok(())
+}
+
+/// Anchor a run at this Reading, reading its Model scope once for every
+/// candidate the run will weigh. The stored scope came from `ModelScope::stored`
+/// and parses; a Reading whose scope does not is one whose Series should never
+/// have been built, and it anchors nothing.
+fn anchored<'a>(
+    reading: &'a LimitReading,
+    here: &'a (SeriesKey, i64),
+    evidence: &mut Evidence,
+) -> Option<(&'a LimitReading, &'a (SeriesKey, i64), ModelScope)> {
+    match ModelScope::parse(&here.0.model_scope) {
+        Some(scope) => Some((reading, here, scope)),
+        None => {
+            evidence.refuse(ReasonCode::MissingModelScope);
+            None
+        }
+    }
 }
 
 /// One candidate interval, or the first fact that rejects it.
@@ -338,12 +385,16 @@ fn interval(
     to: &LimitReading,
     from_pct: i64,
     to_pct: i64,
-    usage: &[UsageFact],
+    usage: &[MatchingRecord],
     series: &SeriesKey,
+    scope: &ModelScope,
 ) -> Result<Interval, ReasonCode> {
     let (t0, t1) = (from.observed_at, to.observed_at);
 
-    // Two Readings of one instant bound nothing unless something orders them.
+    // Two Readings of one instant bound nothing. `source_order` is the only
+    // thing that could order them, and it is a byte offset whose column carries
+    // no Artifact identity — so it cannot prove the two are even from the one
+    // Artifact whose offsets compare.
     if t0 == t1 {
         return Err(ReasonCode::AmbiguousReadingOrder);
     }
@@ -356,15 +407,9 @@ fn interval(
         _ => return Err(ReasonCode::UnprovenSourceCompleteness),
     }
 
-    // A known fact that something outside local capture moved this Limit spoils
-    // the stretch it overlaps — here, the one ending at `to`. Mere possibility
-    // rejects nothing, and `from`'s own fact belongs to the stretch before this.
-    if to.provenance.external_activity.is_some() {
-        return Err(ReasonCode::KnownExternalActivity);
-    }
-
-    let scope = ModelScope::parse(&series.model_scope).ok_or(ReasonCode::MissingModelScope)?;
-    let members: Vec<&UsageFact> = usage
+    // The scope came from `ModelScope::stored`, so it parses; the Series would
+    // not exist otherwise.
+    let members: Vec<&MatchingRecord> = usage
         .iter()
         .filter(|u| {
             u.source == series.source
@@ -374,7 +419,7 @@ fn interval(
         })
         .collect();
 
-    let tokens = match &scope {
+    let tokens = match scope {
         // Source-wide: every Record of this Source and account counts, and
         // Unattributed Usage is Usage.
         ModelScope::All => members.iter().map(|u| u.tokens).sum(),
@@ -401,19 +446,24 @@ fn interval(
     Ok(Interval { from_pct, to_pct, tokens, t0, t1 })
 }
 
-
-/// Every stored Limit Reading, with the provenance that decides whether it is
-/// evidence. The whole table is small — one row per observation of a handful of
-/// Limits — and the Partition a Reading belongs to cannot be known without its
-/// provenance, so this reads them all and lets the derivation sort them out.
-pub fn stored_readings(conn: &Connection) -> rusqlite::Result<Vec<LimitReading>> {
+/// Stored Limit Readings observed at or after `since`, with the provenance that
+/// decides whether each is evidence.
+///
+/// The horizon is the caller's: evidence has one (ADR-0024 asks for a bounded
+/// read, and the readiness policy is what sets its length), and this table grows
+/// by a row per observation for as long as the app runs, so reading all of it
+/// would cost more every week. The Partition a Reading belongs to cannot be
+/// known without its provenance, so the columns come along and the derivation
+/// sorts them out.
+pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<LimitReading>> {
     let mut stmt = conn.prepare(
         "SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, \
                 plan, account_id, metering_regime, limit_id, model_scope, source_order, \
                 covered_from, external_activity \
-         FROM limit_readings ORDER BY source, window_key, resets_at, observed_at",
+         FROM limit_readings WHERE observed_at >= ?1 \
+         ORDER BY source, window_key, resets_at, observed_at",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map([since], |r| {
         Ok(LimitReading {
             source: r.get(0)?,
             window_key: r.get(1)?,
@@ -450,7 +500,7 @@ pub fn stored_readings(conn: &Connection) -> rusqlite::Result<Vec<LimitReading>>
 pub fn matching_usage(
     conn: &Connection,
     readings: &[LimitReading],
-) -> rusqlite::Result<Vec<UsageFact>> {
+) -> rusqlite::Result<Vec<MatchingRecord>> {
     // Source and account, with the span of the Readings that named them.
     let mut spans: BTreeMap<(String, String), (i64, i64)> = BTreeMap::new();
     for reading in readings {
@@ -474,7 +524,7 @@ pub fn matching_usage(
         // `>` on the low bound: the earliest Reading is an anchor, and nothing at
         // or before it can belong to an interval that starts there.
         let rows = stmt.query_map(params![source, account_id, from, through], |r| {
-            Ok(UsageFact {
+            Ok(MatchingRecord {
                 source: source.clone(),
                 account_id: account_id.clone(),
                 timestamp: r.get(0)?,
@@ -491,8 +541,11 @@ pub fn matching_usage(
 
 /// The whole derivation in one consistent read: what the Ledger and the stored
 /// Readings prove right now, and what they refused.
-pub fn evidence(conn: &Connection) -> rusqlite::Result<Result<Evidence, NonFinitePercentage>> {
-    let readings = stored_readings(conn)?;
+pub fn evidence(
+    conn: &Connection,
+    since: i64,
+) -> rusqlite::Result<Result<Evidence, NonFinitePercentage>> {
+    let readings = stored_readings(conn, since)?;
     let usage = matching_usage(conn, &readings)?;
     Ok(derive(&readings, &usage))
 }
@@ -529,8 +582,8 @@ mod tests {
         }
     }
 
-    fn record(timestamp: i64, model: Option<&str>, tokens: i64) -> UsageFact {
-        UsageFact {
+    fn record(timestamp: i64, model: Option<&str>, tokens: i64) -> MatchingRecord {
+        MatchingRecord {
             source: "codex".to_string(),
             account_id: "acct-a".to_string(),
             timestamp,
@@ -539,16 +592,16 @@ mod tests {
         }
     }
 
-    fn usage(timestamp: i64, tokens: i64) -> UsageFact {
+    fn usage(timestamp: i64, tokens: i64) -> MatchingRecord {
         record(timestamp, Some("gpt-5.4-codex"), tokens)
     }
 
-    fn unattributed(timestamp: i64, tokens: i64) -> UsageFact {
+    fn unattributed(timestamp: i64, tokens: i64) -> MatchingRecord {
         record(timestamp, None, tokens)
     }
 
     /// Every fixture but the invariant one is well-formed evidence.
-    fn derived(readings: &[LimitReading], usage: &[UsageFact]) -> Evidence {
+    fn derived(readings: &[LimitReading], usage: &[MatchingRecord]) -> Evidence {
         derive(readings, usage).expect("fixture percentages are finite")
     }
 
@@ -790,6 +843,98 @@ mod tests {
     }
 
     #[test]
+    fn a_decrease_inside_the_jitter_band_rejects_the_grouping() {
+        // 90 → 5 → 40 with stamps 117s and 120s apart. Banding on the stamps
+        // alone would call all three one epoch and hand the estimator a 5 → 40
+        // movement belonging to the window before the reset. A fall inside a
+        // band is the signature of a reset the jitter hid, and an ambiguous
+        // grouping is rejected rather than guessed at.
+        let mut before = reading(90.0, T0);
+        before.resets_at = RESET;
+        let mut after = reading(5.0, T0 + 100);
+        after.resets_at = RESET + 117;
+        let mut later = reading(40.0, T0 + 200);
+        later.resets_at = RESET + 120;
+
+        let evidence = derived(&[before, after, later], &[usage(T0 + 150, 5_000)]);
+        // 5 → 40 is real evidence — for the window that started at the reset,
+        // which is where it must be filed. The one thing it may never be is the
+        // 90% window's, whose own movement ended when the window did.
+        assert_eq!(evidence.partitions.len(), 1);
+        assert_eq!(evidence.partitions[0].epoch, RESET + 117);
+        assert_eq!(
+            evidence.partitions[0].intervals,
+            vec![Interval { from_pct: 5, to_pct: 40, tokens: 5_000, t0: T0 + 100, t1: T0 + 200 }],
+        );
+        // And the fall itself is a reset, not a decrease inside one window.
+        assert_eq!(refused(&evidence, ReasonCode::ResetBoundary), 1);
+        assert_eq!(refused(&evidence, ReasonCode::PercentageDecrease), 0);
+    }
+
+    #[test]
+    fn a_reading_of_another_partition_ends_the_run_it_interrupts() {
+        // The middle Reading says the account changed and changed back. The
+        // tokens either side of it are not one stretch, and a run cannot step
+        // over the Reading that says so.
+        let mut theirs = reading(40.0, T0 + 300);
+        theirs.provenance.account_id = Some("acct-b".to_string());
+        let evidence = derived(
+            &[reading(40.0, T0), theirs, reading(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 2);
+    }
+
+    #[test]
+    fn a_reading_that_proves_nothing_ends_the_run_it_interrupts() {
+        let mut unprovable = reading(40.0, T0 + 300);
+        unprovable.provenance.account_id = None;
+        let evidence = derived(
+            &[reading(40.0, T0), unprovable, reading(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::MissingAccountIdentity), 1);
+    }
+
+    #[test]
+    fn a_movement_lost_to_a_reset_always_says_so() {
+        // Stamps that drift past the band one step at a time: whichever way the
+        // epochs fall, no movement may vanish without a reason beside it.
+        let stamps = [RESET, RESET + 500, RESET + 1_000];
+        let mut readings = Vec::new();
+        for (i, stamp) in stamps.iter().enumerate() {
+            let mut r = reading(10.0 * (i as f64 + 1.0), T0 + 100 * i as i64);
+            r.resets_at = *stamp;
+            readings.push(r);
+        }
+        let evidence = derived(&readings, &[usage(T0 + 50, 1_000), usage(T0 + 150, 1_000)]);
+        let movements =
+            only_intervals(&evidence).len() + evidence.rejections.values().sum::<usize>();
+        assert_eq!(movements, 2, "every pair is either an interval or a reason: {evidence:?}");
+    }
+
+    #[test]
+    fn any_identity_fact_changing_separates_evidence() {
+        type Change = fn(&mut LimitReading);
+        let changes: [Change; 5] = [
+            |r| r.provenance.account_id = Some("acct-b".to_string()),
+            |r| r.plan = Some("pro".to_string()),
+            |r| r.provenance.metering_regime = Some("codex:rate_limits+x".to_string()),
+            |r| r.provenance.limit_id = Some("codex:w300".to_string()),
+            |r| r.provenance.model_scope = Some(ModelScope::Models(vec!["gpt-5.4".to_string()])),
+        ];
+        for change in changes {
+            let mut moved = reading(50.0, T0 + 600);
+            change(&mut moved);
+            let evidence = derived(&[reading(40.0, T0), moved], &[usage(T0 + 100, 1_000)]);
+            assert!(only_intervals(&evidence).is_empty());
+            assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 1);
+        }
+    }
+
+    #[test]
     fn the_read_pairs_stored_readings_with_the_ledger_they_belong_to() {
         use crate::db;
         use crate::types::{CtxTokens, UsageEvent};
@@ -838,7 +983,7 @@ mod tests {
         )
         .unwrap();
 
-        let evidence = evidence(&conn).unwrap().unwrap();
+        let evidence = evidence(&conn, T0 - 3_600).unwrap().unwrap();
         // Canonical tokens: 100 + 20 + 5 + 3 + 2, with reasoning left out
         // because it classifies tokens already counted.
         assert_eq!(
