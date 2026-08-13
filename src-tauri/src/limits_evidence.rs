@@ -21,6 +21,7 @@ use crate::types::{LimitReading, ModelScope, ReadingProvenance};
 /// localized prose (spec: "Reason codes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReasonCode {
+    NoCurrentReading,
     MissingAccountIdentity,
     MissingPlanIdentity,
     MissingMeteringRegime,
@@ -41,12 +42,14 @@ pub enum ReasonCode {
     QuantizationRangesDisjoint,
     RatioSpreadExceeded,
     CompetingStableCores,
+    HistoricalCoreAgedOut,
 }
 
 impl ReasonCode {
     /// The wire spelling the specification fixes.
     pub fn code(self) -> &'static str {
         match self {
+            ReasonCode::NoCurrentReading => "no-current-reading",
             ReasonCode::MissingAccountIdentity => "missing-account-identity",
             ReasonCode::MissingPlanIdentity => "missing-plan-identity",
             ReasonCode::MissingMeteringRegime => "missing-metering-regime",
@@ -67,6 +70,7 @@ impl ReasonCode {
             ReasonCode::QuantizationRangesDisjoint => "quantization-ranges-disjoint",
             ReasonCode::RatioSpreadExceeded => "ratio-spread-exceeded",
             ReasonCode::CompetingStableCores => "competing-stable-cores",
+            ReasonCode::HistoricalCoreAgedOut => "historical-core-aged-out",
         }
     }
 }
@@ -87,7 +91,7 @@ pub struct SeriesKey {
 
 impl SeriesKey {
     /// The Series a Reading belongs to, or the first fact it could not prove.
-    fn of(reading: &LimitReading) -> Result<SeriesKey, ReasonCode> {
+    pub fn of(reading: &LimitReading) -> Result<SeriesKey, ReasonCode> {
         let p = &reading.provenance;
         Ok(SeriesKey {
             source: reading.source.clone(),
