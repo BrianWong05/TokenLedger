@@ -53,6 +53,12 @@ pub struct LimitReading {
     /// 'logs' (read from an Artifact the scan already walks) | 'live' (fetched
     /// by a Companion, ADR-0019).
     pub via: String,
+    /// The vendor's own plan value, raw — `rateLimitTier`, `plan_type`,
+    /// `subscriptionTier`. It is the plan identity the evidence contract requires
+    /// as well as the card's pill, so it must never be localized, prettified, or
+    /// normalized on the way in; presentation belongs to the frontend. A Source
+    /// that ever needs a label distinct from its identity brings a column of its
+    /// own rather than reshaping this one.
     pub plan: Option<String>,
     pub provenance: ReadingProvenance,
 }
@@ -70,23 +76,28 @@ pub struct ReadingProvenance {
     pub account_id: Option<String>,
     /// The vendor meter in force, as the adapter identifies it — one plan may
     /// bill under several regimes, so a plan label alone is not this.
-    pub meter: Option<String>,
+    pub metering_regime: Option<String>,
     /// Raw vendor Limit identity, or an adapter-defined canonical one with a
     /// documented one-to-one mapping. A duration, slot, or display label is not.
     pub limit_id: Option<String>,
     pub model_scope: Option<ModelScope>,
     /// Stable source order for Readings sharing one `observed_at`; without it
     /// same-second Readings cannot be ordered, and so bound nothing.
-    pub source_seq: Option<i64>,
+    pub source_order: Option<i64>,
     /// The earliest instant local capture of this Source and account is durably
-    /// proven to cover, unbroken, through this observation. An interval is
-    /// complete only when this reaches back past its earlier anchor; raising it
-    /// (or leaving it unknown) is how a later unreadable-Artifact discovery
-    /// withdraws coverage.
+    /// proven to cover, unbroken, through this Reading. An interval is complete
+    /// only when this reaches back past its earlier anchor, so raising it is how
+    /// a later unreadable-Artifact discovery withdraws coverage: the newest pass
+    /// to prove a value replaces the stored one, in either direction, while a
+    /// pass that proves nothing leaves it alone.
     pub covered_from: Option<i64>,
     /// A known or detected fact that activity outside local capture moved this
-    /// Limit through the segment ending here. Unknown is no such fact, not proof
+    /// Limit through the stretch ending here. Unknown is no such fact, not proof
     /// of absence — the mere possibility of invisible activity rejects nothing.
+    ///
+    /// A bounded signature (ADR-0011): an adapter-defined constant naming the
+    /// kind of activity, whose length its own vocabulary fixes. Never a vendor
+    /// payload, message, or anything whose size the user's data decides.
     pub external_activity: Option<String>,
 }
 
@@ -102,15 +113,17 @@ pub enum ModelScope {
 impl ModelScope {
     /// The stored form: `all`, or a sorted, deduplicated JSON array — canonical
     /// so that two Readings scope the same Models exactly when their stored
-    /// strings are equal. An empty set is not a scope and reads back as unknown.
-    pub fn stored(&self) -> String {
+    /// strings are equal. An empty set is no scope at all, and stores as unknown
+    /// rather than as an empty one.
+    pub fn stored(&self) -> Option<String> {
         match self {
-            ModelScope::All => "all".to_string(),
+            ModelScope::All => Some("all".to_string()),
             ModelScope::Models(models) => {
                 let mut canonical: Vec<&str> = models.iter().map(String::as_str).collect();
                 canonical.sort_unstable();
                 canonical.dedup();
-                serde_json::to_string(&canonical).unwrap_or_default()
+                (!canonical.is_empty())
+                    .then(|| serde_json::to_string(&canonical).unwrap_or_default())
             }
         }
     }

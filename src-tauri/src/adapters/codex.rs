@@ -217,12 +217,18 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                         // refused 429 carrying an empty snapshot (#104), and
                         // taking it as "the newest reading" would blank a gauge
                         // that had good data one line earlier.
-                        if limits.get("limit_id").and_then(|i| i.as_str()) == Some("codex") {
-                            let observed_at = v
-                                .get("timestamp")
-                                .and_then(|t| t.as_str())
-                                .and_then(iso_to_epoch)
-                                .unwrap_or(0);
+                        // A snapshot whose envelope carries no readable stamp
+                        // cannot be placed in time, and `observed_at` is part of
+                        // a Reading's identity: taken as 0 it would claim 1970
+                        // and sort before every anchor evidence has. Rejected
+                        // like a slot missing its own reset instant.
+                        let stamp = v
+                            .get("timestamp")
+                            .and_then(|t| t.as_str())
+                            .and_then(iso_to_epoch);
+                        if let (Some(observed_at), Some("codex")) =
+                            (stamp, limits.get("limit_id").and_then(|i| i.as_str()))
+                        {
                             let plan = limits.get("plan_type").and_then(|p| p.as_str());
                             readings.extend(
                                 [limits.get("primary"), limits.get("secondary")]

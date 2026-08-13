@@ -309,6 +309,9 @@ PRAGMA user_version = 13;";
 // `used_pct` keeps the vendor's own figure unconverted. `window_key` is opaque
 // TEXT — Claude's response key, Codex's `w{canonical minutes}`, and one day
 // perhaps a pool prefix — never parsed for structure.
+// (V18 widened that key with `observed_at` and rebuilt the table: a repeat at an
+// unchanged percentage is now its own Reading, because evidence needs it as an
+// anchor. What stands below is v14's shape, not today's.)
 // Clearing scanned_files is the established backfill pattern (V2-V5, V12): the
 // next scan re-parses every log once and Codex limit history back-fills
 // retroactively. Ingest is idempotent by the PK, so re-running the migration
@@ -376,14 +379,15 @@ PRAGMA user_version = 17;";
 // Limit Token Estimate (spec: "Evidence participation contract", "Migration and
 // backfill"). Two changes, both additive to what the Limits page already draws.
 //
-// 1. A Reading's identity widens to the observation itself. V14 keyed it by
-//    content — (source, window_key, resets_at, used_pct) — which collapsed every
-//    later observation at an unchanged percentage onto the row already there,
-//    including one a gap later that the estimator needs as its next anchor.
-//    `observed_at` joins the key: it comes from the Artifact, not the clock, so
-//    re-ingesting one source observation still lands on the stored row, while a
-//    genuinely later equal-percentage observation keeps its own. SQLite cannot
-//    widen a key in place, so the table is rebuilt and every row copied.
+// 1. A Reading's identity widens to the exact source observation it records.
+//    V14 keyed it by content — (source, window_key, resets_at, used_pct) —
+//    which collapsed every later Reading at an unchanged percentage onto the row
+//    already there, including one a gap later that the estimator needs as its
+//    next anchor. `observed_at` joins the key: it comes from the Artifact, not
+//    the clock, so re-ingesting one source observation still lands on the stored
+//    row, while a genuinely later Reading at an equal percentage keeps its own.
+//    SQLite cannot widen a key in place, so the table is rebuilt (the V7 idiom:
+//    rename aside, create the canonical name, copy, drop) and every row copied.
 // 2. Seven nullable provenance columns carry the facts the contract requires
 //    beyond the figures: account identity, metering regime, Limit identity,
 //    Model scope, source order, completeness coverage, and external activity.
@@ -392,27 +396,54 @@ PRAGMA user_version = 17;";
 //    ponytail: the provenance stays OUT of the key. A nullable column in a
 //    rowid table's key would defeat the dedup it is meant to sharpen, because
 //    SQLite counts every NULL as distinct — so until a Source proves an account,
-//    each re-ingestion would insert again. The ceiling: two accounts observed in
-//    the same second, at the same percentage, in the same reset second collapse
-//    to one row. Key the account too (with '' for unknown, or a COALESCE unique
-//    index) if a Source ever reads two accounts at once.
+//    each re-ingestion would insert again. The ceiling: two Readings alike in
+//    all five key columns but differing in a proven identity fact cannot both be
+//    stored; the second is dropped rather than merged (insert_limit_readings
+//    refuses to blend contradicting identities). Key the identity too (with ''
+//    for unknown, or a COALESCE unique index) if that ever stops being a corner.
 //
 // Legacy rows keep unknown provenance, and NULL is unknown rather than a
 // wildcard, so no stored history can accidentally match estimator evidence.
 // scanned_files is deliberately NOT cleared, against the pattern of V2-V5/V12/
 // V14: re-parsing today's Artifacts cannot prove an old interval's account or
 // completeness (spec hard rule), so Claude and Codex cold-start instead.
-// The widened key is itself the range index the evidence query needs — its
-// (source, window_key, resets_at, observed_at) prefix — so limit_readings gains
-// no second index; events gains the one Usage membership needs, by Source,
-// account and time with the raw Model along for scoped filtering. No estimate,
-// materialisation, or history table: an estimate is derived (ADR-0024).
-// Re-running this batch is safe, the established rule here: the new columns are
-// added beforehand by add_column (SQLite has no ADD COLUMN IF NOT EXISTS), so a
-// second pass copies an already-migrated table onto itself with every column,
-// provenance included. An intermediate dev build cannot eat evidence.
+// limit_readings gains no index of its own: the widened key indexes what the
+// table is read by today — the display query's (source, window_key, resets_at),
+// and now Reading order within an epoch. It is not the Series key, which leads
+// with account, meter and Limit identity rather than `window_key`, so if the
+// evidence query wants that order it brings its own index, once a Source proves
+// those facts and there is a query to measure. events gains the one Usage
+// membership needs, by Source, account and time with the raw Model along for
+// scoped filtering. No estimate, materialisation, or history table: an estimate
+// is derived (ADR-0024).
+//
+// The migration comes in two halves, and both are v18's DDL: the ADD COLUMNs
+// below cannot live in the batch because SQLite has no ADD COLUMN IF NOT EXISTS
+// and the rebuild copies the new columns by name, so they must exist before it
+// runs and a second pass must find them rather than fail on a duplicate. That is
+// what makes the whole migration re-runnable, the rule V14 set: a second pass
+// copies an already-migrated table onto itself with every column, provenance
+// included, so an intermediate dev build cannot eat evidence.
+const SCHEMA_V18_COLUMNS: [(&str, &str, &str); 8] = [
+    ("limit_readings", "account_id", "TEXT"),
+    ("limit_readings", "metering_regime", "TEXT"),
+    ("limit_readings", "limit_id", "TEXT"),
+    ("limit_readings", "model_scope", "TEXT"),
+    ("limit_readings", "source_order", "INTEGER"),
+    ("limit_readings", "covered_from", "INTEGER"),
+    ("limit_readings", "external_activity", "TEXT"),
+    // Deliberately outside COLS, which is otherwise the one place an events
+    // column is declared (see COLS below): nothing derives an account identity
+    // yet, and the shape of Usage-capture provenance is the per-Source tickets'
+    // to settle. Whoever first writes this MUST add it to COLS — REPLACE_SQL has
+    // no slot for a column COLS does not know, so replace_file_events would drop
+    // the account identity of every fork or replay it rewrites.
+    ("events", "account_id", "TEXT"),
+];
+
 const SCHEMA_V18: &str = "\
-CREATE TABLE limit_readings_v18 (
+ALTER TABLE limit_readings RENAME TO limit_readings_v17;
+CREATE TABLE limit_readings (
   source            TEXT NOT NULL,
   window_key        TEXT NOT NULL,
   window_minutes    INTEGER,
@@ -422,49 +453,37 @@ CREATE TABLE limit_readings_v18 (
   via               TEXT NOT NULL,
   plan              TEXT,
   account_id        TEXT,
-  meter             TEXT,
+  metering_regime   TEXT,
   limit_id          TEXT,
   model_scope       TEXT,
-  source_seq        INTEGER,
+  source_order      INTEGER,
   covered_from      INTEGER,
   external_activity TEXT,
   PRIMARY KEY (source, window_key, resets_at, observed_at, used_pct)
 );
-INSERT INTO limit_readings_v18
+INSERT INTO limit_readings
   (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan,
-   account_id, meter, limit_id, model_scope, source_seq, covered_from, external_activity)
+   account_id, metering_regime, limit_id, model_scope, source_order, covered_from,
+   external_activity)
   SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan,
-         account_id, meter, limit_id, model_scope, source_seq, covered_from, external_activity
-  FROM limit_readings;
-DROP TABLE limit_readings;
-ALTER TABLE limit_readings_v18 RENAME TO limit_readings;
+         account_id, metering_regime, limit_id, model_scope, source_order, covered_from,
+         external_activity
+  FROM limit_readings_v17;
+DROP TABLE limit_readings_v17;
 CREATE INDEX IF NOT EXISTS idx_events_evidence
   ON events(source, account_id, timestamp, model);
 PRAGMA user_version = 18;";
 
-/// The columns SCHEMA_V18 adds, `<table>`/`<column with its declaration>`.
-const V18_COLUMNS: [(&str, &str); 8] = [
-    ("limit_readings", "account_id TEXT"),
-    ("limit_readings", "meter TEXT"),
-    ("limit_readings", "limit_id TEXT"),
-    ("limit_readings", "model_scope TEXT"),
-    ("limit_readings", "source_seq INTEGER"),
-    ("limit_readings", "covered_from INTEGER"),
-    ("limit_readings", "external_activity TEXT"),
-    ("events", "account_id TEXT"),
-];
-
 /// `ALTER TABLE ... ADD COLUMN` with the `IF NOT EXISTS` SQLite has no syntax
 /// for, so a migration that carries new columns stays re-runnable.
-fn add_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<()> {
-    let name = column.split(' ').next().unwrap_or(column);
+fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
     let present: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
-        params![table, name],
+        params![table, column],
         |r| r.get(0),
     )?;
     if !present {
-        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column}"))?;
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
     }
     Ok(())
 }
@@ -708,8 +727,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch(SCHEMA_V17)?;
         }
         if version < 18 {
-            for (table, column) in V18_COLUMNS {
-                add_column(conn, table, column)?;
+            for (table, column, decl) in SCHEMA_V18_COLUMNS {
+                add_column(conn, table, column, decl)?;
             }
             conn.execute_batch(SCHEMA_V18)?;
         }
@@ -798,42 +817,81 @@ fn set_wal(conn: &Connection) -> rusqlite::Result<()> {
     }
 }
 
-/// Append Limit Readings. The key is the observation itself — the reading's
-/// content plus `observed_at` — so a re-scan, a fork replay of the same block,
-/// and a Companion export read twice all land on the stored row, while a later
-/// observation at an unchanged percentage stays a Reading of its own.
+/// Append Limit Readings. The key is the exact source observation — the
+/// reading's content plus `observed_at` — so a re-scan, a fork replay of the same
+/// block, and a Companion export read twice all land on the stored row, while a
+/// later Reading at an unchanged percentage stays a Reading of its own. Returns
+/// the number of Readings written, new or genuinely revised: the "relevant
+/// Reading facts changed" signal an evaluation triggers on (ADR-0024).
 ///
-/// Provenance and plan fill in on conflict: a pass that proves more than the
-/// stored row, or corrects its coverage, revises it in place, and one that proves
-/// nothing never erases what is already there. The Reading's own figures are
-/// never rewritten — they are what the identity is made of.
+/// Provenance and plan fill in on conflict, under two rules. A pass may fill an
+/// unknown identity fact or confirm a known one, never contradict it: readings
+/// alike in all five key columns but disagreeing about account, meter, Limit, or
+/// scope are two different Readings that this table cannot hold apart, so the
+/// second is dropped whole rather than blended into the first (see SCHEMA_V18's
+/// ponytail note). Coverage, external activity, and plan take the newest proof,
+/// which is how a later unreadable-Artifact discovery withdraws coverage — a
+/// pass that proves nothing still erases nothing. The Reading's own figures are
+/// never rewritten; they are what the identity is made of. `window_minutes` and
+/// `via` are neither keyed nor revised: the first writer's stand, as in V14.
+///
+/// The `WHERE` keeps the conflict path as free as V14's `INSERT OR IGNORE` was —
+/// it fires only when merging actually changes the row, so re-reading a whole
+/// rollout or credit log, which every scan of a live session does, costs the
+/// reads and no writes.
 pub fn insert_limit_readings(
     conn: &mut Connection,
     readings: &[LimitReading],
-) -> rusqlite::Result<()> {
+) -> rusqlite::Result<u64> {
     let tx = conn.transaction()?;
+    let mut written = 0u64;
     {
         let mut stmt = tx.prepare(
             "INSERT INTO limit_readings \
              (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan, \
-              account_id, meter, limit_id, model_scope, source_seq, covered_from, \
+              account_id, metering_regime, limit_id, model_scope, source_order, covered_from, \
               external_activity) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
              ON CONFLICT(source, window_key, resets_at, observed_at, used_pct) DO UPDATE SET \
-               plan        = COALESCE(excluded.plan,        limit_readings.plan), \
-               account_id  = COALESCE(excluded.account_id,  limit_readings.account_id), \
-               meter       = COALESCE(excluded.meter,       limit_readings.meter), \
-               limit_id    = COALESCE(excluded.limit_id,    limit_readings.limit_id), \
-               model_scope = COALESCE(excluded.model_scope, limit_readings.model_scope), \
-               source_seq  = COALESCE(excluded.source_seq,  limit_readings.source_seq), \
+               plan            = COALESCE(excluded.plan,            limit_readings.plan), \
+               account_id      = COALESCE(excluded.account_id,      limit_readings.account_id), \
+               metering_regime = COALESCE(excluded.metering_regime, \
+                                          limit_readings.metering_regime), \
+               limit_id        = COALESCE(excluded.limit_id,        limit_readings.limit_id), \
+               model_scope     = COALESCE(excluded.model_scope,     limit_readings.model_scope), \
+               source_order    = COALESCE(excluded.source_order,    limit_readings.source_order), \
                covered_from      = COALESCE(excluded.covered_from, \
                                             limit_readings.covered_from), \
                external_activity = COALESCE(excluded.external_activity, \
-                                            limit_readings.external_activity)",
+                                            limit_readings.external_activity) \
+             WHERE (COALESCE(excluded.plan,              limit_readings.plan), \
+                    COALESCE(excluded.account_id,        limit_readings.account_id), \
+                    COALESCE(excluded.metering_regime,   limit_readings.metering_regime), \
+                    COALESCE(excluded.limit_id,          limit_readings.limit_id), \
+                    COALESCE(excluded.model_scope,       limit_readings.model_scope), \
+                    COALESCE(excluded.source_order,      limit_readings.source_order), \
+                    COALESCE(excluded.covered_from,      limit_readings.covered_from), \
+                    COALESCE(excluded.external_activity, limit_readings.external_activity)) \
+                IS NOT (limit_readings.plan,            limit_readings.account_id, \
+                        limit_readings.metering_regime, limit_readings.limit_id, \
+                        limit_readings.model_scope,     limit_readings.source_order, \
+                        limit_readings.covered_from,    limit_readings.external_activity) \
+               AND (excluded.account_id IS NULL \
+                    OR limit_readings.account_id IS NULL \
+                    OR excluded.account_id IS limit_readings.account_id) \
+               AND (excluded.metering_regime IS NULL \
+                    OR limit_readings.metering_regime IS NULL \
+                    OR excluded.metering_regime IS limit_readings.metering_regime) \
+               AND (excluded.limit_id IS NULL \
+                    OR limit_readings.limit_id IS NULL \
+                    OR excluded.limit_id IS limit_readings.limit_id) \
+               AND (excluded.model_scope IS NULL \
+                    OR limit_readings.model_scope IS NULL \
+                    OR excluded.model_scope IS limit_readings.model_scope)",
         )?;
         for r in readings {
             let p = &r.provenance;
-            stmt.execute(params![
+            written += stmt.execute(params![
                 r.source,
                 r.window_key,
                 r.window_minutes,
@@ -843,16 +901,17 @@ pub fn insert_limit_readings(
                 r.via,
                 r.plan,
                 p.account_id,
-                p.meter,
+                p.metering_regime,
                 p.limit_id,
-                p.model_scope.as_ref().map(ModelScope::stored),
-                p.source_seq,
+                p.model_scope.as_ref().and_then(ModelScope::stored),
+                p.source_order,
                 p.covered_from,
                 p.external_activity,
-            ])?;
+            ])? as u64;
         }
     }
-    tx.commit()
+    tx.commit()?;
+    Ok(written)
 }
 
 pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<u64> {
@@ -1623,7 +1682,7 @@ mod tests {
             provenance: ReadingProvenance::default(),
         };
         insert_limit_readings(&mut conn, &[reading(40.0, 100), reading(40.0, 100)]).unwrap();
-        assert_eq!(stored_readings(&conn), 1, "one observation twice is one row");
+        assert_eq!(stored_readings(&conn), 1, "one source observation twice is one Reading");
         insert_limit_readings(&mut conn, &[reading(41.0, 100), reading(40.0, 200)]).unwrap();
         assert_eq!(
             stored_readings(&conn),
@@ -1812,18 +1871,18 @@ mod tests {
 
     fn stored_provenance(conn: &Connection, observed_at: i64) -> ReadingProvenance {
         conn.query_row(
-            "SELECT account_id, meter, limit_id, model_scope, source_seq, covered_from, \
-             external_activity FROM limit_readings WHERE observed_at = ?1",
+            "SELECT account_id, metering_regime, limit_id, model_scope, source_order, \
+             covered_from, external_activity FROM limit_readings WHERE observed_at = ?1",
             [observed_at],
             |r| {
                 Ok(ReadingProvenance {
                     account_id: r.get(0)?,
-                    meter: r.get(1)?,
+                    metering_regime: r.get(1)?,
                     limit_id: r.get(2)?,
                     model_scope: r
                         .get::<_, Option<String>>(3)?
                         .and_then(|s| ModelScope::parse(&s)),
-                    source_seq: r.get(4)?,
+                    source_order: r.get(4)?,
                     covered_from: r.get(5)?,
                     external_activity: r.get(6)?,
                 })
@@ -1990,23 +2049,33 @@ mod tests {
     #[test]
     fn reading_identity_dedupes_re_ingestion_and_keeps_a_later_equal_percentage() {
         let (_dir, mut conn) = temp_db();
-        // The same observation, read twice — a re-scan of an appended rollout, or
-        // the scan and the command that just ran a Companion both ingesting.
-        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap();
-        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap();
+        // The same source observation, read twice — a re-scan of an appended
+        // rollout, or the scan and the command that just ran a Companion both
+        // ingesting. The second read writes nothing at all.
+        assert_eq!(
+            insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap(),
+            1,
+        );
+        let settled = conn.total_changes();
+        assert_eq!(
+            insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap(),
+            0,
+            "re-reading a stored Reading is not a change to evaluate on",
+        );
+        assert_eq!(conn.total_changes(), settled, "and costs no write");
         assert_eq!(stored_readings(&conn), 1);
 
-        // A genuinely later observation at an unchanged percentage is its own
-        // Reading: after a gap it is the only anchor the next run can start from.
+        // A genuinely later Reading at an unchanged percentage is its own: after
+        // a gap it is the only anchor the next run can start from.
         insert_limit_readings(&mut conn, &[evidence_reading(40.0, 5_400)]).unwrap();
-        let observations: Vec<i64> = conn
+        let stamps: Vec<i64> = conn
             .prepare("SELECT observed_at FROM limit_readings ORDER BY observed_at")
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(observations, vec![900, 5_400]);
+        assert_eq!(stamps, vec![900, 5_400]);
     }
 
     #[test]
@@ -2014,10 +2083,10 @@ mod tests {
         let (_dir, mut conn) = temp_db();
         let proven = ReadingProvenance {
             account_id: Some("acct-9f3".to_string()),
-            meter: Some("codex-standard".to_string()),
+            metering_regime: Some("codex-standard".to_string()),
             limit_id: Some("codex".to_string()),
             model_scope: Some(ModelScope::All),
-            source_seq: Some(17),
+            source_order: Some(17),
             covered_from: Some(600),
             external_activity: None,
         };
@@ -2027,8 +2096,14 @@ mod tests {
         assert_eq!(stored_provenance(&conn, 900), proven);
 
         // A later pass that proves nothing — a live Reading of the same
-        // observation — must not erase what a richer one already proved.
-        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap();
+        // observation — must not erase what a richer one already proved, and has
+        // nothing to write.
+        let settled = conn.total_changes();
+        assert_eq!(
+            insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap(),
+            0,
+        );
+        assert_eq!(conn.total_changes(), settled);
         assert_eq!(stored_provenance(&conn, 900), proven);
 
         // Provenance is correctable: discovering an unreadable Artifact inside
@@ -2040,7 +2115,7 @@ mod tests {
             external_activity: Some("codex-web".to_string()),
             ..ReadingProvenance::default()
         };
-        insert_limit_readings(&mut conn, &[corrected]).unwrap();
+        assert_eq!(insert_limit_readings(&mut conn, &[corrected]).unwrap(), 1);
         assert_eq!(
             stored_provenance(&conn, 900),
             ReadingProvenance {
@@ -2053,7 +2128,7 @@ mod tests {
     }
 
     #[test]
-    fn readings_differing_only_in_evidence_identity_stay_separable() {
+    fn each_evidence_identity_keeps_its_own_readings() {
         let (_dir, mut conn) = temp_db();
         let with = |observed_at: i64, provenance: ReadingProvenance| {
             let mut reading = evidence_reading(40.0, observed_at);
@@ -2062,14 +2137,14 @@ mod tests {
         };
         let first = ReadingProvenance {
             account_id: Some("acct-a".to_string()),
-            meter: Some("codex-standard".to_string()),
+            metering_regime: Some("codex-standard".to_string()),
             limit_id: Some("codex".to_string()),
             model_scope: Some(ModelScope::All),
             ..ReadingProvenance::default()
         };
         let second = ReadingProvenance {
             account_id: Some("acct-b".to_string()),
-            meter: Some("codex-priority".to_string()),
+            metering_regime: Some("codex-priority".to_string()),
             limit_id: Some("codex-credits".to_string()),
             model_scope: Some(ModelScope::Models(vec!["gpt-5.4-codex".to_string()])),
             ..ReadingProvenance::default()
@@ -2079,15 +2154,70 @@ mod tests {
             &[with(900, first.clone()), with(1_800, second.clone())],
         )
         .unwrap();
-
         assert_eq!(stored_readings(&conn), 2);
         assert_eq!(stored_provenance(&conn, 900), first);
         assert_eq!(stored_provenance(&conn, 1_800), second);
+
+        // A change of plan or of reset epoch likewise keeps its own Readings —
+        // the two facts the Reading carries itself rather than in its provenance.
+        let mut other_plan = evidence_reading(40.0, 2_700);
+        other_plan.plan = Some("pro".to_string());
+        let mut other_epoch = evidence_reading(40.0, 900);
+        other_epoch.resets_at += 86_400;
+        insert_limit_readings(&mut conn, &[other_plan, other_epoch]).unwrap();
+        let plans: Vec<(Option<String>, i64)> = conn
+            .prepare("SELECT plan, resets_at FROM limit_readings ORDER BY observed_at, resets_at")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            plans,
+            vec![
+                (Some("plus".to_string()), 1_786_879_486),
+                (Some("plus".to_string()), 1_786_965_886),
+                (Some("plus".to_string()), 1_786_879_486),
+                (Some("pro".to_string()), 1_786_879_486),
+            ],
+        );
+    }
+
+    #[test]
+    fn contradicting_identities_are_never_blended_into_one_reading() {
+        let (_dir, mut conn) = temp_db();
+        // Two Readings alike in every key column — same Source, window, epoch
+        // second, observation second, percentage — but proven to different
+        // accounts. This table cannot hold them apart (SCHEMA_V18's ponytail
+        // note), and the wrong answer would be a row wearing one account's
+        // identity over the other's completeness proof. The second is dropped
+        // whole instead.
+        let stored = ReadingProvenance {
+            account_id: Some("acct-a".to_string()),
+            covered_from: Some(600),
+            ..ReadingProvenance::default()
+        };
+        let mut first = evidence_reading(40.0, 900);
+        first.provenance = stored.clone();
+        let mut other_account = evidence_reading(40.0, 900);
+        other_account.provenance = ReadingProvenance {
+            account_id: Some("acct-b".to_string()),
+            metering_regime: Some("codex-priority".to_string()),
+            ..ReadingProvenance::default()
+        };
+        insert_limit_readings(&mut conn, &[first]).unwrap();
+        assert_eq!(
+            insert_limit_readings(&mut conn, &[other_account]).unwrap(),
+            0,
+            "a contradicted Reading is refused, not merged",
+        );
+        assert_eq!(stored_readings(&conn), 1);
+        assert_eq!(stored_provenance(&conn, 900), stored);
     }
 
     #[test]
     fn model_scope_stored_form_is_canonical() {
-        assert_eq!(ModelScope::All.stored(), "all");
+        assert_eq!(ModelScope::All.stored().as_deref(), Some("all"));
         // Order and repetition in the scope a Source reports are not identity:
         // the same set stores as the same string, so a Series holds together.
         let one = ModelScope::Models(vec!["opus-4.5".to_string(), "sonnet-4.5".to_string()]);
@@ -2098,14 +2228,17 @@ mod tests {
         ]);
         assert_eq!(one.stored(), other.stored());
         assert_eq!(
-            ModelScope::parse(&one.stored()),
+            ModelScope::parse(&one.stored().unwrap()),
             Some(ModelScope::Models(vec![
                 "opus-4.5".to_string(),
                 "sonnet-4.5".to_string(),
             ])),
         );
+        // An empty set is no scope: it stores as unknown rather than as a scope
+        // that matches nothing, and no stored string reads back as one.
+        assert_eq!(ModelScope::Models(Vec::new()).stored(), None);
         assert_eq!(ModelScope::parse("seven_day_opus"), None);
-        assert_eq!(ModelScope::parse("[]"), None, "an empty set is no scope");
+        assert_eq!(ModelScope::parse("[]"), None);
     }
 
     #[test]
