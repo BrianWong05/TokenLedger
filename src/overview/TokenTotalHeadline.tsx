@@ -247,24 +247,20 @@ export default function TokenTotalHeadline({
   const rollAllowed = () =>
     summaryReady && total > 0 && !prefersReducedMotion() && !usesCompactLayout();
 
-  // A period switch rolls the wheels in place to the new window's figure — the
-  // same motion as a mode change, never the zero-shaped entrance. The roll is
-  // owed to the WINDOW moving, not merely to the figure changing: the switch's
-  // Summary lands a beat after the click, so what marks it is that the figure
-  // settled under a different windowKey than the one now selected. A background
-  // scan reports a new figure for the SAME window and stays still (#12 story 9),
-  // as does a window whose total is unchanged — there is nothing to roll.
-  // ponytail: a switch between two windows with identical totals leaves the
-  // recorded key stale, so a later scan on the new window rolls once. Needs the
-  // store to say "this Summary is for that window" to close; not worth it.
+  // A period switch rolls the wheels in place as soon as its windowKey changes,
+  // using the series-derived figure while the window Summary is still loading.
+  // It is the WINDOW moving, not merely the figure changing, that earns a roll;
+  // a background scan reports a new figure for the SAME window and stays still
+  // (#12 story 9).
   const settled = useRef<{ display: string; windowKey: string } | null>(null);
   useEffect(() => {
     if (awaitingInitialLoad || !summaryReady) return;
     const previous = settled.current;
-    if (previous?.display === display) return;
+    const windowChanged = previous?.windowKey !== windowKey;
+    if (previous?.display === display && !windowChanged) return;
     settled.current = { display, windowKey };
     if (!previous) return; // the entrance (or its reduced-motion reveal) showed this value
-    if (previous.windowKey === windowKey) return; // same window: a scan, not a switch
+    if (!windowChanged) return; // same window: a scan, not a switch
     if (modeAnimation?.to === display) return;
     if (rollAllowed()) startAnimation(display);
     // eslint-disable-next-line react-hooks/exhaustive-deps

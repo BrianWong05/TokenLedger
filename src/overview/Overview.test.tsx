@@ -162,11 +162,15 @@ describe('Overview presentation', () => {
     // The entrance already played this session, so the headline starts at rest
     // and any roll below is the in-place period-switch motion.
     sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
-    const { container: c, ledger } = await mountSettled({ dayPoints: [pt({})], summary });
+    const { container: c, ledger } = await mountSettled({
+      dayPoints: [pt({ bucket: new Date().toISOString().slice(0, 10), totalTokens: 400 })],
+      summary,
+    });
     const headline = c.querySelector<HTMLElement>('.tt-b8-total')!;
     expect(headline.getAttribute('aria-busy')).toBeNull();
 
-    // The Week window holds a different total; its landing rolls the wheels.
+    // The Week window starts its roll as soon as the range changes, before its
+    // different Summary lands.
     ledger.data.summary = { ...summary, totalTokens: 987_654_321 };
     const week = Array.from(c.querySelectorAll('button')).find((b) =>
       /week/i.test(b.textContent ?? ''),
@@ -177,6 +181,42 @@ describe('Overview presentation', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(50);
     });
+    expect(headline.getAttribute('aria-busy')).toBe('true');
+  });
+
+  it('starts the range-switch roll before the new summary lands', async () => {
+    sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
+    const dayPoints = [
+      pt({ bucket: '2026-08-14', totalTokens: 400 }),
+      pt({ bucket: '2026-08-13', totalTokens: 600 }),
+    ];
+    const { container: c, ledger } = await mountSettled({
+      dayPoints,
+      summary,
+    });
+    const headline = c.querySelector<HTMLElement>('.tt-b8-total')!;
+    const dayTab = Array.from(c.querySelectorAll('button')).find((b) =>
+      /^day$/i.test(b.textContent?.trim() ?? ''),
+    )!;
+    const totalTab = Array.from(c.querySelectorAll('button')).find((b) =>
+      /^total$/i.test(b.textContent?.trim() ?? ''),
+    )!;
+
+    await act(async () => {
+      dayTab.click();
+      await vi.advanceTimersByTimeAsync(1_400);
+    });
+    await act(async () => {
+      ledger.emitPricesRebuilt();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    ledger.hold('summary');
+    await act(async () => {
+      totalTab.click();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(headline.getAttribute('aria-label')).not.toContain('400 total tokens');
     expect(headline.getAttribute('aria-busy')).toBe('true');
   });
 
