@@ -124,9 +124,13 @@ authenticated request exists. The companions never write or refresh your sign-in
 | WorkBuddy | Desktop AI assistant | `~/.workbuddy/projects/**/*.jsonl` |
 | CodeBuddy | CLI, IDE, and VS Code plugin coding agent | `~/.codebuddy/projects/**/*.jsonl` |
 
-For recursively scanned JSONL Sources, a configured root may itself be a
-symlink and JSONL file symlinks inside it are read, but directory symlinks
-inside it are not traversed; on Windows, this includes junctions.
+For the JSONL Sources discovered by the shared recursive walk — Claude Code,
+Codex CLI, pi, Oh My Pi, WorkBuddy, CodeBuddy, Qoder — a configured root may
+itself be a symlink and JSONL file symlinks inside it are read, but directory
+symlinks inside it are not traversed; on Windows, this includes junctions.
+Grok Build is walked differently: its own fixed two levels of workspace and
+session directories take a symlinked root and symlinked `updates.jsonl` the
+same way, but they do traverse directory symlinks inside the root.
 
 Most paths above are under your home directory and are read passively. `GROK_HOME`
 and `GOOSE_PATH_ROOT` may point discovery at different roots. The
