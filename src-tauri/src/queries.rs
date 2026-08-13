@@ -915,7 +915,7 @@ pub struct SourceLimits {
 /// otherwise the "current" figure would be whichever jittered row happened to
 /// name the largest stamp. Ten minutes is far wider than the observed wobble and
 /// far narrower than the shortest window Codex reports (300 minutes).
-const EPOCH_JITTER_SECS: i64 = 600;
+pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 
 /// The current state of every Limit the Ledger holds Readings for: per
 /// (source, window_key) the newest epoch, and within it the highest `used_pct`

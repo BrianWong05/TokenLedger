@@ -2,6 +2,10 @@ mod adapters;
 mod db;
 pub mod export_artifact;
 pub mod limits_artifact;
+// Limit Evidence Intervals. Nothing consumes it yet — the estimator that will
+// is the next ticket — so it is `pub` to keep the compiler from pruning a module
+// whose tests are the only caller today.
+pub mod limits_evidence;
 mod pricing;
 pub mod proto;
 mod queries;
