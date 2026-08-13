@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use rusqlite::Connection;
 use serde_json::Value;
 
 use super::ctx::{self, est};
-use super::unchanged;
+use super::{find_jsonl, unchanged};
 use crate::db;
 use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
@@ -47,7 +47,7 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
 pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
-    collect_jsonl(sessions_root, &mut files);
+    find_jsonl(sessions_root, &mut files);
     for path in files {
         match scan_file(conn, &path) {
             Ok((inserted, skipped)) => {
@@ -58,27 +58,6 @@ pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResu
         }
     }
     result
-}
-
-fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
-    if dir.is_file() {
-        if dir.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            out.push(dir.to_path_buf());
-        }
-        return;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return, // missing dir is not an error
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_jsonl(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            out.push(path);
-        }
-    }
 }
 
 struct ParsedCodexFile {
