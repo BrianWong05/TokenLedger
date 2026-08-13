@@ -248,9 +248,11 @@ The specific model a Usage Record used, identified by its raw logged name (e.g.
 `claude-opus-4-8`, `gpt-5.4`). The raw name is what is displayed and what a
 price resolves against; name normalisation exists only for price matching, not
 for display. The one departure: when a Source logs an internal routing ALIAS
-instead of a model name (Qoder's `qmodel_38max`), the parser translates it to
-the Model it designates (`qwen3.8-max`) — an alias names no model, sits in no
-catalog, and would price against nothing. Pi uses an assistant entry's backend
+instead of a model name (Qoder's `qmodel_38max` or `dfmodel`), the parser
+translates it from Qoder's refreshed local desktop Model catalog, falling back
+to known aliases when its rotating logs are absent (`qwen3.8-max` or
+`deepseek-v4-flash`) — an alias names no model, sits in no pricing catalog, and
+would price against nothing. Pi uses an assistant entry's backend
 `responseModel` when present
 and falls back to its selected `model`; a built-in pi summary Request inherits
 the active Model from its parent branch, while an extension-provided summary
