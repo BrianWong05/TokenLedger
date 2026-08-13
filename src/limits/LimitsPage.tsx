@@ -49,6 +49,11 @@ export default function LimitsPage({
   const [failures, setFailures] = useState<Record<string, LiveFailure>>(() => {
     const remembered: Record<string, LiveFailure> = {};
     for (const { meta } of limitsSources()) {
+      // Only a verdict the floor is still holding may be replayed. Past the
+      // floor this mount will check again anyway, and a stale verdict would
+      // meanwhile suppress held Readings — `cards()` gives a failure priority
+      // over windows — showing yesterday's blip as a current fact.
+      if (now() - Number(port.read(lastCheckKey(meta.key)) ?? 0) >= LIVE_FLOOR_MS) continue;
       const value = port.read(lastFailureKey(meta.key));
       if (value === 'signed-out') remembered[meta.key] = 'signed-out';
       else if (value?.startsWith(ERROR_FAILURE_PREFIX)) {
@@ -94,6 +99,12 @@ export default function LimitsPage({
       Promise.all(
         due.map((key) => {
           port.write(lastCheckKey(key), String(now()));
+          // Forget the old verdict as the check starts, not when it settles: the
+          // settle handlers only reach the mounted tree, and a tab switch made
+          // mid-check unmounts it. Without this, the stamp says "checking" while
+          // the verdict beside it still says whatever last failed, and every
+          // remount inside the floor rehydrates that older answer.
+          port.write(lastFailureKey(key), '');
           return Promise.resolve(port.checkLive(key)).then(
             () => {
               port.write(lastFailureKey(key), '');
