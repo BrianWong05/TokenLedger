@@ -2,6 +2,7 @@ mod adapters;
 mod db;
 pub mod export_artifact;
 pub mod limits_artifact;
+pub mod limits_evidence;
 mod pricing;
 pub mod proto;
 mod queries;
