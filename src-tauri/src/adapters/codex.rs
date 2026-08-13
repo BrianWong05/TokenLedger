@@ -9,7 +9,7 @@ use super::{find_jsonl_by_file_identity, unchanged};
 use crate::db;
 use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
-use crate::types::{FileState, LimitReading, SourceScanResult, UsageEvent};
+use crate::types::{FileState, LimitReading, ReadingProvenance, SourceScanResult, UsageEvent};
 
 const PARSER_VERSION: i64 = 1;
 
@@ -40,6 +40,9 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
         observed_at,
         via: "logs".to_string(),
         plan: plan.map(str::to_string),
+        // Codex evidence provenance is its own ticket; a Reading proves only
+        // what its Source has read, and unknown is never a wildcard.
+        provenance: ReadingProvenance::default(),
     })
 }
 
@@ -214,12 +217,18 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                         // refused 429 carrying an empty snapshot (#104), and
                         // taking it as "the newest reading" would blank a gauge
                         // that had good data one line earlier.
-                        if limits.get("limit_id").and_then(|i| i.as_str()) == Some("codex") {
-                            let observed_at = v
-                                .get("timestamp")
-                                .and_then(|t| t.as_str())
-                                .and_then(iso_to_epoch)
-                                .unwrap_or(0);
+                        // A snapshot whose envelope carries no readable stamp
+                        // cannot be placed in time, and `observed_at` is part of
+                        // a Reading's identity: taken as 0 it would claim 1970
+                        // and sort before every anchor evidence has. Rejected
+                        // like a slot missing its own reset instant.
+                        let stamp = v
+                            .get("timestamp")
+                            .and_then(|t| t.as_str())
+                            .and_then(iso_to_epoch);
+                        if let (Some(observed_at), Some("codex")) =
+                            (stamp, limits.get("limit_id").and_then(|i| i.as_str()))
+                        {
                             let plan = limits.get("plan_type").and_then(|p| p.as_str());
                             readings.extend(
                                 [limits.get("primary"), limits.get("secondary")]
@@ -1065,6 +1074,7 @@ mod tests {
                 observed_at: 1_786_331_779,
                 via: "logs".to_string(),
                 plan: Some("plus".to_string()),
+                provenance: ReadingProvenance::default(),
             }
         );
     }
@@ -1160,11 +1170,12 @@ mod tests {
     }
 
     #[test]
-    fn readings_dedup_on_content_across_scans_and_repeats() {
+    fn readings_dedup_per_observation_across_scans_and_repeats() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
         // Two requests at the same used_percent in the same epoch, then a third
-        // that advanced the fill.
+        // that advanced the fill: three Readings, and the estimator needs the
+        // repeat as the anchor a post-gap run would start from.
         let window = |pct: &str, ts: &str| {
             limits_line(
                 &format!(
@@ -1188,13 +1199,17 @@ mod tests {
         let rows = |conn: &Connection| -> i64 {
             conn.query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0)).unwrap()
         };
-        assert_eq!(rows(&conn), 2, "the repeat at an unchanged percentage costs no row");
+        assert_eq!(
+            rows(&conn),
+            3,
+            "each observation is a Reading, the repeat at an unchanged percentage included",
+        );
 
         // Re-scanning the same file — after clearing scan state, so the parse
         // genuinely re-runs — inserts nothing new.
         conn.execute("DELETE FROM scanned_files", []).unwrap();
         scan_codex(&mut conn, std::slice::from_ref(&root));
-        assert_eq!(rows(&conn), 2, "a re-parse is absorbed by the content-keyed PK");
+        assert_eq!(rows(&conn), 3, "a re-parse re-reads the same three observations");
     }
 
     // ---- pure parse_file core (no DB) ----

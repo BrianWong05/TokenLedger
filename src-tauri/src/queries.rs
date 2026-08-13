@@ -982,7 +982,7 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::pricing::{self, OverrideRates};
-    use crate::types::{LimitReading, UsageEvent};
+    use crate::types::{LimitReading, ReadingProvenance, UsageEvent};
     use tempfile::tempdir;
 
     // 2026-07-01T12:00:00Z and 2026-07-02T12:00:00Z (event times)
@@ -1773,6 +1773,7 @@ mod tests {
             observed_at,
             via: via.to_string(),
             plan: plan.map(str::to_string),
+            provenance: ReadingProvenance::default(),
         }
     }
 

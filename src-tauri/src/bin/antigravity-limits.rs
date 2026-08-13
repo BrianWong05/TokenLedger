@@ -122,7 +122,7 @@ const EXIT_ITEM_NOT_FOUND: i32 = 44;
 /// The key carries the pool because Antigravity is the first Source where the
 /// pool is a genuine second axis rather than a slot: two pools share both
 /// durations, so `w300` alone addresses two different pools with two different
-/// fill levels, and one would overwrite the other in the content-keyed PK.
+/// fill levels, and one would displace the other in a Reading's own identity.
 const BUCKETS: [(&str, &str, i64); 4] = [
     ("gemini-5h", "gemini:w300", 300),
     ("gemini-weekly", "gemini:w10080", 10080),
@@ -701,9 +701,9 @@ fn bucket_window(bucket: &Value) -> Option<WindowExport> {
     Some(WindowExport {
         key: key.to_string(),
         window_minutes: Some(*minutes),
-        // The fraction is what is LEFT, so 1.0 is untouched. Rounded to an
-        // integer, which is what keeps the content-keyed PK to ≤101 rows per
-        // window per epoch.
+        // The fraction is what is LEFT, so 1.0 is untouched. Rounded to the
+        // integer percentage the card displays and evidence moves in, so a
+        // sub-point wobble is not a second fill level.
         used_pct: ((1.0 - remaining) * 100.0).round(),
         resets_at,
     })

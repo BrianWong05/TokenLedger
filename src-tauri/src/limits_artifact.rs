@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::adapters::unchanged;
 use crate::db::{self, set_file_state};
-use crate::types::{FileState, LimitReading};
+use crate::types::{FileState, LimitReading, ReadingProvenance};
 
 pub const SUFFIX: &str = ".tokenledger-limits.json";
 
@@ -170,6 +170,7 @@ pub fn readings(export: &LimitsExport) -> Vec<LimitReading> {
             observed_at: export.fetched_at,
             via: "live".to_string(),
             plan: export.plan.clone(),
+            provenance: ReadingProvenance::default(),
         })
         .collect()
 }
@@ -237,8 +238,9 @@ pub fn write(dir: &Path, export: &LimitsExport) -> std::io::Result<()> {
 /// never run is not a Source in trouble.
 ///
 /// Idempotent twice over — the file's own state gates the re-read, and the
-/// content-keyed PK absorbs it if the read happens anyway — so both the scan and
-/// the command that just ran the Companion can call this freely.
+/// export carries its own `fetched_at`, so a second read of one export lands on
+/// the Reading already stored — and both the scan and the command that just ran
+/// the Companion can call this freely.
 pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), String> {
     let path = path_in(dir, source);
     let raw = match std::fs::read_to_string(&path) {

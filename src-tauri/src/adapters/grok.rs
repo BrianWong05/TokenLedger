@@ -26,7 +26,9 @@ use super::{file_state_of, percent_decode, unchanged};
 use crate::db::{insert_limit_readings, replace_file_events, set_file_state};
 use crate::limits_artifact::grok_credit_window;
 use crate::time::iso_to_epoch;
-use crate::types::{CtxTokens, FileState, LimitReading, SourceScanResult, UsageEvent};
+use crate::types::{
+    CtxTokens, FileState, LimitReading, ReadingProvenance, SourceScanResult, UsageEvent,
+};
 
 // Bump to force a full re-parse of every session when the parser changes (the
 // byte-offset slot carries it through `unchanged`).
@@ -122,8 +124,9 @@ fn capture_limits(conn: &mut Connection, unified_log: &Path, result: &mut Source
         return; // a log we cannot read is not a Source in trouble
     };
 
-    // Re-reading the whole log is free: the content-keyed PK absorbs every
-    // repeat, and the file only rewrites on rotation.
+    // Re-reading the whole log is free: each line carries the stamp it was
+    // observed at, so a repeat lands on the Reading already stored, and the file
+    // only rewrites on rotation.
     let readings: Vec<LimitReading> = content
         .lines()
         .filter(|line| line.contains(BILLING_MSG))
@@ -170,6 +173,7 @@ fn billing_reading(line: &str) -> Option<LimitReading> {
             .get("subscriptionTier")
             .and_then(Value::as_str)
             .map(str::to_string),
+        provenance: ReadingProvenance::default(),
     })
 }
 
@@ -1151,8 +1155,9 @@ mod tests {
         let tmp = tempdir().unwrap();
         let log = tmp.path().join("unified.jsonl");
         let sessions = tmp.path().join("sessions");
-        // Two requests at the same percentage are one row: the PK is the
-        // reading's content, so the table holds the fill-curve, not the traffic.
+        // An hour apart at the same percentage is two Readings: each is its own
+        // observation, and after a gap the later one is the only anchor evidence
+        // can start from. Re-reading either of them is not a third.
         std::fs::write(
             &log,
             weekly("2026-07-10T20:49:57.123Z", Some("14")) + "\n"
@@ -1162,9 +1167,9 @@ mod tests {
         let mut conn = open_db(&tmp.path().join("ledger.db")).unwrap();
 
         scan_grok(&mut conn, &sessions, &log);
-        assert_eq!(readings(&conn).len(), 1);
+        assert_eq!(readings(&conn).len(), 2);
         scan_grok(&mut conn, &sessions, &log);
-        assert_eq!(readings(&conn).len(), 1, "a re-scan re-reads nothing and inserts nothing");
+        assert_eq!(readings(&conn).len(), 2, "a re-scan re-reads nothing and inserts nothing");
     }
 
     #[test]
