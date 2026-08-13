@@ -49,6 +49,9 @@ persistence behaviour remains explicit per Source.
 
 After the catalog, add these proven roots to existing Sources:
 
+- Codex: `$CODEX_HOME/sessions` alongside `~/.codex/sessions`, with the
+  default root scanned first; non-default roots contribute Usage and Context
+  but not Limit Readings. See `docs/source-evidence/codex.md`.
 - Hermes: `$HERMES_HOME/state.db` and profile databases, falling back to
   `~/.hermes`.
 - Gemini: `$GEMINI_CLI_HOME/.gemini/tmp`, falling back to `~/.gemini/tmp`.
