@@ -13,13 +13,19 @@
 use std::collections::BTreeMap;
 
 use rusqlite::{params, Connection};
+use serde::Serialize;
+use ts_rs::TS;
 
 use crate::queries;
 use crate::types::{LimitReading, ModelScope, ReadingProvenance};
 
 /// Why evidence was refused. The backend returns codes and values, never
-/// localized prose (spec: "Reason codes").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// localized prose (spec: "Reason codes"). The wire spelling is the variant's
+/// own name in kebab-case, which is exactly the specification's list — one
+/// definition rather than a table to keep in step with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub enum ReasonCode {
     NoCurrentReading,
     MissingAccountIdentity,
@@ -43,36 +49,6 @@ pub enum ReasonCode {
     RatioSpreadExceeded,
     CompetingStableCores,
     HistoricalCoreAgedOut,
-}
-
-impl ReasonCode {
-    /// The wire spelling the specification fixes.
-    pub fn code(self) -> &'static str {
-        match self {
-            ReasonCode::NoCurrentReading => "no-current-reading",
-            ReasonCode::MissingAccountIdentity => "missing-account-identity",
-            ReasonCode::MissingPlanIdentity => "missing-plan-identity",
-            ReasonCode::MissingMeteringRegime => "missing-metering-regime",
-            ReasonCode::MissingLimitIdentity => "missing-limit-identity",
-            ReasonCode::MissingModelScope => "missing-model-scope",
-            ReasonCode::UnprovenSourceCompleteness => "unproven-source-completeness",
-            ReasonCode::AmbiguousReadingOrder => "ambiguous-reading-order",
-            ReasonCode::IdentityChange => "identity-change",
-            ReasonCode::ResetBoundary => "reset-boundary",
-            ReasonCode::PercentageDecrease => "percentage-decrease",
-            ReasonCode::PercentageSaturation => "percentage-saturation",
-            ReasonCode::ZeroLocalUsage => "zero-local-usage",
-            ReasonCode::KnownExternalActivity => "known-external-activity",
-            ReasonCode::UnattributedModelUsage => "unattributed-model-usage",
-            ReasonCode::NoQualifyingRun => "no-qualifying-run",
-            ReasonCode::AmbiguousGreatestRun => "ambiguous-greatest-run",
-            ReasonCode::InsufficientRecentEpochs => "insufficient-recent-epochs",
-            ReasonCode::QuantizationRangesDisjoint => "quantization-ranges-disjoint",
-            ReasonCode::RatioSpreadExceeded => "ratio-spread-exceeded",
-            ReasonCode::CompetingStableCores => "competing-stable-cores",
-            ReasonCode::HistoricalCoreAgedOut => "historical-core-aged-out",
-        }
-    }
 }
 
 /// The identity comparable Readings share. Every field is proven or the Reading
@@ -749,8 +725,8 @@ mod tests {
             let mut from = reading(40.0, T0);
             spoil(&mut from);
             let evidence = derived(&[from, reading(50.0, T0 + 600)], &[usage(T0 + 100, 1_000)]);
-            assert!(only_intervals(&evidence).is_empty(), "{}", reason.code());
-            assert_eq!(refused(&evidence, reason), 1, "{}", reason.code());
+            assert!(only_intervals(&evidence).is_empty(), "{reason:?}");
+            assert_eq!(refused(&evidence, reason), 1, "{reason:?}");
         }
     }
 
@@ -963,6 +939,39 @@ mod tests {
             let evidence = derived(&[reading(40.0, T0), moved], &[usage(T0 + 100, 1_000)]);
             assert!(only_intervals(&evidence).is_empty());
             assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 1);
+        }
+    }
+
+    #[test]
+    fn every_reason_code_is_spelled_as_the_specification_fixes_it() {
+        // The backend returns codes, never prose, and these exact strings are
+        // what the contract and its translations are keyed on.
+        let spelled = |reason: ReasonCode| serde_json::to_string(&reason).unwrap();
+        for (reason, wire) in [
+            (ReasonCode::NoCurrentReading, "no-current-reading"),
+            (ReasonCode::MissingAccountIdentity, "missing-account-identity"),
+            (ReasonCode::MissingPlanIdentity, "missing-plan-identity"),
+            (ReasonCode::MissingMeteringRegime, "missing-metering-regime"),
+            (ReasonCode::MissingLimitIdentity, "missing-limit-identity"),
+            (ReasonCode::MissingModelScope, "missing-model-scope"),
+            (ReasonCode::UnprovenSourceCompleteness, "unproven-source-completeness"),
+            (ReasonCode::AmbiguousReadingOrder, "ambiguous-reading-order"),
+            (ReasonCode::IdentityChange, "identity-change"),
+            (ReasonCode::ResetBoundary, "reset-boundary"),
+            (ReasonCode::PercentageDecrease, "percentage-decrease"),
+            (ReasonCode::PercentageSaturation, "percentage-saturation"),
+            (ReasonCode::ZeroLocalUsage, "zero-local-usage"),
+            (ReasonCode::KnownExternalActivity, "known-external-activity"),
+            (ReasonCode::UnattributedModelUsage, "unattributed-model-usage"),
+            (ReasonCode::NoQualifyingRun, "no-qualifying-run"),
+            (ReasonCode::AmbiguousGreatestRun, "ambiguous-greatest-run"),
+            (ReasonCode::InsufficientRecentEpochs, "insufficient-recent-epochs"),
+            (ReasonCode::QuantizationRangesDisjoint, "quantization-ranges-disjoint"),
+            (ReasonCode::RatioSpreadExceeded, "ratio-spread-exceeded"),
+            (ReasonCode::CompetingStableCores, "competing-stable-cores"),
+            (ReasonCode::HistoricalCoreAgedOut, "historical-core-aged-out"),
+        ] {
+            assert_eq!(spelled(reason), format!("\"{wire}\""));
         }
     }
 

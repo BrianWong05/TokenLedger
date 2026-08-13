@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
+import { estimate } from './limits.fixture';
 import {
   cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
   windowView,
@@ -17,6 +18,7 @@ function win(over: Partial<LimitWindow> = {}): LimitWindow {
     usedPct: 59,
     resetsAt: NOW + 4 * DAY,
     observedAt: NOW - 60,
+    estimate: estimate(),
     ...over,
   };
 }

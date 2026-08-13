@@ -323,7 +323,16 @@ fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecR
 /// date window and Source selection entirely.
 #[tauri::command(async)]
 fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
-    let mut cards = read(&state, queries::limits)?;
+    // One evaluation instant for the whole page, injected here: every window's
+    // estimate is answered as of the same second, and a storage fault or a
+    // broken invariant rejects the command rather than appearing as a state.
+    let evaluated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .map_err(|e| e.to_string())?;
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
+    let mut cards = queries::limits(&db, evaluated_at).map_err(|e| e.to_string())?;
+    drop(db);
     if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
         if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
             card.usage_resets_available = export.usage_resets_available;
