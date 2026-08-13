@@ -1174,7 +1174,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
         // Two requests at the same used_percent in the same epoch, then a third
-        // that advanced the fill: three observations, and the estimator needs the
+        // that advanced the fill: three Readings, and the estimator needs the
         // repeat as the anchor a post-gap run would start from.
         let window = |pct: &str, ts: &str| {
             limits_line(

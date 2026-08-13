@@ -1985,7 +1985,7 @@ mod tests {
 
         // Legacy provenance stays unknown on both sides: nothing about the
         // account, meter, Limit, scope, order, coverage, or external activity of
-        // a pre-migration observation is knowable, so nothing is synthesized.
+        // a pre-migration Reading is knowable, so nothing is synthesized.
         assert_eq!(stored_provenance(&conn, 900), ReadingProvenance::default());
         let account: Option<String> = conn
             .query_row(
