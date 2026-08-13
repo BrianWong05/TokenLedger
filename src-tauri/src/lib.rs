@@ -617,19 +617,31 @@ pub fn run() {
             // manual start; the hidden-start branch above covers login start;
             // this thread covers the long tail. Emits prices-rebuilt so a
             // visible Overview refreshes too.
+            // Every sixth tick also refreshes prices: daily catalog checks keep
+            // today's Codex Auto Review snapshot current without adding another
+            // timer thread. Past snapshots are immutable once their day closes.
             // ponytail: parked thread + 4h sleep, no timer framework needed.
             let handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
-                if scan_now(&handle).is_ok() {
-                    let _ = handle.emit("prices-rebuilt", ());
+            std::thread::spawn(move || {
+                let mut ticks = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
+                    if scan_now(&handle).is_ok() {
+                        let _ = handle.emit("prices-rebuilt", ());
+                    }
+                    ticks += 1;
+                    if ticks == 6 {
+                        refresh_catalogs(&handle);
+                        ticks = 0;
+                    }
                 }
             });
 
             // Refresh both price catalogs off the main thread; each loader falls
             // back to its cached snapshot on a fetch failure (LiteLLM then to its
             // bundled copy, OpenRouter to None — ADR-0009). Scans re-run this same
-            // routine whenever they surface a Model no catalog covers.
+            // routine whenever they surface a Model no catalog covers, and the
+            // resident cadence above re-runs it daily.
             let handle = app.handle().clone();
             std::thread::spawn(move || refresh_catalogs(&handle));
             Ok(())

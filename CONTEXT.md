@@ -332,7 +332,10 @@ would have cost at pay-as-you-go API rates. It is not money that was billed:
 every Source here is subscription, free-tier, or self-hosted, so TokenLedger
 never sees a real invoice. Surfaced in the UI as "Est. cost". A window holding
 no tokens at all has a Cost of zero — $0.00 on every surface, the one zero that
-is a figure rather than a gap, and the opposite of Unpriced.
+is a figure rather than a gap, and the opposite of Unpriced. Codex Auto Review
+uses the resolved rate captured for each local calendar day, so a later price
+change never rewrites a closed day's Cost. If an earlier day was Unpriced, the
+first later price found is used as that day's assumption and then stays fixed.
 _Avoid_: Spend, actual cost, bill
 
 **Display Currency**:

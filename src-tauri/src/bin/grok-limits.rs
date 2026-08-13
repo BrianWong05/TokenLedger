@@ -106,6 +106,7 @@ fn run() -> Result<String, String> {
         // remote settings, so the live plan label costs a second call. Non-fatal:
         // a card with no pill beats a failed check.
         plan: plan(base, &access_token, credential.user_id.as_deref()),
+        usage_resets_available: None,
         windows,
     };
 

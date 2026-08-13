@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V15 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V16 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 14;
+const CURRENT_USER_VERSION: i64 = 15;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -330,6 +330,25 @@ CREATE TABLE IF NOT EXISTS limit_readings (
 DELETE FROM scanned_files;
 PRAGMA user_version = 14;";
 
+// v15: daily resolved-price snapshots for Codex Auto Review. The live `prices`
+// table still drives today's Pricing tab, while this tiny history keeps a past
+// day's Cost fixed after that day closes. `priced = 0` records a real Unpriced
+// observation, so the first later priced snapshot can backfill it once and then
+// remain stable. No scan-state clear: rates are independent of Source Artifacts.
+const SCHEMA_V15: &str = "\
+CREATE TABLE IF NOT EXISTS model_price_history (
+  model                  TEXT NOT NULL,
+  day                    TEXT NOT NULL,
+  priced                 INTEGER NOT NULL,
+  input_per_tok          REAL NOT NULL DEFAULT 0,
+  output_per_tok         REAL NOT NULL DEFAULT 0,
+  cache_read_per_tok     REAL NOT NULL DEFAULT 0,
+  cache_write_5m_per_tok REAL NOT NULL DEFAULT 0,
+  cache_write_1h_per_tok REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (model, day)
+);
+PRAGMA user_version = 15;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -558,6 +577,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 14 {
             conn.execute_batch(SCHEMA_V14)?;
+        }
+        if version < 15 {
+            conn.execute_batch(SCHEMA_V15)?;
         }
         Ok(())
     };
@@ -1154,7 +1176,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, CURRENT_USER_VERSION);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "limit_readings"] {
+        for table in ["events", "scanned_files", "prices", "price_overrides", "model_price_history", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "limit_readings"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -1381,7 +1403,7 @@ mod tests {
 
         let mut conn = open_db(&path).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 14);
+        assert_eq!(v, CURRENT_USER_VERSION);
         // Scan state cleared, so the next scan re-parses every log once and Codex
         // limit history back-fills retroactively.
         let files: i64 = conn
@@ -1425,6 +1447,41 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
             .unwrap();
         assert_eq!(kept, 3);
+    }
+
+    #[test]
+    fn v14_db_migrates_to_daily_price_history_without_clearing_scan_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, CURRENT_USER_VERSION);
+        let history_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_price_history'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_exists, 1);
+        let files: i64 = conn.query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(files, 1, "price history must not force a Source Artifact re-scan");
     }
 
     #[test]

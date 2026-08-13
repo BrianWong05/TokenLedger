@@ -154,17 +154,15 @@ struct CostContribution {
 fn cost_contribution(
     rates: &RateMap,
     model: Option<&str>,
-    input: i64,
-    output: i64,
-    cache_read: i64,
-    cache_write_5m: i64,
-    cache_write_1h: i64,
+    day: &str,
+    tokens: [i64; 5],
 ) -> CostContribution {
+    let [input, output, cache_read, cache_write_5m, cache_write_1h] = tokens;
     let tokens = input + output + cache_read + cache_write_5m + cache_write_1h;
     let Some(model) = model else {
         return CostContribution { unattributed_tokens: tokens, ..Default::default() };
     };
-    let Some(model_rates) = rates.resolve(model) else {
+    let Some(model_rates) = rates.resolve_at(model, day) else {
         return CostContribution { unpriced: tokens > 0, ..Default::default() };
     };
     CostContribution {
@@ -184,17 +182,17 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     // scan paying a fat string key per row. breakdown() reaches the opposite
     // verdict because its group key is already wide; see that comment.
     let sql = format!(
-        "SELECT model, \
+        "SELECT tokenledger_local_bucket(timestamp, 0) AS price_day, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls) \
-         FROM events {where_sql} GROUP BY model"
+         FROM events {where_sql} GROUP BY price_day, model"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
-            r.get::<_, Option<String>>(0)?,
-            r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?,
-            r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
+            r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?,
+            r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
         ))
     })?;
 
@@ -207,14 +205,19 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     let mut cache_estimated_models: Vec<String> = Vec::new();
 
     for row in rows {
-        let (model, in_, out, cr, w5, w1, calls) = row?;
+        let (day, model, in_, out, cr, w5, w1, calls) = row?;
         input += in_;
         output += out;
         cache_read += cr;
         cw5m += w5;
         cw1h += w1;
         requests += calls;
-        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
+        let contribution = cost_contribution(
+            &rates,
+            model.as_deref(),
+            &day,
+            [in_, out, cr, w5, w1],
+        );
         cost += contribution.cost;
         priced_tokens += contribution.priced_tokens;
         unattributed_tokens += contribution.unattributed_tokens;
@@ -226,6 +229,10 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
             }
         }
     }
+    unpriced_models.sort();
+    unpriced_models.dedup();
+    cache_estimated_models.sort();
+    cache_estimated_models.dedup();
 
     // Distinct Sessions over the whole window. `source || ':' || session_id`
     // keeps two Sources that happen to reuse an id apart, and SQLite's
@@ -292,7 +299,12 @@ pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<V
     for row in rows {
         let (bucket, model, in_, out, cr, w5, w1) = row?;
         let tokens = in_ + out + cr + w5 + w1;
-        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
+        let contribution = cost_contribution(
+            &rates,
+            model.as_deref(),
+            price_day(&bucket),
+            [in_, out, cr, w5, w1],
+        );
         let i = *idx.entry(bucket.clone()).or_insert_with(|| {
             points.push(TrendPoint {
                 bucket: bucket.clone(),
@@ -377,6 +389,10 @@ fn hourly_flag(bucket: &str) -> i32 {
     i32::from(bucket == "hour")
 }
 
+fn price_day(bucket: &str) -> &str {
+    bucket.get(..10).unwrap_or(bucket)
+}
+
 // Per-(bucket, source) series — the real-data twin of the frontend mock's DAYS.
 pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<SeriesPoint>> {
     let hourly = hourly_flag(bucket);
@@ -410,7 +426,12 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
         let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning,
              cxm, cxs, cxr, cxt, cxa, cxmc, cxsk) = row?;
         let tokens = in_ + out + cr + w5 + w1;
-        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
+        let contribution = cost_contribution(
+            &rates,
+            model.as_deref(),
+            price_day(&bucket),
+            [in_, out, cr, w5, w1],
+        );
         // Clone into the map key like trend(); avoid moving (bucket, source) before push.
         let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
             points.push(SeriesPoint {
@@ -518,18 +539,20 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     // GROUP BY grp, src, model query produced.
     let sql = format!(
         "SELECT {group_col} AS grp, {src_expr} AS src, model, session_id, \
+         tokenledger_local_bucket(timestamp, 0) AS price_day, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
-         FROM events {where_sql} GROUP BY grp, src, model, session_id"
+         FROM events {where_sql} GROUP BY grp, src, model, session_id, price_day"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
         Ok((
             r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?,
             r.get::<_, Option<String>>(3)?,
-            r.get::<_, i64>(4)?, r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
-            r.get::<_, i64>(7)?, r.get::<_, i64>(8)?, r.get::<_, i64>(9)?,
-            r.get::<_, Option<i64>>(10)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, i64>(5)?, r.get::<_, i64>(6)?, r.get::<_, i64>(7)?,
+            r.get::<_, i64>(8)?, r.get::<_, i64>(9)?, r.get::<_, i64>(10)?,
+            r.get::<_, Option<i64>>(11)?,
         ))
     })?;
 
@@ -542,20 +565,20 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     };
     // BTreeMap so each (grp, src) group's pricing runs over its models in the
     // same sorted order the old GROUP BY emitted them.
-    type Key3 = (Option<String>, Option<String>, Option<String>);
-    let mut subs: std::collections::BTreeMap<Key3, ([i64; 6], Option<i64>)> = Default::default();
+    type Key4 = (Option<String>, Option<String>, Option<String>, String);
+    let mut subs: std::collections::BTreeMap<Key4, ([i64; 6], Option<i64>)> = Default::default();
     // Convs at the row's own grain (distinct sessions can span models); a row
     // with no session identity counts zero distinct, like the old
     // COUNT(DISTINCT session_id) pass.
     let mut sessions: std::collections::HashSet<(Option<String>, Option<String>, String)> =
         Default::default();
     for row in rows {
-        let (grp, src, model, session, in_, out, cr, w5, w1, calls, reasoning) = row?;
+        let (grp, src, model, session, day, in_, out, cr, w5, w1, calls, reasoning) = row?;
         let grp = group_key(grp);
         if let Some(session) = session {
             sessions.insert((grp.clone(), src.clone(), session));
         }
-        let (sums, r_acc) = subs.entry((grp, src, model)).or_default();
+        let (sums, r_acc) = subs.entry((grp, src, model, day)).or_default();
         sums[0] += in_;
         sums[1] += out;
         sums[2] += cr;
@@ -568,7 +591,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
     }
 
     let mut map: HashMap<(Option<String>, Option<String>), Agg> = HashMap::new();
-    for ((grp, src, model), ([in_, out, cr, w5, w1, calls], reasoning)) in subs {
+    for ((grp, src, model, day), ([in_, out, cr, w5, w1, calls], reasoning)) in subs {
         let a = map.entry((grp, src)).or_default();
         a.input += in_;
         a.output += out;
@@ -579,7 +602,12 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         if let Some(r) = reasoning {
             a.reasoning = Some(a.reasoning.unwrap_or(0) + r);
         }
-        let contribution = cost_contribution(&rates, model.as_deref(), in_, out, cr, w5, w1);
+        let contribution = cost_contribution(
+            &rates,
+            model.as_deref(),
+            &day,
+            [in_, out, cr, w5, w1],
+        );
         a.cost += contribution.cost;
         a.priced += contribution.priced_tokens;
         a.cache_estimated |= contribution.cache_estimated;
@@ -1029,6 +1057,49 @@ mod tests {
         assert_eq!(s.unpriced_models, vec!["hermes-local".to_string()]);
         assert_eq!(s.unattributed_tokens, 0, "current Sources attribute every Usage Record to a Model");
         approx(s.cache_hit_rate, 200.0 / 3650.0); // cr / (input + cr + cache_write)
+    }
+
+    #[test]
+    fn auto_review_cost_uses_each_days_frozen_price_on_every_surface() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_events(
+            &mut conn,
+            &[
+                ev("review-1", "codex", DAY1_TS, "codex-auto-review", Some("/p"), 1, 100, 0, 0, 0, 0),
+                ev("review-2", "codex", DAY2_TS, "codex-auto-review", Some("/p"), 1, 100, 0, 0, 0, 0),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, catalog) \
+             VALUES ('codex-auto-review', 0.000009, 0, 'litellm')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO model_price_history (model, day, priced, input_per_tok) \
+             VALUES ('codex-auto-review', '2026-07-01', 1, 0.000001); \
+             INSERT INTO model_price_history (model, day, priced, input_per_tok) \
+             VALUES ('codex-auto-review', '2026-07-02', 1, 0.000002);",
+        )
+        .unwrap();
+
+        approx(summary(&conn, &Filters::default()).unwrap().cost.unwrap(), 0.0003);
+
+        let trend_rows = trend(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(trend_rows.len(), 2);
+        approx(trend_rows[0].cost, 0.0001);
+        approx(trend_rows[1].cost, 0.0002);
+
+        let series_rows = series(&conn, &Filters::default(), "day").unwrap();
+        assert_eq!(series_rows.len(), 2);
+        approx(series_rows[0].cost, 0.0001);
+        approx(series_rows[1].cost, 0.0002);
+
+        let model_rows = breakdown(&conn, "model", &Filters::default()).unwrap();
+        assert_eq!(model_rows.len(), 1);
+        approx(model_rows[0].cost.unwrap(), 0.0003);
     }
 
     // The two zeroes a window can hold, kept apart: nothing recorded costs

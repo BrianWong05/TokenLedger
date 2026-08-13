@@ -67,6 +67,8 @@ const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/models";
 /// tab renders (see the frontend's originLabel).
 const CATALOG_LITELLM: &str = "litellm";
 const CATALOG_OPENROUTER: &str = "openrouter";
+const CODEX_AUTO_REVIEW_MODEL: &str = "codex-auto-review";
+const CODEX_AUTO_REVIEW_FALLBACK_MODEL: &str = "gpt-5.6-luna";
 
 /// How much a stored row is worth believing — **lower is better**, so this is a
 /// rank, not ADR-0009's tier numbering. A publisher's own rate is the Model's
@@ -490,6 +492,7 @@ pub fn rebuild_prices(
         write_price_row(&tx, &normalize_model(model), row, CATALOG_OPENROUTER)
             .map_err(|e| e.to_string())?;
     }
+    snapshot_auto_review_price(&tx).map_err(|e| e.to_string())?;
     let count: u64 = tx
         .query_row("SELECT COUNT(*) FROM prices", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
@@ -794,6 +797,9 @@ pub fn set_override(conn: &Connection, model: &str, rates: OverrideRates) -> rus
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![model, rates.input, rates.output, rates.cache_read, rates.cache_write],
     )?;
+    if model == CODEX_AUTO_REVIEW_MODEL {
+        snapshot_auto_review_price(conn)?;
+    }
     Ok(())
 }
 
@@ -802,6 +808,9 @@ pub fn delete_override(conn: &Connection, model: &str) -> rusqlite::Result<()> {
         "DELETE FROM price_overrides WHERE model = ?1",
         rusqlite::params![model],
     )?;
+    if model == CODEX_AUTO_REVIEW_MODEL {
+        snapshot_auto_review_price(conn)?;
+    }
     Ok(())
 }
 
@@ -809,6 +818,7 @@ pub struct RateMap {
     /// Model key -> (originating catalog, rates).
     prices: HashMap<String, (String, Rates)>,
     overrides: HashMap<String, Rates>,
+    auto_review_history: Vec<(String, Option<Rates>)>,
 }
 
 impl RateMap {
@@ -863,7 +873,28 @@ impl RateMap {
             overrides.insert(m, rt);
         }
 
-        Ok(RateMap { prices, overrides })
+        let mut auto_review_history = Vec::new();
+        let mut stmt3 = conn.prepare(
+            "SELECT day, priced, input_per_tok, output_per_tok, cache_read_per_tok, \
+             cache_write_5m_per_tok, cache_write_1h_per_tok \
+             FROM model_price_history WHERE model = ?1 ORDER BY day",
+        )?;
+        let hrows = stmt3.query_map([CODEX_AUTO_REVIEW_MODEL], |r| {
+            let priced = r.get::<_, i64>(1)? != 0;
+            let rates = Rates {
+                input: r.get(2)?,
+                output: r.get(3)?,
+                cache_read: r.get(4)?,
+                cache_write_5m: r.get(5)?,
+                cache_write_1h: r.get(6)?,
+            };
+            Ok((r.get::<_, String>(0)?, priced.then_some(rates)))
+        })?;
+        for row in hrows {
+            auto_review_history.push(row?);
+        }
+
+        Ok(RateMap { prices, overrides, auto_review_history })
     }
 
     /// override (raw name) -> exact price (raw name) -> normalized price. None = unpriced.
@@ -872,6 +903,27 @@ impl RateMap {
             return Some(*r);
         }
         self.resolve_catalog(raw_model).map(|(_, r)| r)
+    }
+
+    /// Resolve Codex Auto Review at the rate captured for `day`. A past
+    /// Unpriced observation takes the first later priced snapshot — today's
+    /// resolved Model assumption — and that snapshot is materialized onto the
+    /// earlier row so later price changes cannot rewrite the backfilled day.
+    pub fn resolve_at(&self, raw_model: &str, day: &str) -> Option<Rates> {
+        if raw_model != CODEX_AUTO_REVIEW_MODEL || self.auto_review_history.is_empty() {
+            return self.resolve(raw_model);
+        }
+
+        let mut prior: Option<Option<Rates>> = None;
+        let mut first_later_price = None;
+        for (snapshot_day, rates) in &self.auto_review_history {
+            if snapshot_day.as_str() <= day {
+                prior = Some(*rates);
+            } else if first_later_price.is_none() {
+                first_later_price = *rates;
+            }
+        }
+        prior.flatten().or(first_later_price)
     }
 
     /// The catalog tier of `resolve`, ignoring overrides.
@@ -889,10 +941,59 @@ impl RateMap {
             // Ties go to the exact key: same source, more specific match.
             (Some(e), Some(n)) if source_rank(&n.0) < source_rank(&e.0) => n,
             (Some(e), _) => e,
-            (None, n) => n?,
+            (None, Some(n)) => n,
+            (None, None) if raw_model == CODEX_AUTO_REVIEW_MODEL => {
+                return self.resolve_catalog(CODEX_AUTO_REVIEW_FALLBACK_MODEL);
+            }
+            (None, None) => return None,
         };
         Some((best.0.as_str(), best.1))
     }
+}
+
+fn snapshot_auto_review_price_for_day(conn: &Connection, day: &str) -> rusqlite::Result<()> {
+    let current = RateMap::load(conn)?.resolve(CODEX_AUTO_REVIEW_MODEL);
+    let (priced, rates) = current.map_or((0, Rates::default()), |rates| (1, rates));
+    if priced != 0 {
+        conn.execute(
+            "UPDATE model_price_history SET priced = 1, input_per_tok = ?1, \
+             output_per_tok = ?2, cache_read_per_tok = ?3, cache_write_5m_per_tok = ?4, \
+             cache_write_1h_per_tok = ?5 WHERE model = ?6 AND day < ?7 AND priced = 0",
+            rusqlite::params![
+                rates.input,
+                rates.output,
+                rates.cache_read,
+                rates.cache_write_5m,
+                rates.cache_write_1h,
+                CODEX_AUTO_REVIEW_MODEL,
+                day,
+            ],
+        )?;
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO model_price_history \
+         (model, day, priced, input_per_tok, output_per_tok, cache_read_per_tok, \
+          cache_write_5m_per_tok, cache_write_1h_per_tok) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            CODEX_AUTO_REVIEW_MODEL,
+            day,
+            priced,
+            rates.input,
+            rates.output,
+            rates.cache_read,
+            rates.cache_write_5m,
+            rates.cache_write_1h,
+        ],
+    )?;
+    Ok(())
+}
+
+fn snapshot_auto_review_price(conn: &Connection) -> rusqlite::Result<()> {
+    snapshot_auto_review_price_for_day(
+        conn,
+        &chrono::Local::now().format("%Y-%m-%d").to_string(),
+    )
 }
 
 /// Raw Overrides straight from price_overrides (nulls preserved, unlike
@@ -1118,6 +1219,63 @@ mod tests {
         rebuild_prices(&mut conn, FIXTURE, None, &[]).unwrap();
         let rm = RateMap::load(&conn).unwrap();
         assert_eq!(rm.resolve("totally-unknown-model"), None);
+    }
+
+    #[test]
+    fn auto_review_backfills_unpriced_history_once_then_freezes_it() {
+        let (_d, conn) = test_conn();
+        snapshot_auto_review_price_for_day(&conn, "2026-08-10").unwrap();
+
+        conn.execute(
+            "INSERT INTO price_overrides (model, input_per_tok, output_per_tok) \
+             VALUES ('codex-auto-review', 0.000001, 0.000006)",
+            [],
+        )
+        .unwrap();
+        snapshot_auto_review_price_for_day(&conn, "2026-08-11").unwrap();
+
+        conn.execute(
+            "UPDATE price_overrides SET input_per_tok = 0.000002, output_per_tok = 0.000012 \
+             WHERE model = 'codex-auto-review'",
+            [],
+        )
+        .unwrap();
+        snapshot_auto_review_price_for_day(&conn, "2026-08-11").unwrap();
+
+        let rates = RateMap::load(&conn).unwrap();
+        assert_eq!(rates.resolve_at(CODEX_AUTO_REVIEW_MODEL, "2026-08-10").unwrap().input, 0.000001);
+        assert_eq!(rates.resolve_at(CODEX_AUTO_REVIEW_MODEL, "2026-08-11").unwrap().input, 0.000002);
+
+        conn.execute(
+            "DELETE FROM price_overrides WHERE model = 'codex-auto-review'",
+            [],
+        )
+        .unwrap();
+        snapshot_auto_review_price_for_day(&conn, "2026-08-11").unwrap();
+
+        let rates = RateMap::load(&conn).unwrap();
+        assert_eq!(rates.resolve_at(CODEX_AUTO_REVIEW_MODEL, "2026-08-10").unwrap().input, 0.000001);
+        assert_eq!(rates.resolve_at(CODEX_AUTO_REVIEW_MODEL, "2026-08-11"), None);
+    }
+
+    #[test]
+    fn auto_review_snapshots_the_underlying_model_price() {
+        let (_d, conn) = test_conn();
+        conn.execute(
+            "INSERT INTO prices (model, input_per_tok, output_per_tok, cache_read_per_tok, \
+             cache_write_5m_per_tok, cache_write_1h_per_tok, catalog) \
+             VALUES ('gpt-5.6-luna', 0.000001, 0.000006, 0.0000001, 0.0, 0.0, 'litellm')",
+            [],
+        )
+        .unwrap();
+
+        let rates = RateMap::load(&conn).unwrap();
+        assert_eq!(rates.resolve(CODEX_AUTO_REVIEW_MODEL).unwrap().input, 0.000001);
+
+        snapshot_auto_review_price_for_day(&conn, "2026-08-13").unwrap();
+
+        let rates = RateMap::load(&conn).unwrap();
+        assert_eq!(rates.resolve_at(CODEX_AUTO_REVIEW_MODEL, "2026-08-13").unwrap().input, 0.000001);
     }
 
     #[test]
