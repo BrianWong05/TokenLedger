@@ -326,7 +326,7 @@ describe('card states', () => {
 
     const second = await remount(port, NOW_MS + 30_000);
     const trouble = cardFor(second, 'Claude').querySelector('.tl-lim-trouble')!;
-    expect(checks).toBe(4);
+    expect(checks).toBe(LIVE_SOURCES.length);
     expect(trouble.querySelector('.title')?.textContent).toBe("Couldn't check");
     expect(trouble.querySelector('.hint')?.textContent).toBe('could not reach the vendor: timed out');
     // The failure is remembered per Source, so the three that answered thirty
