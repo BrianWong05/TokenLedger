@@ -809,8 +809,9 @@ describe('Export', () => {
   // once as the provisional pre-scan paint and once as the post-scan
   // reconcile. Resolving those two Profile calls lets both series land (which
   // is what ends `loading`); every summary still held after that is a window
-  // Summary — the provisional reload's, superseded and discarded, and the
-  // reconcile's, which is the one whose landing enables Export.
+  // Summary — the provisional reload's, which paints but is still owed a
+  // reconcile, and the reconcile's, which is the one whose landing enables
+  // Export.
   it('withholds Export until the window\'s Summary has landed', async () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
     ledger.hold('summary');
@@ -828,7 +829,7 @@ describe('Export', () => {
     // (resolved above) and two window Summaries. A fifth appearing here means
     // boot grew another fetch pass; this line is where that regression fails.
     expect(ledger.held('summary').length).toBe(4);
-    ledger.resolveHeld('summary', 2); // provisional reload's Summary — superseded, discarded
+    ledger.resolveHeld('summary', 2); // provisional reload's Summary — paints, still behind
     ledger.resolveHeld('summary', 3); // reconcile's Summary — the one that lands
     await settle();
     expect(exportBtn().disabled).toBe(false);

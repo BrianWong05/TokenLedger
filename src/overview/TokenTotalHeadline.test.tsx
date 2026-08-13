@@ -22,7 +22,7 @@ const RANGE_SWITCHES = RANGE_WINDOWS.flatMap((from) =>
   RANGE_WINDOWS.filter((to) => to !== from).map((to) => [from, to] as const),
 );
 
-function mountHeadline(total: number, summaryReady: boolean, initialWindowKey = 'day::') {
+function mountHeadline(total: number, authoritative: boolean, initialWindowKey = 'day::') {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -32,7 +32,7 @@ function mountHeadline(total: number, summaryReady: boolean, initialWindowKey = 
   // visible false is another tab showing over a still-mounted Overview.
   const rerender = (
     nextTotal: number,
-    nextSummaryReady: boolean,
+    nextAuthoritative: boolean,
     windowKey = 'day::',
     visible = true,
   ) => {
@@ -40,14 +40,14 @@ function mountHeadline(total: number, summaryReady: boolean, initialWindowKey = 
       root.render(
         <TokenTotalHeadline
           total={nextTotal}
-          summaryReady={nextSummaryReady}
+          authoritative={nextAuthoritative}
           windowKey={windowKey}
           visible={visible}
         />,
       ),
     );
   };
-  rerender(total, summaryReady, initialWindowKey);
+  rerender(total, authoritative, initialWindowKey);
   return { button: container.querySelector('button')!, rerender };
 }
 
@@ -216,7 +216,7 @@ describe('TokenTotalHeadline', () => {
 
   it('leaves a still-owed entrance to play on the first Overview return', () => {
     vi.useFakeTimers();
-    // summaryReady false: the entrance has not played, so it still owes its own
+    // authoritative false: the entrance has not played, so it still owes its own
     // zero-shaped motion and the return must not pre-empt it.
     const { button, rerender } = mountHeadline(4_500_000_000, false);
     rerender(4_500_000_000, false, 'day::', false);

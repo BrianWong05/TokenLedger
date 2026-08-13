@@ -238,6 +238,82 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().reloading).toBe(false);
   });
 
+  // Boot supersedes its own first window reload: the post-scan reconcile bumps
+  // the epoch in the microtask right after the paint, so the reload's ten
+  // queries were always issued and always discarded — leaving the headline
+  // zero-shaped and the cost '…' until the SECOND fan-out landed (a third, from
+  // prices-rebuilt, could supersede that one too). The figures were already
+  // paid for; nothing may sit on a placeholder while a response is in hand.
+  it('a superseded launch reload still paints, marked as behind', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock });
+    const refreshing = store.refresh();
+    await flush();
+
+    ledger.hold('summary');
+    clock.advance(0); // the provisional window reload fires; its Summary is held
+    await flush();
+    expect(store.getSnapshot().summary).toBeNull();
+
+    // The scan settles: the reconcile bumps the epoch, superseding that reload.
+    ledger.resolveHeld('scan', 0);
+    await flush();
+    expect(store.getSnapshot().summary).toBeNull();
+
+    // Now it answers. Painting it is what keeps the launch off placeholders.
+    ledger.resolveHeld('summary', 0); // the provisional window Summary
+    await flush();
+    expect(store.getSnapshot().summary).not.toBeNull();
+    // Honest about being pre-scan: window-scoped figures are still owed.
+    expect(store.getSnapshot().reloading).toBe(true);
+
+    // The reconcile lands over it and clears the flag.
+    ledger.resolveHeld('summary', 1); // reconcile Profile count
+    await refreshing;
+    clock.advance(0);
+    await flush();
+    ledger.resolveHeld('summary', 2); // reconcile window Summary
+    await flush();
+    expect(store.getSnapshot().reloading).toBe(false);
+  });
+
+  // #14 spends the entrance reel on the first *authoritative* nonzero total.
+  // The launch paint is not that: the reconcile may correct it, and #12 story 9
+  // holds a same-window correction still — so a reel rolled on the provisional
+  // figure would leave the settled one to arrive with no motion. The post-scan
+  // series is what earns the flag, so the reveal waits one query pair rather
+  // than the ten-query window fan-out behind it.
+  it('withholds the entrance until the figure descends from a settled scan', async () => {
+    const clock = fakeClock();
+    // Two days, so the Total window is not a single day: a one-day window is
+    // hourly, and the hourly series it would read is not seeded here.
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ totalTokens: 500 }), pt({ bucket: '2026-07-15', totalTokens: 500 })],
+    });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock });
+    const refreshing = store.refresh();
+    await flush();
+    clock.advance(0);
+    await flush();
+
+    // Figures on screen, but pre-scan: a nonzero total the reel could roll, and
+    // a Summary for the cost line — yet the entrance stays owed.
+    const painted = store.getSnapshot();
+    expect(painted.summary).not.toBeNull();
+    expect(selectView(painted, NOW).total).toBeGreaterThan(0);
+    expect(selectView(painted, NOW).headline.authoritative).toBe(false);
+
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+    clock.advance(0);
+    await flush();
+    // The post-scan series has landed: the reel may roll this one.
+    expect(selectView(store.getSnapshot(), NOW).headline.authoritative).toBe(true);
+  });
+
   it('a window fetched during the launch scan is refetched after it, not replayed', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
