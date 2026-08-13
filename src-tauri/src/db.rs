@@ -1,5 +1,5 @@
 use crate::adapters::ctx::Composition;
-use crate::types::{FileState, LimitReading, UsageEvent};
+use crate::types::{FileState, LimitReading, ModelScope, UsageEvent};
 use chrono::{DateTime, Local, LocalResult, TimeZone, Utc};
 use rusqlite::functions::FunctionFlags;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V17 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V18 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 17;
+const CURRENT_USER_VERSION: i64 = 18;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -372,6 +372,103 @@ SET model = 'deepseek-v4-flash'
 WHERE source = 'qoder' AND model = 'dfmodel';
 PRAGMA user_version = 17;";
 
+// v18: the provenance a Limit Reading needs before it can be *evidence* for a
+// Limit Token Estimate (spec: "Evidence participation contract", "Migration and
+// backfill"). Two changes, both additive to what the Limits page already draws.
+//
+// 1. A Reading's identity widens to the observation itself. V14 keyed it by
+//    content — (source, window_key, resets_at, used_pct) — which collapsed every
+//    later observation at an unchanged percentage onto the row already there,
+//    including one a gap later that the estimator needs as its next anchor.
+//    `observed_at` joins the key: it comes from the Artifact, not the clock, so
+//    re-ingesting one source observation still lands on the stored row, while a
+//    genuinely later equal-percentage observation keeps its own. SQLite cannot
+//    widen a key in place, so the table is rebuilt and every row copied.
+// 2. Seven nullable provenance columns carry the facts the contract requires
+//    beyond the figures: account identity, metering regime, Limit identity,
+//    Model scope, source order, completeness coverage, and external activity.
+//    Nothing repeats what a Reading already stores — `source`, `plan` and
+//    `resets_at` are the Source, plan identity and reset epoch themselves.
+//    ponytail: the provenance stays OUT of the key. A nullable column in a
+//    rowid table's key would defeat the dedup it is meant to sharpen, because
+//    SQLite counts every NULL as distinct — so until a Source proves an account,
+//    each re-ingestion would insert again. The ceiling: two accounts observed in
+//    the same second, at the same percentage, in the same reset second collapse
+//    to one row. Key the account too (with '' for unknown, or a COALESCE unique
+//    index) if a Source ever reads two accounts at once.
+//
+// Legacy rows keep unknown provenance, and NULL is unknown rather than a
+// wildcard, so no stored history can accidentally match estimator evidence.
+// scanned_files is deliberately NOT cleared, against the pattern of V2-V5/V12/
+// V14: re-parsing today's Artifacts cannot prove an old interval's account or
+// completeness (spec hard rule), so Claude and Codex cold-start instead.
+// The widened key is itself the range index the evidence query needs — its
+// (source, window_key, resets_at, observed_at) prefix — so limit_readings gains
+// no second index; events gains the one Usage membership needs, by Source,
+// account and time with the raw Model along for scoped filtering. No estimate,
+// materialisation, or history table: an estimate is derived (ADR-0024).
+// Re-running this batch is safe, the established rule here: the new columns are
+// added beforehand by add_column (SQLite has no ADD COLUMN IF NOT EXISTS), so a
+// second pass copies an already-migrated table onto itself with every column,
+// provenance included. An intermediate dev build cannot eat evidence.
+const SCHEMA_V18: &str = "\
+CREATE TABLE limit_readings_v18 (
+  source            TEXT NOT NULL,
+  window_key        TEXT NOT NULL,
+  window_minutes    INTEGER,
+  used_pct          REAL NOT NULL,
+  resets_at         INTEGER NOT NULL,
+  observed_at       INTEGER NOT NULL,
+  via               TEXT NOT NULL,
+  plan              TEXT,
+  account_id        TEXT,
+  meter             TEXT,
+  limit_id          TEXT,
+  model_scope       TEXT,
+  source_seq        INTEGER,
+  covered_from      INTEGER,
+  external_activity TEXT,
+  PRIMARY KEY (source, window_key, resets_at, observed_at, used_pct)
+);
+INSERT INTO limit_readings_v18
+  (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan,
+   account_id, meter, limit_id, model_scope, source_seq, covered_from, external_activity)
+  SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan,
+         account_id, meter, limit_id, model_scope, source_seq, covered_from, external_activity
+  FROM limit_readings;
+DROP TABLE limit_readings;
+ALTER TABLE limit_readings_v18 RENAME TO limit_readings;
+CREATE INDEX IF NOT EXISTS idx_events_evidence
+  ON events(source, account_id, timestamp, model);
+PRAGMA user_version = 18;";
+
+/// The columns SCHEMA_V18 adds, `<table>`/`<column with its declaration>`.
+const V18_COLUMNS: [(&str, &str); 8] = [
+    ("limit_readings", "account_id TEXT"),
+    ("limit_readings", "meter TEXT"),
+    ("limit_readings", "limit_id TEXT"),
+    ("limit_readings", "model_scope TEXT"),
+    ("limit_readings", "source_seq INTEGER"),
+    ("limit_readings", "covered_from INTEGER"),
+    ("limit_readings", "external_activity TEXT"),
+    ("events", "account_id TEXT"),
+];
+
+/// `ALTER TABLE ... ADD COLUMN` with the `IF NOT EXISTS` SQLite has no syntax
+/// for, so a migration that carries new columns stays re-runnable.
+fn add_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<()> {
+    let name = column.split(' ').next().unwrap_or(column);
+    let present: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+        params![table, name],
+        |r| r.get(0),
+    )?;
+    if !present {
+        conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column}"))?;
+    }
+    Ok(())
+}
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -610,6 +707,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if version < 17 {
             conn.execute_batch(SCHEMA_V17)?;
         }
+        if version < 18 {
+            for (table, column) in V18_COLUMNS {
+                add_column(conn, table, column)?;
+            }
+            conn.execute_batch(SCHEMA_V18)?;
+        }
         Ok(())
     };
     match apply() {
@@ -695,24 +798,42 @@ fn set_wal(conn: &Connection) -> rusqlite::Result<()> {
     }
 }
 
-/// Append Limit Readings. The PK is the reading's content, so INSERT OR IGNORE
-/// is the whole dedup rule: a re-scan, a per-request repeat at an unchanged
-/// percentage, and a fork replay of the same block all land on the stored row.
-/// Returns the number of genuinely new rows.
+/// Append Limit Readings. The key is the observation itself — the reading's
+/// content plus `observed_at` — so a re-scan, a fork replay of the same block,
+/// and a Companion export read twice all land on the stored row, while a later
+/// observation at an unchanged percentage stays a Reading of its own.
+///
+/// Provenance and plan fill in on conflict: a pass that proves more than the
+/// stored row, or corrects its coverage, revises it in place, and one that proves
+/// nothing never erases what is already there. The Reading's own figures are
+/// never rewritten — they are what the identity is made of.
 pub fn insert_limit_readings(
     conn: &mut Connection,
     readings: &[LimitReading],
-) -> rusqlite::Result<u64> {
+) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
-    let mut inserted = 0u64;
     {
         let mut stmt = tx.prepare(
-            "INSERT OR IGNORE INTO limit_readings \
-             (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO limit_readings \
+             (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan, \
+              account_id, meter, limit_id, model_scope, source_seq, covered_from, \
+              external_activity) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+             ON CONFLICT(source, window_key, resets_at, observed_at, used_pct) DO UPDATE SET \
+               plan        = COALESCE(excluded.plan,        limit_readings.plan), \
+               account_id  = COALESCE(excluded.account_id,  limit_readings.account_id), \
+               meter       = COALESCE(excluded.meter,       limit_readings.meter), \
+               limit_id    = COALESCE(excluded.limit_id,    limit_readings.limit_id), \
+               model_scope = COALESCE(excluded.model_scope, limit_readings.model_scope), \
+               source_seq  = COALESCE(excluded.source_seq,  limit_readings.source_seq), \
+               covered_from      = COALESCE(excluded.covered_from, \
+                                            limit_readings.covered_from), \
+               external_activity = COALESCE(excluded.external_activity, \
+                                            limit_readings.external_activity)",
         )?;
         for r in readings {
-            inserted += stmt.execute(params![
+            let p = &r.provenance;
+            stmt.execute(params![
                 r.source,
                 r.window_key,
                 r.window_minutes,
@@ -721,11 +842,17 @@ pub fn insert_limit_readings(
                 r.observed_at,
                 r.via,
                 r.plan,
-            ])? as u64;
+                p.account_id,
+                p.meter,
+                p.limit_id,
+                p.model_scope.as_ref().map(ModelScope::stored),
+                p.source_seq,
+                p.covered_from,
+                p.external_activity,
+            ])?;
         }
     }
-    tx.commit()?;
-    Ok(inserted)
+    tx.commit()
 }
 
 pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::Result<u64> {
@@ -1157,6 +1284,7 @@ pub fn load_unreadable(conn: &Connection) -> Vec<crate::types::SourceUnreadable>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ReadingProvenance;
 
     // GOLDEN: the three write statements are the spec of the write grammar. These
     // literals were captured verbatim from the pre-refactor constants; the
@@ -1482,7 +1610,7 @@ mod tests {
             .unwrap();
         assert_eq!(input, 10);
 
-        // The table exists and its PK is the reading's content.
+        // The table exists and its key is the reading's own observation.
         let reading = |used_pct: f64, resets_at: i64| LimitReading {
             source: "codex".to_string(),
             window_key: "w10080".to_string(),
@@ -1492,15 +1620,14 @@ mod tests {
             observed_at: 1_786_331_779,
             via: "logs".to_string(),
             plan: Some("plus".to_string()),
+            provenance: ReadingProvenance::default(),
         };
+        insert_limit_readings(&mut conn, &[reading(40.0, 100), reading(40.0, 100)]).unwrap();
+        assert_eq!(stored_readings(&conn), 1, "one observation twice is one row");
+        insert_limit_readings(&mut conn, &[reading(41.0, 100), reading(40.0, 200)]).unwrap();
         assert_eq!(
-            insert_limit_readings(&mut conn, &[reading(40.0, 100), reading(40.0, 100)]).unwrap(),
-            1,
-            "identical content is one row",
-        );
-        assert_eq!(
-            insert_limit_readings(&mut conn, &[reading(41.0, 100), reading(40.0, 200)]).unwrap(),
-            2,
+            stored_readings(&conn),
+            3,
             "a new percentage and a new epoch are each their own row",
         );
 
@@ -1676,6 +1803,309 @@ mod tests {
         assert_eq!(qoder_legacy, "deepseek-v4-flash");
         assert_eq!(qoder_known, "qwen3.8-max");
         assert_eq!(other_source, "dfmodel", "migration is scoped to Qoder");
+    }
+
+    fn stored_readings(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn stored_provenance(conn: &Connection, observed_at: i64) -> ReadingProvenance {
+        conn.query_row(
+            "SELECT account_id, meter, limit_id, model_scope, source_seq, covered_from, \
+             external_activity FROM limit_readings WHERE observed_at = ?1",
+            [observed_at],
+            |r| {
+                Ok(ReadingProvenance {
+                    account_id: r.get(0)?,
+                    meter: r.get(1)?,
+                    limit_id: r.get(2)?,
+                    model_scope: r
+                        .get::<_, Option<String>>(3)?
+                        .and_then(|s| ModelScope::parse(&s)),
+                    source_seq: r.get(4)?,
+                    covered_from: r.get(5)?,
+                    external_activity: r.get(6)?,
+                })
+            },
+        )
+        .unwrap()
+    }
+
+    /// A Codex Reading of the 7-day window, observed at `observed_at`.
+    fn evidence_reading(used_pct: f64, observed_at: i64) -> LimitReading {
+        LimitReading {
+            source: "codex".to_string(),
+            window_key: "w10080".to_string(),
+            window_minutes: Some(10080),
+            used_pct,
+            resets_at: 1_786_879_486,
+            observed_at,
+            via: "logs".to_string(),
+            plan: Some("plus".to_string()),
+            provenance: ReadingProvenance::default(),
+        }
+    }
+
+    #[test]
+    fn v17_db_migrates_to_v18_adding_evidence_provenance_without_a_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO limit_readings \
+                 (source, window_key, window_minutes, used_pct, resets_at, observed_at, via, plan) \
+                 VALUES ('codex','w10080',10080,40.0,1000,900,'logs','plus')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, source_file) \
+                 VALUES ('codex:legacy','codex',1,'gpt-5.4','rollout.jsonl')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) \
+                 VALUES ('rollout.jsonl',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, CURRENT_USER_VERSION);
+
+        // The stored Reading survives the rebuild verbatim, and the Limits page
+        // still draws it.
+        let kept: (String, String, Option<i64>, f64, i64, i64, String, Option<String>) = conn
+            .query_row(
+                "SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, \
+                 via, plan FROM limit_readings",
+                [],
+                |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                "codex".to_string(),
+                "w10080".to_string(),
+                Some(10080),
+                40.0,
+                1000,
+                900,
+                "logs".to_string(),
+                Some("plus".to_string()),
+            ),
+        );
+        let cards = crate::queries::limits(&conn).unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].windows[0].used_pct, 40.0);
+        assert_eq!(cards[0].plan.as_deref(), Some("plus"));
+
+        // Legacy provenance stays unknown on both sides: nothing about the
+        // account, meter, Limit, scope, order, coverage, or external activity of
+        // a pre-migration observation is knowable, so nothing is synthesized.
+        assert_eq!(stored_provenance(&conn, 900), ReadingProvenance::default());
+        let account: Option<String> = conn
+            .query_row(
+                "SELECT account_id FROM events WHERE dedup_key = 'codex:legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(account, None, "a legacy Usage Record has no account identity");
+
+        // Scan state is untouched: re-parsing today's Artifacts could not prove
+        // an old interval's account or completeness anyway (spec hard rule).
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 1);
+
+        // Estimates are derived, never materialised (ADR-0024) — and the one
+        // index the Usage-membership query needs is the only one added.
+        let derived: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' \
+                 AND (name LIKE '%estimate%' OR name LIKE '%limit_reading_history%')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(derived, 0);
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' \
+                 AND name = 'idx_events_evidence'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+
+        // Running the migration again is safe — an intermediate dev build may —
+        // and this one rebuilds a table, so prove the rebuild copies proven
+        // provenance rather than the eight columns a v17 database had.
+        conn.execute(
+            "UPDATE limit_readings SET account_id = 'acct-9f3', covered_from = 600",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA user_version = 17").unwrap();
+        drop(conn);
+        let conn = open_db(&path).unwrap();
+        assert_eq!(stored_readings(&conn), 1);
+        assert_eq!(
+            stored_provenance(&conn, 900),
+            ReadingProvenance {
+                account_id: Some("acct-9f3".to_string()),
+                covered_from: Some(600),
+                ..ReadingProvenance::default()
+            },
+        );
+    }
+
+    #[test]
+    fn reading_identity_dedupes_re_ingestion_and_keeps_a_later_equal_percentage() {
+        let (_dir, mut conn) = temp_db();
+        // The same observation, read twice — a re-scan of an appended rollout, or
+        // the scan and the command that just ran a Companion both ingesting.
+        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap();
+        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap();
+        assert_eq!(stored_readings(&conn), 1);
+
+        // A genuinely later observation at an unchanged percentage is its own
+        // Reading: after a gap it is the only anchor the next run can start from.
+        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 5_400)]).unwrap();
+        let observations: Vec<i64> = conn
+            .prepare("SELECT observed_at FROM limit_readings ORDER BY observed_at")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(observations, vec![900, 5_400]);
+    }
+
+    #[test]
+    fn reading_provenance_round_trips_enriches_and_never_erases() {
+        let (_dir, mut conn) = temp_db();
+        let proven = ReadingProvenance {
+            account_id: Some("acct-9f3".to_string()),
+            meter: Some("codex-standard".to_string()),
+            limit_id: Some("codex".to_string()),
+            model_scope: Some(ModelScope::All),
+            source_seq: Some(17),
+            covered_from: Some(600),
+            external_activity: None,
+        };
+        let mut reading = evidence_reading(40.0, 900);
+        reading.provenance = proven.clone();
+        insert_limit_readings(&mut conn, &[reading]).unwrap();
+        assert_eq!(stored_provenance(&conn, 900), proven);
+
+        // A later pass that proves nothing — a live Reading of the same
+        // observation — must not erase what a richer one already proved.
+        insert_limit_readings(&mut conn, &[evidence_reading(40.0, 900)]).unwrap();
+        assert_eq!(stored_provenance(&conn, 900), proven);
+
+        // Provenance is correctable: discovering an unreadable Artifact inside
+        // the covered stretch, or external activity, revises the Reading in place
+        // and the next evaluation derives from the corrected fact.
+        let mut corrected = evidence_reading(40.0, 900);
+        corrected.provenance = ReadingProvenance {
+            covered_from: Some(880),
+            external_activity: Some("codex-web".to_string()),
+            ..ReadingProvenance::default()
+        };
+        insert_limit_readings(&mut conn, &[corrected]).unwrap();
+        assert_eq!(
+            stored_provenance(&conn, 900),
+            ReadingProvenance {
+                covered_from: Some(880),
+                external_activity: Some("codex-web".to_string()),
+                ..proven
+            },
+        );
+        assert_eq!(stored_readings(&conn), 1, "a correction is not a new Reading");
+    }
+
+    #[test]
+    fn readings_differing_only_in_evidence_identity_stay_separable() {
+        let (_dir, mut conn) = temp_db();
+        let with = |observed_at: i64, provenance: ReadingProvenance| {
+            let mut reading = evidence_reading(40.0, observed_at);
+            reading.provenance = provenance;
+            reading
+        };
+        let first = ReadingProvenance {
+            account_id: Some("acct-a".to_string()),
+            meter: Some("codex-standard".to_string()),
+            limit_id: Some("codex".to_string()),
+            model_scope: Some(ModelScope::All),
+            ..ReadingProvenance::default()
+        };
+        let second = ReadingProvenance {
+            account_id: Some("acct-b".to_string()),
+            meter: Some("codex-priority".to_string()),
+            limit_id: Some("codex-credits".to_string()),
+            model_scope: Some(ModelScope::Models(vec!["gpt-5.4-codex".to_string()])),
+            ..ReadingProvenance::default()
+        };
+        insert_limit_readings(
+            &mut conn,
+            &[with(900, first.clone()), with(1_800, second.clone())],
+        )
+        .unwrap();
+
+        assert_eq!(stored_readings(&conn), 2);
+        assert_eq!(stored_provenance(&conn, 900), first);
+        assert_eq!(stored_provenance(&conn, 1_800), second);
+    }
+
+    #[test]
+    fn model_scope_stored_form_is_canonical() {
+        assert_eq!(ModelScope::All.stored(), "all");
+        // Order and repetition in the scope a Source reports are not identity:
+        // the same set stores as the same string, so a Series holds together.
+        let one = ModelScope::Models(vec!["opus-4.5".to_string(), "sonnet-4.5".to_string()]);
+        let other = ModelScope::Models(vec![
+            "sonnet-4.5".to_string(),
+            "opus-4.5".to_string(),
+            "opus-4.5".to_string(),
+        ]);
+        assert_eq!(one.stored(), other.stored());
+        assert_eq!(
+            ModelScope::parse(&one.stored()),
+            Some(ModelScope::Models(vec![
+                "opus-4.5".to_string(),
+                "sonnet-4.5".to_string(),
+            ])),
+        );
+        assert_eq!(ModelScope::parse("seven_day_opus"), None);
+        assert_eq!(ModelScope::parse("[]"), None, "an empty set is no scope");
     }
 
     #[test]

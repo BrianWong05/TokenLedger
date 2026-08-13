@@ -54,6 +54,76 @@ pub struct LimitReading {
     /// by a Companion, ADR-0019).
     pub via: String,
     pub plan: Option<String>,
+    pub provenance: ReadingProvenance,
+}
+
+/// What a Reading proves about itself beyond its own figures, so that two
+/// Readings may be compared as evidence (spec: evidence participation contract).
+/// Every field is unknown until a Source proves it, and unknown is never a
+/// wildcard: a Reading missing any of them cannot bound a Limit Evidence
+/// Interval. `source`, `plan` and `resets_at` on the Reading itself already
+/// stand for Source, plan identity and reset epoch, so nothing here repeats them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReadingProvenance {
+    /// Stable opaque account/subscription identity, shared with the Usage
+    /// capture context. Never an email, token, or any reversible credential.
+    pub account_id: Option<String>,
+    /// The vendor meter in force, as the adapter identifies it — one plan may
+    /// bill under several regimes, so a plan label alone is not this.
+    pub meter: Option<String>,
+    /// Raw vendor Limit identity, or an adapter-defined canonical one with a
+    /// documented one-to-one mapping. A duration, slot, or display label is not.
+    pub limit_id: Option<String>,
+    pub model_scope: Option<ModelScope>,
+    /// Stable source order for Readings sharing one `observed_at`; without it
+    /// same-second Readings cannot be ordered, and so bound nothing.
+    pub source_seq: Option<i64>,
+    /// The earliest instant local capture of this Source and account is durably
+    /// proven to cover, unbroken, through this observation. An interval is
+    /// complete only when this reaches back past its earlier anchor; raising it
+    /// (or leaving it unknown) is how a later unreadable-Artifact discovery
+    /// withdraws coverage.
+    pub covered_from: Option<i64>,
+    /// A known or detected fact that activity outside local capture moved this
+    /// Limit through the segment ending here. Unknown is no such fact, not proof
+    /// of absence — the mere possibility of invisible activity rejects nothing.
+    pub external_activity: Option<String>,
+}
+
+/// Which Models a Limit meters: the whole Source, or an exact set of raw logged
+/// Model identities. A display name, response-key tail, or slug is never a Model
+/// mapping, so a Source that cannot name raw Models has no scope at all.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelScope {
+    All,
+    Models(Vec<String>),
+}
+
+impl ModelScope {
+    /// The stored form: `all`, or a sorted, deduplicated JSON array — canonical
+    /// so that two Readings scope the same Models exactly when their stored
+    /// strings are equal. An empty set is not a scope and reads back as unknown.
+    pub fn stored(&self) -> String {
+        match self {
+            ModelScope::All => "all".to_string(),
+            ModelScope::Models(models) => {
+                let mut canonical: Vec<&str> = models.iter().map(String::as_str).collect();
+                canonical.sort_unstable();
+                canonical.dedup();
+                serde_json::to_string(&canonical).unwrap_or_default()
+            }
+        }
+    }
+
+    /// The inverse of `stored`. Anything else — junk, an empty set — is unknown
+    /// scope rather than a wildcard.
+    pub fn parse(stored: &str) -> Option<Self> {
+        if stored == "all" {
+            return Some(ModelScope::All);
+        }
+        let models: Vec<String> = serde_json::from_str(stored).ok()?;
+        (!models.is_empty()).then_some(ModelScope::Models(models))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
