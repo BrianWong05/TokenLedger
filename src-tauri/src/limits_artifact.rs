@@ -16,6 +16,10 @@ use crate::adapters::unchanged;
 use crate::db::{self, set_file_state};
 use crate::types::{FileState, LimitReading, ReadingProvenance};
 
+/// The Model-scope grammar an export's `model_scope` is written in, re-exported
+/// so a Companion writes the same one the Ledger reads.
+pub use crate::types::ModelScope;
+
 pub const SUFFIX: &str = ".tokenledger-limits.json";
 
 /// The one failure prefix the app classifies as an absence rather than an error
@@ -93,16 +97,19 @@ pub fn grok_credit_window(config: &serde_json::Value) -> Option<WindowExport> {
         window_minutes: Some(window_minutes),
         used_pct,
         resets_at,
+        // Grok's credit window is not in the estimate map; its Readings stay
+        // display-only until a ticket proves what it meters.
+        evidence: WindowEvidence::default(),
     })
 }
 
 /// Bump when the shape changes. An Artifact declaring a schema the reader does
 /// not know is a malformed instance of a supported shape (ADR-0015): it warns
 /// and is not read, rather than being guessed at.
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 fn supported_schema(schema: u32) -> bool {
-    schema == 1 || schema == SCHEMA
+    schema == 1 || schema == 2 || schema == SCHEMA
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +123,11 @@ pub struct LimitsExport {
     /// The plan label the credential document carried (`rateLimitTier`).
     #[serde(default)]
     pub plan: Option<String>,
+    /// The metering regime in force, as the Companion that read the response
+    /// identifies it. One meter reports every window in one fetch, so this sits
+    /// on the export rather than on each of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metering_regime: Option<String>,
     /// Codex Usage Resets currently available. This is source-level current
     /// state, not a rolling-window Reading and not history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,6 +155,36 @@ pub struct WindowExport {
     /// Unix seconds. The vendor's ISO-8601 stamp is converted by the Companion,
     /// so the reader never has to guess at a format.
     pub resets_at: i64,
+    /// What this window proves about itself, where the Companion could tell.
+    #[serde(default, skip_serializing_if = "WindowEvidence::is_unknown")]
+    pub evidence: WindowEvidence,
+}
+
+/// The evidence facts a Companion can prove about one window from the response
+/// it already read — carrying more of one fetch, never making another. Absent is
+/// unknown, and unknown is never a wildcard: a window missing these is still a
+/// Reading the card draws, just not one an estimate may be derived from.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct WindowEvidence {
+    /// The vendor's own identity for this Limit, or an adapter-defined canonical
+    /// one whose one-to-one mapping the Companion documents. A display label,
+    /// a slug, or the duration alone is not one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_id: Option<String>,
+    /// Model scope in the stored grammar (`ModelScope`): `all` for a window that
+    /// meters the whole Source, or a sorted JSON array of raw logged Model
+    /// identities. A vendor's display name is not a Model mapping, so a window
+    /// scoped by one has no scope here at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_scope: Option<String>,
+}
+
+impl WindowEvidence {
+    /// Nothing proven — the shape every Companion but Claude's writes today, and
+    /// what every pre-schema-3 export carries.
+    fn is_unknown(&self) -> bool {
+        self == &WindowEvidence::default()
+    }
 }
 
 /// The Artifact that carries one Source's live Limits.
@@ -170,7 +212,26 @@ pub fn readings(export: &LimitsExport) -> Vec<LimitReading> {
             observed_at: export.fetched_at,
             via: "live".to_string(),
             plan: export.plan.clone(),
-            provenance: ReadingProvenance::default(),
+            provenance: ReadingProvenance {
+                limit_id: w.evidence.limit_id.clone(),
+                metering_regime: export.metering_regime.clone(),
+                model_scope: w.evidence.model_scope.as_deref().and_then(ModelScope::parse),
+                // Account identity and completeness coverage are not a
+                // Companion's to prove: an export says what the vendor answered
+                // now, not who it answered for over the stretch a Record fell in.
+                account_id: None,
+                covered_from: None,
+                // One fetch reports each window once, so `observed_at` already
+                // orders these Readings and no separate order is needed —
+                // `observed_at` plus a source order is only *sufficient*, not
+                // required, and the contract asks for an order only where two
+                // Readings share an instant. Two fetches inside one second would
+                // be that case, and the file-state gate on re-ingest makes it
+                // near-unreachable; a consumer must still treat any pair that
+                // does share an instant as unordered rather than guessing.
+                source_order: None,
+                external_activity: None,
+            },
         })
         .collect()
 }
@@ -421,6 +482,102 @@ mod tests {
     }
 
     #[test]
+    fn an_exports_evidence_reaches_the_readings_it_describes() {
+        let export = LimitsExport {
+            schema: SCHEMA,
+            source: "claude".to_string(),
+            fetched_at: 1_786_492_800,
+            plan: Some("Max 5x".to_string()),
+            metering_regime: Some("claude:usage_limits".to_string()),
+            usage_resets_available: None,
+            windows: vec![
+                WindowExport {
+                    key: "seven_day".to_string(),
+                    window_minutes: Some(10080),
+                    used_pct: 35.0,
+                    resets_at: 1_786_503_900,
+                    evidence: WindowEvidence {
+                        limit_id: Some("weekly_all".to_string()),
+                        model_scope: ModelScope::All.stored(),
+                    },
+                },
+                WindowExport {
+                    key: "seven_day_fable_5".to_string(),
+                    window_minutes: Some(10080),
+                    used_pct: 30.0,
+                    resets_at: 1_786_503_900,
+                    evidence: WindowEvidence::default(),
+                },
+            ],
+        };
+        let readings = readings(&export);
+
+        // The source-wide window carries what the Companion proved.
+        assert_eq!(
+            readings[0].provenance,
+            ReadingProvenance {
+                limit_id: Some("weekly_all".to_string()),
+                metering_regime: Some("claude:usage_limits".to_string()),
+                model_scope: Some(ModelScope::All),
+                // A fetch says what the vendor answered now, not who it answered
+                // for over the stretch a Record fell in.
+                account_id: None,
+                covered_from: None,
+                source_order: None,
+                external_activity: None,
+            },
+        );
+        // The model-scoped one keeps the regime it was metered under and proves
+        // nothing else, so it stays Blocked rather than borrowing its sibling's.
+        assert_eq!(readings[1].provenance.limit_id, None);
+        assert_eq!(readings[1].provenance.model_scope, None);
+        assert_eq!(
+            readings[1].provenance.metering_regime.as_deref(),
+            Some("claude:usage_limits"),
+        );
+    }
+
+    #[test]
+    fn a_window_that_proves_nothing_writes_no_evidence_at_all() {
+        // The evidence fields are omitted rather than written empty, so a
+        // Companion with nothing to prove writes the same bytes it always did
+        // and an older reader finds nothing new to trip over.
+        let export = LimitsExport {
+            schema: SCHEMA,
+            source: "grok".to_string(),
+            fetched_at: 1_786_492_800,
+            plan: None,
+            metering_regime: None,
+            usage_resets_available: None,
+            windows: vec![WindowExport {
+                key: "w10080".to_string(),
+                window_minutes: Some(10080),
+                used_pct: 4.0,
+                resets_at: 1_786_503_900,
+                evidence: WindowEvidence::default(),
+            }],
+        };
+        let written = serde_json::to_string(&export).unwrap();
+        assert!(!written.contains("evidence"), "{written}");
+        assert!(!written.contains("metering_regime"), "{written}");
+        assert_eq!(readings(&export)[0].provenance, ReadingProvenance::default());
+    }
+
+    #[test]
+    fn an_export_from_before_the_evidence_fields_still_reads() {
+        // Schema 2 on disk, written by a Companion that had no evidence to give.
+        // It is still a Reading the card draws; it is simply not evidence.
+        let raw = r#"{"schema":2,"source":"claude","fetched_at":1786492800,
+            "plan":"Max 5x","windows":[{"key":"five_hour","window_minutes":300,
+            "used_pct":18.0,"resets_at":1786503900}]}"#;
+        let export: LimitsExport = serde_json::from_str(raw).unwrap();
+        assert!(supported_schema(export.schema));
+        let readings = readings(&export);
+        assert_eq!(readings[0].used_pct, 18.0);
+        assert_eq!(readings[0].provenance, ReadingProvenance::default());
+    }
+
+    #[test]
     fn a_written_artifact_round_trips_and_leaves_no_staging_file() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");
@@ -429,12 +586,17 @@ mod tests {
             source: "claude".to_string(),
             fetched_at: 1_786_492_800,
             plan: Some("Team 5x".to_string()),
+            metering_regime: Some("claude:usage_limits".to_string()),
             usage_resets_available: Some(1),
             windows: vec![WindowExport {
                 key: "five_hour".to_string(),
                 window_minutes: Some(300),
                 used_pct: 18.0,
                 resets_at: 1_786_503_900,
+                evidence: WindowEvidence {
+                    limit_id: Some("session".to_string()),
+                    model_scope: ModelScope::All.stored(),
+                },
             }],
         };
         write(&dir, &export).unwrap();

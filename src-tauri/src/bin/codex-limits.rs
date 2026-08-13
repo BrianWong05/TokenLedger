@@ -35,7 +35,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use tokenledger_lib::limits_artifact::{
-    self, window_key, LimitsExport, WindowExport, NOT_SIGNED_IN,
+    self, window_key, LimitsExport, WindowEvidence, WindowExport, NOT_SIGNED_IN,
 };
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -76,6 +76,10 @@ fn run() -> Result<String, String> {
             .get("plan_type")
             .and_then(|p| p.as_str())
             .map(str::to_string),
+        // Codex proves its evidence facts from the rollouts the scan reads.
+        // Doing it here too waits for the ticket that gives this export an
+        // account identity, since that is what a live Reading still lacks.
+        metering_regime: None,
         usage_resets_available: usage_resets_available(&body),
         windows,
     };
@@ -221,6 +225,9 @@ fn window(object: &serde_json::Map<String, Value>, fetched_at: i64) -> Option<Wi
         window_minutes: Some(minutes),
         used_pct,
         resets_at,
+        // Codex's live path proves its facts in the ticket that gives the
+        // export an account: from the logs side they are already proven.
+        evidence: WindowEvidence::default(),
     })
 }
 
