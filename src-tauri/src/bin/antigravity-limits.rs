@@ -183,6 +183,7 @@ fn run() -> Result<String, String> {
         source: "antigravity".to_string(),
         fetched_at,
         plan: plan(&assist),
+        usage_resets_available: None,
         windows: windows(&body),
     };
 
