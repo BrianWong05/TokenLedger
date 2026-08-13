@@ -34,7 +34,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use tokenledger_lib::limits_artifact::{
+use tokenledger_lib::limits_artifact::{WindowEvidence, 
     self, window_key, LimitsExport, WindowExport, NOT_SIGNED_IN,
 };
 
@@ -76,6 +76,8 @@ fn run() -> Result<String, String> {
             .get("plan_type")
             .and_then(|p| p.as_str())
             .map(str::to_string),
+        // This Companion proves no metering regime yet.
+        metering_regime: None,
         usage_resets_available: usage_resets_available(&body),
         windows,
     };
@@ -221,6 +223,9 @@ fn window(object: &serde_json::Map<String, Value>, fetched_at: i64) -> Option<Wi
         window_minutes: Some(minutes),
         used_pct,
         resets_at,
+        // Codex's live path proves its facts in the ticket that gives the
+        // export an account: from the logs side they are already proven.
+        evidence: WindowEvidence::default(),
     })
 }
 

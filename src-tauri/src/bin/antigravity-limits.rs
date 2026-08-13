@@ -50,7 +50,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use serde_json::{json, Value};
 
-use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport, NOT_SIGNED_IN};
+use tokenledger_lib::limits_artifact::{WindowEvidence, self, LimitsExport, WindowExport, NOT_SIGNED_IN};
 
 /// Both release-channel frontends, `daily-` first — because that is the one
 /// Antigravity's own client actually calls. Its logs on this machine show
@@ -183,6 +183,8 @@ fn run() -> Result<String, String> {
         source: "antigravity".to_string(),
         fetched_at,
         plan: plan(&assist),
+        // This Companion proves no metering regime yet.
+        metering_regime: None,
         usage_resets_available: None,
         windows: windows(&body),
     };
@@ -706,6 +708,9 @@ fn bucket_window(bucket: &Value) -> Option<WindowExport> {
         // sub-point wobble is not a second fill level.
         used_pct: ((1.0 - remaining) * 100.0).round(),
         resets_at,
+        // Antigravity is not in the estimate map; its Readings stay
+        // display-only until a ticket proves what each pool meters.
+        evidence: WindowEvidence::default(),
     })
 }
 

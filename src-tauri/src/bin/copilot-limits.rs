@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport, NOT_SIGNED_IN};
+use tokenledger_lib::limits_artifact::{WindowEvidence, self, LimitsExport, WindowExport, NOT_SIGNED_IN};
 use tokenledger_lib::time::iso_to_epoch;
 
 const LIMITS_URL: &str = "https://api.github.com/copilot_internal/user";
@@ -53,6 +53,8 @@ fn limits_export(body: &Value, fetched_at: i64) -> Result<LimitsExport, String> 
         source: "copilot".to_string(),
         fetched_at,
         plan: Some(plan.to_string()),
+        // This Companion proves no metering regime yet.
+        metering_regime: None,
         usage_resets_available: None,
         windows: vec![premium_requests(body)?],
     })
@@ -236,6 +238,8 @@ fn premium_requests(body: &Value) -> Result<WindowExport, String> {
         window_minutes: None,
         used_pct: (entitlement - remaining) * 100.0 / entitlement,
         resets_at,
+    // Copilot is not in the estimate map; its Readings stay display-only.
+        evidence: WindowEvidence::default(),
     })
 }
 

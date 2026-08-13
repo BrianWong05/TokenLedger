@@ -38,7 +38,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use tokenledger_lib::limits_artifact::{self, LimitsExport, WindowExport, NOT_SIGNED_IN};
+use tokenledger_lib::limits_artifact::{
+    self, LimitsExport, ModelScope, WindowEvidence, WindowExport, NOT_SIGNED_IN,
+};
 use tokenledger_lib::time::iso_to_epoch;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -90,6 +92,11 @@ fn run() -> Result<String, String> {
         source: "claude".to_string(),
         fetched_at: now(),
         plan: credential.plan,
+        // One meter answers this endpoint, whichever shape it answers in: the
+        // usage limits themselves. Nothing in the response distinguishes a
+        // second regime, so naming one would be inventing it — and if one ever
+        // appears, this identity changes deliberately and a new Series starts.
+        metering_regime: Some("claude:usage_limits".to_string()),
         usage_resets_available: None,
         windows: windows(&body),
     };
@@ -293,6 +300,34 @@ fn limits_list(body: &Value) -> Vec<WindowExport> {
     out
 }
 
+/// What a window proves about itself. The vendor names the same two source-wide
+/// windows twice — `kind` in the modern `limits[]` list, a response key in the
+/// older named shape — and this is the one-to-one mapping between them the
+/// evidence contract asks an adapter to document: `session` is the five-hour
+/// window and `weekly_all` the seven-day one, whichever shape reported it. The
+/// `kind` is the identity because it names the window itself; the key is a
+/// label for it, and a label alone identifies nothing.
+///
+/// A model-scoped window proves neither identity nor scope. `weekly_scoped`
+/// names every one of them alike, so it cannot tell two apart, and what would
+/// tell them apart is `scope.model.display_name` — a display name, which is no
+/// mapping to the raw Models the Ledger logs. Both stay unknown and the window's
+/// estimate stays Blocked, which is the honest answer until the vendor names a
+/// raw Model.
+fn window_evidence(limit: &str) -> WindowEvidence {
+    let limit_id = match limit {
+        "session" | "five_hour" => Some("session"),
+        "weekly_all" | "seven_day" => Some("weekly_all"),
+        _ => None,
+    };
+    WindowEvidence {
+        limit_id: limit_id.map(str::to_string),
+        // Source-wide: every Claude Usage Record counts against these, including
+        // Unattributed Usage.
+        model_scope: limit_id.and_then(|_| ModelScope::All.stored()),
+    }
+}
+
 /// One `limits[]` entry → a window. The keys are synthesized to match what the
 /// legacy shape called the same windows — `five_hour`, `seven_day`,
 /// `seven_day_<model>` — so a Reading from either response shape lands in the
@@ -318,7 +353,7 @@ fn list_window(item: &Value) -> Option<WindowExport> {
         _ if !kind.is_empty() => (kind.to_string(), None),
         _ => return None,
     };
-    Some(WindowExport { key, window_minutes, used_pct, resets_at })
+    Some(WindowExport { key, window_minutes, used_pct, resets_at, evidence: window_evidence(kind) })
 }
 
 fn slug(name: &str) -> String {
@@ -351,6 +386,7 @@ fn window(key: &str, value: &Value) -> Option<WindowExport> {
         window_minutes: window_minutes(key),
         used_pct,
         resets_at,
+        evidence: window_evidence(key),
     })
 }
 
@@ -377,6 +413,57 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn source_wide_windows_prove_their_limit_identity_and_scope() {
+        let windows = windows(&serde_json::json!({"limits": [
+            {"kind": "session", "percent": 25, "resets_at": "2026-08-12T13:00:00+00:00"},
+            {"kind": "weekly_all", "percent": 35, "resets_at": "2026-08-16T13:00:00+00:00"},
+            {"kind": "weekly_scoped", "percent": 30, "resets_at": "2026-08-16T13:00:00+00:00",
+             "scope": {"model": {"display_name": "Fable 5"}}}
+        ]}));
+        let facts: Vec<(String, Option<String>, Option<String>)> = windows
+            .iter()
+            .map(|w| {
+                (w.key.clone(), w.evidence.limit_id.clone(), w.evidence.model_scope.clone())
+            })
+            .collect();
+        assert_eq!(
+            facts,
+            vec![
+                // The vendor's own `kind`, which names the window itself rather
+                // than describing it, and the whole-Source scope it meters.
+                ("five_hour".to_string(), Some("session".to_string()), Some("all".to_string())),
+                ("seven_day".to_string(), Some("weekly_all".to_string()), Some("all".to_string())),
+                // A model-scoped window proves neither: `weekly_scoped` names
+                // every one of them alike, and a display name is not a mapping
+                // to the raw Models the Ledger logs. It stays Blocked.
+                ("seven_day_fable_5".to_string(), None, None),
+            ],
+        );
+    }
+
+    #[test]
+    fn the_legacy_response_shape_proves_the_same_identities() {
+        let windows = windows(&serde_json::json!({
+            "five_hour": {"utilization": 25.0, "resets_at": "2026-08-12T13:00:00+00:00"},
+            "seven_day": {"utilization": 35.0, "resets_at": "2026-08-16T13:00:00+00:00"},
+            "seven_day_opus": {"utilization": 30.0, "resets_at": "2026-08-16T13:00:00+00:00"}
+        }));
+        let facts: Vec<(String, Option<String>)> =
+            windows.iter().map(|w| (w.key.clone(), w.evidence.limit_id.clone())).collect();
+        // The two shapes name the same two windows, and the adapter documents
+        // the mapping, so a Reading from either lands in one Series.
+        assert_eq!(
+            facts,
+            vec![
+                ("five_hour".to_string(), Some("session".to_string())),
+                ("seven_day".to_string(), Some("weekly_all".to_string())),
+                ("seven_day_opus".to_string(), None),
+            ],
+        );
+    }
+
     use super::*;
 
     // The modern response shape, verbatim from a real `--shape` run (2026-08-12,
