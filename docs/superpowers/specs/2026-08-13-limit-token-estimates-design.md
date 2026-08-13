@@ -53,7 +53,7 @@ quota or a separate row figure.
 
 ## Domain semantics
 
-`CONTEXT.md`, ADR-0021, and ADR-0022 are normative.
+`CONTEXT.md`, ADR-0023, and ADR-0024 are normative.
 
 - A **Limit Reading** is a vendor percentage and reset state at one observed
   time. It holds no tokens.
@@ -338,7 +338,7 @@ selectedTokens = tokensPerPct * (mode == Used ? usedPct : leftPct)
 
 ## Derived ownership and query contract
 
-ADR-0022's boundary is strict: persist facts and derive conclusions.
+ADR-0024's boundary is strict: persist facts and derive conclusions.
 
 Persist:
 

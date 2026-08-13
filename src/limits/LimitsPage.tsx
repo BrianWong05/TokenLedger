@@ -19,15 +19,19 @@ import {
   cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
   type CardView, type Mode, type WindowView,
 } from './limits.derive';
-import { tauriLimits, lastCheckKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import {
+  tauriLimits, lastCheckKey, lastFailureKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort,
+} from './limits';
 
 type T = ReturnType<typeof useT>['t'];
+type LiveFailure = 'signed-out' | { detail: string };
 
 // Decision 5's floor: at most one live check per Source per minute, however often
 // the page is opened. The last-check stamp is *stored* rather than held in a ref
 // because the shell unmounts this page on every tab switch — a ref would reset
 // with it, and flipping away and back would fetch again immediately.
 const LIVE_FLOOR_MS = 60_000;
+const ERROR_FAILURE_PREFIX = 'error:';
 
 export default function LimitsPage({
   ports,
@@ -42,7 +46,22 @@ export default function LimitsPage({
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
   const [liveEnabled, setLiveEnabled] = useState(() => port.read(LIVE_ENABLED_KEY) === 'true');
-  const [failures, setFailures] = useState<Record<string, 'signed-out' | { detail: string }>>({});
+  const [failures, setFailures] = useState<Record<string, LiveFailure>>(() => {
+    const remembered: Record<string, LiveFailure> = {};
+    for (const { meta } of limitsSources()) {
+      // Only a verdict the floor is still holding may be replayed. Past the
+      // floor this mount will check again anyway, and a stale verdict would
+      // meanwhile suppress held Readings — `cards()` gives a failure priority
+      // over windows — showing yesterday's blip as a current fact.
+      if (now() - Number(port.read(lastCheckKey(meta.key)) ?? 0) >= LIVE_FLOOR_MS) continue;
+      const value = port.read(lastFailureKey(meta.key));
+      if (value === 'signed-out') remembered[meta.key] = 'signed-out';
+      else if (value?.startsWith(ERROR_FAILURE_PREFIX)) {
+        remembered[meta.key] = { detail: value.slice(ERROR_FAILURE_PREFIX.length) };
+      }
+    }
+    return remembered;
+  });
   // In-flight checks, counted rather than boolean: a Refresh runs a scan and a
   // live check concurrently, and whichever finishes first must not re-enable the
   // button under the other.
@@ -80,16 +99,30 @@ export default function LimitsPage({
       Promise.all(
         due.map((key) => {
           port.write(lastCheckKey(key), String(now()));
+          // Forget the old verdict as the check starts, not when it settles: the
+          // settle handlers only reach the mounted tree, and a tab switch made
+          // mid-check unmounts it. Without this, the stamp says "checking" while
+          // the verdict beside it still says whatever last failed, and every
+          // remount inside the floor rehydrates that older answer.
+          port.write(lastFailureKey(key), '');
           return Promise.resolve(port.checkLive(key)).then(
-            () => setFailures((f) => {
-              const { [key]: _gone, ...rest } = f;
-              return rest;
-            }),
+            () => {
+              port.write(lastFailureKey(key), '');
+              setFailures((f) => {
+                const { [key]: _gone, ...rest } = f;
+                return rest;
+              });
+            },
             (err: unknown) => {
               const detail = String((err as { message?: string })?.message ?? err ?? '');
+              const failure: LiveFailure = signedOut(detail) ? 'signed-out' : { detail };
+              port.write(
+                lastFailureKey(key),
+                failure === 'signed-out' ? failure : ERROR_FAILURE_PREFIX + failure.detail,
+              );
               setFailures((f) => ({
                 ...f,
-                [key]: signedOut(detail) ? 'signed-out' : { detail },
+                [key]: failure,
               }));
             },
           );
@@ -179,11 +212,15 @@ export default function LimitsPage({
   );
 }
 
-// 401/403 and a missing credential are the same thing to the person reading the
-// card — their sign-in needs redoing. Every other failure is a failure, and must
-// not be dressed as this one.
+// A missing or refused credential is the one failure that reads as "sign in
+// again"; every other failure is a failure and must not wear that face. The
+// Companion is what can tell them apart — it knows a 401 on the token from a 403
+// the same token earns on one method while another succeeds — so it marks the
+// signed-out case with this prefix and the page trusts that, rather than
+// re-deriving it by grepping for a status code that also appears in the text of
+// a genuine error (e.g. "the vendor answered 403 … PERMISSION_DENIED").
 function signedOut(detail: string): boolean {
-  return /\bnot signed in\b|\b401\b|\b403\b/i.test(detail);
+  return /\bnot signed in\b/i.test(detail);
 }
 
 function Card({
@@ -198,6 +235,25 @@ function Card({
         {icon ? <img src={icon} alt="" width={18} height={18} /> : <span className="tl-lim-nomark" />}
         <span className="tl-lim-name">{card.meta.label}</span>
         {card.plan && <span className="tl-lim-plan">{planLabel(card.plan)}</span>}
+        {card.usageResetsAvailable !== null && (
+          <span
+            className={'tl-lim-usage-resets' + (card.usageResetsAvailable === 0 ? ' zero' : '')}
+            aria-label={fill(
+              t(card.usageResetsAvailable === 1
+                ? 'limits.usageReset.a11yOne'
+                : 'limits.usageReset.a11yMany'),
+              { n: card.usageResetsAvailable },
+            )}
+          >
+            <span aria-hidden="true">↻</span>
+            {fill(
+              t(card.usageResetsAvailable === 1
+                ? 'limits.usageReset.one'
+                : 'limits.usageReset.many'),
+              { n: card.usageResetsAvailable },
+            )}
+          </span>
+        )}
         {fresh && (
           <span className={'tl-lim-fresh' + (fresh.key === 'observedOld' ? ' old' : '')}>
             {fresh.key === 'checkedNow'
@@ -208,7 +264,7 @@ function Card({
       </div>
 
       {card.state === 'live' ? (
-        card.windows.map((w) => <Row key={w.key} w={w} mode={mode} t={t} />)
+        card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)
       ) : (
         <Trouble card={card} t={t} onRetry={onRetry} />
       )}
@@ -216,8 +272,8 @@ function Card({
   );
 }
 
-function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
-  const label = windowLabel(w.key);
+function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
+  const label = windowLabel(w.key, source);
   const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
   const spent = w.pctLeft <= 0;
 
@@ -236,8 +292,11 @@ function Row({ w, mode, t }: { w: WindowView; mode: Mode; t: T }) {
       <div className="tl-lim-body">
         <div className="tl-lim-labels">
           <span className="tl-lim-label">
+            {poolPrefix(t, label.pool)}
             {label.kind === 'session' && t('limits.win.session')}
             {label.kind === 'weekly' && t('limits.win.weekly')}
+            {label.kind === 'weeklyCredits' && t('limits.win.weeklyCredits')}
+            {label.kind === 'monthlyCredits' && t('limits.win.monthlyCredits')}
             {label.kind === 'other' && fill(t('limits.win.other'), { n: label.minutes })}
             {label.kind === 'model' && (
               <>
@@ -323,6 +382,19 @@ function OptIn({ t, onEnable }: { t: T; onEnable: () => void }) {
       </button>
     </div>
   );
+}
+
+// A window key's pool, where it carries one. `3p` is named "Other models"
+// rather than "Claude" because what it really means is *non-Gemini* — the set
+// behind it changes, and a label naming today's members would rot. A pool
+// nobody has named renders raw, the way an unseen per-model window does.
+function poolPrefix(t: T, pool: string | undefined): string {
+  if (!pool) return '';
+  const named: Record<string, string> = {
+    gemini: t('limits.pool.gemini'),
+    '3p': t('limits.pool.other'),
+  };
+  return `${named[pool] ?? pool} · `;
 }
 
 // "1d 6h" — largest two units, in the reader's own language.

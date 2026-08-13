@@ -162,11 +162,15 @@ describe('Overview presentation', () => {
     // The entrance already played this session, so the headline starts at rest
     // and any roll below is the in-place period-switch motion.
     sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
-    const { container: c, ledger } = await mountSettled({ dayPoints: [pt({})], summary });
+    const { container: c, ledger } = await mountSettled({
+      dayPoints: [pt({ bucket: new Date().toISOString().slice(0, 10), totalTokens: 400 })],
+      summary,
+    });
     const headline = c.querySelector<HTMLElement>('.tt-b8-total')!;
     expect(headline.getAttribute('aria-busy')).toBeNull();
 
-    // The Week window holds a different total; its landing rolls the wheels.
+    // The Week window starts its roll as soon as the range changes, before its
+    // different Summary lands.
     ledger.data.summary = { ...summary, totalTokens: 987_654_321 };
     const week = Array.from(c.querySelectorAll('button')).find((b) =>
       /week/i.test(b.textContent ?? ''),
@@ -177,6 +181,42 @@ describe('Overview presentation', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(50);
     });
+    expect(headline.getAttribute('aria-busy')).toBe('true');
+  });
+
+  it('starts the range-switch roll before the new summary lands', async () => {
+    sessionStorage.setItem('tokenledger.tokenTotalEntrancePlayed', 'true');
+    const dayPoints = [
+      pt({ bucket: '2026-08-14', totalTokens: 400 }),
+      pt({ bucket: '2026-08-13', totalTokens: 600 }),
+    ];
+    const { container: c, ledger } = await mountSettled({
+      dayPoints,
+      summary,
+    });
+    const headline = c.querySelector<HTMLElement>('.tt-b8-total')!;
+    const dayTab = Array.from(c.querySelectorAll('button')).find((b) =>
+      /^day$/i.test(b.textContent?.trim() ?? ''),
+    )!;
+    const totalTab = Array.from(c.querySelectorAll('button')).find((b) =>
+      /^total$/i.test(b.textContent?.trim() ?? ''),
+    )!;
+
+    await act(async () => {
+      dayTab.click();
+      await vi.advanceTimersByTimeAsync(1_400);
+    });
+    await act(async () => {
+      ledger.emitPricesRebuilt();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    ledger.hold('summary');
+    await act(async () => {
+      totalTab.click();
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(headline.getAttribute('aria-label')).not.toContain('400 total tokens');
     expect(headline.getAttribute('aria-busy')).toBe('true');
   });
 
@@ -763,27 +803,56 @@ describe('Export', () => {
   // selector's token fields are non-nullable, so an absent Summary becomes 0 —
   // a figure meaning "unknown". Only the caller can refuse, and it does.
   //
-  // Reaching that state takes two steps, because the fake's hold() is scoped to
+  // Reaching that state takes steps, because the fake's hold() is scoped to
   // the METHOD, not the call: holding 'summary' also holds the Profile-sessions
-  // count that rides with the initial series load. Resolving that first held
-  // call lets allPoints land — which is what ends `loading` and fires the
-  // per-range reload, whose own Summary is then the held call that matters.
-  // Skipping the first resolve leaves the button disabled by `loading` and
-  // tests nothing.
+  // count that rides with each series load — and the first load runs twice,
+  // once as the provisional pre-scan paint and once as the post-scan
+  // reconcile. Resolving those two Profile calls lets both series land (which
+  // is what ends `loading`); every summary still held after that is a window
+  // Summary — the provisional reload's, which paints but is still owed a
+  // reconcile, and the reconcile's, which is the one whose landing enables
+  // Export.
   it('withholds Export until the window\'s Summary has landed', async () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
     ledger.hold('summary');
     const { container } = await mountOverview({ ledger });
     const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
 
-    ledger.resolveHeld('summary', 0); // Profile sessions — lets the first load land
+    ledger.resolveHeld('summary', 0); // provisional Profile — the first paint lands
+    await settle();
+    ledger.resolveHeld('summary', 1); // reconcile Profile — the post-scan series lands
     await settle();
     expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
-    expect(ledger.held('summary').length).toBe(2); // [0] profile, [1] the window's
+    expect(exportBtn().disabled).toBe(true); // the window's Summary is still pending
+
+    // Pin the launch fan-out: exactly four summaries — two Profile counts
+    // (resolved above) and two window Summaries. A fifth appearing here means
+    // boot grew another fetch pass; this line is where that regression fails.
+    expect(ledger.held('summary').length).toBe(4);
+    ledger.resolveHeld('summary', 2); // provisional reload's Summary — paints, still behind
+    ledger.resolveHeld('summary', 3); // reconcile's Summary — the one that lands
+    await settle();
+    expect(exportBtn().disabled).toBe(false);
+  });
+
+  // The launch paint is real figures read from a pre-scan Ledger: the cost line
+  // reads out rather than showing '…', and yet no file may state those figures
+  // (Overview's `provisional` gate) — the screen corrects itself in half a
+  // second where a file would keep them. Holding the scan holds the app in
+  // exactly that state.
+  it('withholds Export through the launch paint, then offers it once the scan settles', async () => {
+    const ledger = makeFakeLedger({ dayPoints: [pt({}), pt({ bucket: '2026-07-15' })], summary });
+    ledger.hold('scan');
+    const { container } = await mountOverview({ ledger });
+    const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
+
+    // The provisional window reload landed — this is a painted screen, not a
+    // loading one — so the gate under test is `provisional`, not the Summary.
+    expect(container.querySelector('.tt-b8-cost')?.textContent ?? '').not.toContain('…');
     expect(exportBtn().disabled).toBe(true);
 
-    ledger.resolveHeld('summary', 1); // the window's own Summary
-    await settle();
+    ledger.resolveHeld('scan', 0);
+    await settle(8);
     expect(exportBtn().disabled).toBe(false);
   });
 

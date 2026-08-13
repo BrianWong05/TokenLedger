@@ -121,7 +121,12 @@ with a bar per Limit, driven by the newest valid Limit Reading. It ignores the
 Overview's date window and Source selection entirely — it is now, not a range.
 A Source that cannot expose Limits gets no card; one that could but has no
 credentials gets a disabled card, so "not signed in" and "unsupported" never
-look alike.
+look alike. Limits describe the subscription even when the Ledger observes
+only some of that Source's surfaces: GitHub Copilot's account-wide Limits may
+therefore include IDE or cloud activity absent from locally observed Usage
+Records, and that gap is never reconstructed from credit changes. Copilot emits
+only finite Limit Readings: its paid plan's Premium Requests render,
+while unlimited Chat and Completions do not.
 _Avoid_: Quotas, Usage, Rate Limits
 
 **Menu Bar Extra**:
@@ -157,7 +162,9 @@ panel; the menu survives only where the platform delivers no icon clicks)
 An independently operated AI coding tool whose local Source Artifacts expose a
 timestamp and non-zero token count. Its identity outlives branding changes;
 alternate surfaces, storage formats, and model backends accessed through that
-tool remain one Source rather than becoming Sources themselves.
+tool remain one Source rather than becoming Sources themselves. GitHub Copilot
+therefore remains one Source across its CLI, IDE extensions, and cloud coding
+agent.
 _Avoid_: Provider, tool, agent, integration
 
 **Source Artifact**:
@@ -241,9 +248,11 @@ The specific model a Usage Record used, identified by its raw logged name (e.g.
 `claude-opus-4-8`, `gpt-5.4`). The raw name is what is displayed and what a
 price resolves against; name normalisation exists only for price matching, not
 for display. The one departure: when a Source logs an internal routing ALIAS
-instead of a model name (Qoder's `qmodel_38max`), the parser translates it to
-the Model it designates (`qwen3.8-max`) — an alias names no model, sits in no
-catalog, and would price against nothing. Pi uses an assistant entry's backend
+instead of a model name (Qoder's `qmodel_38max` or `dfmodel`), the parser
+translates it from Qoder's refreshed local desktop Model catalog, falling back
+to known aliases when its rotating logs are absent (`qwen3.8-max` or
+`deepseek-v4-flash`) — an alias names no model, sits in no pricing catalog, and
+would price against nothing. Pi uses an assistant entry's backend
 `responseModel` when present
 and falls back to its selected `model`; a built-in pi summary Request inherits
 the active Model from its parent branch, while an extension-provided summary
@@ -332,7 +341,10 @@ would have cost at pay-as-you-go API rates. It is not money that was billed:
 every Source here is subscription, free-tier, or self-hosted, so TokenLedger
 never sees a real invoice. Surfaced in the UI as "Est. cost". A window holding
 no tokens at all has a Cost of zero — $0.00 on every surface, the one zero that
-is a figure rather than a gap, and the opposite of Unpriced.
+is a figure rather than a gap, and the opposite of Unpriced. Codex Auto Review
+uses the resolved rate captured for each local calendar day, so a later price
+change never rewrites a closed day's Cost. If an earlier day was Unpriced, the
+first later price found is used as that day's assumption and then stays fixed.
 _Avoid_: Spend, actual cost, bill
 
 **Display Currency**:
@@ -399,8 +411,8 @@ _Avoid_: Rate limit, quota, allowance, cap, throttle
 
 **Limit Reading**:
 One observation of a Limit at a moment — how much of the window is used, and
-when it resets — parsed from a Source's own logs (Codex) or fetched by a
-Companion (Claude, ADR-0019). Not a Usage Record: it holds no tokens, and the
+when it resets — parsed from a Source's own logs or fetched by a Companion
+(ADR-0019). Not a Usage Record: it holds no tokens, and the
 Ledger holds Usage Records only, so Readings persist beside the Ledger —
 append-only, a new valid Reading never replacing an old one, with cards
 presenting the newest valid Reading and the stored series feeding the
@@ -444,3 +456,10 @@ Stale (formerly sufficient evidence has aged out), or Blocked (current identity
 or Source completeness is unproven). It returns automatically to Ready when its
 evidence does and is never a vendor-reported token quota.
 _Avoid_: Token quota, token allowance, exact token count, confidence score
+
+**Usage Reset**:
+A vendor-granted, expiring entitlement that a person can redeem to restore
+eligible Codex Limits before their windows reset normally. Its available count
+is current state, not a Limit Reading or history; an unreported count is unknown,
+never zero.
+_Avoid_: Manual reset, reset credit, reset

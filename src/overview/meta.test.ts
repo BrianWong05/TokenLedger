@@ -5,9 +5,11 @@ import { SOURCES, emptyBySource, sourceMeta } from './meta';
 describe('Source catalog', () => {
   it('keeps Zed, Kilo, Cline, Goose, OpenCode, lowercase pi, WorkBuddy, CodeBuddy, and Qoder in catalog order with distinct marks', () => {
     expect(SOURCES.map((source) => source.key)).toEqual([
-      'claude', 'codex', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'omp', 'workbuddy', 'codebuddy', 'qoder',
+      'claude', 'codex', 'copilot', 'gemini', 'hermes', 'grok', 'antigravity', 'goose', 'opencode', 'kilo', 'zed', 'cline', 'pi', 'omp', 'workbuddy', 'codebuddy', 'qoder',
     ]);
     expect(SOURCES[SOURCES.length - 1]).toMatchObject({ key: 'qoder', label: 'Qoder', source: 'Qoder', icon: 'qoder' });
+    expect(sourceMeta('copilot')).toMatchObject({ key: 'copilot', icon: 'copilot' });
+    expect(SOURCE_ICONS.copilot).not.toBe(SOURCE_ICONS.generic);
     expect(emptyBySource().pi).toBe(0);
     expect(emptyBySource().kilo).toBe(0);
     expect(emptyBySource().omp).toBe(0);

@@ -1,5 +1,5 @@
 // Cross-Source partition invariants, extracted from e2e_real_logs so they run
-// on every plain `cargo test` against a hermetic sixteen-Source fixture — not
+// on every plain `cargo test` against a hermetic seventeen-Source fixture — not
 // only under the #[ignore] real-log e2e. The four assert_* helpers hold the
 // exact SQL + messages the e2e used to inline; both callers share them.
 //
@@ -79,7 +79,7 @@ pub(crate) fn assert_bucket_partition_exact(conn: &Connection) {
 }
 
 // ---------------------------------------------------------------------------
-// Hermetic sixteen-Source fixture + the default-run test that proves the four
+// Hermetic seventeen-Source fixture + the default-run test that proves the four
 // invariants on synthetic logs covering every Source's format. Fixtures are
 // tiny, inline, and mined from each adapter's own #[cfg(test)] module.
 // ---------------------------------------------------------------------------
@@ -129,6 +129,35 @@ fn build_codex(base: &Path) {
         &base.join("codex/rollout-2026-05-01-ctx.jsonl"),
         &(lines.join("\n") + "\n"),
     );
+}
+
+fn build_copilot(base: &Path) {
+    let path = base.join("copilot/session-store.db");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let db = Connection::open(path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL);
+         INSERT INTO schema_version VALUES (6);
+         CREATE TABLE assistant_usage_events (
+            id INTEGER PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            cache_write_tokens INTEGER,
+            reasoning_tokens INTEGER,
+            token_details_json TEXT,
+            created_at TEXT
+         );
+         CREATE TABLE messages (content TEXT NOT NULL);
+         INSERT INTO messages VALUES ('COPILOT_PRIVATE_PROMPT_MARKER');
+         INSERT INTO assistant_usage_events VALUES
+            (1, 'copilot-s1', 'copilot-model', 100, 20, 30, 10, 5,
+             '[{\"tokenType\":\"input\",\"tokenCount\":60},{\"tokenType\":\"cache_read\",\"tokenCount\":30},{\"tokenType\":\"cache_write\",\"tokenCount\":10},{\"tokenType\":\"output\",\"tokenCount\":20}]',
+             '2026-08-13T01:02:03Z');",
+    )
+    .unwrap();
 }
 
 // gemini: tmp_root/<hash>/chats/session-*.json plus projects.json. cached < input
@@ -670,12 +699,13 @@ fn build_omp(base: &Path) {
 }
 
 #[test]
-fn hermetic_sixteen_source_partition_invariants() {
+fn hermetic_seventeen_source_partition_invariants() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
 
     build_claude(base);
     build_codex(base);
+    build_copilot(base);
     build_gemini(base);
     build_hermes(base);
     build_grok(base);
@@ -693,11 +723,13 @@ fn hermetic_sixteen_source_partition_invariants() {
 
     let roots = SourceRoots {
         claude: base.join("claude"),
-        codex: base.join("codex"),
+        codex_sessions: vec![base.join("codex")],
+        copilot_db: base.join("copilot/session-store.db"),
         gemini_tmp: base.join("gemini/tmp"),
         gemini_projects_json: base.join("gemini/projects.json"),
         hermes_db: base.join("hermes/state.db"),
         grok_sessions: base.join("grok"),
+        grok_logs: base.join("grok-logs"),
         antigravity_conversations: base.join("antigravity"),
         antigravity_ide_conversations: base.join("antigravity-ide"),
         // No CLI fixture: a missing root is scanned quietly (zero events, no error).
@@ -718,15 +750,17 @@ fn hermetic_sixteen_source_partition_invariants() {
         limit_exports: base.join("limits"),
     };
 
-    let mut conn = open_db(&base.join("ledger.db")).unwrap();
+    let ledger_path = base.join("ledger.db");
+    let mut conn = open_db(&ledger_path).unwrap();
     let status = run_scan(&mut conn, &roots);
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the sixteen Sources ingested events and reported no error.
+    // Every one of the seventeen Sources ingested events and reported no error.
     for src in [
         "claude",
         "codex",
+        "copilot",
         "gemini",
         "hermes",
         "grok",
@@ -797,11 +831,11 @@ fn hermetic_sixteen_source_partition_invariants() {
         .unwrap();
     assert!(exec > 0, "claude ctx_exec empty");
 
-    // Every Source with billed tokens surfaces in ctx_buckets (all sixteen here).
+    // Every Source with billed tokens surfaces in ctx_buckets (all seventeen here).
     let buckets = crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
     assert!(
-        buckets.len() >= 15,
-        "expected >=15 sources in ctx_buckets, got {}",
+        buckets.len() >= 16,
+        "expected >=16 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -833,6 +867,14 @@ fn hermetic_sixteen_source_partition_invariants() {
         .unwrap();
     assert!(pi_unattributed > 0, "pi recorded no Unattributed usage");
 
+    let copilot = crate::queries::breakdown(&conn, "tool", &crate::queries::Filters::default())
+        .unwrap()
+        .into_iter()
+        .find(|row| row.key.as_deref() == Some("copilot"))
+        .expect("Copilot missing from the public Source breakdown");
+    assert_eq!(copilot.total_tokens, 120);
+    assert_eq!(copilot.requests, 1);
+
     // --- The universal invariants, now proven non-vacuous. ---
     assert_partition_exact(&conn);
     assert_secondary_subset(&conn);
@@ -840,7 +882,7 @@ fn hermetic_sixteen_source_partition_invariants() {
     assert_bucket_partition_exact(&conn);
 
     // A second scan of the same corpus inserts nothing new and leaves every
-    // ingestion is idempotent across all sixteen.
+    // ingestion is idempotent across all seventeen.
     let totals_before = source_totals(&conn);
     let rescan = run_scan(&mut conn, &roots);
     for s in &rescan.sources {
@@ -855,6 +897,47 @@ fn hermetic_sixteen_source_partition_invariants() {
         source_totals(&conn),
         "second-scan totals drifted"
     );
+
+    std::fs::remove_file(&roots.copilot_db).unwrap();
+    Connection::open(&roots.copilot_db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version VALUES (7);",
+        )
+        .unwrap();
+    let malformed = run_scan(&mut conn, &roots);
+    let copilot = malformed
+        .sources
+        .iter()
+        .find(|source| source.source == "copilot")
+        .unwrap();
+    assert!(copilot
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("unsupported schema version 7")));
+    assert_eq!(totals_before, source_totals(&conn));
+
+    std::fs::remove_file(&roots.copilot_db).unwrap();
+    let disappeared = run_scan(&mut conn, &roots);
+    let copilot = disappeared
+        .sources
+        .iter()
+        .find(|source| source.source == "copilot")
+        .unwrap();
+    assert!(copilot.error.is_none());
+    assert_eq!(copilot.events_inserted, 0);
+    assert_eq!(totals_before, source_totals(&conn));
+
+    drop(conn);
+    let durable = ["", "-wal", "-shm"]
+        .into_iter()
+        .filter_map(|suffix| std::fs::read(format!("{}{}", ledger_path.display(), suffix)).ok())
+        .flatten()
+        .collect::<Vec<_>>();
+    assert!(!durable
+        .windows("COPILOT_PRIVATE_PROMPT_MARKER".len())
+        .any(|window| window == b"COPILOT_PRIVATE_PROMPT_MARKER"));
 }
 
 // (source, total tokens, requests) per Source — a stable-totals fingerprint.

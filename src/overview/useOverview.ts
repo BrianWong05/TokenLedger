@@ -99,6 +99,11 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
       snap.ctxResources, snap.ctxBuckets, snap.ctxToolRows, snap.ctxExecRows,
       snap.range, snap.selected, snap.customFrom, snap.customTo,
       snap.from, snap.to, snap.firstIso, snap.lastIso,
+      snap.reloading,
+      // Both feed headline.authoritative/total. `provisional` clears on the
+      // post-scan series, which lands a new allPoints reference anyway — but
+      // the view must not depend on that coincidence to reveal the headline.
+      snap.provisional,
       lang,
     ],
   );
@@ -138,6 +143,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   return {
     loading: snap.loading,
     reloading: snap.reloading,
+    provisional: snap.provisional,
     // Full unbounded daily series — the trend enlarge buckets it for its own
     // local window (the store keeps this reference stable across ticks).
     allPoints: snap.allPoints ?? [],

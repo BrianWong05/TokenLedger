@@ -11,8 +11,18 @@ import './overview.css';
 
 const mountedRoots: Root[] = [];
 const ENTRANCE_PLAYED_KEY = 'tokenledger.tokenTotalEntrancePlayed';
+const RANGE_WINDOWS = [
+  'day:2026-08-14:2026-08-14',
+  'week:2026-08-08:2026-08-14',
+  'month:2026-07-16:2026-08-14',
+  'total:2026-07-16:2026-08-14',
+  'custom:2026-08-10:2026-08-12',
+] as const;
+const RANGE_SWITCHES = RANGE_WINDOWS.flatMap((from) =>
+  RANGE_WINDOWS.filter((to) => to !== from).map((to) => [from, to] as const),
+);
 
-function mountHeadline(total: number, summaryReady: boolean) {
+function mountHeadline(total: number, authoritative: boolean, initialWindowKey = 'day::') {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -22,7 +32,7 @@ function mountHeadline(total: number, summaryReady: boolean) {
   // visible false is another tab showing over a still-mounted Overview.
   const rerender = (
     nextTotal: number,
-    nextSummaryReady: boolean,
+    nextAuthoritative: boolean,
     windowKey = 'day::',
     visible = true,
   ) => {
@@ -30,14 +40,14 @@ function mountHeadline(total: number, summaryReady: boolean) {
       root.render(
         <TokenTotalHeadline
           total={nextTotal}
-          summaryReady={nextSummaryReady}
+          authoritative={nextAuthoritative}
           windowKey={windowKey}
           visible={visible}
         />,
       ),
     );
   };
-  rerender(total, summaryReady);
+  rerender(total, authoritative, initialWindowKey);
   return { button: container.querySelector('button')!, rerender };
 }
 
@@ -159,17 +169,14 @@ describe('TokenTotalHeadline', () => {
     const { button, rerender } = mountHeadline(4_500_000_000, true);
     act(() => vi.advanceTimersByTime(1_400));
 
-    // The switch's Summary lands a beat after the click, so the new window's
-    // key arrives while the old figure is still on screen.
+    // The new window's key arrives while its Summary is still pending.
     rerender(4_500_000_000, true, 'week::');
-    expect(button.getAttribute('aria-busy')).toBeNull();
-
-    // Now the figure lands: the wheels roll to it — never through the
-    // zero-shaped resting value the entrance starts from.
-    rerender(5_000_000_000, true, 'week::');
     expect(button.getAttribute('aria-busy')).toBe('true');
-    expect(button.textContent).not.toContain('0.0B');
     act(() => vi.advanceTimersByTime(1_400));
+
+    // A changed figure from the same window still updates without a second
+    // roll, because background scans are not range switches.
+    rerender(5_000_000_000, true, 'week::');
     expect(button.getAttribute('aria-busy')).toBeNull();
     expect(button.textContent).toBe('5B');
 
@@ -177,6 +184,17 @@ describe('TokenTotalHeadline', () => {
     const revisited = mountHeadline(6_000_000_000, true).button;
     expect(revisited.getAttribute('aria-busy')).toBeNull();
     expect(revisited.textContent).toBe('6B');
+  });
+
+  it.each(RANGE_SWITCHES)('rolls before the Summary lands for %s → %s', (from, to) => {
+    vi.useFakeTimers();
+    sessionStorage.setItem(ENTRANCE_PLAYED_KEY, 'true');
+    const { button, rerender } = mountHeadline(4_500_000_000, true, from);
+    act(() => vi.advanceTimersByTime(1_400));
+
+    rerender(4_500_000_000, true, to);
+
+    expect(button.getAttribute('aria-busy')).toBe('true');
   });
 
   it('rolls the figure already on screen when the Overview tab comes back', () => {
@@ -198,7 +216,7 @@ describe('TokenTotalHeadline', () => {
 
   it('leaves a still-owed entrance to play on the first Overview return', () => {
     vi.useFakeTimers();
-    // summaryReady false: the entrance has not played, so it still owes its own
+    // authoritative false: the entrance has not played, so it still owes its own
     // zero-shaped motion and the return must not pre-empt it.
     const { button, rerender } = mountHeadline(4_500_000_000, false);
     rerender(4_500_000_000, false, 'day::', false);

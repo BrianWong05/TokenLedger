@@ -76,6 +76,7 @@ fn run() -> Result<String, String> {
             .get("plan_type")
             .and_then(|p| p.as_str())
             .map(str::to_string),
+        usage_resets_available: usage_resets_available(&body),
         windows,
     };
 
@@ -174,6 +175,12 @@ fn windows(body: &Value, fetched_at: i64) -> Vec<WindowExport> {
     out
 }
 
+fn usage_resets_available(body: &Value) -> Option<u64> {
+    body.get("rate_limit_reset_credits")?
+        .get("available_count")?
+        .as_u64()
+}
+
 fn collect_windows(node: &Value, fetched_at: i64, out: &mut Vec<WindowExport>) {
     let Some(object) = node.as_object() else { return };
     match window(object, fetched_at) {
@@ -259,6 +266,7 @@ mod tests {
             {"limit_name": "gpt-5.3-codex-spark",
              "rate_limit": {"primary_window": {"used_percent": 10.0, "limit_window_seconds": 604800, "reset_at": 1786885199}}}
         ],
+        "rate_limit_reset_credits": {"available_count": 1},
         "credits": {"has_credits": false, "unlimited": false, "balance": "0"}
     }"#;
 
@@ -288,6 +296,19 @@ mod tests {
         assert!(
             windows(&body, 0).iter().all(|w| w.used_pct != 10.0),
             "the spark pool's window must not enter the codex series",
+        );
+    }
+
+    #[test]
+    fn usage_resets_are_source_state_and_preserve_zero() {
+        let body: Value = serde_json::from_str(WHAM).unwrap();
+        assert_eq!(usage_resets_available(&body), Some(1));
+        assert_eq!(usage_resets_available(&serde_json::json!({})), None);
+        assert_eq!(
+            usage_resets_available(&serde_json::json!({
+                "rate_limit_reset_credits": {"available_count": 0}
+            })),
+            Some(0),
         );
     }
 

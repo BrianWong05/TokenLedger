@@ -45,6 +45,8 @@ export interface CardView {
   via: LimitsVia;
   state: CardState;
   plan: string | null;
+  /** Current source-level count; null means the vendor did not report it. */
+  usageResetsAvailable: number | null;
   /** Epoch seconds of the newest observation behind these windows, or null. */
   observedAt: number | null;
   windows: WindowView[];
@@ -126,10 +128,32 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
  * duration classes are named; a per-model window is DISCOVERED from the key's
  * own tail, so a `seven_day_zephyr` nobody has seen renders as "Zephyr" rather
  * than disappearing.
+ *
+ * A key may carry a **pool** ahead of a colon — `gemini:w300`. Antigravity is
+ * the first Source where the pool is a genuine second axis rather than a slot:
+ * two pools share both durations, so the duration alone does not address a bar.
+ * An unrecognised pool renders raw, mirroring the `seven_day_zephyr` rule.
+ *
+ * `source` is passed because one bar's *quantity* can be a fact about the Source
+ * rather than the window: Grok's weekly bar meters a credit pool, not a
+ * rate-limit window, and the same geometry at 80% means two different things
+ * (#126). It says "credits" so the two are not read as the same thing.
  */
 export function windowLabel(
   key: string,
-): { kind: 'session' | 'weekly'; model?: undefined } | { kind: 'model'; model: string } | { kind: 'other'; minutes: string } {
+  source?: string,
+):
+  | { kind: 'session' | 'weekly' | 'weeklyCredits' | 'monthlyCredits'; pool?: string; model?: undefined }
+  | { kind: 'model'; model: string; pool?: string }
+  | { kind: 'other'; minutes: string; pool?: string } {
+  const split = key.indexOf(':');
+  if (split > 0) {
+    return { ...windowLabel(key.slice(split + 1), source), pool: key.slice(0, split) };
+  }
+  if (source === 'grok') {
+    if (key === 'w10080') return { kind: 'weeklyCredits' };
+    if (key === 'w43200') return { kind: 'monthlyCredits' };
+  }
   if (key === 'five_hour' || key === 'w300') return { kind: 'session' };
   if (key === 'seven_day' || key === 'w10080') return { kind: 'weekly' };
   const model = key.startsWith('seven_day_') ? key.slice('seven_day_'.length) : null;
@@ -210,6 +234,7 @@ export function cards(
       via,
       state,
       plan: state === 'live' ? (held?.plan ?? null) : null,
+      usageResetsAvailable: state === 'live' ? (held?.usageResetsAvailable ?? null) : null,
       observedAt,
       windows: state === 'live' ? windows : [],
       ...(failure && failure !== 'signed-out' ? { detail: failure.detail } : {}),

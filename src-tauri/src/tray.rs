@@ -256,17 +256,18 @@ fn focus_main<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
 
 /// Recomputes Today's figures (Today's Summary + Settings → tray_title) and
 /// rewrites them in place, wherever this platform shows them. Called after
-/// every scan and on settings save; no-op until the tray exists. The db lock
-/// is released before show_today: every one of those calls hops to the main
-/// thread, and sync commands on the main thread take the same lock — holding
-/// it here would deadlock.
+/// every scan and on settings save; no-op until the tray exists. Reads run on
+/// `read_db` so opening the Menu Bar Extra during a scan never waits on it.
+/// The lock is still released before show_today: those calls hop to the main
+/// thread, and holding any connection across that hop invites a deadlock the
+/// moment something on the main thread takes the same lock.
 pub fn refresh(app: &AppHandle) {
     let Some(tray) = app.try_state::<Tray>() else {
         return;
     };
     let state = app.state::<crate::AppState>();
     let title = {
-        let Ok(db) = state.db.lock() else { return };
+        let Ok(db) = state.read_db.lock() else { return };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)

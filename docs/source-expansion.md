@@ -49,6 +49,9 @@ persistence behaviour remains explicit per Source.
 
 After the catalog, add these proven roots to existing Sources:
 
+- Codex: `$CODEX_HOME/sessions` alongside `~/.codex/sessions`, with the
+  default root scanned first; non-default roots contribute Usage and Context
+  but not Limit Readings. See `docs/source-evidence/codex.md`.
 - Hermes: `$HERMES_HOME/state.db` and profile databases, falling back to
   `~/.hermes`.
 - Gemini: `$GEMINI_CLI_HOME/.gemini/tmp`, falling back to `~/.gemini/tmp`.
@@ -63,6 +66,10 @@ After the catalog, add these proven roots to existing Sources:
   scanned. The CLI transcripts share the Claude-Code shape and its usage rule;
   `~/.qoder-cli` carries no token usage today and is scanned quietly until it
   does.
+- GitHub Copilot CLI: schema version 6 of
+  `$COPILOT_HOME/session-store.db` (falling back to
+  `~/.copilot/session-store.db`), privately validated 2026-08-13. IDE and cloud
+  Artifacts remain independently evidence-gated under ADR-0021.
 
 `~/.claude/transcripts` remains evidence-gated because other programs can write
 Claude-shaped records there; it must not be attributed to Claude until origin
@@ -93,7 +100,6 @@ trustworthy finer timing.
 - MiMo Code
 - OpenCodeReview
 - OpenClaw
-- GitHub Copilot CLI
 - Kimchi
 - Oh My Pi
 - WorkBuddy — genuine private Artifact verified 2026-08-07

@@ -22,9 +22,24 @@
       "color": "#6e50f2",
       "icon": "codex",
       "artifacts": [
-        { "id": "sessions", "kind": "directory", "path": ".codex/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
+        { "id": "sessions", "kind": "directory", "path": ".codex/sessions", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "home", "kind": "directory", "path": null, "environment": "CODEX_HOME", "suffix": "sessions", "platforms": ["all"], "prerequisite": null }
       ],
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
+      "key": "copilot",
+      "label": "Copilot",
+      "source": "GitHub Copilot",
+      "aliases": ["GitHub Copilot CLI", "Copilot CLI"],
+      "color": "#6e40c9",
+      "icon": "copilot",
+      "artifacts": [
+        { "id": "session-store", "kind": "file", "path": ".copilot/session-store.db", "environment": "COPILOT_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": false, "session": true, "tokenCategories": true, "context": false, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },
@@ -65,9 +80,10 @@
       "color": "#c3c8d2",
       "icon": "grok",
       "artifacts": [
-        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
+        { "id": "sessions", "kind": "directory", "path": ".grok/sessions", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null },
+        { "id": "logs", "kind": "file", "path": ".grok/logs/unified.jsonl", "environment": "GROK_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },
@@ -83,7 +99,7 @@
         { "id": "ide-conversations", "kind": "directory", "path": ".gemini/antigravity-ide/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
         { "id": "cli-conversations", "kind": "directory", "path": ".gemini/antigravity-cli/conversations", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null }
       ],
-      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
+      "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false, "limits": "live" },
       "platforms": ["all"],
       "prerequisite": null
     },

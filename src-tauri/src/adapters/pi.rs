@@ -1584,6 +1584,9 @@ mod tests {
         let app = tempfile::tempdir().unwrap();
         let orig_dir = corpus.path().join("a");
         let fork_dir = corpus.path().join("b");
+        let orig_file = orig_dir.join("2026-07-01T10-00-00-000Z_orig.jsonl");
+        let fork_file = fork_dir.join("2026-07-01T11-00-00-000Z_fork.jsonl");
+        let db_path = app.path().join("ledger.db");
         let readtool = |conn: &rusqlite::Connection| -> (i64, i64) {
             queries::ctx_tools(conn, &Filters::default())
                 .unwrap()
@@ -1594,13 +1597,13 @@ mod tests {
         };
 
         write_file(
-            orig_dir.join("2026-07-01T10-00-00-000Z_orig.jsonl"),
+            orig_file.clone(),
             &format!(
                 "{}\n{SHARED_U1}\n{A1_TOOL}\n{R1_NOUSAGE}\n",
                 r#"{"type":"session","version":3,"id":"orig","cwd":"/projects/a"}"#,
             ),
         );
-        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let mut conn = open_db(&db_path).unwrap();
         // Scan 1: the original alone.
         assert!(scan_pi(&mut conn, &[orig_dir.clone(), fork_dir.clone()]).error.is_none());
         let after_1 = readtool(&conn);
@@ -1610,18 +1613,28 @@ mod tests {
         // unchanged, skipped file, so only the persisted owner table can dedup the
         // usage-less result.
         write_file(
-            fork_dir.join("2026-07-01T11-00-00-000Z_fork.jsonl"),
+            fork_file,
             &format!(
                 "{}\n{SHARED_U1}\n{A1_TOOL}\n{R1_NOUSAGE}\n",
                 r#"{"type":"session","version":3,"id":"fork","cwd":"/projects/b"}"#,
             ),
         );
-        assert!(scan_pi(&mut conn, &[orig_dir, fork_dir]).error.is_none());
+        assert!(scan_pi(&mut conn, &[orig_dir.clone(), fork_dir.clone()]).error.is_none());
         assert_eq!(
             readtool(&conn),
             after_1,
             "a later-discovered fork must not double-count copied tool drill-down",
         );
+
+        // v15 discards rebuildable Context after the original owner disappears.
+        // Reopening runs the real migration; the surviving fork must claim the
+        // tool entries instead of deferring forever to the deleted owner.
+        std::fs::remove_file(orig_file).unwrap();
+        conn.execute_batch("PRAGMA user_version = 14").unwrap();
+        drop(conn);
+        let mut conn = open_db(&db_path).unwrap();
+        assert!(scan_pi(&mut conn, &[orig_dir, fork_dir]).error.is_none());
+        assert_eq!(readtool(&conn), after_1, "migration rebuilds ownership from surviving files");
     }
 
     #[test]

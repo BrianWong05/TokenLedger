@@ -31,7 +31,14 @@ interface ModeAnimation {
 
 interface TokenTotalHeadlineProps {
   total: number;
-  summaryReady: boolean;
+  // Whether `total` descends from a settled scan. False through the launch's
+  // provisional paint, which shows real figures the reconcile may still
+  // correct: the entrance is spent once (#14) and a same-window correction
+  // holds still (#12 story 9), so rolling that figure would leave the settled
+  // one to arrive with no motion at all. The zero-shaped placeholder therefore
+  // stands until this turns true — which is why the store reads it off the
+  // post-scan SERIES and not the window Summary ten queries behind it.
+  authoritative: boolean;
   // Identifies the window the total describes (range + bounds). A change here is
   // what earns a roll: the same window reporting a new figure is a background
   // scan landing, which #12 story 9 keeps still.
@@ -180,7 +187,7 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
 
 export default function TokenTotalHeadline({
   total,
-  summaryReady,
+  authoritative,
   windowKey,
   visible = true,
   incomplete = null,
@@ -200,7 +207,7 @@ export default function TokenTotalHeadline({
   // Three decimals here and on the source cards; the tray panel keeps two.
   const compact = formatCompactTokenTotal(total, 3);
   const display = mode === 'exact' ? exact : compact;
-  const revealImmediately = summaryReady && prefersReducedMotion();
+  const revealImmediately = authoritative && prefersReducedMotion();
   const restingDisplay =
     awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
   const action = mode === 'exact' ? t('overview.showCompact') : t('overview.showExact');
@@ -229,14 +236,14 @@ export default function TokenTotalHeadline({
   }, [modeAnimation]);
 
   useEffect(() => {
-    if (!awaitingInitialLoad || !summaryReady || total <= 0) return;
+    if (!awaitingInitialLoad || !authoritative || total <= 0) return;
 
     sessionStorage.setItem(ENTRANCE_PLAYED_KEY, 'true');
     setAwaitingInitialLoad(false);
     if (!prefersReducedMotion()) {
       startAnimation(display);
     }
-  }, [awaitingInitialLoad, display, startAnimation, summaryReady, total]);
+  }, [awaitingInitialLoad, display, startAnimation, authoritative, total]);
 
   // What every data-driven roll requires, wherever it is triggered from: an
   // authoritative figure, usage to show (a zero window reads out immediately —
@@ -245,30 +252,26 @@ export default function TokenTotalHeadline({
   // toggleMode's own conditions instead, because it may cross modes when the
   // figure itself has not moved.
   const rollAllowed = () =>
-    summaryReady && total > 0 && !prefersReducedMotion() && !usesCompactLayout();
+    authoritative && total > 0 && !prefersReducedMotion() && !usesCompactLayout();
 
-  // A period switch rolls the wheels in place to the new window's figure — the
-  // same motion as a mode change, never the zero-shaped entrance. The roll is
-  // owed to the WINDOW moving, not merely to the figure changing: the switch's
-  // Summary lands a beat after the click, so what marks it is that the figure
-  // settled under a different windowKey than the one now selected. A background
-  // scan reports a new figure for the SAME window and stays still (#12 story 9),
-  // as does a window whose total is unchanged — there is nothing to roll.
-  // ponytail: a switch between two windows with identical totals leaves the
-  // recorded key stale, so a later scan on the new window rolls once. Needs the
-  // store to say "this Summary is for that window" to close; not worth it.
+  // A period switch rolls the wheels in place as soon as its windowKey changes,
+  // using the series-derived figure while the window Summary is still loading.
+  // It is the WINDOW moving, not merely the figure changing, that earns a roll;
+  // a background scan reports a new figure for the SAME window and stays still
+  // (#12 story 9).
   const settled = useRef<{ display: string; windowKey: string } | null>(null);
   useEffect(() => {
-    if (awaitingInitialLoad || !summaryReady) return;
+    if (awaitingInitialLoad || !authoritative) return;
     const previous = settled.current;
-    if (previous?.display === display) return;
+    const windowChanged = previous?.windowKey !== windowKey;
+    if (previous?.display === display && !windowChanged) return;
     settled.current = { display, windowKey };
     if (!previous) return; // the entrance (or its reduced-motion reveal) showed this value
-    if (previous.windowKey === windowKey) return; // same window: a scan, not a switch
+    if (!windowChanged) return; // same window: a scan, not a switch
     if (modeAnimation?.to === display) return;
     if (rollAllowed()) startAnimation(display);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [awaitingInitialLoad, display, modeAnimation, startAnimation, summaryReady, total, windowKey]);
+  }, [awaitingInitialLoad, display, modeAnimation, startAnimation, authoritative, total, windowKey]);
 
   // Coming back to the Overview from another tab rolls the figure that is
   // already on screen. The Overview stays mounted while Pricing or Settings
@@ -282,7 +285,7 @@ export default function TokenTotalHeadline({
     if (!returning || awaitingInitialLoad) return;
     if (rollAllowed()) startAnimation(display);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, awaitingInitialLoad, display, startAnimation, summaryReady, total]);
+  }, [visible, awaitingInitialLoad, display, startAnimation, authoritative, total]);
 
   const toggleMode = () => {
     // Only a click's own reel swallows further clicks; a data-driven roll must

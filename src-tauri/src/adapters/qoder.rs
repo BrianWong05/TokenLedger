@@ -13,6 +13,10 @@
 //!    (`prompt_tokens`, `completion_tokens`, `cached_tokens`) and a
 //!    `model_info` JSON blob (`model_key`). Each usage-bearing assistant row is
 //!    one Usage Record (one Request), deduplicating on the row `id`.
+//!    The edition's extension-host logs also contain the refreshed local Model
+//!    catalog (`name` plus `displayName`). It is read as auxiliary metadata so
+//!    new routing aliases resolve without a CLI install or an app release;
+//!    known aliases remain as a fallback when those rotating logs are absent.
 //!
 //!    Cache semantics (ADR-0001): `prompt_tokens` **includes** the cache read
 //!    (`cached_tokens`), so Input Tokens = `prompt_tokens − cached_tokens`.
@@ -52,8 +56,10 @@
 //! NULL, the source cannot say.
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -78,19 +84,140 @@ const SUPPORTED_SCHEMA: &[(&str, &[&str])] = &[(
     ],
 )];
 
-// Qoder logs internal routing aliases, never the backing Model; the catalogs
-// price only the real name. Translate on ingest so Cost resolves (the alias
-// itself would be Unpriced forever). Mapping confirmed by the user; the
-// Artifacts carry no evidence of their own.
-const MODEL_ALIASES: &[(&str, &str)] = &[("qmodel_38max", "qwen3.8-max")];
+type ModelAliases = [HashMap<String, String>; 2];
 
-fn translate_model(model: Option<String>) -> Option<String> {
+const MODEL_CATALOG_MARKER: &str = "Model classes refreshed:";
+
+fn qoder_app_root(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .find(|parent| {
+            parent.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                name.eq_ignore_ascii_case("Qoder") || name.eq_ignore_ascii_case("QoderCN")
+            })
+        })
+        .map(Path::to_path_buf)
+}
+
+fn find_log_files(root: &Path, files: &mut Vec<(SystemTime, PathBuf)>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if kind.is_dir() {
+            find_log_files(&path, files);
+        } else if kind.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("log")
+            && path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("qoder")
+            })
+        {
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            files.push((modified, path));
+        }
+    }
+}
+
+fn model_catalog(path: &Path) -> Option<HashMap<String, String>> {
+    let file = File::open(path).ok()?;
+    let mut latest = None;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Some((_, json)) = line.split_once(MODEL_CATALOG_MARKER) else {
+            continue;
+        };
+        let Ok(catalog) = serde_json::from_str::<Value>(json) else {
+            continue;
+        };
+        let mut aliases = HashMap::new();
+        for model in catalog
+            .as_object()
+            .into_iter()
+            .flat_map(|groups| groups.values())
+            .filter_map(Value::as_array)
+            .flatten()
+        {
+            let Some(alias) = model.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(display) = model.get("displayName").and_then(Value::as_str) else {
+                continue;
+            };
+            if !alias.is_empty() && !display.is_empty() {
+                aliases.insert(alias.to_string(), display.to_ascii_lowercase());
+            }
+        }
+        if !aliases.is_empty() {
+            latest = Some(aliases);
+        }
+    }
+    latest
+}
+
+fn discover_model_aliases(databases: &[PathBuf]) -> ModelAliases {
+    let mut discovered = ModelAliases::default();
+    for database in databases {
+        let Some(app_root) = qoder_app_root(database) else {
+            continue;
+        };
+        let mut logs = Vec::new();
+        find_log_files(&app_root.join("logs"), &mut logs);
+        logs.sort_by(|a, b| b.cmp(a));
+        let Some(catalog) = logs.iter().find_map(|(_, path)| model_catalog(path)) else {
+            continue;
+        };
+        let edition = if is_qoder_cn_path(database) { 1 } else { 0 };
+        discovered[edition].extend(catalog);
+    }
+    discovered
+}
+
+// Qoder usage logs internal routing aliases, never the backing Model. Prefer
+// the desktop app's local refreshed catalog; the fallback keeps old Records
+// readable when those rotating logs are absent. Global and China can route the
+// same alias to different Models.
+fn translate_model(
+    model: Option<String>,
+    qoder_cn: bool,
+    discovered: &ModelAliases,
+) -> Option<String> {
     model.map(|m| {
-        MODEL_ALIASES
-            .iter()
-            .find(|(alias, _)| *alias == m)
-            .map(|(_, real)| real.to_string())
-            .unwrap_or(m)
+        if let Some(real) = discovered[usize::from(qoder_cn)].get(&m) {
+            return real.clone();
+        }
+        match (m.as_str(), qoder_cn) {
+            ("qmodel_38max", _) => "qwen3.8-max",
+            ("qmodel_preview", _) => "qwen3.8-max-preview",
+            ("qmodel_latest", _) => "qwen3.7-max",
+            ("qmodel", _) => "qwen3.7-plus",
+            ("q36fmodel", _) => "qwen3.6-flash",
+            ("dmodel", _) => "deepseek-v4-pro",
+            ("dfmodel", _) => "deepseek-v4-flash",
+            ("gm51model", _) => "glm-5.2",
+            ("kmodel_latest", _) => "kimi-k3",
+            ("kmodel", true) => "kimi-k2.6",
+            ("kmodel", false) => "kimi-k2.7-code",
+            ("mmodel", true) => "minimax-m2.7",
+            ("mmodel", false) => "minimax-m3",
+            ("cmodel", _) => "cantus",
+            _ => return m,
+        }
+        .to_string()
+    })
+}
+
+fn is_qoder_cn_path(path: &Path) -> bool {
+    path.components().any(|part| {
+        let part = part.as_os_str().to_string_lossy();
+        part.eq_ignore_ascii_case(".qoder-cn") || part.eq_ignore_ascii_case("QoderCN")
     })
 }
 
@@ -99,7 +226,8 @@ fn translate_model(model: Option<String>) -> Option<String> {
 // 2: translate routing aliases (qmodel_38max -> qwen3.8-max).
 // 3: re-parse so the keep-max Latest policy rewrites already-booked models.
 // 4: estimate context attribution (messages/system/reasoning) from content.
-const TRANSCRIPT_PARSER_VERSION: i64 = 4;
+// 5: translate aliases from Qoder's local desktop model catalog.
+const TRANSCRIPT_PARSER_VERSION: i64 = 5;
 
 #[derive(Default)]
 struct DatabaseScan {
@@ -116,14 +244,21 @@ pub fn scan_qoder(
     cli_projects: &[PathBuf],
 ) -> SourceScanResult {
     let mut result = SourceScanResult::default();
+    let model_aliases = discover_model_aliases(databases);
     // Session-id → transcript file, shared by both IDE editions: the db rows
     // carry the usage, the transcript carries the content (ADR-0014 —
     // Source-native identity crosses artifacts).
     let transcripts = transcript_index(cli_projects);
     for database in databases {
-        merge_result(&mut result, scan_qoder_database(conn, database, &transcripts));
+        merge_result(
+            &mut result,
+            scan_qoder_database(conn, database, &transcripts, &model_aliases),
+        );
     }
-    merge_result(&mut result, scan_qoder_cli(conn, cli_projects));
+    merge_result(
+        &mut result,
+        scan_qoder_cli(conn, cli_projects, &model_aliases),
+    );
     result
 }
 
@@ -168,6 +303,7 @@ fn scan_qoder_database(
     conn: &mut Connection,
     database: &Path,
     transcripts: &HashMap<String, PathBuf>,
+    model_aliases: &ModelAliases,
 ) -> SourceScanResult {
     if !database.exists() {
         return SourceScanResult::default();
@@ -179,7 +315,7 @@ fn scan_qoder_database(
         };
     }
 
-    let scan = match scan_database(database, transcripts) {
+    let scan = match scan_database(database, transcripts, model_aliases) {
         Ok(scan) => scan,
         Err(error) => {
             return SourceScanResult {
@@ -211,7 +347,11 @@ fn scan_qoder_database(
 /// `~/.qoder-cn/projects`). Missing roots are scanned quietly; each
 /// usage-bearing `assistant` line is one Usage Record, deduplicating on
 /// `qoder:<message.id>`.
-fn scan_qoder_cli(conn: &mut Connection, roots: &[PathBuf]) -> SourceScanResult {
+fn scan_qoder_cli(
+    conn: &mut Connection,
+    roots: &[PathBuf],
+    model_aliases: &ModelAliases,
+) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
     for root in roots {
@@ -220,7 +360,7 @@ fn scan_qoder_cli(conn: &mut Connection, roots: &[PathBuf]) -> SourceScanResult 
     files.sort();
     for path in files {
         let mut file_result = SourceScanResult::default();
-        match scan_file(conn, &path) {
+        match scan_file(conn, &path, model_aliases) {
             Ok((inserted, skipped)) => {
                 file_result.events_inserted = inserted;
                 file_result.lines_skipped = skipped;
@@ -232,7 +372,11 @@ fn scan_qoder_cli(conn: &mut Connection, roots: &[PathBuf]) -> SourceScanResult 
     result
 }
 
-fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
+fn scan_file(
+    conn: &mut Connection,
+    path: &Path,
+    model_aliases: &ModelAliases,
+) -> Result<(u64, u64), String> {
     let state = FileState {
         byte_offset: TRANSCRIPT_PARSER_VERSION,
         ..file_state_of(path)
@@ -244,7 +388,7 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     let source_file = path.to_string_lossy().to_string();
     let content = fs::read_to_string(path)
         .map_err(|error| format!("{SOURCE}: read {}: {error}", path.display()))?;
-    let parsed = parse_file(&content, path, &source_file);
+    let parsed = parse_file(&content, path, &source_file, model_aliases);
     // A changed file is reparsed from the top; keep_max_output re-inserts the
     // same dedup keys without double-booking and raises output on a conflict.
     let inserted = insert_events_keep_max_output(conn, &parsed.events)
@@ -259,7 +403,12 @@ struct ParsedTranscript {
     lines_skipped: u64,
 }
 
-fn parse_file(content: &str, path: &Path, source_file: &str) -> ParsedTranscript {
+fn parse_file(
+    content: &str,
+    path: &Path,
+    source_file: &str,
+    model_aliases: &ModelAliases,
+) -> ParsedTranscript {
     // Consume only complete newline-terminated lines; a trailing partial line
     // is left for the next scan (it is not malformed, just incomplete).
     let consumed = content.rfind('\n').map(|i| i + 1).unwrap_or(0);
@@ -276,6 +425,7 @@ fn parse_file(content: &str, path: &Path, source_file: &str) -> ParsedTranscript
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let qoder_cn = is_qoder_cn_path(path);
 
     let mut events = Vec::new();
     let mut lines_skipped: u64 = 0;
@@ -316,7 +466,14 @@ fn parse_file(content: &str, path: &Path, source_file: &str) -> ParsedTranscript
                 }
             }
             Some("assistant") => {
-                if let Some(mut ev) = parse_line_event(&v, source_file, &encoded_dir, &file_stem) {
+                if let Some(mut ev) = parse_line_event(
+                    &v,
+                    source_file,
+                    &encoded_dir,
+                    &file_stem,
+                    qoder_cn,
+                    model_aliases,
+                ) {
                     let billed = ev.input_tokens
                         + ev.cache_read_tokens
                         + ev.cache_write_5m_tokens
@@ -359,6 +516,8 @@ fn parse_line_event(
     source_file: &str,
     encoded_dir: &str,
     file_stem: &str,
+    qoder_cn: bool,
+    model_aliases: &ModelAliases,
 ) -> Option<UsageEvent> {
     if v.get("type").and_then(|t| t.as_str()) != Some("assistant") {
         return None;
@@ -380,6 +539,8 @@ fn parse_line_event(
             .and_then(|m| m.as_str())
             .filter(|m| !m.is_empty())
             .map(str::to_owned),
+        qoder_cn,
+        model_aliases,
     );
 
     let project = match v.get("cwd").and_then(|c| c.as_str()) {
@@ -498,12 +659,14 @@ fn attribute_session(transcript: &Path, events: &mut [UsageEvent], order: &[usiz
 fn scan_database(
     path: &Path,
     transcripts: &HashMap<String, PathBuf>,
+    model_aliases: &ModelAliases,
 ) -> Result<DatabaseScan, String> {
     let source_file = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let database = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|error| format!("{SOURCE}: database open failed: {error}"))?;
     let _ = database.busy_timeout(std::time::Duration::from_millis(5000));
     ensure_schema(&database)?;
+    let qoder_cn = is_qoder_cn_path(path);
 
     let mut scan = DatabaseScan::default();
     // Subagent messages log no model_info; their parent session's does.
@@ -564,6 +727,8 @@ fn scan_database(
                         .and_then(|s| model_fallback.get(s))
                         .cloned()
                 }),
+            qoder_cn,
+            model_aliases,
         );
 
         scan.events.push(UsageEvent {
@@ -766,6 +931,143 @@ mod tests {
             rusqlite::params![id, session, role, token_info, model_info, gmt_create],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn routing_aliases_translate_to_model_names() {
+        let discovered = ModelAliases::default();
+        for (alias, model) in [
+            ("qmodel_38max", "qwen3.8-max"),
+            ("qmodel_preview", "qwen3.8-max-preview"),
+            ("qmodel_latest", "qwen3.7-max"),
+            ("qmodel", "qwen3.7-plus"),
+            ("q36fmodel", "qwen3.6-flash"),
+            ("dmodel", "deepseek-v4-pro"),
+            ("dfmodel", "deepseek-v4-flash"),
+            ("gm51model", "glm-5.2"),
+            ("kmodel_latest", "kimi-k3"),
+            ("cmodel", "cantus"),
+        ] {
+            assert_eq!(
+                translate_model(Some(alias.to_string()), false, &discovered).as_deref(),
+                Some(model)
+            );
+        }
+
+        assert_eq!(
+            translate_model(Some("kmodel".into()), false, &discovered).as_deref(),
+            Some("kimi-k2.7-code")
+        );
+        assert_eq!(
+            translate_model(Some("kmodel".into()), true, &discovered).as_deref(),
+            Some("kimi-k2.6")
+        );
+        assert_eq!(
+            translate_model(Some("mmodel".into()), false, &discovered).as_deref(),
+            Some("minimax-m3")
+        );
+        assert_eq!(
+            translate_model(Some("mmodel".into()), true, &discovered).as_deref(),
+            Some("minimax-m2.7")
+        );
+        assert_eq!(
+            translate_model(Some("future-model".into()), false, &discovered).as_deref(),
+            Some("future-model")
+        );
+        assert!(is_qoder_cn_path(Path::new(
+            "/Users/dev/.qoder-cn/projects/session.jsonl"
+        )));
+        assert!(is_qoder_cn_path(Path::new(
+            "/Users/dev/Library/Application Support/QoderCN/cache/local.db"
+        )));
+        assert!(!is_qoder_cn_path(Path::new(
+            "/Users/dev/.qoder/projects/session.jsonl"
+        )));
+
+        for (database, edition) in [
+            (
+                "/Users/dev/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db",
+                "Qoder",
+            ),
+            (
+                "/home/dev/.config/QoderCN/SharedClientCache/cache/db/local.db",
+                "QoderCN",
+            ),
+            (
+                "C:/Users/dev/AppData/Roaming/Qoder/SharedClientCache/cache/db/local.db",
+                "Qoder",
+            ),
+        ] {
+            assert_eq!(
+                qoder_app_root(Path::new(database))
+                    .unwrap()
+                    .file_name()
+                    .unwrap(),
+                edition
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_catalog_translates_new_models_without_the_cli() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_root = tmp.path().join("Qoder");
+        let db_path = app_root.join("SharedClientCache/cache/db/local.db");
+        create_database(&db_path);
+        let db = Connection::open(&db_path).unwrap();
+        insert_message(
+            &db,
+            "m1",
+            Some("s"),
+            "assistant",
+            Some(r#"{"prompt_tokens":100,"completion_tokens":10,"cached_tokens":0}"#),
+            Some(r#"{"model_key":"futuremodel"}"#),
+            1_786_112_276_027i64,
+        );
+        insert_message(
+            &db,
+            "m2",
+            Some("s"),
+            "assistant",
+            Some(r#"{"prompt_tokens":100,"completion_tokens":10,"cached_tokens":0}"#),
+            Some(r#"{"model_key":"dfmodel"}"#),
+            1_786_112_276_028i64,
+        );
+        drop(db);
+
+        let log = app_root.join(
+            "logs/20260814T120000/questWindow/exthost/output_logging_20260814T120001/1-Qoder.log",
+        );
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        fs::write(
+            log,
+            concat!(
+                "2026-08-14 12:00:01 [info] Model classes refreshed:",
+                r#"{"assistant":[{"name":"futuremodel","displayName":"Future-Model-1"},{"name":"dfmodel","displayName":"DeepSeek-V5-Flash"}]}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, &[db_path], &[]);
+        assert!(result.error.is_none());
+        let model: String = ledger
+            .query_row(
+                "SELECT model FROM events WHERE dedup_key = 'qoder:m1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, "future-model-1");
+        let repointed: String = ledger
+            .query_row(
+                "SELECT model FROM events WHERE dedup_key = 'qoder:m2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(repointed, "deepseek-v5-flash");
     }
 
     #[test]

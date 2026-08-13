@@ -81,6 +81,13 @@ fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
 
 pub struct AppState {
     pub db: Mutex<Connection>,
+    /// Second connection to the same database (WAL), for reads. A scan holds
+    /// `db` for its whole pass, so reads sharing that mutex queue behind it —
+    /// at start-up that put the first paint behind the launch scan (measured
+    /// in docs/performance.md, "startup first paint"). WAL readers never
+    /// block on the writer; they see the last committed state, which is
+    /// exactly what a provisional paint wants. Route reads through `read()`.
+    pub read_db: Mutex<Connection>,
     pub roots: SourceRoots,
     pub scan_lock: Mutex<()>,
     /// Model names already looked up against the catalogs during this run of the
@@ -93,6 +100,17 @@ pub struct AppState {
     /// figures are, and the resident capture scans at start-up, so freshness
     /// from a previous launch would answer a question nobody asked.
     pub last_scan: AtomicI64,
+}
+
+/// Run a read on the read connection. The db-vs-read_db choice every read
+/// makes, made in one place so the next read cannot silently pick the write
+/// connection and queue behind a scan.
+fn read<T>(
+    state: &AppState,
+    f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> Result<T, String> {
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
+    f(&db).map_err(|e| e.to_string())
 }
 
 /// Fetch both price catalogs and rebuild the prices table, then tell the frontend
@@ -116,12 +134,9 @@ fn refresh_catalogs(app: &AppHandle) {
     // install rendering 'unpriced' until the next range change. A failure to read
     // the Ledger costs the publisher tier this run, not the whole refresh.
     let targets = match openrouter.as_deref() {
-        Some(json) => state
-            .db
-            .lock()
-            .ok()
-            .and_then(|db| pricing::ledger_publisher_targets(&db, json).ok())
-            .unwrap_or_default(),
+        Some(json) => {
+            read(&state, |db| pricing::ledger_publisher_targets(db, json)).unwrap_or_default()
+        }
         None => Vec::new(),
     };
     let publishers = pricing::load_publisher_rates(&data_dir, &targets);
@@ -140,7 +155,8 @@ fn refresh_catalogs(app: &AppHandle) {
 fn lookup_new_unpriced(app: &AppHandle) {
     let state = app.state::<AppState>();
     let fresh = {
-        let (Ok(db), Ok(mut attempted)) = (state.db.lock(), state.price_lookups.lock()) else {
+        let (Ok(db), Ok(mut attempted)) = (state.read_db.lock(), state.price_lookups.lock())
+        else {
             return;
         };
         let fresh = pricing::models_needing_lookup(&db, &attempted).unwrap_or_default();
@@ -163,9 +179,8 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
     let state = app.state::<AppState>();
     let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
     let status = {
-        // ponytail: single Mutex<Connection> per the AppState contract. A scan
-        // briefly blocks reads; incremental scans are cheap, so no separate read
-        // connection. Add one only if UI jank during scans is ever measured.
+        // The scan holds `db` for its whole pass; the read commands run on
+        // `read_db` (WAL) so the launch scan cannot queue the first paint.
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
         run_scan(&mut db, &state.roots)
     };
@@ -200,11 +215,7 @@ fn last_scan(state: State<'_, AppState>) -> i64 {
 /// marker on its own window's token figure.
 #[tauri::command(async)]
 fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadable> {
-    state
-        .db
-        .lock()
-        .map(|db| db::load_unreadable(&db))
-        .unwrap_or_default()
+    read(&state, |db| Ok(db::load_unreadable(db))).unwrap_or_default()
 }
 
 /// Decrypt Antigravity's `.pb` Sessions by running the `antigravity-export`
@@ -243,8 +254,7 @@ async fn export_antigravity(app: tauri::AppHandle) -> Result<String, String> {
 // which is main-thread territory.
 #[tauri::command(async)]
 fn summary(state: State<'_, AppState>, filters: Filters) -> Result<Summary, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::summary(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::summary(db, &filters))
 }
 
 #[tauri::command(async)]
@@ -253,8 +263,7 @@ fn trend(
     filters: Filters,
     bucket: String,
 ) -> Result<Vec<TrendPoint>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::trend(&db, &filters, &bucket).map_err(|e| e.to_string())
+    read(&state, |db| queries::trend(db, &filters, &bucket))
 }
 
 #[tauri::command(async)]
@@ -263,8 +272,7 @@ fn series(
     filters: Filters,
     bucket: String,
 ) -> Result<Vec<SeriesPoint>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::series(&db, &filters, &bucket).map_err(|e| e.to_string())
+    read(&state, |db| queries::series(db, &filters, &bucket))
 }
 
 #[tauri::command(async)]
@@ -273,8 +281,7 @@ fn breakdown(
     by: String,
     filters: Filters,
 ) -> Result<Vec<BreakdownRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::breakdown(&db, &by, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::breakdown(db, &by, &filters))
 }
 
 #[tauri::command(async)]
@@ -282,41 +289,41 @@ fn ctx_resources(
     state: State<'_, AppState>,
     filters: Filters,
 ) -> Result<Vec<CtxResource>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_resources(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_resources(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBuckets>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_buckets(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_buckets(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_tools(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_tools(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSkillRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_skills(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_skills(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_exec(db, &filters))
 }
 
 /// The current state of every Limit the Ledger holds Readings for. Takes no
 /// Filters: the Limits page is *now*, not a range, and it ignores the Overview's
 /// date window and Source selection entirely.
 #[tauri::command(async)]
-fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::limits(&db).map_err(|e| e.to_string())
+fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
+    let mut cards = read(&state, queries::limits)?;
+    if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
+        if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
+            card.usage_resets_available = export.usage_resets_available;
+        }
+    }
+    Ok(cards)
 }
 
 /// Ask a `live` Source's Companion for a fresh reading (ADR-0019). This is the
@@ -389,8 +396,7 @@ async fn refresh_prices(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command(async)]
 fn model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricing>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    pricing::model_pricing(&db).map_err(|e| e.to_string())
+    read(&state, pricing::model_pricing)
 }
 
 // The Pricing tab's Override mutations. Both emit the SAME prices-rebuilt event
@@ -450,8 +456,7 @@ fn resize_panel(app: AppHandle, height: f64) {
 
 #[tauri::command(async)]
 fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    settings::get_settings(&db).map_err(|e| e.to_string())
+    read(&state, settings::get_settings)
 }
 
 #[tauri::command]
@@ -550,8 +555,12 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let conn = db::open_db(&data_dir.join("tokenledger.db"))?;
+            // Opened second, after the first open has settled WAL mode and the
+            // migrations — for this one both are no-ops.
+            let read_conn = db::open_db(&data_dir.join("tokenledger.db"))?;
             app.manage(AppState {
                 db: Mutex::new(conn),
+                read_db: Mutex::new(read_conn),
                 // The Companions' output directory is the app's own, not
                 // something to find under home — so it is filled in here, where
                 // the data dir is already resolved.
@@ -588,12 +597,7 @@ pub fn run() {
             // no-ops until a signed release exists.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let auto = handle
-                    .state::<AppState>()
-                    .db
-                    .lock()
-                    .ok()
-                    .and_then(|db| settings::get_settings(&db).ok())
+                let auto = read(&handle.state::<AppState>(), settings::get_settings)
                     .map(|s| s.auto_check_updates)
                     .unwrap_or(false);
                 if auto {
@@ -609,19 +613,31 @@ pub fn run() {
             // manual start; the hidden-start branch above covers login start;
             // this thread covers the long tail. Emits prices-rebuilt so a
             // visible Overview refreshes too.
+            // Every sixth tick also refreshes prices: daily catalog checks keep
+            // today's Codex Auto Review snapshot current without adding another
+            // timer thread. Past snapshots are immutable once their day closes.
             // ponytail: parked thread + 4h sleep, no timer framework needed.
             let handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
-                if scan_now(&handle).is_ok() {
-                    let _ = handle.emit("prices-rebuilt", ());
+            std::thread::spawn(move || {
+                let mut ticks = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
+                    if scan_now(&handle).is_ok() {
+                        let _ = handle.emit("prices-rebuilt", ());
+                    }
+                    ticks += 1;
+                    if ticks == 6 {
+                        refresh_catalogs(&handle);
+                        ticks = 0;
+                    }
                 }
             });
 
             // Refresh both price catalogs off the main thread; each loader falls
             // back to its cached snapshot on a fetch failure (LiteLLM then to its
             // bundled copy, OpenRouter to None — ADR-0009). Scans re-run this same
-            // routine whenever they surface a Model no catalog covers.
+            // routine whenever they surface a Model no catalog covers, and the
+            // resident cadence above re-runs it daily.
             let handle = app.handle().clone();
             std::thread::spawn(move || refresh_catalogs(&handle));
             Ok(())
@@ -732,6 +748,69 @@ mod tests {
         assert!(app.get_webview_window("main").is_some());
     }
 
+    /// Every `live` Source needs three separate files to agree before its card
+    /// can ever fetch: the catalog says it is live, `tauri.conf.json` ships a
+    /// Companion by that name, and the window's capability lets the shell run
+    /// it. Any one of them missing fails only at the moment a person presses
+    /// **Enable** — which is how the v1 wiring shipped unverified. Here the
+    /// three are read and compared instead.
+    #[test]
+    fn every_live_source_has_a_companion_that_the_shell_is_allowed_to_run() {
+        let read = |path: &str| {
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + path)
+                    .unwrap_or_else(|e| panic!("{path}: {e}")),
+            )
+            .unwrap_or_else(|e| panic!("{path}: {e}"))
+        };
+        let conf = read("tauri.conf.json");
+        let external: Vec<&str> = conf
+            .pointer("/bundle/externalBin")
+            .and_then(|b| b.as_array())
+            .expect("the bundle must declare its external binaries")
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        let capability = read("capabilities/default.json");
+        let allowed: Vec<&serde_json::Value> = capability
+            .pointer("/permissions")
+            .and_then(|p| p.as_array())
+            .expect("the window capability must list permissions")
+            .iter()
+            .filter(|p| p.get("identifier").and_then(|i| i.as_str()) == Some("shell:allow-execute"))
+            .filter_map(|p| p.get("allow").and_then(|a| a.as_array()))
+            .flatten()
+            .collect();
+
+        let live: Vec<&str> = crate::source_catalog::catalog()
+            .sources
+            .iter()
+            .filter(|s| s.capabilities.limits.as_deref() == Some("live"))
+            .map(|s| s.key.as_str())
+            .collect();
+        assert!(live.contains(&"antigravity"), "the catalog decides who is live: {live:?}");
+
+        for key in live {
+            let name = format!("binaries/{key}-limits");
+            assert!(external.contains(&name.as_str()), "{name} is not shipped with the app");
+            let entry = allowed
+                .iter()
+                .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("the shell may not run {name}"));
+            assert_eq!(entry.get("sidecar").and_then(|s| s.as_bool()), Some(true));
+            // The Companions' one hand-run diagnostic is `--shape`, and the app
+            // must never be able to pass it: no argument reaches a Companion
+            // from the frontend.
+            assert_eq!(entry.get("args").and_then(|a| a.as_bool()), Some(false));
+            assert!(
+                std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin"))
+                    .join(format!("{key}-limits.rs"))
+                    .is_file(),
+                "{key}-limits has no source to build from",
+            );
+        }
+    }
+
     #[test]
     fn resident_app_prevents_automatic_exit_but_allows_explicit_quit() {
         assert!(super::should_prevent_exit(None));
@@ -740,18 +819,21 @@ mod tests {
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
-    // functions. Empty fixture roots => 14 source statuses, zero events.
+    // functions. Empty fixture roots => one status per catalog Source, zero events.
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
         let conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
+        let read_conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
         let roots = SourceRoots {
             claude: dir.path().join("claude"),
-            codex: dir.path().join("codex"),
+            codex_sessions: vec![dir.path().join("codex")],
+            copilot_db: dir.path().join("copilot/session-store.db"),
             gemini_tmp: dir.path().join("gemini"),
             gemini_projects_json: dir.path().join("projects.json"),
             hermes_db: dir.path().join("state.db"),
             grok_sessions: dir.path().join("grok"),
+            grok_logs: dir.path().join("grok-logs"),
             antigravity_conversations: dir.path().join("antigravity"),
             antigravity_ide_conversations: dir.path().join("antigravity-ide"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),
@@ -772,6 +854,7 @@ mod tests {
         };
         let state = AppState {
             db: Mutex::new(conn),
+            read_db: Mutex::new(read_conn),
             roots,
             scan_lock: Mutex::new(()),
             price_lookups: Mutex::new(Default::default()),
@@ -780,9 +863,11 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 16);
+        assert_eq!(status.sources.len(), 17);
 
-        let sum = queries::summary(&db, &Filters::default()).unwrap();
+        // The IPC read commands query through `read` (the second connection);
+        // a scan's committed writes must be visible there.
+        let sum = super::read(&state, |db| queries::summary(db, &Filters::default())).unwrap();
         assert_eq!(sum.total_tokens, 0);
     }
 }

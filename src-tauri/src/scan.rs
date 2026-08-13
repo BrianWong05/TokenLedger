@@ -10,6 +10,7 @@ use crate::adapters::claude::scan_claude;
 use crate::adapters::cline::scan_cline;
 use crate::adapters::codebuddy::scan_codebuddy;
 use crate::adapters::codex::scan_codex;
+use crate::adapters::copilot::scan_copilot;
 use crate::adapters::gemini::scan_gemini;
 use crate::adapters::goose::scan_goose;
 use crate::adapters::grok::scan_grok;
@@ -28,11 +29,16 @@ use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 
 pub struct SourceRoots {
     pub claude: PathBuf,
-    pub codex: PathBuf,
+    pub codex_sessions: Vec<PathBuf>,
+    pub copilot_db: PathBuf,
     pub gemini_tmp: PathBuf,
     pub gemini_projects_json: PathBuf,
     pub hermes_db: PathBuf,
     pub grok_sessions: PathBuf,
+    /// The CLI's own unified log, where every credits snapshot it fetches lands.
+    /// A separate artifact from the sessions above, discovered and failing
+    /// independently of them (ADR-0015).
+    pub grok_logs: PathBuf,
     // The IDE writes under either `antigravity/` or `antigravity-ide/` depending
     // on its `--app_data_dir`, and the CLI under `antigravity-cli/`. All three
     // share one SQLite schema, and all three are scanned — a dir left out is a
@@ -67,11 +73,17 @@ impl SourceRoots {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let session_dir = pi_environment_value("session-dir");
         let agent_dir = pi_environment_value("agent-dir");
-        Self::from_home_and_pi_env(&home, session_dir.as_deref(), agent_dir.as_deref())
+        Self::from_home_and_overrides(
+            &home,
+            environment_value("codex", "home").as_deref(),
+            session_dir.as_deref(),
+            agent_dir.as_deref(),
+        )
     }
 
-    fn from_home_and_pi_env(
+    fn from_home_and_overrides(
         home: &Path,
+        codex_home: Option<&OsStr>,
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
     ) -> Self {
@@ -79,9 +91,11 @@ impl SourceRoots {
             home,
             session_dir,
             agent_dir,
+            codex_home,
             std::env::var_os("HERMES_HOME").as_deref(),
             gemini_environment_value().as_deref(),
             grok_environment_value().as_deref(),
+            std::env::var_os("COPILOT_HOME").as_deref(),
             environment_value("cline", "cli-data").as_deref(),
             environment_value("cline", "cli-sandbox").as_deref(),
             environment_value("kilo", "db").as_deref(),
@@ -101,9 +115,11 @@ impl SourceRoots {
             home,
             session_dir,
             agent_dir,
+            None,
             hermes_home,
             gemini_home,
             grok_home,
+            None,
             None,
             None,
             None,
@@ -114,14 +130,19 @@ impl SourceRoots {
         home: &Path,
         session_dir: Option<&OsStr>,
         agent_dir: Option<&OsStr>,
+        codex_home: Option<&OsStr>,
         hermes_home: Option<&OsStr>,
         gemini_home: Option<&OsStr>,
         grok_home: Option<&OsStr>,
+        copilot_home: Option<&OsStr>,
         cline_data: Option<&OsStr>,
         cline_sandbox_data: Option<&OsStr>,
         kilo_db: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
+        let copilot_home = copilot_home
+            .and_then(|value| visible_path(home, value))
+            .unwrap_or_else(|| home.join(".copilot"));
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
         append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
         append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
@@ -149,7 +170,9 @@ impl SourceRoots {
         );
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
-            codex: catalog_root(home, "codex", "sessions"),
+            codex_sessions: codex_session_roots(home, codex_home),
+            copilot_db: copilot_home
+                .join(source_catalog::artifact_filename("copilot", "session-store")),
             gemini_tmp: gemini_home.join(source_catalog::artifact_filename("gemini", "tmp")),
             gemini_projects_json: gemini_home
                 .join(source_catalog::artifact_filename("gemini", "projects")),
@@ -157,6 +180,8 @@ impl SourceRoots {
                 .join(source_catalog::artifact_filename("hermes", "state")),
             grok_sessions: grok_home_for(home, grok_home)
                 .join(source_catalog::artifact_filename("grok", "sessions")),
+            grok_logs: grok_home_for(home, grok_home)
+                .join(catalog_artifact_tail("grok", "logs")),
             antigravity_conversations: catalog_root(home, "antigravity", "conversations"),
             antigravity_ide_conversations: catalog_root(home, "antigravity", "ide-conversations"),
             antigravity_cli_conversations: catalog_root(home, "antigravity", "cli-conversations"),
@@ -265,6 +290,17 @@ fn environment_value(source: &str, artifact: &str) -> Option<OsString> {
         .and_then(|artifact| artifact.environment.as_deref())
         .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} environment"));
     std::env::var_os(environment)
+}
+
+fn codex_session_roots(home: &Path, value: Option<&OsStr>) -> Vec<PathBuf> {
+    let mut roots = vec![catalog_root(home, "codex", "sessions")];
+    let suffix = source_catalog::artifact("codex", "home")
+        .and_then(|artifact| artifact.suffix.as_deref())
+        .unwrap_or_else(|| panic!("source catalog must define codex.home suffix"));
+    if let Some(root) = value.and_then(|value| visible_path(home, value)) {
+        push_unique_root(&mut roots, root.join(suffix));
+    }
+    roots
 }
 
 fn pi_environment_value(artifact: &str) -> Option<OsString> {
@@ -428,11 +464,21 @@ fn grok_home_for(home: &Path, value: Option<&OsStr>) -> PathBuf {
     home.join(catalog_artifact_parent("grok", "sessions"))
 }
 
-fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
-    let path = source_catalog::artifact(source, artifact)
+fn catalog_artifact_path(source: &str, artifact: &str) -> &'static str {
+    source_catalog::artifact(source, artifact)
         .and_then(|artifact| artifact.path.as_deref())
-        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"));
-    Path::new(path)
+        .unwrap_or_else(|| panic!("source catalog must define {source}.{artifact} path"))
+}
+
+/// The catalog path with its home-relative root removed — precisely the part a
+/// `$..._HOME` override replaces. `.grok/logs/unified.jsonl` → `logs/unified.jsonl`,
+/// so an artifact nested deeper than one level still resolves under an override.
+fn catalog_artifact_tail(source: &str, artifact: &str) -> PathBuf {
+    Path::new(catalog_artifact_path(source, artifact)).iter().skip(1).collect()
+}
+
+fn catalog_artifact_parent(source: &str, artifact: &str) -> PathBuf {
+    Path::new(catalog_artifact_path(source, artifact))
         .parent()
         .map(PathBuf::from)
         .unwrap_or_else(|| {
@@ -528,12 +574,15 @@ fn run_scan_sources(
             Err(error) => unavailable_source_status(&source.key, error),
             Ok(()) => match source.key.as_str() {
                 "claude" => run_one(&source.key, || scan_claude(conn, &roots.claude)),
-                "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex)),
+                "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex_sessions)),
+                "copilot" => run_one(&source.key, || scan_copilot(conn, &roots.copilot_db)),
                 "gemini" => run_one(&source.key, || {
                     scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
                 }),
                 "hermes" => run_one(&source.key, || scan_hermes(conn, &roots.hermes_db)),
-                "grok" => run_one(&source.key, || scan_grok(conn, &roots.grok_sessions)),
+                "grok" => {
+                    run_one(&source.key, || scan_grok(conn, &roots.grok_sessions, &roots.grok_logs))
+                }
                 "antigravity" => run_one(&source.key, || {
                     scan_antigravity(
                         conn,
@@ -576,7 +625,8 @@ fn run_scan_sources(
         sources.push(merge_limit_exports(conn, roots, source, status));
     }
 
-    // Ledger hygiene only: drops scanned_files rows for vanished paths.
+    // Ledger hygiene only: drops scanned_files rows for vanished paths, and
+    // the Codex Context rows keyed to them — both rebuildable scan state.
     // Never deletes events (see prune_missing_files contract). Best-effort.
     let _ = prune_missing_files(conn);
 
@@ -663,7 +713,7 @@ mod tests {
         // the only Readings in play are the export's.
         let roots = SourceRoots {
             limit_exports: exports,
-            ..SourceRoots::from_home_and_pi_env(&base.join("home"), None, None)
+            ..SourceRoots::from_home_and_overrides(&base.join("home"), None, None, None)
         };
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
@@ -712,6 +762,7 @@ mod tests {
             [
                 "claude",
                 "codex",
+                "copilot",
                 "gemini",
                 "hermes",
                 "grok",
@@ -740,7 +791,7 @@ mod tests {
                 }
                 && source.prerequisite.is_none()
                 && source.capabilities.model
-                && source.capabilities.project
+                && (source.capabilities.project || source.key == "copilot")
                 && source.capabilities.session
                 && source.capabilities.token_categories
         }));
@@ -761,10 +812,12 @@ mod tests {
             [
                 ("claude", "projects", ".claude/projects"),
                 ("codex", "sessions", ".codex/sessions"),
+                ("copilot", "session-store", ".copilot/session-store.db"),
                 ("gemini", "tmp", ".gemini/tmp"),
                 ("gemini", "projects", ".gemini/projects.json"),
                 ("hermes", "state", ".hermes/state.db"),
                 ("grok", "sessions", ".grok/sessions"),
+                ("grok", "logs", ".grok/logs/unified.jsonl"),
                 ("antigravity", "conversations", ".gemini/antigravity/conversations"),
                 ("antigravity", "ide-conversations", ".gemini/antigravity-ide/conversations"),
                 ("antigravity", "cli-conversations", ".gemini/antigravity-cli/conversations"),
@@ -824,6 +877,21 @@ mod tests {
             .artifacts
             .iter()
             .any(|artifact| artifact.path.as_deref() == Some(".claude/projects")));
+
+        let codex = crate::source_catalog::source("codex").unwrap();
+        assert_eq!(
+            codex
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.id.as_str())
+                .collect::<Vec<_>>(),
+            ["sessions", "home"]
+        );
+        assert_eq!(
+            codex.artifacts[1].environment.as_deref(),
+            Some("CODEX_HOME")
+        );
+        assert_eq!(codex.artifacts[1].suffix.as_deref(), Some("sessions"));
 
         let hermes = crate::source_catalog::source("hermes").unwrap();
         assert_eq!(
@@ -965,8 +1033,9 @@ mod tests {
         use std::ffi::OsStr;
 
         let home = tempfile::tempdir().unwrap();
-        let roots = SourceRoots::from_home_and_pi_env(
+        let roots = SourceRoots::from_home_and_overrides(
             home.path(),
+            None,
             Some(OsStr::new("~/custom-sessions")),
             Some(OsStr::new("~/custom-agent")),
         );
@@ -977,6 +1046,46 @@ mod tests {
                 home.path().join("custom-sessions"),
                 home.path().join("custom-agent/sessions"),
             ],
+        );
+    }
+
+    #[test]
+    fn codex_roots_include_default_then_visible_home_override() {
+        use std::ffi::OsStr;
+
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            SourceRoots::from_home_and_overrides(
+                home.path(),
+                Some(OsStr::new("~/relocated-codex")),
+                None,
+                None,
+            )
+            .codex_sessions,
+            vec![
+                home.path().join(".codex/sessions"),
+                home.path().join("relocated-codex/sessions"),
+            ]
+        );
+        assert_eq!(
+            SourceRoots::from_home_and_overrides(
+                home.path(),
+                Some(OsStr::new("  ")),
+                None,
+                None,
+            )
+            .codex_sessions,
+            vec![home.path().join(".codex/sessions")]
+        );
+        assert_eq!(
+            SourceRoots::from_home_and_overrides(
+                home.path(),
+                Some(home.path().join(".codex").as_os_str()),
+                None,
+                None,
+            )
+            .codex_sessions,
+            vec![home.path().join(".codex/sessions")]
         );
     }
 
@@ -1200,6 +1309,12 @@ mod tests {
             overridden.grok_sessions,
             home.path().join("configured-grok/sessions")
         );
+        // The unified log sits a level deeper, so the override has to replace the
+        // home-relative root rather than just the last component.
+        assert_eq!(
+            overridden.grok_logs,
+            home.path().join("configured-grok/logs/unified.jsonl")
+        );
 
         let blank = SourceRoots::from_home_and_pi_env_with_hermes_and_gemini_and_grok(
             home.path(),
@@ -1220,6 +1335,7 @@ mod tests {
             None,
         );
         assert_eq!(absent.grok_sessions, home.path().join(".grok/sessions"));
+        assert_eq!(absent.grok_logs, home.path().join(".grok/logs/unified.jsonl"));
     }
 
     #[test]
@@ -1297,7 +1413,11 @@ mod tests {
         let r = SourceRoots::default_roots();
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         assert!(r.claude.ends_with(".claude/projects"));
-        assert!(r.codex.ends_with(".codex/sessions"));
+        assert!(r.codex_sessions[0].ends_with(".codex/sessions"));
+        let copilot_home = std::env::var_os("COPILOT_HOME")
+            .and_then(|value| visible_path(&home, &value))
+            .unwrap_or_else(|| home.join(".copilot"));
+        assert_eq!(r.copilot_db, copilot_home.join("session-store.db"));
         assert!(r.gemini_tmp.ends_with(".gemini/tmp"));
         assert!(r.gemini_projects_json.ends_with(".gemini/projects.json"));
         assert!(r.hermes_db.ends_with(".hermes/state.db"));
@@ -1552,11 +1672,13 @@ mod tests {
         .unwrap();
         let roots = SourceRoots {
             claude: root,
-            codex: tmp.path().join("codex"),
+            codex_sessions: vec![tmp.path().join("codex")],
+            copilot_db: tmp.path().join("copilot/session-store.db"),
             gemini_tmp: tmp.path().join("gemini/tmp"),
             gemini_projects_json: tmp.path().join("gemini/projects.json"),
             hermes_db: tmp.path().join("hermes/state.db"),
             grok_sessions: tmp.path().join("grok"),
+            grok_logs: tmp.path().join("grok-logs"),
             antigravity_conversations: tmp.path().join("antigravity"),
             antigravity_ide_conversations: tmp.path().join("antigravity-ide"),
             antigravity_cli_conversations: tmp.path().join("antigravity-cli"),
@@ -1615,11 +1737,13 @@ mod tests {
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
@@ -1659,7 +1783,7 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 16);
+        assert_eq!(status.sources.len(), 17);
         assert_eq!(status.sources.last().unwrap().source, "qoder");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -1995,11 +2119,13 @@ mod tests {
         // unsupported Kilo database above.
         let roots = SourceRoots {
             claude: claude_root,
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: gemini_root,
             gemini_projects_json: gemini_projects,
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
@@ -2022,7 +2148,7 @@ mod tests {
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 16);
+        assert_eq!(status.sources.len(), 17);
         assert_eq!(status.sources.last().unwrap().source, "qoder");
         assert!(status.scanned_at > 0);
 
@@ -2152,11 +2278,13 @@ mod tests {
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
@@ -2321,11 +2449,13 @@ mod tests {
 
         let roots = SourceRoots {
             claude: base.join("no-claude"),
-            codex: base.join("no-codex"),
+            codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
             grok_sessions: base.join("no-grok"),
+            grok_logs: base.join("no-grok-logs"),
             antigravity_conversations: base.join("no-antigravity"),
             antigravity_ide_conversations: base.join("no-antigravity-ide"),
             antigravity_cli_conversations: base.join("no-antigravity-cli"),
