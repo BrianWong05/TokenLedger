@@ -594,7 +594,8 @@ fn run_scan_sources(
         sources.push(merge_limit_exports(conn, roots, source, status));
     }
 
-    // Ledger hygiene only: drops scanned_files rows for vanished paths.
+    // Ledger hygiene only: drops scanned_files rows for vanished paths, and
+    // the Codex Context rows keyed to them — both rebuildable scan state.
     // Never deletes events (see prune_missing_files contract). Best-effort.
     let _ = prune_missing_files(conn);
 

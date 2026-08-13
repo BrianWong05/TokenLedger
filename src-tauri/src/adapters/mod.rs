@@ -18,6 +18,7 @@ pub mod qoder;
 pub mod workbuddy;
 pub mod zed;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::db::{get_file_state, upsert_events};
@@ -47,6 +48,68 @@ pub(crate) fn upsert_events_count(
 }
 
 pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
+    find_jsonl_inner(dir, out);
+}
+
+pub(crate) fn find_jsonl_by_file_identity(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    aliases: &mut Vec<PathBuf>,
+    seen: &mut HashSet<FileIdentity>,
+) {
+    let mut files = Vec::new();
+    find_jsonl(dir, &mut files);
+    // A symlink and its target share one identity, so only their order decides
+    // which spelling wins — and the winner's file stem keys every event the
+    // rollout mints (codex.rs:287), so a change of winner mints a permanent
+    // second copy of the Session. Sort links last so the real file always wins
+    // and the key cannot move when someone drops a link beside it.
+    // Decorated so the flag costs one `symlink_metadata` per path rather than
+    // one per comparison: this pass runs on every scan, including the no-op
+    // ones where nothing is re-parsed.
+    let mut files: Vec<(bool, PathBuf)> = files.into_iter().map(|p| (p.is_symlink(), p)).collect();
+    files.sort();
+    for (_, path) in files {
+        // Insert outside the match guard: a guard only borrows what it binds,
+        // and FileIdentity is a PathBuf off unix, so moving it here would not
+        // compile there (E0507).
+        match file_identity(&path) {
+            Ok(identity) => {
+                if seen.insert(identity) {
+                    out.push(path);
+                } else {
+                    aliases.push(path);
+                }
+            }
+            // An unreadable identity is never an alias: a transient stat
+            // failure must not send a real rollout through the cleanup loop
+            // that erases its scan state and Context.
+            Err(_) => out.push(path),
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) type FileIdentity = (u64, u64);
+#[cfg(not(unix))]
+pub(crate) type FileIdentity = PathBuf;
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = path.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
+    // ponytail: canonical paths cannot collapse Windows hard links; switch to
+    // stable file IDs when Rust exposes them without an unstable API.
+    path.canonicalize()
+}
+
+fn find_jsonl_inner(dir: &Path, out: &mut Vec<PathBuf>) {
     if dir.is_file() {
         if dir.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             out.push(dir.to_path_buf());
@@ -63,8 +126,10 @@ pub(crate) fn find_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
         };
         let path = entry.path();
         if file_type.is_dir() {
-            find_jsonl(&path, out);
-        } else if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
+            find_jsonl_inner(&path, out);
+        } else if path.is_file()
+            && path.extension().and_then(|ext| ext.to_str()) == Some("jsonl")
+        {
             out.push(path);
         }
     }

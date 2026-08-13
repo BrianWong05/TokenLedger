@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::Connection;
 use serde_json::Value;
 
 use super::ctx::{self, est};
-use super::{find_jsonl, unchanged};
+use super::{find_jsonl_by_file_identity, unchanged};
 use crate::db;
 use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
@@ -47,7 +48,9 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
 pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResult {
     let mut result = SourceScanResult::default();
     let mut files = Vec::new();
-    find_jsonl(sessions_root, &mut files);
+    let mut aliases = Vec::new();
+    let mut seen = HashSet::new();
+    find_jsonl_by_file_identity(sessions_root, &mut files, &mut aliases, &mut seen);
     for path in files {
         match scan_file(conn, &path) {
             Ok((inserted, skipped)) => {
@@ -55,6 +58,14 @@ pub fn scan_codex(conn: &mut Connection, sessions_root: &Path) -> SourceScanResu
                 result.lines_skipped += skipped;
             }
             Err(e) => result.error = Some(e),
+        }
+    }
+    for path in aliases {
+        let source_file = path.to_string_lossy();
+        if let Err(error) = db::clear_file_state(conn, &source_file)
+            .and_then(|_| db::clear_ctx_tools_for_file(conn, &source_file))
+        {
+            result.error = Some(error.to_string());
         }
     }
     result
@@ -359,6 +370,8 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
 mod tests {
     use super::*;
     use crate::db::open_db;
+    #[cfg(unix)]
+    use crate::queries::{ctx_tools, Filters};
 
     fn fixture_root() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex")
@@ -678,6 +691,96 @@ mod tests {
             "SELECT est_tokens, calls FROM ctx_tools WHERE source='codex' AND name='shell'",
             [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((est2, calls2), (est1, calls1), "re-parse replaced, not doubled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_counts_a_hard_linked_rollout_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let rollout = write_rollout(&root, "rollout-b.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        let alias = root.join("rollout-a.jsonl");
+        std::fs::hard_link(&rollout, &alias).unwrap();
+
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let scan = scan_codex(&mut conn, &root);
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        let source_file: String = conn
+            .query_row("SELECT source_file FROM events WHERE source='codex'", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!((scan.events_inserted, tools.len(), tools[0].calls), (1, 1, 1));
+        assert_eq!(source_file, alias.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_keeps_the_real_rollout_as_winner_when_a_symlink_to_it_appears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let rollout = write_rollout(&root, "rollout-real.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        scan_codex(&mut conn, &root);
+
+        // `archived` sorts first, so a plain path sort would hand it the shared
+        // identity and re-key the whole Session off the link's stem.
+        std::os::unix::fs::symlink(&rollout, root.join("archived.jsonl")).unwrap();
+        scan_codex(&mut conn, &root);
+
+        let (requests, total): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(input_tokens + cache_read_tokens + output_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let linked_state: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files WHERE path LIKE '%archived%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+
+        assert_eq!((requests, total), (1, 110), "the link is an alias, not a second Session");
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
+        assert_eq!(linked_state, 0, "the link never becomes the scanned winner");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_replaces_context_when_alias_winner_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let rollout = write_rollout(&root, "rollout-b.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        scan_codex(&mut conn, &root);
+        let alias = root.join("rollout-a.jsonl");
+        std::fs::hard_link(&rollout, &alias).unwrap();
+        scan_codex(&mut conn, &root);
+
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
+
+        std::fs::remove_file(alias).unwrap();
+        scan_codex(&mut conn, &root);
+        db::prune_missing_files(&conn).unwrap();
+
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
     }
 
     // ---- Limit Readings (#104 ingest rules) ----

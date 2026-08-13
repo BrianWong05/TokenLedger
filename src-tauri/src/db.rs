@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 /// tests assert a fully-migrated database reaches, so adding SCHEMA_V16 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 15;
+const CURRENT_USER_VERSION: i64 = 16;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -349,6 +349,19 @@ CREATE TABLE IF NOT EXISTS model_price_history (
 );
 PRAGMA user_version = 15;";
 
+// v16: physical aliases could make one Source Artifact contribute multiple
+// path-keyed Context rows. They are derived scan state, so discard and rebuild
+// them with pi's ownership map after discovery starts collapsing aliases by
+// file identity. The Ledger is permanent and remains untouched.
+const SCHEMA_V16: &str = "\
+DELETE FROM ctx_tools;
+DELETE FROM ctx_exec;
+DELETE FROM ctx_skills_usage;
+DELETE FROM pi_tool_owner;
+DELETE FROM scanned_files;
+DELETE FROM session_ctx;
+PRAGMA user_version = 16;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -580,6 +593,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 15 {
             conn.execute_batch(SCHEMA_V15)?;
+        }
+        if version < 16 {
+            conn.execute_batch(SCHEMA_V16)?;
         }
         Ok(())
     };
@@ -825,6 +841,19 @@ pub fn set_file_state(conn: &Connection, path: &str, state: FileState) -> rusqli
     Ok(())
 }
 
+pub fn clear_file_state(conn: &Connection, path: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM scanned_files WHERE path = ?1", [path])?;
+    Ok(())
+}
+
+/// Drops scan state for paths that have left disk. The Ledger is permanent, so
+/// events are never touched. From v15 this also drops the Codex Context rows
+/// keyed to those paths, which is how a rollout demoted to a physical alias
+/// stops contributing a second drill-down — the cost being that a Codex rollout
+/// the user really deletes takes its Context with it for good. Codex only: its
+/// Context is keyed to whichever physical alias won discovery, so a path that
+/// leaves disk must not keep a drill-down alive under a name nothing scans any
+/// more. Every other Source keeps its Context, on the same rule as events.
 pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     let paths: Vec<String> = {
         let mut stmt = conn.prepare("SELECT path FROM scanned_files")?;
@@ -834,7 +863,11 @@ pub fn prune_missing_files(conn: &Connection) -> rusqlite::Result<u64> {
     let mut removed = 0u64;
     for p in paths {
         if !std::path::Path::new(&p).exists() {
-            conn.execute("DELETE FROM scanned_files WHERE path = ?1", [&p])?;
+            conn.execute(
+                "DELETE FROM ctx_tools WHERE source = 'codex' AND source_file = ?1",
+                [&p],
+            )?;
+            clear_file_state(conn, &p)?;
             removed += 1;
         }
     }
@@ -1467,11 +1500,13 @@ mod tests {
                 [],
             )
             .unwrap();
+            // Isolate v15: open_db would continue to v16 and clear scan state.
+            conn.execute_batch(SCHEMA_V15).unwrap();
         }
 
-        let conn = open_db(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, CURRENT_USER_VERSION);
+        assert_eq!(version, 15);
         let history_exists: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_price_history'",
@@ -1482,6 +1517,79 @@ mod tests {
         assert_eq!(history_exists, 1);
         let files: i64 = conn.query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0)).unwrap();
         assert_eq!(files, 1, "price history must not force a Source Artifact re-scan");
+    }
+
+    #[test]
+    fn v15_db_migrates_to_v16_rebuilding_context_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, source_file) \
+                 VALUES ('codex:kept:1', 'codex', 1, 'gpt-5.4', 'rollout.jsonl')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) \
+                 VALUES ('rollout.jsonl', 1, 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ctx_tools (source, source_file, name, day, est_tokens, calls) \
+                 VALUES ('codex', 'rollout.jsonl', 'shell', '2026-05-03', 10, 2), \
+                        ('claude', 'missing.jsonl', 'Bash', '2026-05-03', 10, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ctx_exec \
+                 (source, source_file, day, kind, exe, cmd, est_tokens, calls) \
+                 VALUES ('claude', 'missing.jsonl', '2026-05-03', 'test', 'cargo', \
+                         'cargo test', 10, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ctx_skills_usage \
+                 (source, source_file, name, day, est_tokens, uses) \
+                 VALUES ('claude', 'missing.jsonl', 'tdd', '2026-05-03', 10, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO pi_tool_owner (ident, source_file) \
+                 VALUES ('tool-entry', 'missing.jsonl')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let events: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        let files: i64 =
+            conn.query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0)).unwrap();
+        let tools: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_tools", [], |r| r.get(0)).unwrap();
+        let exec: i64 = conn.query_row("SELECT COUNT(*) FROM ctx_exec", [], |r| r.get(0)).unwrap();
+        let skills: i64 =
+            conn.query_row("SELECT COUNT(*) FROM ctx_skills_usage", [], |r| r.get(0)).unwrap();
+        let owners: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pi_tool_owner", [], |r| r.get(0)).unwrap();
+
+        assert_eq!(
+            (version, events, files, tools, exec, skills, owners),
+            (CURRENT_USER_VERSION, 1, 0, 0, 0, 0, 0)
+        );
     }
 
     #[test]
@@ -1904,6 +2012,16 @@ mod tests {
         // The ledger is permanent: an event referencing the missing file must survive.
         insert_events(&mut conn, &[sample_event("claude:x:1", "/nonexistent/gone.jsonl")]).unwrap();
 
+        // Context is rebuildable, but only Codex rebuilds it from the file alone.
+        // A vanished Claude session can never be re-read, so its drill-down must
+        // outlive the file the way its events do.
+        // (ctx_tools is unique on (source_file, name, day), so the two rows need
+        // distinct tool names to coexist on the one vanished path.)
+        let codex_row = [("shell".to_string(), 10i64, 1i64, 1_700_000_000i64)];
+        let claude_row = [("Bash".to_string(), 10i64, 1i64, 1_700_000_000i64)];
+        add_ctx_tool_rows(&mut conn, "codex", "/nonexistent/gone.jsonl", &codex_row).unwrap();
+        add_ctx_tool_rows(&mut conn, "claude", "/nonexistent/gone.jsonl", &claude_row).unwrap();
+
         let removed = prune_missing_files(&conn).unwrap();
         assert_eq!(removed, 1);
 
@@ -1915,6 +2033,12 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(events, 1);
+        let tools: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT source FROM ctx_tools ORDER BY source").unwrap();
+            let rows = stmt.query_map([], |r| r.get(0)).unwrap();
+            rows.map(|r| r.unwrap()).collect()
+        };
+        assert_eq!(tools, vec!["claude".to_string()], "only Codex Context follows the file out");
     }
 
     #[test]
