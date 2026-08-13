@@ -115,6 +115,13 @@ export interface OverviewSnapshot {
   // series-derived total during this gap; other window-scoped figures and any
   // file export wait for this to clear.
   reloading: boolean;
+  // Everything on screen predates a settled scan: the launch paint, or a paint
+  // kept through a scan that threw. Cleared by the post-scan series refetch,
+  // which is one query pair rather than the window fan-out — so this answers
+  // "is this figure post-scan truth?" well before the Summary does. The
+  // headline's entrance reel waits on it (#14 wants an authoritative figure);
+  // the idle gate uses the private field it mirrors.
+  provisional: boolean;
 }
 
 export interface OverviewStore {
@@ -130,14 +137,14 @@ export interface OverviewStore {
 // Raw state; derived fields live only in the built snapshot.
 type State = Omit<
   OverviewSnapshot,
-  'firstIso' | 'lastIso' | 'from' | 'to' | 'loading' | 'reloading'
+  'firstIso' | 'lastIso' | 'from' | 'to' | 'loading' | 'reloading' | 'provisional'
 >;
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'sourceRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
-  'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading',
+  'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading', 'provisional',
 ];
 
 function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
@@ -160,13 +167,18 @@ class Store implements OverviewStore {
   // re-render either. Cleared at EVERY refresh — the idle gate's zero-insert
   // signal cannot stand in for "unchanged", because keep-max adapters upgrade
   // existing Usage Records in place while reporting nothing inserted — and
-  // when prices rebuild. Entries land only from reloads that won the epoch
-  // race, so a superseded response can never be replayed.
+  // when prices rebuild. Only a response that is STILL CURRENT when it lands is
+  // written here (runReload's own `epoch === this.epoch` guard, not land()'s
+  // looser one), so a superseded response can never be replayed.
   private reloadCache = new Map<string, ReloadResult>();
   private epoch = 0; // monotonic; supersedes in-flight reload responses
   // The epoch whose reload actually landed. Reusing the counter that already
   // decides which response wins means "still loading" needs no second flag to
   // keep in sync with it: scheduleReload bumps epoch, land() catches this up.
+  // 0 is therefore also the sentinel for "no window-scoped figures have landed
+  // yet", which land() reads to let the launch's superseded first reload paint.
+  // Safe as a sentinel because scheduleReload pre-increments: a scheduled epoch
+  // is never 0, so this can only be 0 before the first landing.
   private loadedEpoch = 0;
   private reloadTimer: number | null = null; // pending debounce timer
   // The data on screen predates the last settled scan. Set when the first-load
@@ -235,13 +247,25 @@ class Store implements OverviewStore {
       // so it is suspect even when this scan reports idle: the gate's premise
       // ("what's rendered IS the Ledger") only holds for post-scan fetches,
       // and zero-insert ≠ unchanged (keep-max upgrades). Drop whatever got
-      // cached, supersede any in-flight reload so nothing pre-scan can land
-      // or be replayed from here on, and refetch. The reload is rescheduled
-      // even when the series refetch fails: the epoch bump would otherwise
-      // leave `reloading` latched until the next tick.
+      // cached, supersede any in-flight reload so nothing pre-scan can be
+      // REPLAYED from here on, and refetch. A superseded reload may still
+      // paint once (see land) — the launch would otherwise sit on placeholders
+      // through figures it had already fetched — but `reloading` stays true and
+      // `provisional` stays set until the refetch below lands, so nothing
+      // pre-scan is presented as settled. The reload is rescheduled even when
+      // the series refetch fails: the epoch bump would otherwise leave
+      // `reloading` latched until the next tick.
       this.reloadCache.clear();
       this.epoch++;
       this.publish(); // `reloading` is true from the bump until the refetch lands
+      // Do NOT publish between these two lines. fetchSeries publishes before
+      // `provisional` clears, so the flip reaches the snapshot on
+      // scheduleReload's trailing publish — the same one that carries the epoch
+      // bump. That pairing is what the headline's entrance rests on: it reveals
+      // on `authoritative` (provisional false) while `reloading` is true, so the
+      // figure it rolls is the post-scan SERIES total. An eager publish here
+      // would emit provisional false with reloading still false for one render,
+      // and the reel would roll the pre-scan Summary instead (#14).
       if (await this.fetchSeries()) this.provisional = false;
       this.scheduleReload();
       return;
@@ -334,7 +358,12 @@ class Store implements OverviewStore {
         this.clock.clearTimeout(this.reloadTimer);
         this.reloadTimer = null;
       }
-      this.epoch++; // invalidate any in-flight reload so nothing lands post-dispose
+      // Supersede any in-flight reload. This no longer stops one landing during
+      // a launch (land's exception fires while loadedEpoch is 0), which is inert
+      // rather than fixed: unsub() above and useSyncExternalStore's own
+      // unsubscribe have both run, so a late patch reaches a snapshot nobody
+      // reads and publishes to an empty listener set.
+      this.epoch++;
     };
   }
 
@@ -360,6 +389,7 @@ class Store implements OverviewStore {
       to: d.to,
       loading: s.allPoints === null,
       reloading: this.epoch !== this.loadedEpoch,
+      provisional: this.provisional,
     };
   }
 
@@ -414,8 +444,19 @@ class Store implements OverviewStore {
     // Both the success and the failure path land, so a reload that throws
     // clears `reloading` too — fetchError is how a failure is reported, and
     // leaving the flag set would disable the export button for good.
+    // The current epoch always lands. A SUPERSEDED one lands too while no
+    // window-scoped figures have landed yet (loadedEpoch 0 — the series has
+    // always painted by then, since scheduleReload requires it), because boot
+    // supersedes its own first reload before it can answer: the post-scan
+    // reconcile bumps the epoch in the microtask that follows the paint (and
+    // prices-rebuilt can bump it in the same stretch). Discarding that left the
+    // '…' cost and the '—' Context rows on screen until the SECOND fan-out
+    // landed — measured at 2.7s on a 95k-event Ledger, after the first had
+    // already paid for the same figures. Once a window HAS landed,
+    // only the current epoch may overwrite it: a rapid range walk must not
+    // flash the figures of windows it passed through.
     const land = (fn: () => void) => {
-      if (epoch !== this.epoch) return;
+      if (epoch !== this.epoch && this.loadedEpoch !== 0) return;
       this.loadedEpoch = epoch;
       fn();
     };
@@ -454,17 +495,31 @@ class Store implements OverviewStore {
     ])
       .then((result) =>
         land(() => {
-          this.reloadCache.set(key, result);
-          // A session can walk arbitrarily many custom windows; drop the
-          // oldest entry rather than growing without bound.
-          if (this.reloadCache.size > 16) {
-            const oldest = this.reloadCache.keys().next();
-            if (!oldest.done) this.reloadCache.delete(oldest.value);
+          // Only a CURRENT response is worth remembering. A superseded one is
+          // painted (above) for the launch's sake, but caching it would let a
+          // pre-scan read be replayed as post-scan truth the next time its
+          // window comes back — zero-insert ≠ unchanged.
+          if (epoch === this.epoch) {
+            this.reloadCache.set(key, result);
+            // A session can walk arbitrarily many custom windows; drop the
+            // oldest entry rather than growing without bound.
+            if (this.reloadCache.size > 16) {
+              const oldest = this.reloadCache.keys().next();
+              if (!oldest.done) this.reloadCache.delete(oldest.value);
+            }
           }
           apply(result);
         }),
       )
-      .catch((e) => land(() => this.patch({ fetchError: String(e) })));
+      // A failure has nothing to paint, so land()'s launch exception must not
+      // apply to it: a superseded reload's error would flash a band that the
+      // newer reload already in flight clears half a second later. Dropping it
+      // leaves `reloading` true, which that newer reload clears when it lands —
+      // or latches honestly if it fails too, since its own error IS current.
+      .catch((e) => {
+        if (epoch !== this.epoch) return;
+        land(() => this.patch({ fetchError: String(e) }));
+      });
   }
 }
 
@@ -515,7 +570,7 @@ export interface OverviewView {
   selMcp: McpBar[];
   selModels: ModelBar[];
   tool: SourceMeta;
-  headline: { total: number; summaryReady: boolean };
+  headline: { total: number; authoritative: boolean };
   canOpenCostBreakdown: boolean;
   // Sources whose Unreadable Artifacts could hold usage in this window
   // (ADR-0017) — every token total shown for the window is a floor.
@@ -586,7 +641,18 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     selMcp: mcpBars(selToolRows, ctx.mcp),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: sourceMeta(s.selected),
-    headline: { total: s.reloading ? total : s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
+    // `authoritative` is #14's own word for the figure the entrance reel is
+    // allowed to roll: one that descends from a settled scan, so the launch
+    // reconcile cannot correct it a moment later with no motion (#12 story 9
+    // holds a same-window change still, and the entrance is spent once). The
+    // post-scan SERIES earns it, not the Summary: the series is what `total`
+    // reads while the window fan-out is in flight, and it lands one query pair
+    // after the scan rather than ten. A Summary alone would not do — the
+    // launch's provisional one describes a pre-scan Ledger.
+    headline: {
+      total: s.reloading ? total : s.summary?.totalTokens ?? total,
+      authoritative: !s.provisional && s.allPoints !== null,
+    },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
     unreadable,
   };

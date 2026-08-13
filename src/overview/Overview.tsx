@@ -104,7 +104,7 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
   }, []);
 
   const {
-    loading, reloading, scanError, fetchError, scanSources, allPoints,
+    loading, reloading, provisional, scanError, fetchError, scanSources, allPoints,
     refresh, refreshing, scanAt,
     range, setRange,
     from, to, firstIso, lastIso, customFrom, customTo, setCustomRange,
@@ -249,7 +249,12 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
           // file would state the new window over the old window's Summary,
           // Sources, Models, Projects and Context. The screen shows that gap
           // too, but wears it for an instant; a file keeps it.
-          disabled={exporting || loading || reloading || summary === null}
+          //
+          // `provisional` is the same argument one step earlier: the launch
+          // paint's figures do describe this window, but from before the launch
+          // scan settled. The screen wears that for half a second and corrects
+          // itself; a file would state it forever.
+          disabled={exporting || loading || reloading || provisional || summary === null}
           aria-busy={exporting}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -300,7 +305,7 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
               background scan. */}
           <TokenTotalHeadline
             total={headline.total}
-            summaryReady={headline.summaryReady}
+            authoritative={headline.authoritative}
             windowKey={`${range}:${from}:${to}`}
             visible={visible}
             incomplete={unreadableTitle || null}
