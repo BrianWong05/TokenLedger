@@ -332,7 +332,10 @@ would have cost at pay-as-you-go API rates. It is not money that was billed:
 every Source here is subscription, free-tier, or self-hosted, so TokenLedger
 never sees a real invoice. Surfaced in the UI as "Est. cost". A window holding
 no tokens at all has a Cost of zero — $0.00 on every surface, the one zero that
-is a figure rather than a gap, and the opposite of Unpriced.
+is a figure rather than a gap, and the opposite of Unpriced. Codex Auto Review
+uses the resolved rate captured for each local calendar day, so a later price
+change never rewrites a closed day's Cost. If an earlier day was Unpriced, the
+first later price found is used as that day's assumption and then stays fixed.
 _Avoid_: Spend, actual cost, bill
 
 **Display Currency**:
@@ -399,10 +402,17 @@ _Avoid_: Rate limit, quota, allowance, cap, throttle
 
 **Limit Reading**:
 One observation of a Limit at a moment — how much of the window is used, and
-when it resets — parsed from a Source's own logs (Codex) or fetched by a
-Companion (Claude, ADR-0019). Not a Usage Record: it holds no tokens, and the
+when it resets — parsed from a Source's own logs or fetched by a Companion
+(ADR-0019). Not a Usage Record: it holds no tokens, and the
 Ledger holds Usage Records only, so Readings persist beside the Ledger —
 append-only, a new valid Reading never replacing an old one, with cards
 presenting the newest valid Reading and the stored series feeding the
 forecast. A refused fetch is not a Reading.
 _Avoid_: Observation, sample, snapshot, measurement
+
+**Usage Reset**:
+A vendor-granted, expiring entitlement that a person can redeem to restore
+eligible Codex Limits before their windows reset normally. Its available count
+is current state, not a Limit Reading or history; an unreported count is unknown,
+never zero.
+_Avoid_: Manual reset, reset credit, reset

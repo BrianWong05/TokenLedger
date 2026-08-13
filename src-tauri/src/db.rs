@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V15 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V16 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 15;
+const CURRENT_USER_VERSION: i64 = 16;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -330,18 +330,37 @@ CREATE TABLE IF NOT EXISTS limit_readings (
 DELETE FROM scanned_files;
 PRAGMA user_version = 14;";
 
-// v15: physical aliases could make one Source Artifact contribute multiple
+// v15: daily resolved-price snapshots for Codex Auto Review. The live `prices`
+// table still drives today's Pricing tab, while this tiny history keeps a past
+// day's Cost fixed after that day closes. `priced = 0` records a real Unpriced
+// observation, so the first later priced snapshot can backfill it once and then
+// remain stable. No scan-state clear: rates are independent of Source Artifacts.
+const SCHEMA_V15: &str = "\
+CREATE TABLE IF NOT EXISTS model_price_history (
+  model                  TEXT NOT NULL,
+  day                    TEXT NOT NULL,
+  priced                 INTEGER NOT NULL,
+  input_per_tok          REAL NOT NULL DEFAULT 0,
+  output_per_tok         REAL NOT NULL DEFAULT 0,
+  cache_read_per_tok     REAL NOT NULL DEFAULT 0,
+  cache_write_5m_per_tok REAL NOT NULL DEFAULT 0,
+  cache_write_1h_per_tok REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (model, day)
+);
+PRAGMA user_version = 15;";
+
+// v16: physical aliases could make one Source Artifact contribute multiple
 // path-keyed Context rows. They are derived scan state, so discard and rebuild
 // them with pi's ownership map after discovery starts collapsing aliases by
 // file identity. The Ledger is permanent and remains untouched.
-const SCHEMA_V15: &str = "\
+const SCHEMA_V16: &str = "\
 DELETE FROM ctx_tools;
 DELETE FROM ctx_exec;
 DELETE FROM ctx_skills_usage;
 DELETE FROM pi_tool_owner;
 DELETE FROM scanned_files;
 DELETE FROM session_ctx;
-PRAGMA user_version = 15;";
+PRAGMA user_version = 16;";
 
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
@@ -574,6 +593,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 15 {
             conn.execute_batch(SCHEMA_V15)?;
+        }
+        if version < 16 {
+            conn.execute_batch(SCHEMA_V16)?;
         }
         Ok(())
     };
@@ -1187,7 +1209,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, CURRENT_USER_VERSION);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "limit_readings"] {
+        for table in ["events", "scanned_files", "prices", "price_overrides", "model_price_history", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "limit_readings"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
@@ -1461,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn v14_db_migrates_to_v15_rebuilding_context_rows() {
+    fn v14_db_migrates_to_daily_price_history_without_clearing_scan_state() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.db");
         {
@@ -1470,6 +1492,43 @@ mod tests {
                 SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
                 SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
                 SCHEMA_V14,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+            // Isolate v15: open_db would continue to v16 and clear scan state.
+            conn.execute_batch(SCHEMA_V15).unwrap();
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 15);
+        let history_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='model_price_history'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(history_exists, 1);
+        let files: i64 = conn.query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(files, 1, "price history must not force a Source Artifact re-scan");
+    }
+
+    #[test]
+    fn v15_db_migrates_to_v16_rebuilding_context_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15,
             ] {
                 conn.execute_batch(batch).unwrap();
             }

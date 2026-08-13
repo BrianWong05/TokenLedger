@@ -21,8 +21,13 @@ function win(over: Partial<LimitWindow> = {}): LimitWindow {
   };
 }
 
-function held(source: string, windows: LimitWindow[], plan: string | null = 'Plus'): SourceLimits {
-  return { source, plan, windows };
+function held(
+  source: string,
+  windows: LimitWindow[],
+  plan: string | null = 'Plus',
+  usageResetsAvailable: number | null = null,
+): SourceLimits {
+  return { source, plan, usageResetsAvailable, windows };
 }
 
 describe('scarcity tone', () => {
@@ -125,6 +130,24 @@ describe('window labels', () => {
   it('keeps an unrecognised Codex duration as its raw minutes', () => {
     expect(windowLabel('w4321')).toEqual({ kind: 'other', minutes: '4321' });
   });
+
+  it('splits a pool off the front of the key, and never guesses at an unknown one', () => {
+    // Antigravity's two pools share both durations, so the pool is part of the
+    // key rather than a second card.
+    expect(windowLabel('gemini:w300')).toEqual({ kind: 'session', pool: 'gemini' });
+    expect(windowLabel('3p:w10080')).toEqual({ kind: 'weekly', pool: '3p' });
+    // A pool nobody has named still renders, the way an unseen per-model
+    // window does — it is carried through raw rather than dropped.
+    expect(windowLabel('zephyr:w300')).toEqual({ kind: 'session', pool: 'zephyr' });
+  });
+
+  it('says "credits" where the bar meters a pool rather than a rate-limit window', () => {
+    // Same key, same geometry, different quantity: 80% of Grok's weekly credit
+    // pool is not 80% of the way to a rate limit (#126).
+    expect(windowLabel('w10080', 'grok')).toEqual({ kind: 'weeklyCredits' });
+    expect(windowLabel('w43200', 'grok')).toEqual({ kind: 'monthlyCredits' });
+    expect(windowLabel('w10080', 'codex')).toEqual({ kind: 'weekly' });
+  });
 });
 
 describe('the plan pill', () => {
@@ -147,9 +170,9 @@ describe('framing', () => {
   });
 });
 
-// A fabricated `logs` Source: the shipped catalog holds only `live` ones now,
-// and the logs rules must outlive that coincidence — a post-v1 Source may well
-// be logs-only again.
+// A fabricated `logs` Source. No shipped Source is `logs`-only now (Grok gained
+// a live Companion), so the logs rules are pinned here independently of the
+// catalog rather than against a real card.
 const LOGS_SOURCE = {
   meta: {
     key: 'faketool', label: 'FakeTool', source: 'FakeTool', color: '#000000',
@@ -162,23 +185,26 @@ const LOGS_SOURCE = {
 describe('catalog gating', () => {
   it('yields a card only for a Source declaring a limits capability', () => {
     const keys = limitsSources().map((s) => s.meta.key);
-    expect(keys).toEqual(['claude', 'codex']);
-    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live']);
+    // All four shipped Sources are `live` now — Codex and Grok each pair a live
+    // Companion with passive log capture; Claude and Antigravity are live-only.
+    expect(keys).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live', 'live']);
   });
 
   it('gives a Source without the capability no card, even holding Readings', () => {
     // Nothing writes Readings for an uncatalogued Source, but if history ever
     // held some, the enum still decides what the page shows.
     const views = cards([held('gemini', [win()])], NOW, 'left');
-    expect(views.map((v) => v.source)).toEqual(['claude', 'codex']);
+    expect(views.map((v) => v.source)).toEqual(['claude', 'codex', 'grok', 'antigravity']);
   });
 });
 
 describe('card states', () => {
   it('is live when the Source holds windows', () => {
-    const [, codex] = cards([held('codex', [win({ windowKey: 'w10080' })])], NOW, 'left');
+    const [, codex] = cards([held('codex', [win({ windowKey: 'w10080' })], 'Plus', 1)], NOW, 'left');
     expect(codex.state).toBe('live');
     expect(codex.plan).toBe('Plus');
+    expect(codex.usageResetsAvailable).toBe(1);
     expect(codex.windows).toHaveLength(1);
   });
 
@@ -209,6 +235,7 @@ describe('card states', () => {
       claude: { detail: 'network unreachable' },
     });
     expect(claude.plan).toBeNull();
+    expect(claude.usageResetsAvailable).toBeNull();
     expect(claude.windows).toEqual([]);
   });
 });

@@ -2,7 +2,9 @@
    tokens only, so light and dark both come free from index.css. */
 
 .tl-page-limits {
-  padding: 26px 30px;
+  /* the top padding lives on the toolbar so it sits flush at the window top and
+     doubles as the window-drag strip */
+  padding: 0 30px 26px;
   overflow-y: auto;
   height: 100%;
 }
@@ -12,7 +14,10 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 18px;
+  /* full-bleed: the page owns the side padding, but the drag strip must cover
+     the whole main area up to the window edges */
+  margin: 0 -30px 18px;
+  padding: 26px 30px 0;
 }
 .tl-lim-toolbar h1 {
   font-size: 17px;
@@ -117,6 +122,25 @@
   background: var(--accent-subtle);
   color: var(--text-accent);
   border: 1px solid var(--accent-border);
+}
+.tl-lim-usage-resets {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in srgb, var(--success) 35%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+  color: var(--success);
+  font-size: 10.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.tl-lim-usage-resets.zero {
+  border-color: var(--border-subtle);
+  background: var(--bg-inset);
+  color: var(--text-tertiary);
 }
 .tl-lim-fresh {
   margin-left: auto;

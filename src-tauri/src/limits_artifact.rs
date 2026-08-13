@@ -1,7 +1,7 @@
-// The Limits Export Artifact — the one contract between the `claude-limits`
-// Companion, which writes these files, and the scan, which reads them like any
-// other file (ADR-0019). Both sides use these types, so a field can never be
-// spelled one way by the writer and another by the reader.
+// The Limits Export Artifact — the one contract between the Companions, which
+// write these files, and the scan, which reads them like any other file
+// (ADR-0019). Both sides use these types, so a field can never be spelled one
+// way by the writer and another by the reader.
 //
 // One Artifact per `live` Source, named `<source>.tokenledger-limits.json`, in a
 // directory the app owns. It carries Limit Readings — never tokens, never usage —
@@ -44,10 +44,66 @@ pub fn window_key(window_minutes: i64) -> String {
     format!("w{canonical}")
 }
 
+/// Grok's billing `config` object → the one credit window it describes, shared by
+/// the two producers that see the identical shape: the scan's log ingest (the
+/// `ctx.config` of a `billing: fetched credits config` line) and the live
+/// Companion (the `config` of a `/v1/billing?format=credits` response). Keeping
+/// one mapper means a new period type or a changed field is edited once, not in
+/// two files that would silently drift.
+///
+/// The window is keyed off the vendor's own period *type*, never the measured
+/// duration — a 28-day February falls outside the canonical 43200 ±5% band, so
+/// classifying by duration would split one card's history into two keys once a
+/// year — and through the shared `window_key` grammar, so a live reading and a
+/// logged one of the same window land in the same series. An absent
+/// `creditUsagePercent` is 0% used: the payload is proto3-as-JSON, which omits
+/// zero-valued scalars, so dropping it would lose the start of every window.
+pub fn grok_credit_window(config: &serde_json::Value) -> Option<WindowExport> {
+    let period = config.get("currentPeriod");
+    let used_pct = config
+        .get("creditUsagePercent")
+        .and_then(|p| p.as_f64())
+        .unwrap_or(0.0);
+    // `billingPeriodEnd` is the deprecated mirror, identical on every observed
+    // row; a payload carrying only it names no period type, and an unnameable
+    // window cannot be keyed however well its reset is known.
+    let resets_at = period
+        .and_then(|p| p.get("end"))
+        .or_else(|| config.get("billingPeriodEnd"))
+        .and_then(|e| e.as_str())
+        .and_then(crate::time::iso_to_epoch)?;
+    let canonical_minutes = match period.and_then(|p| p.get("type")).and_then(|t| t.as_str())? {
+        "USAGE_PERIOD_TYPE_WEEKLY" => 10_080,
+        "USAGE_PERIOD_TYPE_MONTHLY" => 43_200,
+        // A period type nobody has seen is not guessed into a lane it may not
+        // belong to; an absent window is unknown, never zero.
+        _ => return None,
+    };
+    // The bar's time axis, measured where the payload states both bounds — a
+    // calendar month is not 43200 minutes, and the tick would sit wrong.
+    let window_minutes = period
+        .and_then(|p| p.get("start"))
+        .and_then(|s| s.as_str())
+        .and_then(crate::time::iso_to_epoch)
+        .map(|start| (resets_at - start) / 60)
+        .filter(|&m| m > 0)
+        .unwrap_or(canonical_minutes);
+    Some(WindowExport {
+        key: window_key(canonical_minutes),
+        window_minutes: Some(window_minutes),
+        used_pct,
+        resets_at,
+    })
+}
+
 /// Bump when the shape changes. An Artifact declaring a schema the reader does
 /// not know is a malformed instance of a supported shape (ADR-0015): it warns
 /// and is not read, rather than being guessed at.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
+
+fn supported_schema(schema: u32) -> bool {
+    schema == 1 || schema == SCHEMA
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LimitsExport {
@@ -60,14 +116,23 @@ pub struct LimitsExport {
     /// The plan label the credential document carried (`rateLimitTier`).
     #[serde(default)]
     pub plan: Option<String>,
+    /// Codex Usage Resets currently available. This is source-level current
+    /// state, not a rolling-window Reading and not history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_resets_available: Option<u64>,
     #[serde(default)]
     pub windows: Vec<WindowExport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowExport {
-    /// The vendor's own response key, verbatim and opaque: `five_hour`,
-    /// `seven_day`, `seven_day_opus`, or one nobody has seen yet.
+    /// How the Reading's window is addressed: the vendor's own response key
+    /// where there is one (`five_hour`, `seven_day_opus`, or one nobody has seen
+    /// yet), or a key this side builds where the vendor's does not identify a
+    /// window uniquely — `w{minutes}` from a duration, and a `pool:` prefix
+    /// where a Source meters more than one pool over the same durations. The
+    /// page splits on the colon and classifies the remainder; nothing else
+    /// reads inside it.
     pub key: String,
     /// The window's length, where the key names one. Absent means unknown — the
     /// card then draws a bar with no time tick rather than inventing an axis.
@@ -111,6 +176,15 @@ pub fn readings(export: &LimitsExport) -> Vec<LimitReading> {
 
 pub fn path_in(dir: &Path, source: &str) -> PathBuf {
     dir.join(file_name(source))
+}
+
+/// Read the current source-level state from an Artifact. Invalid, stale-schema,
+/// or mismatched files simply report no current state; `ingest` remains the
+/// warning path for malformed exports.
+pub fn read(dir: &Path, source: &str) -> Option<LimitsExport> {
+    let raw = std::fs::read_to_string(path_in(dir, source)).ok()?;
+    let export = serde_json::from_str::<LimitsExport>(&raw).ok()?;
+    (supported_schema(export.schema) && export.source == source).then_some(export)
 }
 
 /// A vendor response's structure, values mostly redacted — every Companion's
@@ -187,7 +261,7 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
     }
 
     let export: LimitsExport = match serde_json::from_str::<LimitsExport>(&raw) {
-        Ok(export) if export.schema == SCHEMA => export,
+        Ok(export) if supported_schema(export.schema) => export,
         // A malformed instance of a *supported* shape: warn, per ADR-0015. File
         // state stays unwritten so a corrected export is read on the next pass.
         _ => {
@@ -216,6 +290,8 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
 mod tests {
     use super::*;
     use crate::db::open_db;
+    use crate::time::iso_to_epoch;
+    use serde_json::Value;
 
     fn write_file(dir: &Path, name: &str, body: &str) {
         std::fs::create_dir_all(dir).unwrap();
@@ -280,6 +356,38 @@ mod tests {
     }
 
     #[test]
+    fn a_pool_keyed_export_files_each_pool_as_its_own_series() {
+        // Antigravity is the first Source whose pool is a genuine second axis:
+        // both pools share both durations, so a key of the duration alone would
+        // put two different pools' Limits on one row and lose one of them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        write_file(
+            &dir,
+            &file_name("antigravity"),
+            r#"{"schema":1,"source":"antigravity","fetched_at":1786492800,"plan":"Pro","windows":[
+                {"key":"gemini:w300","window_minutes":300,"used_pct":58.0,"resets_at":1786547640},
+                {"key":"3p:w300","window_minutes":300,"used_pct":12.0,"resets_at":1786547640}]}"#,
+        );
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        assert_eq!(ingest(&mut conn, &dir, "antigravity"), Ok(()));
+        let rows: Vec<(String, f64, String)> = conn
+            .prepare(
+                "SELECT window_key, used_pct, via FROM limit_readings \
+                 WHERE source = 'antigravity' ORDER BY window_key",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "two pools sharing one duration are two rows");
+        assert_eq!(rows[0], ("3p:w300".to_string(), 12.0, "live".to_string()));
+        assert_eq!(rows[1].0, "gemini:w300");
+    }
+
+    #[test]
     fn an_unrecognised_schema_warns_instead_of_parsing() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("limits");
@@ -319,6 +427,7 @@ mod tests {
             source: "claude".to_string(),
             fetched_at: 1_786_492_800,
             plan: Some("Team 5x".to_string()),
+            usage_resets_available: Some(1),
             windows: vec![WindowExport {
                 key: "five_hour".to_string(),
                 window_minutes: Some(300),
@@ -328,9 +437,9 @@ mod tests {
         };
         write(&dir, &export).unwrap();
 
-        let raw = std::fs::read_to_string(path_in(&dir, "claude")).unwrap();
-        let read: LimitsExport = serde_json::from_str(&raw).unwrap();
+        let read = super::read(&dir, "claude").unwrap();
         assert_eq!(read.source, "claude");
+        assert_eq!(read.usage_resets_available, Some(1));
         assert_eq!(read.windows[0].used_pct, 18.0);
         let leftovers: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
@@ -353,5 +462,60 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
         assert_eq!(ingest(&mut conn, &tmp.path().join("nothing-here"), "claude"), Ok(()));
+    }
+
+    // grok_credit_window: the one mapper both Grok producers share. The log
+    // ingest and the live Companion pass the identical `config` shape through it.
+
+    #[test]
+    fn a_weekly_config_becomes_one_window_through_the_shared_grammar() {
+        let config: Value = serde_json::from_str(
+            r#"{"creditUsagePercent":16,
+                "currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY",
+                    "start":"2026-07-05T00:00:00.000000+00:00",
+                    "end":"2026-07-12T00:00:00.000000+00:00"}}"#,
+        )
+        .unwrap();
+        let w = grok_credit_window(&config).unwrap();
+        assert_eq!(w.key, "w10080", "the same key the log path stores, so one series");
+        assert_eq!(w.window_minutes, Some(10_080));
+        assert_eq!(w.used_pct, 16.0);
+        assert_eq!(w.resets_at, iso_to_epoch("2026-07-12T00:00:00").unwrap());
+    }
+
+    #[test]
+    fn an_absent_percent_is_zero_used_not_a_missing_window() {
+        // proto3 omits zero-valued scalars, so the start of every window arrives
+        // with no `creditUsagePercent` — dropping it would lose those readings.
+        let config: Value = serde_json::from_str(
+            r#"{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-07-12T00:00:00Z"}}"#,
+        )
+        .unwrap();
+        assert_eq!(grok_credit_window(&config).unwrap().used_pct, 0.0);
+    }
+
+    #[test]
+    fn a_config_this_card_cannot_place_yields_no_window() {
+        // No reset, and a period type nobody has seen: neither is placeable, and
+        // an unnameable window is unknown rather than guessed.
+        for config in [
+            r#"{"creditUsagePercent":10,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"}}"#,
+            r#"{"creditUsagePercent":10,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_FORTNIGHTLY","end":"2026-07-12T00:00:00Z"}}"#,
+        ] {
+            assert!(grok_credit_window(&serde_json::from_str(config).unwrap()).is_none(), "{config}");
+        }
+    }
+
+    #[test]
+    fn the_deprecated_reset_mirror_is_the_fallback() {
+        let config: Value = serde_json::from_str(
+            r#"{"creditUsagePercent":5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"},
+                "billingPeriodEnd":"2026-07-12T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            grok_credit_window(&config).unwrap().resets_at,
+            iso_to_epoch("2026-07-12T00:00:00").unwrap(),
+        );
     }
 }

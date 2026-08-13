@@ -11,6 +11,8 @@ use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, LimitReading, SourceScanResult, UsageEvent};
 
+const PARSER_VERSION: i64 = 1;
+
 /// One `rate_limits` slot → a Reading, or None when that window does not exist.
 /// A null slot is an absent window, never a window at zero; a slot missing the
 /// duration or the reset instant cannot be keyed or placed on a time axis, so it
@@ -84,14 +86,13 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
     let mut events: Vec<UsageEvent> = Vec::new();
     let mut readings: Vec<LimitReading> = Vec::new();
     let mut skipped: u64 = 0;
-    let mut model = String::from("unknown");
+    let mut model: Option<String> = None;
     let mut cwd: Option<String> = None;
     // Forked and subagent rollouts replay their parent's history under rewritten
-    // envelope timestamps (#104), so a replayed window could present itself as
-    // current. The content-keyed PK absorbs the duplicate rows; this guard is
-    // what keeps `observed_at` honest. Usage events are unaffected — they have
-    // always been read from these files.
+    // envelope timestamps (#104). Advance the cumulative counters through that
+    // prefix, but emit nothing until the child's own turn_context begins.
     let mut replay = false;
+    let mut started = false;
     // Previous cumulative snapshot (raw, unclamped).
     let mut prev_input: i64 = 0;
     let mut prev_cached: i64 = 0;
@@ -126,15 +127,20 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                 if let Some(c) = v.pointer("/payload/cwd").and_then(|c| c.as_str()) {
                     cwd = Some(c.to_string());
                 }
-                replay = v.pointer("/payload/forked_from_id").is_some_and(|f| !f.is_null())
-                    || v.pointer("/payload/parent_thread_id").is_some_and(|p| !p.is_null())
-                    || v.pointer("/payload/thread_source").and_then(|s| s.as_str())
-                        == Some("subagent");
+                if !started {
+                    replay |= v.pointer("/payload/forked_from_id").is_some_and(|f| !f.is_null())
+                        || v.pointer("/payload/parent_thread_id").is_some_and(|p| !p.is_null())
+                        || v.pointer("/payload/thread_source").and_then(|s| s.as_str())
+                            == Some("subagent");
+                }
             }
             "turn_context" => {
                 if let Some(m) = v.pointer("/payload/model").and_then(|m| m.as_str()) {
-                    model = m.to_string();
+                    model = (!m.trim().is_empty() && !m.eq_ignore_ascii_case("unknown"))
+                        .then(|| m.to_string());
                 }
+                started = true;
+                replay = false;
             }
             "response_item" => {
                 let payload = match v.get("payload") {
@@ -256,6 +262,10 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                         d
                     });
 
+                if replay {
+                    continue;
+                }
+
                 let ts = v
                     .get("timestamp")
                     .and_then(|t| t.as_str())
@@ -287,7 +297,7 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                     dedup_key: format!("codex:{}:{}", file_stem, line_offset),
                     source: "codex".to_string(),
                     timestamp: ts,
-                    model: Some(model.clone()),
+                    model: model.clone(),
                     project: cwd.clone(),
                     api_calls: 1,
                     input_tokens: input,
@@ -311,6 +321,9 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
 /// Returns (events_inserted, lines_skipped) for one file.
 fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
     let path_str = path.to_string_lossy().to_string();
+    let parser_repair = db::get_file_state(conn, &path_str)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|previous| previous.byte_offset != PARSER_VERSION);
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let size = meta.len() as i64;
     let mtime = meta
@@ -321,11 +334,16 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
         .unwrap_or(0);
 
     // Unchanged file → skip (full re-parse only on change).
-    if unchanged(conn, path, &FileState { size, mtime, byte_offset: size }) {
+    let state = FileState {
+        size,
+        mtime,
+        byte_offset: PARSER_VERSION,
+    };
+    if unchanged(conn, path, &state) {
         return Ok((0, 0));
     }
 
-    // Codex re-parses changed files in full: replace this file's tool rows.
+    // Codex re-parses changed or parser-versioned files in full.
     db::clear_ctx_tools_for_file(conn, &path_str).map_err(|e| e.to_string())?;
 
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -336,19 +354,15 @@ fn scan_file(conn: &mut Connection, path: &Path) -> Result<(u64, u64), String> {
 
     let parsed = parse_file(&content, &file_stem, &path_str);
 
-    let inserted = db::insert_events(conn, &parsed.events).map_err(|e| e.to_string())?;
+    let inserted = if parser_repair {
+        db::replace_file_events(conn, &path_str, &parsed.events).map_err(|e| e.to_string())?;
+        parsed.events.len() as u64
+    } else {
+        db::insert_events(conn, &parsed.events).map_err(|e| e.to_string())?
+    };
     db::insert_limit_readings(conn, &parsed.readings).map_err(|e| e.to_string())?;
     db::add_ctx_tool_rows(conn, "codex", &path_str, &parsed.tool_rows).map_err(|e| e.to_string())?;
-    db::set_file_state(
-        conn,
-        &path_str,
-        FileState {
-            size,
-            mtime,
-            byte_offset: size,
-        },
-    )
-    .map_err(|e| e.to_string())?;
+    db::set_file_state(conn, &path_str, state).map_err(|e| e.to_string())?;
     Ok((inserted, parsed.skipped))
 }
 
@@ -412,6 +426,35 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM events WHERE source='codex'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n2, 2);
+
+        // A parser upgrade replaces stale rows from this file, including bad
+        // replay usage previously persisted under the `unknown` sentinel.
+        let source_file = fixture_root().join("rollout-fixture.jsonl");
+        let source_file = source_file.to_string_lossy();
+        conn.execute(
+            "INSERT INTO events (dedup_key, source, timestamp, model, source_file) \
+             VALUES ('codex:stale-replay', 'codex', 1, 'unknown', ?1)",
+            [&source_file],
+        )
+        .unwrap();
+        let old_offset = std::fs::metadata(source_file.as_ref()).unwrap().len() as i64;
+        conn.execute(
+            "UPDATE scanned_files SET byte_offset = ?2 WHERE path = ?1",
+            rusqlite::params![source_file.as_ref(), old_offset],
+        )
+        .unwrap();
+
+        let repaired = scan_codex(&mut conn, &fixture_root());
+        assert_eq!(repaired.events_inserted, 2);
+        let (rows, unknown): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE model = 'unknown') \
+                 FROM events WHERE source = 'codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, unknown), (2, 0));
     }
 
     fn write_rollout(dir: &std::path::Path, name: &str, lines: &[&str]) -> std::path::PathBuf {
@@ -419,6 +462,36 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, lines.join("\n") + "\n").unwrap();
         p
+    }
+
+    #[test]
+    fn a_truncated_rollout_does_not_delete_ledger_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let path = write_rollout(
+            &root,
+            "rollout.jsonl",
+            &[
+                r#"{"type":"session_meta","timestamp":"2026-08-12T12:00:00.000Z","payload":{"id":"parent","thread_source":"user","cwd":"/p"}}"#,
+                r#"{"type":"turn_context","timestamp":"2026-08-12T12:00:01.000Z","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-08-12T12:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":110}}}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-08-12T12:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":20,"total_tokens":220}}}}"#,
+            ],
+        );
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        scan_codex(&mut conn, &root);
+
+        std::fs::write(&path, "{\"type\":\"session_meta\"}\n").unwrap();
+        scan_codex(&mut conn, &root);
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE source = 'codex'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2, "a normal rescan must never erase prior usage");
     }
 
     #[test]
@@ -446,6 +519,49 @@ mod tests {
         };
         assert_eq!(rows[0], (Some("rollout-2026-04-23-abc".to_string()), Some(10)));
         assert_eq!(rows[1], (Some("rollout-2026-04-23-abc".to_string()), Some(15)));
+    }
+
+    #[test]
+    fn parent_and_subagent_replays_count_only_sol_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "parent.jsonl", &[
+            r#"{"type":"session_meta","timestamp":"2026-08-12T12:00:00.000Z","payload":{"id":"parent","thread_source":"user","cwd":"/p"}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-08-12T12:00:01.000Z","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-12T12:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-12T12:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":20,"total_tokens":220}}}}"#,
+        ]);
+        write_rollout(&root, "child-1.jsonl", &[
+            r#"{"type":"session_meta","timestamp":"2026-08-12T12:05:00.000Z","payload":{"id":"child-1","parent_thread_id":"parent","thread_source":"subagent","cwd":"/p"}}"#,
+            r#"{"type":"session_meta","timestamp":"2026-08-12T12:05:00.001Z","payload":{"id":"parent","thread_source":"user","cwd":"/p"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-12T12:05:00.002Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-08-12T12:05:01.000Z","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-12T12:05:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130,"cached_input_tokens":30,"output_tokens":17,"total_tokens":147}}}}"#,
+        ]);
+        write_rollout(&root, "child-2.jsonl", &[
+            r#"{"type":"session_meta","timestamp":"2026-08-12T12:10:00.000Z","payload":{"id":"child-2","forked_from_id":"parent","thread_source":"subagent","cwd":"/p"}}"#,
+            r#"{"type":"session_meta","timestamp":"2026-08-12T12:10:00.001Z","payload":{"id":"parent","thread_source":"user","cwd":"/p"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-12T12:10:00.002Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":40,"output_tokens":20,"total_tokens":220}}}}"#,
+            r#"{"type":"turn_context","timestamp":"2026-08-12T12:10:01.000Z","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-12T12:10:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":240,"cached_input_tokens":50,"output_tokens":29,"total_tokens":269}}}}"#,
+        ]);
+
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let result = scan_codex(&mut conn, &root);
+        assert_eq!(result.events_inserted, 4, "two parent requests plus two child requests");
+        let (tokens, requests, sol, other): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(input_tokens + output_tokens + cache_read_tokens), \
+                        SUM(api_calls), \
+                        COUNT(*) FILTER (WHERE model = 'gpt-5.6-sol'), \
+                        COUNT(*) FILTER (WHERE model IS NULL OR model <> 'gpt-5.6-sol') \
+                 FROM events WHERE source = 'codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(tokens, 306, "parent 220 + child deltas 37 + 49; replay prefixes excluded");
+        assert_eq!((requests, sol, other), (4, 4, 0));
     }
 
     #[test]
@@ -484,10 +600,18 @@ mod tests {
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
         let r = scan_codex(&mut conn, &root);
         assert_eq!(r.events_inserted, 1);
-        let rt: Option<i64> = conn
-            .query_row("SELECT reasoning_tokens FROM events WHERE source='codex'", [], |r| r.get(0))
+        let (rt, model): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT reasoning_tokens, model FROM events WHERE source='codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(rt, None, "absent field means not-reported, never 0");
+        assert_eq!(
+            model, None,
+            "absent Model means unattributed usage, never a sentinel"
+        );
     }
 
     #[test]
@@ -752,15 +876,39 @@ mod tests {
     }
 
     #[test]
-    fn a_subagent_replay_contributes_no_readings() {
+    fn a_subagent_replay_contributes_no_usage_or_readings() {
         let content = [
             r#"{"type":"session_meta","timestamp":"2026-07-03T06:37:20.985Z","payload":{"id":"019f26b2","parent_thread_id":"019f2681","thread_source":"subagent","cwd":"/p"}}"#,
+            r#"{"type":"session_meta","timestamp":"2026-07-03T06:37:20.986Z","payload":{"id":"019f2681","parent_thread_id":null,"thread_source":"user","cwd":"/p"}}"#,
             REAL_BLOCK,
+            r#"{"type":"turn_context","timestamp":"2026-07-03T06:37:22.000Z","payload":{"model":"gpt-5.6-sol"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-07-03T06:37:23.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130,"cached_input_tokens":10,"output_tokens":60,"total_tokens":190}}}}"#,
         ]
         .join("\n") + "\n";
         let parsed = parse_file(&content, "rollout", "/p/rollout.jsonl");
-        assert_eq!(parsed.readings, vec![], "a replay must not donate a fresh observed_at");
-        assert_eq!(parsed.events.len(), 1, "its usage is read as it always was");
+        assert!(
+            parsed
+                .events
+                .iter()
+                .all(|event| event.model.as_deref() != Some("unknown")),
+            "replayed parent usage must not surface as an unknown Model"
+        );
+        assert_eq!(
+            parsed.readings,
+            vec![],
+            "a replay must not donate a fresh observed_at"
+        );
+        assert_eq!(
+            parsed.events.len(),
+            1,
+            "only usage after the child turn starts is new"
+        );
+        let event = &parsed.events[0];
+        assert_eq!(event.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            (event.input_tokens, event.cache_read_tokens, event.output_tokens),
+            (20, 10, 10)
+        );
     }
 
     #[test]

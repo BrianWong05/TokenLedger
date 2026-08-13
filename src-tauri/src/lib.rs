@@ -314,9 +314,17 @@ fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecR
 /// Filters: the Limits page is *now*, not a range, and it ignores the Overview's
 /// date window and Source selection entirely.
 #[tauri::command(async)]
-fn limits(state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::limits(&db).map_err(|e| e.to_string())
+fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
+    let mut cards = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        queries::limits(&db).map_err(|e| e.to_string())?
+    };
+    if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
+        if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
+            card.usage_resets_available = export.usage_resets_available;
+        }
+    }
+    Ok(cards)
 }
 
 /// Ask a `live` Source's Companion for a fresh reading (ADR-0019). This is the
@@ -609,19 +617,31 @@ pub fn run() {
             // manual start; the hidden-start branch above covers login start;
             // this thread covers the long tail. Emits prices-rebuilt so a
             // visible Overview refreshes too.
+            // Every sixth tick also refreshes prices: daily catalog checks keep
+            // today's Codex Auto Review snapshot current without adding another
+            // timer thread. Past snapshots are immutable once their day closes.
             // ponytail: parked thread + 4h sleep, no timer framework needed.
             let handle = app.handle().clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
-                if scan_now(&handle).is_ok() {
-                    let _ = handle.emit("prices-rebuilt", ());
+            std::thread::spawn(move || {
+                let mut ticks = 0;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
+                    if scan_now(&handle).is_ok() {
+                        let _ = handle.emit("prices-rebuilt", ());
+                    }
+                    ticks += 1;
+                    if ticks == 6 {
+                        refresh_catalogs(&handle);
+                        ticks = 0;
+                    }
                 }
             });
 
             // Refresh both price catalogs off the main thread; each loader falls
             // back to its cached snapshot on a fetch failure (LiteLLM then to its
             // bundled copy, OpenRouter to None — ADR-0009). Scans re-run this same
-            // routine whenever they surface a Model no catalog covers.
+            // routine whenever they surface a Model no catalog covers, and the
+            // resident cadence above re-runs it daily.
             let handle = app.handle().clone();
             std::thread::spawn(move || refresh_catalogs(&handle));
             Ok(())
@@ -732,6 +752,69 @@ mod tests {
         assert!(app.get_webview_window("main").is_some());
     }
 
+    /// Every `live` Source needs three separate files to agree before its card
+    /// can ever fetch: the catalog says it is live, `tauri.conf.json` ships a
+    /// Companion by that name, and the window's capability lets the shell run
+    /// it. Any one of them missing fails only at the moment a person presses
+    /// **Enable** — which is how the v1 wiring shipped unverified. Here the
+    /// three are read and compared instead.
+    #[test]
+    fn every_live_source_has_a_companion_that_the_shell_is_allowed_to_run() {
+        let read = |path: &str| {
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/").to_string() + path)
+                    .unwrap_or_else(|e| panic!("{path}: {e}")),
+            )
+            .unwrap_or_else(|e| panic!("{path}: {e}"))
+        };
+        let conf = read("tauri.conf.json");
+        let external: Vec<&str> = conf
+            .pointer("/bundle/externalBin")
+            .and_then(|b| b.as_array())
+            .expect("the bundle must declare its external binaries")
+            .iter()
+            .filter_map(|b| b.as_str())
+            .collect();
+        let capability = read("capabilities/default.json");
+        let allowed: Vec<&serde_json::Value> = capability
+            .pointer("/permissions")
+            .and_then(|p| p.as_array())
+            .expect("the window capability must list permissions")
+            .iter()
+            .filter(|p| p.get("identifier").and_then(|i| i.as_str()) == Some("shell:allow-execute"))
+            .filter_map(|p| p.get("allow").and_then(|a| a.as_array()))
+            .flatten()
+            .collect();
+
+        let live: Vec<&str> = crate::source_catalog::catalog()
+            .sources
+            .iter()
+            .filter(|s| s.capabilities.limits.as_deref() == Some("live"))
+            .map(|s| s.key.as_str())
+            .collect();
+        assert!(live.contains(&"antigravity"), "the catalog decides who is live: {live:?}");
+
+        for key in live {
+            let name = format!("binaries/{key}-limits");
+            assert!(external.contains(&name.as_str()), "{name} is not shipped with the app");
+            let entry = allowed
+                .iter()
+                .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("the shell may not run {name}"));
+            assert_eq!(entry.get("sidecar").and_then(|s| s.as_bool()), Some(true));
+            // The Companions' one hand-run diagnostic is `--shape`, and the app
+            // must never be able to pass it: no argument reaches a Companion
+            // from the frontend.
+            assert_eq!(entry.get("args").and_then(|a| a.as_bool()), Some(false));
+            assert!(
+                std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin"))
+                    .join(format!("{key}-limits.rs"))
+                    .is_file(),
+                "{key}-limits has no source to build from",
+            );
+        }
+    }
+
     #[test]
     fn resident_app_prevents_automatic_exit_but_allows_explicit_quit() {
         assert!(super::should_prevent_exit(None));
@@ -752,6 +835,7 @@ mod tests {
             gemini_projects_json: dir.path().join("projects.json"),
             hermes_db: dir.path().join("state.db"),
             grok_sessions: dir.path().join("grok"),
+            grok_logs: dir.path().join("grok-logs"),
             antigravity_conversations: dir.path().join("antigravity"),
             antigravity_ide_conversations: dir.path().join("antigravity-ide"),
             antigravity_cli_conversations: dir.path().join("antigravity-cli"),

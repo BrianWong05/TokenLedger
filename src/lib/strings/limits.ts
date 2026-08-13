@@ -20,6 +20,10 @@ export const limits = {
     'limits.refreshing': 'Checking…',
     'limits.mode.left': 'Left',
     'limits.mode.used': 'Used',
+    'limits.usageReset.one': '{n} Usage Reset',
+    'limits.usageReset.many': '{n} Usage Resets',
+    'limits.usageReset.a11yOne': '{n} Usage Reset available',
+    'limits.usageReset.a11yMany': '{n} Usage Resets available',
 
     // Window labels. `five_hour`/`seven_day` are the two known Claude keys and
     // Codex classifies by duration; per-model windows are discovered from the
@@ -28,6 +32,15 @@ export const limits = {
     'limits.win.weekly': 'Weekly',
     'limits.win.weeklySub': 'Weekly',
     'limits.win.other': '{n} window',
+    // Grok's bar meters a shared credit pool rather than a rate-limit window:
+    // same geometry, different quantity, so the label says which (#126).
+    'limits.win.weeklyCredits': 'Weekly credits',
+    'limits.win.monthlyCredits': 'Monthly credits',
+
+    // Pools. Antigravity meters two shared pools over the same two durations,
+    // so the pool is part of the row label rather than a second card.
+    'limits.pool.gemini': 'Gemini',
+    'limits.pool.other': 'Other models',
 
     'limits.pctLeft': '{pct}% left',
     'limits.pctUsed': '{pct}% used',
@@ -51,10 +64,16 @@ export const limits = {
     // The opt-in empty state is the disclosure surface: it states exactly what
     // enabling does before any credential is read.
     'limits.optinTitle': 'See how much of your plan is left',
+    // Tool names stay general rather than listed: the card grid directly below
+    // already names each tool by icon and label, and a list would rot.
     'limits.optinBody':
-      'Each card shows a vendor window — how much of it is used and when it resets. Checking live keeps them current: TokenLedger reads the sign-ins Claude Code and Codex already store for you and asks each vendor — read-only — how much of each window you have used.',
+      "Each card shows a vendor window — how much of it is used and when it resets. Checking live keeps them current: TokenLedger reads the sign-ins your AI tools already store for you and asks each vendor — read-only — how much of each window you've used.",
+    // The old promise ("never changed, refreshed, or sent anywhere else") could
+    // not survive the Google exchange (ADR-0020), so it is reframed to what is
+    // actually true: the *saved* sign-in is untouched, and the disposable pass
+    // the vendor's own client mints constantly is used once and never kept.
     'limits.optinBounds':
-      'Only when you open this page or press Refresh — never on a timer. Your sign-in is never changed, refreshed, or sent anywhere else.',
+      'Only when you open this page or press Refresh — never on a timer. Your saved sign-in is never changed, and never sent anywhere but the vendor it belongs to. Some tools need a fresh access pass first; TokenLedger gets one the way the tool itself does, uses it once, and never keeps it.',
     'limits.optinButton': 'Enable live limit checks',
 
     'limits.t.d': '{n}d',
@@ -68,11 +87,20 @@ export const limits = {
     'limits.refreshing': '查詢中…',
     'limits.mode.left': '剩餘',
     'limits.mode.used': '已用',
+    'limits.usageReset.one': '{n} 次用量重置',
+    'limits.usageReset.many': '{n} 次用量重置',
+    'limits.usageReset.a11yOne': '可用的用量重置：{n} 次',
+    'limits.usageReset.a11yMany': '可用的用量重置：{n} 次',
 
     'limits.win.session': '時段',
     'limits.win.weekly': '每週',
     'limits.win.weeklySub': '每週',
     'limits.win.other': '{n} 窗口',
+    'limits.win.weeklyCredits': '每週額度',
+    'limits.win.monthlyCredits': '每月額度',
+
+    'limits.pool.gemini': 'Gemini',
+    'limits.pool.other': '其他模型',
 
     'limits.pctLeft': '剩 {pct}%',
     'limits.pctUsed': '已用 {pct}%',
@@ -95,9 +123,9 @@ export const limits = {
 
     'limits.optinTitle': '看看方案還剩多少',
     'limits.optinBody':
-      '每張卡是一個供應商窗口——用了多少、幾時重置。即時查詢讓數字保持最新：TokenLedger 會讀取 Claude Code 與 Codex 已為你儲存的登入，以唯讀方式向各自的供應商查詢各窗口的使用量。',
+      '每張卡是一個供應商窗口——用了多少、幾時重置。即時查詢讓數字保持最新：TokenLedger 會讀取你的 AI 工具已為你儲存的登入，以唯讀方式向各自的供應商查詢各窗口的使用量。',
     'limits.optinBounds':
-      '只在開啟此頁或按「重新查詢」時查詢——絕不定時輪詢。你的登入不會被修改、續期或傳往其他地方。',
+      '只在開啟此頁或按「重新查詢」時查詢——絕不定時輪詢。你儲存的登入不會被修改，也不會傳送到它所屬供應商以外的任何地方。有些工具需要先換取臨時通行證；TokenLedger 會以該工具本身的做法換取一次，用完即棄，絕不保留。',
     'limits.optinButton': '啟用即時限額查詢',
 
     'limits.t.d': '{n} 天',
