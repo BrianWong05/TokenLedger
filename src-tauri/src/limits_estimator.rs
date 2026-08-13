@@ -11,6 +11,17 @@ use std::collections::BTreeMap;
 
 use crate::limits_evidence::{Interval, PartitionEvidence, ReasonCode, SeriesKey};
 
+/// What endpoint rounding alone could have hidden. Each displayed percentage
+/// stands for anything within half a point, so a run's true movement is `d ± 1`
+/// and its true ratio lies somewhere in here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Quantization {
+    pub lower: f64,
+    /// Unbounded at a single point of movement — `None` rather than an infinity
+    /// no wire may carry.
+    pub upper: Option<f64>,
+}
+
 /// A clean run: a maximal monotonic sequence of eligible intervals inside one
 /// Partition. Its ratio is the whole run's, never a pooled sum and never an
 /// average of its intervals.
@@ -18,7 +29,11 @@ use crate::limits_evidence::{Interval, PartitionEvidence, ReasonCode, SeriesKey}
 pub struct Run {
     /// `T`, the canonical tokens across the run.
     pub tokens: i64,
-    /// `d`, the displayed points it moved: last percentage less first.
+    /// The run's first anchor, and the last Reading it reached.
+    pub from: i64,
+    pub through: i64,
+    /// `d`, the displayed points it moved: last percentage less first. A run is
+    /// built from positive movements only, so this is at least one.
     pub movement: i64,
     /// How many separate times it moved, which is not the same as how far.
     pub positive_movements: usize,
@@ -26,19 +41,16 @@ pub struct Run {
 
 impl Run {
     pub fn ratio(&self) -> f64 {
+        debug_assert!(self.movement > 0, "a run is built from positive movements");
         self.tokens as f64 / self.movement as f64
     }
 
-    /// What endpoint rounding alone could have hidden: each displayed percentage
-    /// stands for anything within half a point, so the true movement is `d ± 1`.
-    /// At a single point the upper bound is unbounded, which is `None` rather
-    /// than an infinity no wire may carry.
-    pub fn quantization(&self) -> (f64, Option<f64>) {
+    pub fn quantization(&self) -> Quantization {
         let tokens = self.tokens as f64;
-        (
-            tokens / (self.movement + 1) as f64,
-            (self.movement > 1).then(|| tokens / (self.movement - 1) as f64),
-        )
+        Quantization {
+            lower: tokens / (self.movement + 1) as f64,
+            upper: (self.movement > 1).then(|| tokens / (self.movement - 1) as f64),
+        }
     }
 
     /// A run may represent its epoch only if it moved more than once and far
@@ -49,13 +61,26 @@ impl Run {
 }
 
 /// One completed epoch's representative — at most one per epoch, ever.
+///
+/// It carries the run's own bounds as well as its figures. The specification
+/// asks that a run's raw Model composition and its contributing Reading and
+/// Usage Record identities stay recoverable, while keeping them out of the
+/// normal payload; `from`/`through` with the Series is what makes that
+/// deterministic, since the contributors of a stretch are exactly the Records
+/// its Source and account logged inside it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub epoch_ended_at: i64,
     pub tokens: i64,
     pub movement: i64,
+    /// How many separate times it moved — the count the epoch summary reports,
+    /// which is not the same as how far it moved.
+    pub positive_movements: usize,
+    /// The run's first anchor and last, exclusive and inclusive as membership is.
+    pub from: i64,
+    pub through: i64,
     pub ratio: f64,
-    pub quantization: (f64, Option<f64>),
+    pub quantization: Quantization,
 }
 
 /// What the estimator makes of one Series.
@@ -97,11 +122,14 @@ fn runs_of(intervals: &[Interval]) -> Vec<Run> {
         match runs.last_mut() {
             Some(run) if continues => {
                 run.tokens += interval.tokens;
+                run.through = interval.t1;
                 run.movement += interval.movement();
                 run.positive_movements += 1;
             }
             _ => runs.push(Run {
                 tokens: interval.tokens,
+                from: interval.t0,
+                through: interval.t1,
                 movement: interval.movement(),
                 positive_movements: 1,
             }),
@@ -130,6 +158,9 @@ fn representative(partition: &PartitionEvidence, estimate: &mut Estimate) -> Opt
         epoch_ended_at: partition.epoch,
         tokens: run.tokens,
         movement: run.movement,
+        positive_movements: run.positive_movements,
+        from: run.from,
+        through: run.through,
         ratio: run.ratio(),
         quantization: run.quantization(),
     })
@@ -139,26 +170,27 @@ fn representative(partition: &PartitionEvidence, estimate: &mut Estimate) -> Opt
 /// endpoint-rounding ranges all overlap somewhere, and the widest ratio is no
 /// more than a quarter again the narrowest.
 fn coheres(members: &[&Candidate]) -> Option<ReasonCode> {
-    let lower = members.iter().map(|c| c.quantization.0).fold(f64::MIN, f64::max);
-    let upper = members
-        .iter()
-        .filter_map(|c| c.quantization.1)
-        .fold(f64::MAX, f64::min);
-    if lower > upper {
-        return Some(ReasonCode::QuantizationRangesDisjoint);
+    let lower = members.iter().map(|c| c.quantization.lower).reduce(f64::max);
+    // Every member unbounded above leaves nothing for the ranges to contradict,
+    // so the spread below is what judges them.
+    let upper = members.iter().filter_map(|c| c.quantization.upper).reduce(f64::min);
+    if let (Some(lower), Some(upper)) = (lower, upper) {
+        if lower > upper {
+            return Some(ReasonCode::QuantizationRangesDisjoint);
+        }
     }
-    let ratios: Vec<f64> = members.iter().map(|c| c.ratio).collect();
-    let (min, max) = (
-        ratios.iter().copied().fold(f64::MAX, f64::min),
-        ratios.iter().copied().fold(f64::MIN, f64::max),
-    );
-    (max / min > 1.25).then_some(ReasonCode::RatioSpreadExceeded)
+    let min = members.iter().map(|c| c.ratio).reduce(f64::min);
+    let max = members.iter().map(|c| c.ratio).reduce(f64::max);
+    match (min, max) {
+        (Some(min), Some(max)) if max / min > 1.25 => Some(ReasonCode::RatioSpreadExceeded),
+        _ => None,
+    }
 }
 
 /// The conventional median, and with an even count the mean of the two middle
 /// ratios. Full precision throughout: rounding belongs to the display.
 fn median(mut ratios: Vec<f64>) -> f64 {
-    ratios.sort_by(|a, b| a.partial_cmp(b).expect("run ratios are finite"));
+    ratios.sort_by(f64::total_cmp);
     let middle = ratios.len() / 2;
     if ratios.len() % 2 == 1 {
         ratios[middle]
@@ -191,18 +223,22 @@ pub fn estimates(
             epochs.retain(|p| p.epoch <= evaluated_at);
             epochs.sort_by_key(|p| std::cmp::Reverse(p.epoch));
 
-            let horizon = epochs
-                .first()
-                .and_then(|p| p.window_minutes)
-                .map_or_else(|| recency_horizon(None), |m| recency_horizon(Some(m)));
+            // The newest epoch that names a window, not merely the newest: one
+            // Reading short of a duration must not collapse a weekly Series'
+            // horizon to the seven-day floor.
+            let horizon = recency_horizon(epochs.iter().find_map(|p| p.window_minutes));
             let cutoff = evaluated_at - horizon;
 
-            // Newest five, and only those still recent.
+            // The newest five *representatives*, not the newest five epochs: an
+            // epoch that offers none has nothing to inspect, and letting it eat
+            // a slot would report too few candidates while qualifying epochs sat
+            // unread inside the horizon. Laziness stops the walk at the fifth,
+            // so nothing further back is inspected or refused.
             let candidates: Vec<Candidate> = epochs
                 .iter()
                 .filter(|p| p.epoch >= cutoff)
-                .take(5)
                 .filter_map(|p| representative(p, &mut estimate))
+                .take(5)
                 .collect();
 
             if candidates.len() < 3 {
@@ -213,7 +249,8 @@ pub fn estimates(
 
             // Every subset large enough to be a core, widest first.
             let n = candidates.len();
-            let floor = 3.max((n as f64 * 0.75).ceil() as usize);
+            // `ceil(0.75 * N)`, in integers: 3/3, 3/4, 4/5.
+            let floor = 3.max((3 * n).div_ceil(4));
             let mut cores: Vec<Vec<usize>> = Vec::new();
             let mut reason: Option<ReasonCode> = None;
             for size in (floor..=n).rev() {
@@ -241,7 +278,11 @@ pub fn estimates(
                     estimate.tokens_per_pct = Some(median(ratios));
                     estimate.core = core;
                 }
-                0 => estimate.refuse(reason.unwrap_or(ReasonCode::RatioSpreadExceeded)),
+                0 => {
+                    if let Some(why) = reason {
+                        estimate.refuse(why);
+                    }
+                }
                 // More than one, and nothing chooses between them.
                 _ => estimate.refuse(ReasonCode::CompetingStableCores),
             }
@@ -320,19 +361,20 @@ mod tests {
     #[test]
     fn a_run_ratio_is_its_tokens_over_its_movement_with_the_quantization_it_implies() {
         // The specification's own worked example.
-        let run = Run { tokens: 1_000_000, movement: 10, positive_movements: 2 };
+        let run =
+            Run { tokens: 1_000_000, from: 0, through: 60, movement: 10, positive_movements: 2 };
         assert_eq!(run.ratio(), 100_000.0);
-        let (lower, upper) = run.quantization();
-        assert_eq!(lower, 1_000_000.0 / 11.0);
-        assert_eq!(upper, Some(1_000_000.0 / 9.0));
+        let quantization = run.quantization();
+        assert_eq!(quantization.lower, 1_000_000.0 / 11.0);
+        assert_eq!(quantization.upper, Some(1_000_000.0 / 9.0));
     }
 
     #[test]
     fn a_single_point_run_has_no_upper_quantization_bound() {
         // `T / (d - 1)` is unbounded at one point, and unbounded is not a number
         // the wire may carry as infinity.
-        let run = Run { tokens: 500.0 as i64, movement: 1, positive_movements: 1 };
-        assert_eq!(run.quantization().1, None);
+        let run = Run { tokens: 500, from: 0, through: 60, movement: 1, positive_movements: 1 };
+        assert_eq!(run.quantization().upper, None);
     }
 
     #[test]
@@ -421,6 +463,51 @@ mod tests {
     }
 
     #[test]
+    fn an_epoch_with_nothing_to_offer_does_not_use_up_a_slot() {
+        // Six recent epochs, the second-newest barren. Five representatives are
+        // there to be had, and counting epochs instead of representatives would
+        // report four — or, with enough barren ones, report too few candidates
+        // while qualifying epochs sat unread inside the horizon.
+        let mut epochs: Vec<PartitionEvidence> =
+            (1..=6).map(|d| epoch(d, 20, 2_000 + d * 5)).collect();
+        epochs[1] = partition(NOW - 2 * DAY, chain(0, &[(12, 1_200)], NOW - 2 * DAY - 3_600));
+
+        let estimate = only(estimates(&epochs, NOW));
+        assert_eq!(estimate.candidates.len(), 5);
+        assert_eq!(refused(&estimate, ReasonCode::NoQualifyingRun), 1);
+        // And the walk stopped at the fifth: the sixth epoch was never inspected.
+        assert_eq!(estimate.candidates[4].epoch_ended_at, NOW - 6 * DAY);
+    }
+
+    #[test]
+    fn a_horizon_comes_from_the_newest_epoch_that_names_a_window() {
+        // The newest epoch happens not to name its duration. The Series is still
+        // weekly, and collapsing it to the seven-day floor would age out
+        // candidates that are not old.
+        let mut epochs: Vec<PartitionEvidence> =
+            [1, 30, 31, 32].iter().map(|d| epoch(*d, 20, 2_000)).collect();
+        epochs[0].window_minutes = None;
+
+        let estimate = only(estimates(&epochs, NOW));
+        assert_eq!(estimate.candidates.len(), 4);
+    }
+
+    #[test]
+    fn a_candidate_carries_what_its_contributors_can_be_found_by() {
+        let estimate = only(estimates(
+            &[epoch(1, 20, 2_000), epoch(2, 20, 2_020), epoch(3, 20, 1_980)],
+            NOW,
+        ));
+        let newest = &estimate.candidates[0];
+        assert_eq!(newest.positive_movements, 2);
+        // The stretch itself: with the Series, exactly the Records inside it are
+        // the contributors, which is what keeps them reconstructible without
+        // being carried.
+        assert!(newest.from < newest.through);
+        assert_eq!(newest.through - newest.from, 120);
+    }
+
+    #[test]
     fn three_recent_epochs_are_the_fewest_that_can_carry_a_core() {
         let two = only(estimates(&[epoch(1, 20, 2_000), epoch(2, 20, 2_000)], NOW));
         assert_eq!(two.tokens_per_pct, None);
@@ -503,8 +590,11 @@ mod tests {
             epoch_ended_at: NOW,
             tokens: ratio as i64,
             movement: 1,
+            positive_movements: 1,
+            from: 0,
+            through: 60,
             ratio,
-            quantization: (0.0, None),
+            quantization: Quantization { lower: 0.0, upper: None },
         };
         let inside = [candidate(100.0), candidate(124.0), candidate(110.0)];
         assert_eq!(coheres(&inside.iter().collect::<Vec<_>>()), None);
