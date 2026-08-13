@@ -4,7 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import LimitsPage from './LimitsPage';
-import { LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import { LIVE_ENABLED_KEY, MODE_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from './limits';
 import type { SourceLimits } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -99,6 +99,7 @@ const CLAUDE_LIVE: SourceLimits = {
 const ANTIGRAVITY_LIVE: SourceLimits = {
   source: 'antigravity',
   plan: 'Pro',
+  usageResetsAvailable: null,
   windows: [
     { windowKey: '3p:w300', windowMinutes: 300, usedPct: 12, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120 },
     { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 58, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120 },
@@ -110,6 +111,7 @@ const ANTIGRAVITY_LIVE: SourceLimits = {
 const GROK_CREDITS: SourceLimits = {
   source: 'grok',
   plan: 'SuperGrok',
+  usageResetsAvailable: null,
   windows: [
     { windowKey: 'w10080', windowMinutes: 10080, usedPct: 16, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR },
   ],
@@ -196,14 +198,16 @@ describe('card states', () => {
     expect(badge.className).toMatch(/zero/);
   });
 
-  it('reads a live Source with nothing recorded as not signed in', async () => {
+  it('reads a live Source with no usable sign-in as unavailable', async () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CODEX_WEEKLY]) }));
     const claude = cardFor(c, 'Claude');
 
     expect(claude.className).toMatch(/off/);
-    expect(claude.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Not signed in');
+    expect(claude.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      'Sign-in unavailable',
+    );
     expect(claude.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      'Sign in with the claude CLI, then check again.',
+      'Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.',
     );
     expect(claude.querySelector('.tl-lim-plan')).toBeNull();
     expect(btn(claude, 'Check again')).toBeTruthy();
@@ -226,7 +230,7 @@ describe('card states', () => {
     expect(btn(claude, 'Retry')).toBeTruthy();
   });
 
-  it('renders a refused credential as signed out, not as a failure', async () => {
+  it('renders a refused credential as sign-in unavailable, not as a failure', async () => {
     // The Companion marks this case with the "not signed in" prefix; the page
     // trusts that word, never the bare status code.
     const c = await mount(
@@ -237,7 +241,7 @@ describe('card states', () => {
       }),
     );
     expect(cardFor(c, 'Claude').querySelector('.tl-lim-trouble .title')?.textContent).toBe(
-      'Not signed in',
+      'Sign-in unavailable',
     );
   });
 
@@ -261,25 +265,186 @@ describe('card states', () => {
     expect(trouble.querySelector('.hint')?.textContent).toContain('PERMISSION_DENIED');
   });
 
-  it('reads a live Source with nothing recorded as not signed in, naming its own CLI', async () => {
+  it('does not call a Codex home-specific credential failure a machine-wide sign-out', async () => {
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: (source) => source === 'codex'
+        ? Promise.reject(new Error('not signed in: no Codex sign-in found on this computer'))
+        : Promise.resolve(),
+    }));
+    const codex = cardFor(c, 'Codex');
+    expect(codex.className).toMatch(/off/);
+    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      'Sign-in unavailable',
+    );
+    expect(codex.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
+      'Run codex once to sign in or renew it, or check where codex stores its sign-in, then check again.',
+    );
+  });
+
+  it('reads a live Source with nothing recorded as sign-in unavailable, naming its own CLI', async () => {
     // Every shipped Source is `live` now, so an absence means the credential.
     // The nothing-recorded (`logs`) state is exercised at the derive level.
     const c = await mount(fakePort({ list: () => Promise.resolve([]) }));
     const codex = cardFor(c, 'Codex');
     expect(codex.className).toMatch(/off/);
-    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Not signed in');
+    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      'Sign-in unavailable',
+    );
     expect(codex.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      'Sign in with the codex CLI, then check again.',
+      'Run codex once to sign in or renew it, or check where codex stores its sign-in, then check again.',
     );
     // Grok and Antigravity are live too — an empty card points at each one's own
     // CLI, not a blank.
     const grok = cardFor(c, 'Grok');
     expect(grok.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      'Sign in with the grok CLI, then check again.',
+      'Run grok once to sign in or renew it, or check where grok stores its sign-in, then check again.',
     );
     const antigravity = cardFor(c, 'Antigravity');
     expect(antigravity.querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
-      'Sign in with the antigravity CLI, then check again.',
+      'Run antigravity once to sign in or renew it, or check where antigravity stores its sign-in, then check again.',
+    );
+  });
+
+  it('keeps a Companion failure across tab switches inside the live-check floor', async () => {
+    let checks = 0;
+    const port = fakePort({
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: (source) => {
+        checks += 1;
+        return source === 'claude'
+          ? Promise.reject(new Error('could not reach the vendor: timed out'))
+          : Promise.resolve();
+      },
+    });
+
+    const first = await mount(port);
+    expect(cardFor(first, 'Claude').querySelector('.tl-lim-trouble .title')?.textContent).toBe(
+      "Couldn't check",
+    );
+
+    const second = await remount(port, NOW_MS + 30_000);
+    const trouble = cardFor(second, 'Claude').querySelector('.tl-lim-trouble')!;
+    expect(checks).toBe(4);
+    expect(trouble.querySelector('.title')?.textContent).toBe("Couldn't check");
+    expect(trouble.querySelector('.hint')?.textContent).toBe('could not reach the vendor: timed out');
+    // The failure is remembered per Source, so the three that answered thirty
+    // seconds ago keep their own cards — one vendor being unreachable is not
+    // evidence about any other.
+    const codex = cardFor(second, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
+  it('keeps a sign-in failure across tab switches inside the live-check floor', async () => {
+    // The other half of #133. A credential failure has to survive the remount
+    // exactly as a network one does: without it the card quietly falls back to
+    // the Readings the Ledger already held and forgets the sign-in problem the
+    // page had just reported.
+    const port = fakePort({
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: (source) => (source === 'codex'
+        ? Promise.reject(new Error('not signed in: no Codex sign-in found on this computer'))
+        : Promise.resolve()),
+    });
+    await mount(port);
+
+    const second = await remount(port, NOW_MS + 30_000);
+    const codex = cardFor(second, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Sign-in unavailable');
+    expect(rows(codex)).toHaveLength(0);
+  });
+
+  it('does not replay a failure from outside the live-check floor over held Readings', async () => {
+    // A verdict older than the floor says nothing about now, and this mount is
+    // already checking again. Replaying it would suppress the windows the
+    // Ledger holds today to show yesterday's blip as a current fact.
+    const c = await mount(fakePort({
+      store: {
+        [LIVE_ENABLED_KEY]: 'true',
+        [lastFailureKey('codex')]: 'signed-out',
+        [lastCheckKey('codex')]: String(NOW_MS - 24 * HOUR * 1000),
+      },
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: () => new Promise<void>(() => {}),
+    }));
+
+    const codex = cardFor(c, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
+  it('does not let a straggling check leave a verdict the check after it disproved', async () => {
+    // A check that is still running when the floor lifts can settle *after* its
+    // successor started — the only way a stale verdict now reaches storage. The
+    // successor succeeding is what has to clear it, or every remount inside the
+    // floor replays a sign-in failure the app has since confirmed working.
+    const codexChecks: { resolve: () => void; reject: (e: Error) => void }[] = [];
+    const port = fakePort({
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: (source) => (source === 'codex'
+        ? new Promise<void>((resolve, reject) => { codexChecks.push({ resolve, reject }); })
+        : Promise.resolve()),
+    });
+    await mount(port);
+
+    // The user flips away mid-check and comes back past the floor, so a second
+    // check starts while the first is still out.
+    await remount(port, NOW_MS + 61_000);
+    expect(codexChecks).toHaveLength(2);
+
+    // The user signed in between the two, so the straggler fails and its
+    // successor succeeds.
+    await act(async () => codexChecks[0].reject(new Error('not signed in: no Codex sign-in found on this computer')));
+    await settle();
+    await act(async () => codexChecks[1].resolve());
+    await settle();
+
+    expect(port.store[lastFailureKey('codex')]).toBe('');
+    const third = await remount(port, NOW_MS + 70_000);
+    const codex = cardFor(third, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
+  it('does not rehydrate a verdict older than the check currently in flight', async () => {
+    // The settle handlers only reach the tree that started the check, and a tab
+    // switch unmounts it. So a stamp saying "checking" must never sit beside a
+    // verdict from before that check began, or the remount inside the floor
+    // reports an outcome the running check has not reached yet.
+    const port = fakePort({
+      store: {
+        [LIVE_ENABLED_KEY]: 'true',
+        [lastFailureKey('codex')]: 'signed-out',
+        [lastCheckKey('codex')]: String(NOW_MS - 24 * HOUR * 1000),
+      },
+      list: () => Promise.resolve([CODEX_WEEKLY]),
+      checkLive: () => new Promise<void>(() => {}),
+    });
+    await mount(port);
+
+    const second = await remount(port, NOW_MS + 2_000);
+    const codex = cardFor(second, 'Codex');
+    expect(codex.querySelector('.tl-lim-trouble')).toBeNull();
+    expect(rows(codex)).toHaveLength(1);
+  });
+
+  it('does not claim a sign-in lookup completed while the check is in flight', async () => {
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([]),
+      checkLive: () => new Promise<void>(() => {}),
+    }));
+
+    // The header is the one place the two frames differ — the empty settled card
+    // is byte-identical — so it carries the claim: while a check is outstanding
+    // the page says so rather than presenting the situation as concluded.
+    const busy = btn(c, 'Checking…');
+    expect(busy).toBeTruthy();
+    expect(busy.disabled).toBe(true);
+    // And the body stays imperative throughout: it tells the reader what to do,
+    // never that a lookup has been made and come back empty.
+    expect(cardFor(c, 'Claude').querySelector('.tl-lim-trouble .hint')?.textContent).toBe(
+      'Run claude once to sign in or renew it, or check where claude stores its sign-in, then check again.',
     );
   });
 
@@ -339,6 +504,7 @@ describe('bars', () => {
       list: () => Promise.resolve([{
         source: 'antigravity',
         plan: null,
+        usageResetsAvailable: null,
         windows: [{ windowKey: 'zephyr:w300', windowMinutes: 300, usedPct: 10, resetsAt: NOW + HOUR, observedAt: NOW }],
       }]),
     }));

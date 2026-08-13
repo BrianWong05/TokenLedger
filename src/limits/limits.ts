@@ -31,6 +31,12 @@ export function lastCheckKey(source: string): string {
   return `tl.limits.lastCheck.${source}`;
 }
 
+// The last classified outcome travels with the floor stamp, so a remount inside
+// the floor cannot invent a different result without making another check.
+export function lastFailureKey(source: string): string {
+  return `tl.limits.lastFailure.${source}`;
+}
+
 export interface LimitsPort {
   /** The current state of every Limit the Ledger holds Readings for. */
   list(): Promise<SourceLimits[]>;
@@ -38,7 +44,7 @@ export interface LimitsPort {
   checkLive(source: string): Promise<void>;
   /** An ordinary scan — how a `logs` Source refreshes. */
   scan(): Promise<unknown>;
-  /** Persisted page preferences. Swallows a storage that refuses to answer. */
+  /** Persisted page state. Swallows a storage that refuses to answer. */
   read(key: string): string | null;
   write(key: string, value: string): void;
 }
