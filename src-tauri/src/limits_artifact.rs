@@ -109,7 +109,7 @@ pub fn grok_credit_window(config: &serde_json::Value) -> Option<WindowExport> {
 pub const SCHEMA: u32 = 3;
 
 fn supported_schema(schema: u32) -> bool {
-    (1..=SCHEMA).contains(&schema)
+    schema == 1 || schema == 2 || schema == SCHEMA
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,13 +216,19 @@ pub fn readings(export: &LimitsExport) -> Vec<LimitReading> {
                 limit_id: w.evidence.limit_id.clone(),
                 metering_regime: export.metering_regime.clone(),
                 model_scope: w.evidence.model_scope.as_deref().and_then(ModelScope::parse),
-                // Account identity, completeness coverage and source order are
-                // not a Companion's to prove from one fetch: an export says what
-                // the vendor answered now, not who it answered for over the
-                // stretch a Record fell in, nor what order two fetches in one
-                // second arrived in.
+                // Account identity and completeness coverage are not a
+                // Companion's to prove: an export says what the vendor answered
+                // now, not who it answered for over the stretch a Record fell in.
                 account_id: None,
                 covered_from: None,
+                // One fetch reports each window once, so `observed_at` already
+                // orders these Readings and no separate order is needed —
+                // `observed_at` plus a source order is only *sufficient*, not
+                // required, and the contract asks for an order only where two
+                // Readings share an instant. Two fetches inside one second would
+                // be that case, and the file-state gate on re-ingest makes it
+                // near-unreachable; a consumer must still treat any pair that
+                // does share an instant as unordered rather than guessing.
                 source_order: None,
                 external_activity: None,
             },
@@ -529,6 +535,32 @@ mod tests {
             readings[1].provenance.metering_regime.as_deref(),
             Some("claude:usage_limits"),
         );
+    }
+
+    #[test]
+    fn a_window_that_proves_nothing_writes_no_evidence_at_all() {
+        // The evidence fields are omitted rather than written empty, so a
+        // Companion with nothing to prove writes the same bytes it always did
+        // and an older reader finds nothing new to trip over.
+        let export = LimitsExport {
+            schema: SCHEMA,
+            source: "grok".to_string(),
+            fetched_at: 1_786_492_800,
+            plan: None,
+            metering_regime: None,
+            usage_resets_available: None,
+            windows: vec![WindowExport {
+                key: "w10080".to_string(),
+                window_minutes: Some(10080),
+                used_pct: 4.0,
+                resets_at: 1_786_503_900,
+                evidence: WindowEvidence::default(),
+            }],
+        };
+        let written = serde_json::to_string(&export).unwrap();
+        assert!(!written.contains("evidence"), "{written}");
+        assert!(!written.contains("metering_regime"), "{written}");
+        assert_eq!(readings(&export)[0].provenance, ReadingProvenance::default());
     }
 
     #[test]

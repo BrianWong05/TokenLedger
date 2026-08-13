@@ -34,8 +34,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 
-use tokenledger_lib::limits_artifact::{WindowEvidence, 
-    self, window_key, LimitsExport, WindowExport, NOT_SIGNED_IN,
+use tokenledger_lib::limits_artifact::{
+    self, window_key, LimitsExport, WindowEvidence, WindowExport, NOT_SIGNED_IN,
 };
 
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -76,7 +76,9 @@ fn run() -> Result<String, String> {
             .get("plan_type")
             .and_then(|p| p.as_str())
             .map(str::to_string),
-        // This Companion proves no metering regime yet.
+        // Codex proves its evidence facts from the rollouts the scan reads.
+        // Doing it here too waits for the ticket that gives this export an
+        // account identity, since that is what a live Reading still lacks.
         metering_regime: None,
         usage_resets_available: usage_resets_available(&body),
         windows,

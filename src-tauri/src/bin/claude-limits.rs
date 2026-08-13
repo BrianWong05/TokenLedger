@@ -300,13 +300,33 @@ fn limits_list(body: &Value) -> Vec<WindowExport> {
     out
 }
 
-/// What a window proves about itself. The vendor names the same two source-wide
-/// windows twice — `kind` in the modern `limits[]` list, a response key in the
-/// older named shape — and this is the one-to-one mapping between them the
-/// evidence contract asks an adapter to document: `session` is the five-hour
-/// window and `weekly_all` the seven-day one, whichever shape reported it. The
-/// `kind` is the identity because it names the window itself; the key is a
-/// label for it, and a label alone identifies nothing.
+/// The two windows the vendor meters across the whole Source, and the one
+/// mapping between the two names it gives each: `kind` in the modern `limits[]`
+/// list, a response key in the older named shape. This table *is* the
+/// one-to-one identity mapping the evidence contract asks an adapter to
+/// document, and it is one table because three things read it — the key a
+/// Reading is stored under, the duration the card ticks, and the Limit identity
+/// evidence needs — so a third source-wide window is added here once.
+///
+/// The `kind` is the identity, because it names the window itself where the key
+/// only labels it, and a label alone identifies nothing.
+const SOURCE_WIDE: [SourceWide; 2] = [
+    SourceWide { kind: "session", key: "five_hour", minutes: 300 },
+    SourceWide { kind: "weekly_all", key: "seven_day", minutes: 10080 },
+];
+
+struct SourceWide {
+    kind: &'static str,
+    key: &'static str,
+    minutes: i64,
+}
+
+/// The row the vendor named, by either of its names.
+fn source_wide(kind_or_key: &str) -> Option<&'static SourceWide> {
+    SOURCE_WIDE.iter().find(|w| w.kind == kind_or_key || w.key == kind_or_key)
+}
+
+/// What a window proves about itself, from either response shape.
 ///
 /// A model-scoped window proves neither identity nor scope. `weekly_scoped`
 /// names every one of them alike, so it cannot tell two apart, and what would
@@ -314,17 +334,13 @@ fn limits_list(body: &Value) -> Vec<WindowExport> {
 /// mapping to the raw Models the Ledger logs. Both stay unknown and the window's
 /// estimate stays Blocked, which is the honest answer until the vendor names a
 /// raw Model.
-fn window_evidence(limit: &str) -> WindowEvidence {
-    let limit_id = match limit {
-        "session" | "five_hour" => Some("session"),
-        "weekly_all" | "seven_day" => Some("weekly_all"),
-        _ => None,
-    };
+fn window_evidence(kind_or_key: &str) -> WindowEvidence {
+    let identity = source_wide(kind_or_key);
     WindowEvidence {
-        limit_id: limit_id.map(str::to_string),
+        limit_id: identity.map(|w| w.kind.to_string()),
         // Source-wide: every Claude Usage Record counts against these, including
         // Unattributed Usage.
-        model_scope: limit_id.and_then(|_| ModelScope::All.stored()),
+        model_scope: identity.and_then(|_| ModelScope::All.stored()),
     }
 }
 
@@ -344,13 +360,16 @@ fn list_window(item: &Value) -> Option<WindowExport> {
         .pointer("/scope/model/display_name")
         .and_then(|d| d.as_str());
 
-    let (key, window_minutes) = match (kind, scoped_model) {
-        ("session", _) => ("five_hour".to_string(), Some(300)),
-        ("weekly_all", _) => ("seven_day".to_string(), Some(10080)),
-        ("weekly_scoped", Some(model)) => (format!("seven_day_{}", slug(model)), Some(10080)),
+    let (key, window_minutes) = match (source_wide(kind), kind, scoped_model) {
+        (Some(w), _, _) => (w.key.to_string(), Some(w.minutes)),
+        // A scoped weekly is the weekly window's length, under its own key.
+        (None, "weekly_scoped", Some(model)) => (
+            format!("seven_day_{}", slug(model)),
+            source_wide("weekly_all").map(|w| w.minutes),
+        ),
         // A kind nobody has seen still renders rather than vanishing: its kind
         // is its (opaque) key, and with no known duration it draws no tick.
-        _ if !kind.is_empty() => (kind.to_string(), None),
+        (None, _, _) if !kind.is_empty() => (kind.to_string(), None),
         _ => return None,
     };
     Some(WindowExport { key, window_minutes, used_pct, resets_at, evidence: window_evidence(kind) })
@@ -395,11 +414,12 @@ fn window(key: &str, value: &Value) -> Option<WindowExport> {
 /// names no duration yields None and the card draws no tick rather than
 /// inventing an axis.
 fn window_minutes(key: &str) -> Option<i64> {
-    if key == "five_hour" {
-        return Some(300);
+    if let Some(window) = source_wide(key) {
+        return Some(window.minutes);
     }
-    if key == "seven_day" || key.starts_with("seven_day_") {
-        return Some(10080);
+    // A scoped weekly runs for the weekly window's length under its own key.
+    if key.starts_with("seven_day_") {
+        return source_wide("weekly_all").map(|w| w.minutes);
     }
     None
 }
@@ -413,6 +433,7 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn source_wide_windows_prove_their_limit_identity_and_scope() {
@@ -464,8 +485,6 @@ mod tests {
         );
     }
 
-    use super::*;
-
     // The modern response shape, verbatim from a real `--shape` run (2026-08-12,
     // Max 5x account): a normalized `limits[]` list beside the legacy named keys,
     // the per-model Fable window ONLY in the list (`seven_day_*` all null), and
@@ -489,6 +508,36 @@ mod tests {
         "extra_usage": {"is_enabled": false, "utilization": null},
         "spend": {"percent": 0, "severity": "normal"}
     }"#;
+
+    #[test]
+    fn one_real_response_reports_each_source_wide_window_under_both_names() {
+        // The mapping this adapter documents is not an assumption: this captured
+        // response names the same two windows twice at once — the modern list's
+        // `kind` beside the older shape's key — and each pair reports the one
+        // figure and the one reset instant. That co-observation is the proof the
+        // identity rests on, so it is pinned here rather than argued in prose.
+        let body: Value = serde_json::from_str(MODERN).unwrap();
+        for window in SOURCE_WIDE {
+            let listed = body["limits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["kind"] == window.kind)
+                .unwrap();
+            let named = &body[window.key];
+            assert_eq!(
+                (listed["percent"].as_f64(), listed["resets_at"].as_str()),
+                (named["utilization"].as_f64(), named["resets_at"].as_str()),
+                "{} and {} are one window", window.kind, window.key,
+            );
+            // So either name proves the same identity, and the modern one is it.
+            assert_eq!(window_evidence(window.kind), window_evidence(window.key));
+            assert_eq!(
+                window_evidence(window.key).limit_id.as_deref(),
+                Some(window.kind),
+            );
+        }
+    }
 
     #[test]
     fn the_limits_list_wins_and_carries_the_scoped_model_window() {
