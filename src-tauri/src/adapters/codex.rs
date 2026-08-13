@@ -499,10 +499,10 @@ mod tests {
             ],
         );
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
 
         std::fs::write(&path, "{\"type\":\"session_meta\"}\n").unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
 
         let rows: i64 = conn
             .query_row(
@@ -567,7 +567,7 @@ mod tests {
         ]);
 
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        let result = scan_codex(&mut conn, &root);
+        let result = scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(result.events_inserted, 4, "two parent requests plus two child requests");
         let (tokens, requests, sol, other): (i64, i64, i64, i64) = conn
             .query_row(
@@ -853,12 +853,12 @@ mod tests {
             r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
 
         // `archived` sorts first, so a plain path sort would hand it the shared
         // identity and re-key the whole Session off the link's stem.
         std::os::unix::fs::symlink(&rollout, root.join("archived.jsonl")).unwrap();
-        scan_codex(&mut conn, &root);
+        scan_codex(&mut conn, std::slice::from_ref(&root));
 
         let (requests, total): (i64, i64) = conn
             .query_row(
