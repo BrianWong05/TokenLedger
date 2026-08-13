@@ -35,6 +35,12 @@ pub enum ReasonCode {
     ZeroLocalUsage,
     KnownExternalActivity,
     UnattributedModelUsage,
+    NoQualifyingRun,
+    AmbiguousGreatestRun,
+    InsufficientRecentEpochs,
+    QuantizationRangesDisjoint,
+    RatioSpreadExceeded,
+    CompetingStableCores,
 }
 
 impl ReasonCode {
@@ -55,6 +61,12 @@ impl ReasonCode {
             ReasonCode::ZeroLocalUsage => "zero-local-usage",
             ReasonCode::KnownExternalActivity => "known-external-activity",
             ReasonCode::UnattributedModelUsage => "unattributed-model-usage",
+            ReasonCode::NoQualifyingRun => "no-qualifying-run",
+            ReasonCode::AmbiguousGreatestRun => "ambiguous-greatest-run",
+            ReasonCode::InsufficientRecentEpochs => "insufficient-recent-epochs",
+            ReasonCode::QuantizationRangesDisjoint => "quantization-ranges-disjoint",
+            ReasonCode::RatioSpreadExceeded => "ratio-spread-exceeded",
+            ReasonCode::CompetingStableCores => "competing-stable-cores",
         }
     }
 }
@@ -138,6 +150,9 @@ impl Interval {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PartitionEvidence {
     pub series: SeriesKey,
+    /// The window's own length, where the vendor names one — six of them is the
+    /// recency horizon when that is longer than seven days.
+    pub window_minutes: Option<i64>,
     /// The reset instant the Partition is identified by — the earliest stamp of
     /// the jitter band the Readings agreed on.
     pub epoch: i64,
@@ -221,7 +236,13 @@ pub fn derive(
 
     for ((series, epoch), intervals) in intervals {
         if !intervals.is_empty() {
-            evidence.partitions.push(PartitionEvidence { series, epoch, intervals });
+            let window_minutes = readings
+                .iter()
+                .find(|r| r.source == series.source && r.resets_at == epoch)
+                .and_then(|r| r.window_minutes);
+            evidence
+                .partitions
+                .push(PartitionEvidence { series, epoch, window_minutes, intervals });
         }
     }
     Ok(evidence)

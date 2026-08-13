@@ -6,6 +6,7 @@ pub mod limits_artifact;
 // is the next ticket — so it is `pub` to keep the compiler from pruning a module
 // whose tests are the only caller today.
 pub mod limits_evidence;
+pub mod limits_estimator;
 mod pricing;
 pub mod proto;
 mod queries;
