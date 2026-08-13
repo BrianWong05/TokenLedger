@@ -101,3 +101,35 @@ The remaining cost is honest aggregation: `summary` and each `breakdown` run
 two full-window passes, the second only to count distinct Sessions. Merging
 them into one pass at `(group, source, session)` grain measured about 45%
 cheaper and is the next lever if these windows need to get faster.
+
+## Validated result — startup first paint (2026-08-13)
+
+Same machine and release profile as above. This pass targeted the launch: the
+Overview used to render zeros until the launch scan, the unbounded series, and
+the window reload had completed **in sequence**, with every read queued behind
+the one connection mutex the scan holds for its whole pass.
+
+This change is structural rather than a per-query win: the scan term is
+removed from the first paint entirely. The store paints the persisted Ledger
+immediately (series + Profile + window reload — the range-switch figures
+above) while the scan runs on the write connection; reads moved to a second
+WAL connection (`read_db`), so they cannot queue behind it.
+
+| Workload | Measured |
+| --- | ---: |
+| Launch-shaped scan, real roots + 94,412-event live snapshot, nothing new accrued | 274 ms cold file cache / 60 ms warm |
+| First paint (unbounded series + Profile + window reload, real snapshot) | the range-switch figures above; scan no longer a term |
+
+The scan term the paint no longer waits for grows with accrued logs and cold
+caches (a full-history cold scan is in the tens of seconds in a debug build),
+which is exactly why it was the wrong thing to put in front of the paint.
+
+Deliberate cost: boot now runs the series + Profile + window fan-out twice —
+once provisionally before the scan settles, once as the post-scan reconcile,
+because a pre-scan read must never be mistaken for post-scan truth
+(zero-insert ≠ unchanged). The second pass is background work behind painted
+figures, roughly 0.3–0.7 s of query time on the real Ledger, paid once per
+launch. `Overview.test.tsx` pins the fan-out at exactly two window Summaries
+per boot so a third pass cannot creep in unmeasured; the committed `npm run
+perf` budgets are unaffected because the benchmark measures the queries, not
+the orchestration.

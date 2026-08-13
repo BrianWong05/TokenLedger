@@ -81,6 +81,13 @@ fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
 
 pub struct AppState {
     pub db: Mutex<Connection>,
+    /// Second connection to the same database (WAL), for reads. A scan holds
+    /// `db` for its whole pass, so reads sharing that mutex queue behind it —
+    /// at start-up that put the first paint behind the launch scan (measured
+    /// in docs/performance.md, "startup first paint"). WAL readers never
+    /// block on the writer; they see the last committed state, which is
+    /// exactly what a provisional paint wants. Route reads through `read()`.
+    pub read_db: Mutex<Connection>,
     pub roots: SourceRoots,
     pub scan_lock: Mutex<()>,
     /// Model names already looked up against the catalogs during this run of the
@@ -93,6 +100,17 @@ pub struct AppState {
     /// figures are, and the resident capture scans at start-up, so freshness
     /// from a previous launch would answer a question nobody asked.
     pub last_scan: AtomicI64,
+}
+
+/// Run a read on the read connection. The db-vs-read_db choice every read
+/// makes, made in one place so the next read cannot silently pick the write
+/// connection and queue behind a scan.
+fn read<T>(
+    state: &AppState,
+    f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+) -> Result<T, String> {
+    let db = state.read_db.lock().map_err(|e| e.to_string())?;
+    f(&db).map_err(|e| e.to_string())
 }
 
 /// Fetch both price catalogs and rebuild the prices table, then tell the frontend
@@ -116,12 +134,9 @@ fn refresh_catalogs(app: &AppHandle) {
     // install rendering 'unpriced' until the next range change. A failure to read
     // the Ledger costs the publisher tier this run, not the whole refresh.
     let targets = match openrouter.as_deref() {
-        Some(json) => state
-            .db
-            .lock()
-            .ok()
-            .and_then(|db| pricing::ledger_publisher_targets(&db, json).ok())
-            .unwrap_or_default(),
+        Some(json) => {
+            read(&state, |db| pricing::ledger_publisher_targets(db, json)).unwrap_or_default()
+        }
         None => Vec::new(),
     };
     let publishers = pricing::load_publisher_rates(&data_dir, &targets);
@@ -140,7 +155,8 @@ fn refresh_catalogs(app: &AppHandle) {
 fn lookup_new_unpriced(app: &AppHandle) {
     let state = app.state::<AppState>();
     let fresh = {
-        let (Ok(db), Ok(mut attempted)) = (state.db.lock(), state.price_lookups.lock()) else {
+        let (Ok(db), Ok(mut attempted)) = (state.read_db.lock(), state.price_lookups.lock())
+        else {
             return;
         };
         let fresh = pricing::models_needing_lookup(&db, &attempted).unwrap_or_default();
@@ -163,9 +179,8 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
     let state = app.state::<AppState>();
     let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
     let status = {
-        // ponytail: single Mutex<Connection> per the AppState contract. A scan
-        // briefly blocks reads; incremental scans are cheap, so no separate read
-        // connection. Add one only if UI jank during scans is ever measured.
+        // The scan holds `db` for its whole pass; the read commands run on
+        // `read_db` (WAL) so the launch scan cannot queue the first paint.
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
         run_scan(&mut db, &state.roots)
     };
@@ -200,11 +215,7 @@ fn last_scan(state: State<'_, AppState>) -> i64 {
 /// marker on its own window's token figure.
 #[tauri::command(async)]
 fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadable> {
-    state
-        .db
-        .lock()
-        .map(|db| db::load_unreadable(&db))
-        .unwrap_or_default()
+    read(&state, |db| Ok(db::load_unreadable(db))).unwrap_or_default()
 }
 
 /// Decrypt Antigravity's `.pb` Sessions by running the `antigravity-export`
@@ -243,8 +254,7 @@ async fn export_antigravity(app: tauri::AppHandle) -> Result<String, String> {
 // which is main-thread territory.
 #[tauri::command(async)]
 fn summary(state: State<'_, AppState>, filters: Filters) -> Result<Summary, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::summary(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::summary(db, &filters))
 }
 
 #[tauri::command(async)]
@@ -253,8 +263,7 @@ fn trend(
     filters: Filters,
     bucket: String,
 ) -> Result<Vec<TrendPoint>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::trend(&db, &filters, &bucket).map_err(|e| e.to_string())
+    read(&state, |db| queries::trend(db, &filters, &bucket))
 }
 
 #[tauri::command(async)]
@@ -263,8 +272,7 @@ fn series(
     filters: Filters,
     bucket: String,
 ) -> Result<Vec<SeriesPoint>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::series(&db, &filters, &bucket).map_err(|e| e.to_string())
+    read(&state, |db| queries::series(db, &filters, &bucket))
 }
 
 #[tauri::command(async)]
@@ -273,8 +281,7 @@ fn breakdown(
     by: String,
     filters: Filters,
 ) -> Result<Vec<BreakdownRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::breakdown(&db, &by, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::breakdown(db, &by, &filters))
 }
 
 #[tauri::command(async)]
@@ -282,32 +289,27 @@ fn ctx_resources(
     state: State<'_, AppState>,
     filters: Filters,
 ) -> Result<Vec<CtxResource>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_resources(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_resources(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBuckets>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_buckets(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_buckets(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_tools(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_tools(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSkillRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_skills(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_skills(db, &filters))
 }
 
 #[tauri::command(async)]
 fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    queries::ctx_exec(&db, &filters).map_err(|e| e.to_string())
+    read(&state, |db| queries::ctx_exec(db, &filters))
 }
 
 /// The current state of every Limit the Ledger holds Readings for. Takes no
@@ -315,10 +317,7 @@ fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecR
 /// date window and Source selection entirely.
 #[tauri::command(async)]
 fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
-    let mut cards = {
-        let db = state.db.lock().map_err(|e| e.to_string())?;
-        queries::limits(&db).map_err(|e| e.to_string())?
-    };
+    let mut cards = read(&state, queries::limits)?;
     if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
         if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
             card.usage_resets_available = export.usage_resets_available;
@@ -397,8 +396,7 @@ async fn refresh_prices(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command(async)]
 fn model_pricing(state: State<'_, AppState>) -> Result<Vec<ModelPricing>, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    pricing::model_pricing(&db).map_err(|e| e.to_string())
+    read(&state, pricing::model_pricing)
 }
 
 // The Pricing tab's Override mutations. Both emit the SAME prices-rebuilt event
@@ -458,8 +456,7 @@ fn resize_panel(app: AppHandle, height: f64) {
 
 #[tauri::command(async)]
 fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    settings::get_settings(&db).map_err(|e| e.to_string())
+    read(&state, settings::get_settings)
 }
 
 #[tauri::command]
@@ -558,8 +555,12 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let conn = db::open_db(&data_dir.join("tokenledger.db"))?;
+            // Opened second, after the first open has settled WAL mode and the
+            // migrations — for this one both are no-ops.
+            let read_conn = db::open_db(&data_dir.join("tokenledger.db"))?;
             app.manage(AppState {
                 db: Mutex::new(conn),
+                read_db: Mutex::new(read_conn),
                 // The Companions' output directory is the app's own, not
                 // something to find under home — so it is filled in here, where
                 // the data dir is already resolved.
@@ -596,12 +597,7 @@ pub fn run() {
             // no-ops until a signed release exists.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let auto = handle
-                    .state::<AppState>()
-                    .db
-                    .lock()
-                    .ok()
-                    .and_then(|db| settings::get_settings(&db).ok())
+                let auto = read(&handle.state::<AppState>(), settings::get_settings)
                     .map(|s| s.auto_check_updates)
                     .unwrap_or(false);
                 if auto {
@@ -828,6 +824,7 @@ mod tests {
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
         let conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
+        let read_conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
         let roots = SourceRoots {
             claude: dir.path().join("claude"),
             codex_sessions: vec![dir.path().join("codex")],
@@ -856,6 +853,7 @@ mod tests {
         };
         let state = AppState {
             db: Mutex::new(conn),
+            read_db: Mutex::new(read_conn),
             roots,
             scan_lock: Mutex::new(()),
             price_lookups: Mutex::new(Default::default()),
@@ -866,7 +864,9 @@ mod tests {
         let status = scan::run_scan(&mut db, &state.roots);
         assert_eq!(status.sources.len(), 16);
 
-        let sum = queries::summary(&db, &Filters::default()).unwrap();
+        // The IPC read commands query through `read` (the second connection);
+        // a scan's committed writes must be visible there.
+        let sum = super::read(&state, |db| queries::summary(db, &Filters::default())).unwrap();
         assert_eq!(sum.total_tokens, 0);
     }
 }
