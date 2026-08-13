@@ -47,7 +47,6 @@ import { parseLocalDate } from '../lib/dateRange';
 import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import type {
   Filters,
-  ScanStatus,
   SourceStatus,
   SeriesPoint,
   Summary,
@@ -172,6 +171,13 @@ class Store implements OverviewStore {
   // keep in sync with it: scheduleReload bumps epoch, land() catches this up.
   private loadedEpoch = 0;
   private reloadTimer: number | null = null; // pending debounce timer
+  // The data on screen predates the last settled scan. Set when the first-load
+  // paint fires, cleared only once a post-scan series refetch lands. A field,
+  // not a local of refresh(): a scan can throw AFTER committing (the rejection
+  // is IPC-level; per-source errors travel inside ScanStatus), and the next
+  // tick's scan may then honestly report idle — the idle gate must still not
+  // mistake the pre-scan paint for post-scan truth.
+  private provisional = false;
 
   constructor(private ledger: LedgerPort, private clock: ClockPort) {
     this.snapshot = this.buildSnapshot(this.clock.now());
@@ -197,22 +203,25 @@ class Store implements OverviewStore {
     // First load of this store: the Ledger already holds every record the
     // previous run captured, so paint that now instead of sitting on zeros
     // for the whole launch scan (the backend runs reads on a separate WAL
-    // connection, so the scan's write hold cannot queue them). Everything
-    // this paints — and anything a range click fetches while the scan is
-    // still running — is provisional; the firstPaint block below refetches
-    // it all once the scan settles.
-    const firstPaint = this.state.allPoints === null ? this.loadSeries(false) : null;
-
-    let status: ScanStatus;
-    try {
-      status = await this.ledger.scan();
-    } catch (e) {
-      await firstPaint;
-      this.state.scanError = String(e);
-      this.publish();
-      return; // scan threw: keep any provisional paint; the next tick retries
+    // connection, so the scan's write hold cannot queue them). The reload is
+    // scheduled on both outcomes, exactly as first loads always have: a
+    // failure settles the series to [] and the window fetch still proceeds.
+    let firstPaint: Promise<void> | null = null;
+    if (this.state.allPoints === null) {
+      this.provisional = true;
+      firstPaint = this.fetchSeries().then(() => this.scheduleReload());
     }
-    await firstPaint;
+
+    // One await for both: the scan's verdict may be a rejection, and the paint
+    // must have landed before post-scan state is applied over it. fetchSeries
+    // never rejects, so only the scan's slot needs inspecting.
+    const [scanned] = await Promise.allSettled([this.ledger.scan(), firstPaint]);
+    if (scanned.status === 'rejected') {
+      this.state.scanError = String(scanned.reason);
+      this.publish();
+      return; // keep any paint; `provisional` stays set, so the next tick reconciles
+    }
+    const status = scanned.value;
     this.state.scanSources = status.sources;
     const errs = status.sources
       .filter((s) => s.error)
@@ -222,17 +231,21 @@ class Store implements OverviewStore {
     this.state.scanAt = status.scannedAt ? status.scannedAt * 1000 : this.clock.now().getTime();
     this.publish();
 
-    if (firstPaint) {
-      // Everything fetched so far predates this scan, so it is provisional
-      // even when the scan reports idle — the idle gate's premise ("what's
-      // rendered IS the Ledger") only holds for data fetched after a scan,
-      // and zero-insert ≠ unchanged (keep-max upgrades). Drop whatever a
-      // mid-scan range click may have cached, supersede any in-flight reload
-      // so nothing pre-scan can land or be replayed from here on, and refetch.
+    if (this.provisional) {
+      // Everything on screen predates a settled scan — painted above, kept
+      // through an earlier scan throw, or fetched by a mid-scan range click —
+      // so it is suspect even when this scan reports idle: the gate's premise
+      // ("what's rendered IS the Ledger") only holds for post-scan fetches,
+      // and zero-insert ≠ unchanged (keep-max upgrades). Drop whatever got
+      // cached, supersede any in-flight reload so nothing pre-scan can land
+      // or be replayed from here on, and refetch. The reload is rescheduled
+      // even when the series refetch fails: the epoch bump would otherwise
+      // leave `reloading` latched until the next tick.
       this.reloadCache.clear();
       this.epoch++;
       this.publish(); // `reloading` is true from the bump until the refetch lands
-      await this.loadSeries(true);
+      if (await this.fetchSeries()) this.provisional = false;
+      this.scheduleReload();
       return;
     }
 
@@ -240,22 +253,20 @@ class Store implements OverviewStore {
     // the Ledger is bit-identical to what's rendered, so skip the series fetch
     // and the 9-query reload. This is the every-30s steady state of an open
     // app; the skip is what lets it sit at ~0 CPU instead of re-rendering the
-    // whole dashboard each tick. Prices-rebuilt still forces a reload via its
+    // whole Overview each tick. Prices-rebuilt still forces a reload via its
     // own listener.
     // fetchError null required: a failed cycle must retry on the next tick
     // even when the scan reports nothing new.
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
     if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
 
-    await this.loadSeries(false);
+    if (await this.fetchSeries()) this.scheduleReload();
   }
 
-  // The unbounded daily series + the Profile's Session count, then the window
-  // reload. Shared by the provisional first paint and every post-scan fetch.
-  // `mustReload`: a caller that just invalidated the reload pipeline (epoch
-  // bump with nothing scheduled) needs the reschedule even on failure, or
-  // `reloading` would stay latched until the next tick.
-  private async loadSeries(mustReload: boolean) {
+  // Fetch the unbounded daily series + the Profile's Session count, publish,
+  // and report whether the series landed. Scheduling the window reload is the
+  // caller's decision — the policy differs per call site.
+  private async fetchSeries(): Promise<boolean> {
     try {
       // The Profile's Session count rides with the unbounded series, not with
       // the per-range reload: both describe the Ledger itself, so both refresh
@@ -273,14 +284,13 @@ class Store implements OverviewStore {
       this.state.profileSessions = sessions;
       this.correctSelection();
       this.publish();
-      this.scheduleReload();
+      return true;
     } catch (e) {
-      const wasNull = this.state.allPoints === null;
       this.state.fetchError = String(e);
       // First load settles to [] so loading ends; later failures keep prior data.
-      if (wasNull) this.state.allPoints = [];
+      if (this.state.allPoints === null) this.state.allPoints = [];
       this.publish();
-      if (wasNull || mustReload) this.scheduleReload();
+      return false;
     }
   }
 

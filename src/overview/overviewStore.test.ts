@@ -157,6 +157,34 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().loading).toBe(false);
   });
 
+  it('a paint kept through a scan throw stays provisional: the idle retry reconciles it', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
+    ledger.failNext('scan', 'scanboom');
+    const store = createOverviewStore({ ledger, clock });
+    await store.refresh(); // paint lands, scan throws
+    clock.advance(0);
+    await flush();
+    const seriesCalls = ledger.calls.series.length;
+
+    // The retry scan succeeds but reports zero inserted. A throw can arrive
+    // AFTER the backend committed, so the on-screen paint still predates a
+    // settled scan — idle must not excuse skipping the reconcile.
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    expect(store.getSnapshot().scanError).toBeNull();
+    expect(ledger.calls.series.length).toBeGreaterThan(seriesCalls);
+    expect(store.getSnapshot().reloading).toBe(false);
+
+    // Reconciled: from here the idle gate applies as usual.
+    const settled = ledger.calls.series.length;
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.series.length).toBe(settled);
+  });
+
   it('scan() throw after the first load skips the series fetch', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger();
@@ -179,7 +207,7 @@ describe('overviewStore refresh / scan', () => {
     clock.advance(0); // the provisional window reload's delay-0 timer
     await flush();
 
-    // The scan is still running, yet the dashboard already has data.
+    // The scan is still running, yet the Overview already has data.
     expect(store.getSnapshot().loading).toBe(false);
     expect(store.getSnapshot().allPoints).toHaveLength(1);
     expect(store.getSnapshot().summary).not.toBeNull();

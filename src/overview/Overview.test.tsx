@@ -784,7 +784,12 @@ describe('Export', () => {
     expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
     expect(exportBtn().disabled).toBe(true); // the window's Summary is still pending
 
-    for (let i = 2; i < ledger.held('summary').length; i++) ledger.resolveHeld('summary', i);
+    // Pin the launch fan-out: exactly four summaries — two Profile counts
+    // (resolved above) and two window Summaries. A fifth appearing here means
+    // boot grew another fetch pass; this line is where that regression fails.
+    expect(ledger.held('summary').length).toBe(4);
+    ledger.resolveHeld('summary', 2); // provisional reload's Summary — superseded, discarded
+    ledger.resolveHeld('summary', 3); // reconcile's Summary — the one that lands
     await settle();
     expect(exportBtn().disabled).toBe(false);
   });
