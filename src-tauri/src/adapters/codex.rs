@@ -9,7 +9,9 @@ use super::{find_jsonl_by_file_identity, unchanged};
 use crate::db;
 use crate::limits_artifact::window_key;
 use crate::time::iso_to_epoch;
-use crate::types::{FileState, LimitReading, ReadingProvenance, SourceScanResult, UsageEvent};
+use crate::types::{
+    FileState, LimitReading, ModelScope, ReadingProvenance, SourceScanResult, UsageEvent,
+};
 
 const PARSER_VERSION: i64 = 1;
 
@@ -22,7 +24,12 @@ const PARSER_VERSION: i64 = 1;
 /// the 5-hour one in the rest (#104). ponytail: `resets_in_seconds` (Codex
 /// ≤ 0.47) is not read — reading it as an epoch would date the window to 1970.
 /// Convert it here if pre-0.48 Artifacts ever turn up.
-fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> Option<LimitReading> {
+fn slot_reading(
+    slot: Option<&Value>,
+    limits: &Value,
+    observed_at: i64,
+    source_order: i64,
+) -> Option<LimitReading> {
     let slot = slot.filter(|s| !s.is_null())?;
     let used_pct = slot.get("used_percent").and_then(|v| v.as_f64())?;
     let window_minutes = slot.get("window_minutes").and_then(|v| v.as_i64())?;
@@ -39,11 +46,79 @@ fn slot_reading(slot: Option<&Value>, observed_at: i64, plan: Option<&str>) -> O
         resets_at,
         observed_at,
         via: "logs".to_string(),
-        plan: plan.map(str::to_string),
-        // Codex evidence provenance is its own ticket; a Reading proves only
-        // what its Source has read, and unknown is never a wildcard.
-        provenance: ReadingProvenance::default(),
+        plan: limits
+            .get("plan_type")
+            .and_then(|p| p.as_str())
+            .map(str::to_string),
+        provenance: evidence(limits, window_minutes, source_order),
     })
+}
+
+/// What a rollout proves about a Reading beyond its figures.
+///
+/// **Limit identity** is the vendor's own `limit_id` — the Codex entitlement —
+/// with the vendor's own `window_minutes`, because one entitlement meters more
+/// than one window. The `primary`/`secondary` slot never enters it: the slot is
+/// a position, and the local corpus carries the weekly window in `primary` in
+/// 88% of observations and the five-hour one in the rest (#104).
+///
+/// **Metering regime** names the meter the adapter can actually document: the
+/// `rate_limits` block itself, whose windows and percentages are what a Reading
+/// is made of. Credits, an unlimited grant, and an individual limit are the
+/// vendor's own signals that something else is metering too, and none of them is
+/// documented well enough to say how — so each takes its own regime identity
+/// rather than joining the plain one. A Series then starts fresh instead of
+/// silently spanning terms that may not compare, which is the conservative
+/// direction: the cost of splitting a Series is an estimate that waits, and the
+/// cost of merging two is an estimate that lies. `spend_control_reached` and
+/// `rate_limit_reached_type` stay out — they are states a meter passes through,
+/// not meters.
+///
+/// **Model scope** is `all`: the Codex general window meters the whole Source,
+/// so every Codex Usage Record participates, Unattributed Usage included.
+///
+/// **Source order** is the line's byte offset, which orders the Readings one
+/// rollout wrote within a second it shares. Across rollouts it means nothing,
+/// and two Readings that cannot be ordered bound no interval — correct, since
+/// nothing here proves which of two files was written first.
+///
+/// **Account identity and completeness coverage stay unknown.** A rollout names
+/// no account: the only account ids in the corpus belong to third-party payloads
+/// inside tool results, which are user content the Ledger never persists
+/// (ADR-0011). Stamping Records with whoever is signed in at scan time would
+/// claim a fact no observation proves — a rollout read today may have been
+/// written under another account — so Codex stays truthfully Blocked until an
+/// account and coverage chain proves otherwise.
+fn evidence(limits: &Value, window_minutes: i64, source_order: i64) -> ReadingProvenance {
+    let flag = |object: &str, field: &str| {
+        limits
+            .get(object)
+            .and_then(|c| c.get(field))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    let mut regime = "codex:rate_limits".to_string();
+    if flag("credits", "unlimited") {
+        regime.push_str("+unlimited");
+    }
+    if flag("credits", "has_credits") {
+        regime.push_str("+credits");
+    }
+    if limits.get("individual_limit").is_some_and(|l| !l.is_null()) {
+        regime.push_str("+individual");
+    }
+    ReadingProvenance {
+        limit_id: limits
+            .get("limit_id")
+            .and_then(|i| i.as_str())
+            .map(|id| format!("{id}:{window_minutes}")),
+        metering_regime: Some(regime),
+        model_scope: Some(ModelScope::All),
+        source_order: Some(source_order),
+        account_id: None,
+        covered_from: None,
+        external_activity: None,
+    }
 }
 
 /// Scan all `*.jsonl` rollout files under the ordered Session roots.
@@ -229,11 +304,17 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                         if let (Some(observed_at), Some("codex")) =
                             (stamp, limits.get("limit_id").and_then(|i| i.as_str()))
                         {
-                            let plan = limits.get("plan_type").and_then(|p| p.as_str());
                             readings.extend(
                                 [limits.get("primary"), limits.get("secondary")]
                                     .into_iter()
-                                    .flat_map(|slot| slot_reading(slot, observed_at, plan)),
+                                    .flat_map(|slot| {
+                                        slot_reading(
+                                            slot,
+                                            limits,
+                                            observed_at,
+                                            line_offset as i64,
+                                        )
+                                    }),
                             );
                         }
                     }
@@ -1057,25 +1138,144 @@ mod tests {
         parse_file(content, "rollout", "/p/rollout.jsonl").readings
     }
 
+    /// The evidence facts a Codex Reading proves, and the two it cannot.
+    #[test]
+    fn readings_carry_the_evidence_facts_the_rollout_proves() {
+        let readings = readings_of(&format!("{REAL_BLOCK}\n"));
+        assert_eq!(
+            readings[0].provenance,
+            ReadingProvenance {
+                // The vendor's own entitlement id and its own window length —
+                // never the `primary`/`secondary` slot, which is a position.
+                limit_id: Some("codex:10080".to_string()),
+                metering_regime: Some("codex:rate_limits".to_string()),
+                // The Codex general window meters the whole Source, so every
+                // Codex Usage Record is in scope, Unattributed Usage included.
+                model_scope: Some(ModelScope::All),
+                source_order: Some(0),
+                // A rollout names no account and proves no historical coverage:
+                // both stay unknown rather than being taken from whoever is
+                // signed in at scan time, so Codex is truthfully Blocked.
+                account_id: None,
+                covered_from: None,
+                external_activity: None,
+            },
+        );
+        // Plan identity is the Reading's own raw `plan_type`, not provenance.
+        assert_eq!(readings[0].plan.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn the_slot_a_window_arrives_in_is_never_its_identity() {
+        let five_hour = r#"{"used_percent":10.0,"window_minutes":300,"resets_at":1786879486}"#;
+        let weekly = r#"{"used_percent":40.0,"window_minutes":10080,"resets_at":1787212699}"#;
+        let identities = |primary: &str, secondary: &str| -> Vec<(String, Option<String>)> {
+            readings_of(&limits_line(
+                &format!(
+                    r#"{{"limit_id":"codex","primary":{primary},"secondary":{secondary},"plan_type":"plus"}}"#
+                ),
+                "2026-08-10T03:16:19.385Z",
+            ))
+            .into_iter()
+            .map(|r| (r.window_key, r.provenance.limit_id))
+            .collect()
+        };
+        // The same two windows, swapped between the slots: 88% of the local
+        // corpus carries the weekly window in `primary` and the rest the
+        // five-hour one (#104), so identity has to survive the swap.
+        let mut straight = identities(weekly, five_hour);
+        let mut swapped = identities(five_hour, weekly);
+        straight.sort();
+        swapped.sort();
+        assert_eq!(straight, swapped);
+        assert_eq!(
+            straight,
+            vec![
+                ("w10080".to_string(), Some("codex:10080".to_string())),
+                ("w300".to_string(), Some("codex:300".to_string())),
+            ],
+        );
+    }
+
+    #[test]
+    fn a_credit_or_individual_meter_is_its_own_regime() {
+        let regime = |extra: &str| -> Option<String> {
+            readings_of(&limits_line(
+                &format!(
+                    r#"{{"limit_id":"codex","primary":{{"used_percent":10.0,"window_minutes":300,"resets_at":1786879486}},"secondary":null,{extra}"plan_type":"plus"}}"#
+                ),
+                "2026-08-10T03:16:19.385Z",
+            ))
+            .remove(0)
+            .provenance
+            .metering_regime
+        };
+        // A meter the adapter cannot document never joins the one it can: an
+        // unrecognised state starts its own Series instead of quietly extending
+        // a run measured under different terms.
+        assert_eq!(
+            regime(r#""credits":{"has_credits":false,"unlimited":false,"balance":"0"},"#),
+            Some("codex:rate_limits".to_string()),
+        );
+        assert_eq!(
+            regime(r#""credits":{"has_credits":true,"unlimited":false,"balance":"500"},"#),
+            Some("codex:rate_limits+credits".to_string()),
+        );
+        assert_eq!(
+            regime(r#""credits":{"has_credits":false,"unlimited":true,"balance":"0"},"#),
+            Some("codex:rate_limits+unlimited".to_string()),
+        );
+        assert_eq!(
+            regime(r#""individual_limit":{"used_percent":3.0},"#),
+            Some("codex:rate_limits+individual".to_string()),
+        );
+    }
+
+    #[test]
+    fn a_reading_and_its_same_envelope_usage_share_one_instant() {
+        // The `(t0, t1]` boundary includes the token delta emitted in the same
+        // snapshot as the later Reading, which holds only while both take their
+        // instant from that one envelope stamp.
+        let parsed = parse_file(&format!("{REAL_BLOCK}\n"), "rollout", "/p/rollout.jsonl");
+        assert_eq!(parsed.events.len(), 1);
+        assert_eq!(parsed.readings.len(), 1);
+        assert_eq!(parsed.events[0].timestamp, parsed.readings[0].observed_at);
+    }
+
+    #[test]
+    fn source_order_follows_the_rollout() {
+        let content = format!("{REAL_BLOCK}\n{REAL_BLOCK}\n");
+        let orders: Vec<Option<i64>> =
+            readings_of(&content).into_iter().map(|r| r.provenance.source_order).collect();
+        // Two Readings of one second need an order to bound anything; the byte
+        // offset gives it, within the one Artifact that wrote them.
+        assert_eq!(orders, vec![Some(0), Some(REAL_BLOCK.len() as i64 + 1)]);
+    }
+
     #[test]
     fn the_real_block_yields_one_reading_per_window_that_exists() {
         let readings = readings_of(&format!("{REAL_BLOCK}\n"));
         assert_eq!(readings.len(), 1, "a null `secondary` is a window that does not exist");
+        // The figures; what the Reading proves about itself is asserted by
+        // readings_carry_the_evidence_facts_the_rollout_proves.
+        let reading = &readings[0];
         assert_eq!(
-            readings[0],
-            LimitReading {
-                source: "codex".to_string(),
-                window_key: "w10080".to_string(),
-                window_minutes: Some(10080),
-                used_pct: 100.0,
-                resets_at: 1_786_879_486,
+            (
+                reading.source.as_str(),
+                reading.window_key.as_str(),
+                reading.window_minutes,
+                reading.used_pct,
+                reading.resets_at,
                 // The envelope timestamp, never the filename date: 123 of 212
                 // local files have a name-date that differs from it (#104).
-                observed_at: 1_786_331_779,
-                via: "logs".to_string(),
-                plan: Some("plus".to_string()),
-                provenance: ReadingProvenance::default(),
-            }
+                reading.observed_at,
+                reading.via.as_str(),
+                reading.plan.as_deref(),
+            ),
+            (
+                "codex", "w10080", Some(10080), 100.0, 1_786_879_486, 1_786_331_779, "logs",
+                Some("plus"),
+            ),
         );
     }
 
