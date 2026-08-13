@@ -69,7 +69,7 @@ After the catalog, add these proven roots to existing Sources:
 - GitHub Copilot CLI: schema version 6 of
   `$COPILOT_HOME/session-store.db` (falling back to
   `~/.copilot/session-store.db`), privately validated 2026-08-13. IDE and cloud
-  Artifacts remain independently evidence-gated under ADR-0021.
+  Artifacts remain independently evidence-gated under ADR-0025.
 
 `~/.claude/transcripts` remains evidence-gated because other programs can write
 Claude-shaped records there; it must not be attributed to Claude until origin
