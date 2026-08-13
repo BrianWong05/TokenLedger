@@ -7,6 +7,7 @@ pub mod limits_artifact;
 // the compiler from pruning a module whose tests are its only caller today.
 pub mod limits_estimator;
 pub mod limits_evidence;
+pub mod limits_readiness;
 mod pricing;
 pub mod proto;
 mod queries;

@@ -39,6 +39,13 @@ pub struct Run {
     pub positive_movements: usize,
 }
 
+impl Candidate {
+    /// When the epoch this represents ended — its reset instant.
+    pub fn ended_at(&self) -> i64 {
+        self.epoch_ended_at
+    }
+}
+
 impl Run {
     pub fn ratio(&self) -> f64 {
         debug_assert!(self.movement > 0, "a run is built from positive movements");
@@ -105,7 +112,7 @@ impl Estimate {
 
 /// Seven days, or six of the Limit's own windows where that is longer. A window
 /// that names no duration gets the seven.
-fn recency_horizon(window_minutes: Option<i64>) -> i64 {
+pub fn recency_horizon(window_minutes: Option<i64>) -> i64 {
     const SEVEN_DAYS: i64 = 7 * 86_400;
     window_minutes.map_or(SEVEN_DAYS, |m| SEVEN_DAYS.max(6 * m * 60))
 }
