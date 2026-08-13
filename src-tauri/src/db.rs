@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V16 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V17 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 16;
+const CURRENT_USER_VERSION: i64 = 17;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -362,6 +362,16 @@ DELETE FROM scanned_files;
 DELETE FROM session_ctx;
 PRAGMA user_version = 16;";
 
+// v17: Qoder previously persisted its internal `dfmodel` routing alias in the
+// Ledger. Those source rows may already have aged out of Qoder's database, so
+// a normal re-scan cannot re-translate them. Rewrite only Qoder's historical
+// alias; the Usage Records and their token figures remain intact.
+const SCHEMA_V17: &str = "\
+UPDATE events
+SET model = 'deepseek-v4-flash'
+WHERE source = 'qoder' AND model = 'dfmodel';
+PRAGMA user_version = 17;";
+
 // One row of Usage-Record column knowledge: the write grammar (column list,
 // placeholders, params binder, and the three conflict bodies) is generated
 // from COLS so a new column is added in exactly one place.
@@ -596,6 +606,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 16 {
             conn.execute_batch(SCHEMA_V16)?;
+        }
+        if version < 17 {
+            conn.execute_batch(SCHEMA_V17)?;
         }
         Ok(())
     };
@@ -1608,6 +1621,61 @@ mod tests {
             (version, events, files, tools, exec, skills, owners),
             (CURRENT_USER_VERSION, 1, 0, 0, 0, 0, 0)
         );
+    }
+
+    #[test]
+    fn v16_db_migrates_qoder_aliases_without_deleting_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, source_file) VALUES
+                 ('qoder:legacy', 'qoder', 1, 'dfmodel', 'qoder.db'),
+                 ('qoder:known', 'qoder', 2, 'qwen3.8-max', 'qoder.db'),
+                 ('claude:legacy', 'claude', 3, 'dfmodel', 'claude.jsonl')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        let events: i64 = conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
+        let qoder_legacy: String = conn
+            .query_row(
+                "SELECT model FROM events WHERE dedup_key = 'qoder:legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let qoder_known: String = conn
+            .query_row(
+                "SELECT model FROM events WHERE dedup_key = 'qoder:known'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let other_source: String = conn
+            .query_row(
+                "SELECT model FROM events WHERE dedup_key = 'claude:legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(version, CURRENT_USER_VERSION);
+        assert_eq!(events, 3, "migration preserves every Usage Record");
+        assert_eq!(qoder_legacy, "deepseek-v4-flash");
+        assert_eq!(qoder_known, "qwen3.8-max");
+        assert_eq!(other_source, "dfmodel", "migration is scoped to Qoder");
     }
 
     #[test]
