@@ -59,11 +59,32 @@ pub(crate) fn find_jsonl_by_file_identity(
 ) {
     let mut files = Vec::new();
     find_jsonl(dir, &mut files);
+    // A symlink and its target share one identity, so only their order decides
+    // which spelling wins — and the winner's file stem keys every event the
+    // rollout mints (codex.rs:287), so a change of winner mints a permanent
+    // second copy of the Session. Sort links last so the real file always wins
+    // and the key cannot move when someone drops a link beside it.
+    // Decorated so the flag costs one `symlink_metadata` per path rather than
+    // one per comparison: this pass runs on every scan, including the no-op
+    // ones where nothing is re-parsed.
+    let mut files: Vec<(bool, PathBuf)> = files.into_iter().map(|p| (p.is_symlink(), p)).collect();
     files.sort();
-    for path in files {
+    for (_, path) in files {
+        // Insert outside the match guard: a guard only borrows what it binds,
+        // and FileIdentity is a PathBuf off unix, so moving it here would not
+        // compile there (E0507).
         match file_identity(&path) {
-            Ok(identity) if !seen.insert(identity) => aliases.push(path),
-            _ => out.push(path),
+            Ok(identity) => {
+                if seen.insert(identity) {
+                    out.push(path);
+                } else {
+                    aliases.push(path);
+                }
+            }
+            // An unreadable identity is never an alias: a transient stat
+            // failure must not send a real rollout through the cleanup loop
+            // that erases its scan state and Context.
+            Err(_) => out.push(path),
         }
     }
 }

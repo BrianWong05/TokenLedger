@@ -595,6 +595,44 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn codex_keeps_the_real_rollout_as_winner_when_a_symlink_to_it_appears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        let rollout = write_rollout(&root, "rollout-real.jsonl", &[
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:00.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
+            r#"{"type":"response_item","timestamp":"2026-05-03T09:00:01.000Z","payload":{"type":"function_call_output","call_id":"c1","output":"done"}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-05-03T09:00:02.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        scan_codex(&mut conn, &root);
+
+        // `archived` sorts first, so a plain path sort would hand it the shared
+        // identity and re-key the whole Session off the link's stem.
+        std::os::unix::fs::symlink(&rollout, root.join("archived.jsonl")).unwrap();
+        scan_codex(&mut conn, &root);
+
+        let (requests, total): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), SUM(input_tokens + cache_read_tokens + output_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let linked_state: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files WHERE path LIKE '%archived%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let tools = ctx_tools(&conn, &Filters::default()).unwrap();
+
+        assert_eq!((requests, total), (1, 110), "the link is an alias, not a second Session");
+        assert_eq!((tools.len(), tools[0].calls), (1, 1));
+        assert_eq!(linked_state, 0, "the link never becomes the scanned winner");
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn codex_replaces_context_when_alias_winner_changes() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
