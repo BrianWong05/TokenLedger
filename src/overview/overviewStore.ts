@@ -258,6 +258,14 @@ class Store implements OverviewStore {
       this.reloadCache.clear();
       this.epoch++;
       this.publish(); // `reloading` is true from the bump until the refetch lands
+      // Do NOT publish between these two lines. fetchSeries publishes before
+      // `provisional` clears, so the flip reaches the snapshot on
+      // scheduleReload's trailing publish — the same one that carries the epoch
+      // bump. That pairing is what the headline's entrance rests on: it reveals
+      // on `authoritative` (provisional false) while `reloading` is true, so the
+      // figure it rolls is the post-scan SERIES total. An eager publish here
+      // would emit provisional false with reloading still false for one render,
+      // and the reel would roll the pre-scan Summary instead (#14).
       if (await this.fetchSeries()) this.provisional = false;
       this.scheduleReload();
       return;
@@ -350,7 +358,12 @@ class Store implements OverviewStore {
         this.clock.clearTimeout(this.reloadTimer);
         this.reloadTimer = null;
       }
-      this.epoch++; // invalidate any in-flight reload so nothing lands post-dispose
+      // Supersede any in-flight reload. This no longer stops one landing during
+      // a launch (land's exception fires while loadedEpoch is 0), which is inert
+      // rather than fixed: unsub() above and useSyncExternalStore's own
+      // unsubscribe have both run, so a late patch reaches a snapshot nobody
+      // reads and publishes to an empty listener set.
+      this.epoch++;
     };
   }
 
@@ -498,7 +511,15 @@ class Store implements OverviewStore {
           apply(result);
         }),
       )
-      .catch((e) => land(() => this.patch({ fetchError: String(e) })));
+      // A failure has nothing to paint, so land()'s launch exception must not
+      // apply to it: a superseded reload's error would flash a band that the
+      // newer reload already in flight clears half a second later. Dropping it
+      // leaves `reloading` true, which that newer reload clears when it lands —
+      // or latches honestly if it fails too, since its own error IS current.
+      .catch((e) => {
+        if (epoch !== this.epoch) return;
+        land(() => this.patch({ fetchError: String(e) }));
+      });
   }
 }
 

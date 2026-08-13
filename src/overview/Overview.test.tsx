@@ -835,6 +835,27 @@ describe('Export', () => {
     expect(exportBtn().disabled).toBe(false);
   });
 
+  // The launch paint is real figures read from a pre-scan Ledger: the cost line
+  // reads out rather than showing '…', and yet no file may state those figures
+  // (Overview's `provisional` gate) — the screen corrects itself in half a
+  // second where a file would keep them. Holding the scan holds the app in
+  // exactly that state.
+  it('withholds Export through the launch paint, then offers it once the scan settles', async () => {
+    const ledger = makeFakeLedger({ dayPoints: [pt({}), pt({ bucket: '2026-07-15' })], summary });
+    ledger.hold('scan');
+    const { container } = await mountOverview({ ledger });
+    const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
+
+    // The provisional window reload landed — this is a painted screen, not a
+    // loading one — so the gate under test is `provisional`, not the Summary.
+    expect(container.querySelector('.tt-b8-cost')?.textContent ?? '').not.toContain('…');
+    expect(exportBtn().disabled).toBe(true);
+
+    ledger.resolveHeld('scan', 0);
+    await settle(8);
+    expect(exportBtn().disabled).toBe(false);
+  });
+
   // A Summary that has landed is not the same as a Summary for THIS window.
   // Switching range moves the header instantly and leaves every figure behind
   // until the reload lands; exporting in that gap would write the new window
