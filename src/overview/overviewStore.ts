@@ -111,11 +111,9 @@ export interface OverviewSnapshot {
   loading: boolean;
   // A window-scoped reload is scheduled or in flight, so the fields it owns —
   // summary, the three breakdowns, every ctx row — still describe the PREVIOUS
-  // window while range/from/to already name the new one. The screen wears that
-  // gap as a stale headline beside a fresh chart and it passes in a blink; a
-  // file saved in it would carry the new window in its header over the old
-  // window's figures, permanently. Anything that must state which window its
-  // figures belong to has to wait for this to clear.
+  // window while range/from/to already name the new one. The headline uses the
+  // series-derived total during this gap; other window-scoped figures and any
+  // file export wait for this to clear.
   reloading: boolean;
 }
 
@@ -588,7 +586,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     selMcp: mcpBars(selToolRows, ctx.mcp),
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: sourceMeta(s.selected),
-    headline: { total: s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
+    headline: { total: s.reloading ? total : s.summary?.totalTokens ?? total, summaryReady: s.summary !== null },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
     unreadable,
   };
