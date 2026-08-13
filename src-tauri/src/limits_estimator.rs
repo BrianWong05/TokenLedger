@@ -39,13 +39,6 @@ pub struct Run {
     pub positive_movements: usize,
 }
 
-impl Candidate {
-    /// When the epoch this represents ended — its reset instant.
-    pub fn ended_at(&self) -> i64 {
-        self.epoch_ended_at
-    }
-}
-
 impl Run {
     pub fn ratio(&self) -> f64 {
         debug_assert!(self.movement > 0, "a run is built from positive movements");
@@ -93,6 +86,10 @@ pub struct Candidate {
 /// What the estimator makes of one Series.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Estimate {
+    /// The recency horizon these candidates were judged under — six of the
+    /// Limit's own windows, or seven days. Carried so that everything reporting
+    /// or scheduling against it uses the one the answer was made with.
+    pub horizon: i64,
     /// The median of the unique stable core's whole-run ratios, at full
     /// precision. `None` whenever no unique stable core exists — which is a
     /// state for the readiness machine to name, not this.
@@ -173,23 +170,35 @@ fn representative(partition: &PartitionEvidence, estimate: &mut Estimate) -> Opt
     })
 }
 
+/// The narrowest and widest ratio among these candidates.
+pub fn ratio_range(members: &[&Candidate]) -> Option<(f64, f64)> {
+    let min = members.iter().map(|c| c.ratio).reduce(f64::min)?;
+    let max = members.iter().map(|c| c.ratio).reduce(f64::max)?;
+    Some((min, max))
+}
+
+/// Where every candidate's endpoint rounding could agree — `None` when they
+/// agree nowhere, or when there are no candidates to agree. A member unbounded
+/// above constrains nothing, so an upper of `None` here means unbounded rather
+/// than absent.
+pub fn quantization_intersection(members: &[&Candidate]) -> Option<Quantization> {
+    let lower = members.iter().map(|c| c.quantization.lower).reduce(f64::max)?;
+    let upper = members.iter().filter_map(|c| c.quantization.upper).reduce(f64::min);
+    match upper {
+        Some(upper) if lower > upper => None,
+        upper => Some(Quantization { lower, upper }),
+    }
+}
+
 /// Whether these candidates could be one Limit's constant ratio: their
 /// endpoint-rounding ranges all overlap somewhere, and the widest ratio is no
 /// more than a quarter again the narrowest.
 fn coheres(members: &[&Candidate]) -> Option<ReasonCode> {
-    let lower = members.iter().map(|c| c.quantization.lower).reduce(f64::max);
-    // Every member unbounded above leaves nothing for the ranges to contradict,
-    // so the spread below is what judges them.
-    let upper = members.iter().filter_map(|c| c.quantization.upper).reduce(f64::min);
-    if let (Some(lower), Some(upper)) = (lower, upper) {
-        if lower > upper {
-            return Some(ReasonCode::QuantizationRangesDisjoint);
-        }
+    if quantization_intersection(members).is_none() && !members.is_empty() {
+        return Some(ReasonCode::QuantizationRangesDisjoint);
     }
-    let min = members.iter().map(|c| c.ratio).reduce(f64::min);
-    let max = members.iter().map(|c| c.ratio).reduce(f64::max);
-    match (min, max) {
-        (Some(min), Some(max)) if max / min > 1.25 => Some(ReasonCode::RatioSpreadExceeded),
+    match ratio_range(members) {
+        Some((min, max)) if max / min > 1.25 => Some(ReasonCode::RatioSpreadExceeded),
         _ => None,
     }
 }
@@ -234,6 +243,7 @@ pub fn estimates(
             // Reading short of a duration must not collapse a weekly Series'
             // horizon to the seven-day floor.
             let horizon = recency_horizon(epochs.iter().find_map(|p| p.window_minutes));
+            estimate.horizon = horizon;
             let cutoff = evaluated_at - horizon;
 
             // The newest five *representatives*, not the newest five epochs: an
