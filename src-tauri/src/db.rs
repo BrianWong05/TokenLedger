@@ -826,10 +826,13 @@ fn set_wal(conn: &Connection) -> rusqlite::Result<()> {
 ///
 /// Provenance and plan fill in on conflict, under two rules. A pass may fill an
 /// unknown identity fact or confirm a known one, never contradict it: readings
-/// alike in all five key columns but disagreeing about account, meter, Limit, or
-/// scope are two different Readings that this table cannot hold apart, so the
-/// second is dropped whole rather than blended into the first (see SCHEMA_V18's
-/// ponytail note). Coverage, external activity, and plan take the newest proof,
+/// alike in all five key columns but disagreeing about account, meter, Limit,
+/// scope, or the order they were read in are two different Readings that this
+/// table cannot hold apart, so the second is dropped whole rather than blended
+/// into the first (see SCHEMA_V18's ponytail note). Source order joins that rule
+/// rather than the newest-proof one because an order that moves under a Reading
+/// between scans orders nothing. Coverage, external activity, and plan take the
+/// newest proof,
 /// which is how a later unreadable-Artifact discovery withdraws coverage — a
 /// pass that proves nothing still erases nothing. The Reading's own figures are
 /// never rewritten; they are what the identity is made of. `window_minutes` and
@@ -887,7 +890,10 @@ pub fn insert_limit_readings(
                     OR excluded.limit_id IS limit_readings.limit_id) \
                AND (excluded.model_scope IS NULL \
                     OR limit_readings.model_scope IS NULL \
-                    OR excluded.model_scope IS limit_readings.model_scope)",
+                    OR excluded.model_scope IS limit_readings.model_scope) \
+               AND (excluded.source_order IS NULL \
+                    OR limit_readings.source_order IS NULL \
+                    OR excluded.source_order IS limit_readings.source_order)",
         )?;
         for r in readings {
             let p = &r.provenance;
@@ -2213,6 +2219,27 @@ mod tests {
         );
         assert_eq!(stored_readings(&conn), 1);
         assert_eq!(stored_provenance(&conn, 900), stored);
+
+        // Source order holds to the same rule. An unknown order still fills,
+        let mut ordered = evidence_reading(40.0, 900);
+        ordered.provenance = ReadingProvenance {
+            source_order: Some(17),
+            ..ReadingProvenance::default()
+        };
+        insert_limit_readings(&mut conn, &[ordered]).unwrap();
+        assert_eq!(stored_provenance(&conn, 900).source_order, Some(17));
+        // but a second Artifact reaching this Reading does not get to move the
+        // order the first gave it — an order that moves orders nothing — and the
+        // refusal takes the whole update with it, coverage included.
+        let mut moved = evidence_reading(40.0, 900);
+        moved.provenance = ReadingProvenance {
+            source_order: Some(4_096),
+            covered_from: Some(1),
+            ..ReadingProvenance::default()
+        };
+        assert_eq!(insert_limit_readings(&mut conn, &[moved]).unwrap(), 0);
+        assert_eq!(stored_provenance(&conn, 900).source_order, Some(17));
+        assert_eq!(stored_provenance(&conn, 900).covered_from, Some(600));
     }
 
     #[test]

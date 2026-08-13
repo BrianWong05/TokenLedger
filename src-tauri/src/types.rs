@@ -81,8 +81,13 @@ pub struct ReadingProvenance {
     /// documented one-to-one mapping. A duration, slot, or display label is not.
     pub limit_id: Option<String>,
     pub model_scope: Option<ModelScope>,
-    /// Stable source order for Readings sharing one `observed_at`; without it
-    /// same-second Readings cannot be ordered, and so bound nothing.
+    /// Source order for Readings sharing one `observed_at`; without it
+    /// same-second Readings cannot be ordered, and so bound nothing. Stable in
+    /// the sense that ingest keeps the first order written and refuses a pass
+    /// that contradicts it — an order that moved between scans would order
+    /// nothing. It is only comparable *within* one Artifact, and this carries no
+    /// Artifact identity, so a consumer that cannot prove two Readings came from
+    /// the same one must treat them as unordered.
     pub source_order: Option<i64>,
     /// The earliest instant local capture of this Source and account is durably
     /// proven to cover, unbroken, through this Reading. An interval is complete

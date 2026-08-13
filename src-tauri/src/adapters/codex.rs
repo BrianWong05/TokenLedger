@@ -27,6 +27,7 @@ const PARSER_VERSION: i64 = 1;
 fn slot_reading(
     slot: Option<&Value>,
     limits: &Value,
+    limit_id: &str,
     observed_at: i64,
     source_order: i64,
 ) -> Option<LimitReading> {
@@ -50,37 +51,40 @@ fn slot_reading(
             .get("plan_type")
             .and_then(|p| p.as_str())
             .map(str::to_string),
-        provenance: evidence(limits, window_minutes, source_order),
+        provenance: evidence(limit_id, window_minutes, source_order),
     })
 }
 
 /// What a rollout proves about a Reading beyond its figures.
 ///
-/// **Limit identity** is the vendor's own `limit_id` — the Codex entitlement —
-/// with the vendor's own `window_minutes`, because one entitlement meters more
-/// than one window. The `primary`/`secondary` slot never enters it: the slot is
-/// a position, and the local corpus carries the weekly window in `primary` in
-/// 88% of observations and the five-hour one in the rest (#104).
+/// **Limit identity** is the vendor's own entitlement id with the *canonical*
+/// duration of the window it meters, through the same `window_key` grammar the
+/// Reading is stored under — one entitlement meters more than one window, and
+/// upstream rounding drifts (#104), so a raw 10081 must not start a new Series
+/// from the 10080 before it. The `primary`/`secondary` slot never enters it:
+/// the slot is a position, and the local corpus carries the weekly window in
+/// `primary` in 88% of the blocks it wrote and the five-hour one in the rest.
 ///
-/// **Metering regime** names the meter the adapter can actually document: the
+/// **Metering regime** names the meter the adapter can document: the
 /// `rate_limits` block itself, whose windows and percentages are what a Reading
-/// is made of. Credits, an unlimited grant, and an individual limit are the
-/// vendor's own signals that something else is metering too, and none of them is
-/// documented well enough to say how — so each takes its own regime identity
-/// rather than joining the plain one. A Series then starts fresh instead of
-/// silently spanning terms that may not compare, which is the conservative
-/// direction: the cost of splitting a Series is an estimate that waits, and the
-/// cost of merging two is an estimate that lies. `spend_control_reached` and
-/// `rate_limit_reached_type` stay out — they are states a meter passes through,
-/// not meters.
+/// is made of. It is deliberately constant. `credits`, `individual_limit`,
+/// `spend_control_reached` and `rate_limit_reached_type` stay out — every one of
+/// them is a state a meter passes through rather than a meter, and `has_credits`
+/// in particular flips as a balance depletes, which would split a Series
+/// mid-epoch over nothing. None of them has ever been anything but false or null
+/// across the whole local corpus, so nothing here is evidence of a second
+/// regime; when one turns up, this identity changes deliberately.
 ///
 /// **Model scope** is `all`: the Codex general window meters the whole Source,
 /// so every Codex Usage Record participates, Unattributed Usage included.
 ///
 /// **Source order** is the line's byte offset, which orders the Readings one
-/// rollout wrote within a second it shares. Across rollouts it means nothing,
-/// and two Readings that cannot be ordered bound no interval — correct, since
-/// nothing here proves which of two files was written first.
+/// rollout wrote inside a second they share. It means nothing across rollouts,
+/// and the column carries no Artifact identity, so a consumer cannot tell a
+/// comparable pair from an incomparable one: Readings sharing an `observed_at`
+/// must be treated as unordered, and bound no interval, unless something proves
+/// they came from one Artifact. Ingest keeps the first offset written rather
+/// than the newest, so the order a Reading was given does not move under it.
 ///
 /// **Account identity and completeness coverage stay unknown.** A rollout names
 /// no account: the only account ids in the corpus belong to third-party payloads
@@ -89,30 +93,10 @@ fn slot_reading(
 /// claim a fact no observation proves — a rollout read today may have been
 /// written under another account — so Codex stays truthfully Blocked until an
 /// account and coverage chain proves otherwise.
-fn evidence(limits: &Value, window_minutes: i64, source_order: i64) -> ReadingProvenance {
-    let flag = |object: &str, field: &str| {
-        limits
-            .get(object)
-            .and_then(|c| c.get(field))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-    };
-    let mut regime = "codex:rate_limits".to_string();
-    if flag("credits", "unlimited") {
-        regime.push_str("+unlimited");
-    }
-    if flag("credits", "has_credits") {
-        regime.push_str("+credits");
-    }
-    if limits.get("individual_limit").is_some_and(|l| !l.is_null()) {
-        regime.push_str("+individual");
-    }
+fn evidence(limit_id: &str, window_minutes: i64, source_order: i64) -> ReadingProvenance {
     ReadingProvenance {
-        limit_id: limits
-            .get("limit_id")
-            .and_then(|i| i.as_str())
-            .map(|id| format!("{id}:{window_minutes}")),
-        metering_regime: Some(regime),
+        limit_id: Some(format!("{limit_id}:{}", window_key(window_minutes))),
+        metering_regime: Some("codex:rate_limits".to_string()),
         model_scope: Some(ModelScope::All),
         source_order: Some(source_order),
         account_id: None,
@@ -301,7 +285,10 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                             .get("timestamp")
                             .and_then(|t| t.as_str())
                             .and_then(iso_to_epoch);
-                        if let (Some(observed_at), Some("codex")) =
+                        // The matched literal travels on as the Limit identity,
+                        // so what a Reading stores is bounded here where it is
+                        // proven rather than re-read from the payload (ADR-0011).
+                        if let (Some(observed_at), Some(limit_id @ "codex")) =
                             (stamp, limits.get("limit_id").and_then(|i| i.as_str()))
                         {
                             readings.extend(
@@ -311,6 +298,7 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                                         slot_reading(
                                             slot,
                                             limits,
+                                            limit_id,
                                             observed_at,
                                             line_offset as i64,
                                         )
@@ -1145,9 +1133,10 @@ mod tests {
         assert_eq!(
             readings[0].provenance,
             ReadingProvenance {
-                // The vendor's own entitlement id and its own window length —
-                // never the `primary`/`secondary` slot, which is a position.
-                limit_id: Some("codex:10080".to_string()),
+                // The vendor's own entitlement id and the canonical duration
+                // of the window it meters — never the `primary`/`secondary`
+                // slot, which is a position, and never the raw minutes.
+                limit_id: Some("codex:w10080".to_string()),
                 metering_regime: Some("codex:rate_limits".to_string()),
                 // The Codex general window meters the whole Source, so every
                 // Codex Usage Record is in scope, Unattributed Usage included.
@@ -1180,9 +1169,8 @@ mod tests {
             .map(|r| (r.window_key, r.provenance.limit_id))
             .collect()
         };
-        // The same two windows, swapped between the slots: 88% of the local
-        // corpus carries the weekly window in `primary` and the rest the
-        // five-hour one (#104), so identity has to survive the swap.
+        // The same two windows, swapped between the slots, which the corpus
+        // does constantly (see `evidence`): identity has to survive it.
         let mut straight = identities(weekly, five_hour);
         let mut swapped = identities(five_hour, weekly);
         straight.sort();
@@ -1191,14 +1179,14 @@ mod tests {
         assert_eq!(
             straight,
             vec![
-                ("w10080".to_string(), Some("codex:10080".to_string())),
-                ("w300".to_string(), Some("codex:300".to_string())),
+                ("w10080".to_string(), Some("codex:w10080".to_string())),
+                ("w300".to_string(), Some("codex:w300".to_string())),
             ],
         );
     }
 
     #[test]
-    fn a_credit_or_individual_meter_is_its_own_regime() {
+    fn credit_and_limit_states_are_not_metering_regimes() {
         let regime = |extra: &str| -> Option<String> {
             readings_of(&limits_line(
                 &format!(
@@ -1210,67 +1198,128 @@ mod tests {
             .provenance
             .metering_regime
         };
-        // A meter the adapter cannot document never joins the one it can: an
-        // unrecognised state starts its own Series instead of quietly extending
-        // a run measured under different terms.
-        assert_eq!(
-            regime(r#""credits":{"has_credits":false,"unlimited":false,"balance":"0"},"#),
-            Some("codex:rate_limits".to_string()),
-        );
-        assert_eq!(
-            regime(r#""credits":{"has_credits":true,"unlimited":false,"balance":"500"},"#),
-            Some("codex:rate_limits+credits".to_string()),
-        );
-        assert_eq!(
-            regime(r#""credits":{"has_credits":false,"unlimited":true,"balance":"0"},"#),
-            Some("codex:rate_limits+unlimited".to_string()),
-        );
-        assert_eq!(
-            regime(r#""individual_limit":{"used_percent":3.0},"#),
-            Some("codex:rate_limits+individual".to_string()),
-        );
+        // Credits, an unlimited grant and an individual limit are states the
+        // meter passes through, not meters: `has_credits` alone flips as a
+        // balance depletes, and reading identity off it would split a Series
+        // mid-epoch. The regime is what the adapter can document, and holds.
+        let plain = r#""credits":{"has_credits":false,"unlimited":false,"balance":"0"},"#;
+        assert_eq!(regime(plain), Some("codex:rate_limits".to_string()));
+        for state in [
+            r#""credits":{"has_credits":true,"unlimited":false,"balance":"500"},"#,
+            r#""credits":{"has_credits":false,"unlimited":true,"balance":"0"},"#,
+            r#""individual_limit":{"used_percent":3.0},"#,
+            r#""spend_control_reached":true,"#,
+        ] {
+            assert_eq!(regime(state), regime(plain), "{state} is not a regime");
+        }
     }
 
     #[test]
-    fn a_reading_and_its_same_envelope_usage_share_one_instant() {
+    fn the_canonical_duration_carries_the_identity_not_the_reported_minutes() {
+        let identity = |minutes: i64| -> (String, String) {
+            let reading = readings_of(&limits_line(
+                &format!(
+                    r#"{{"limit_id":"codex","primary":{{"used_percent":10.0,"window_minutes":{minutes},"resets_at":1786879486}},"secondary":null,"plan_type":"plus"}}"#
+                ),
+                "2026-08-10T03:16:19.385Z",
+            ))
+            .remove(0);
+            (reading.window_key, reading.provenance.limit_id.unwrap())
+        };
+        // Upstream rounding drifts (#104), and the window key already absorbs it
+        // within 5%. Identity has to absorb it identically, or a Series would
+        // restart on the drift the canonical set exists to swallow.
+        assert_eq!(identity(10_081), identity(10_080));
+        assert_eq!(identity(10_081).1, "codex:w10080");
+        // An unrecognised duration is still its own window, and its own Limit.
+        assert_eq!(identity(77).1, "codex:w77");
+    }
+
+    #[test]
+    fn each_reading_shares_its_instant_with_the_delta_of_its_own_snapshot() {
         // The `(t0, t1]` boundary includes the token delta emitted in the same
-        // snapshot as the later Reading, which holds only while both take their
-        // instant from that one envelope stamp.
-        let parsed = parse_file(&format!("{REAL_BLOCK}\n"), "rollout", "/p/rollout.jsonl");
-        assert_eq!(parsed.events.len(), 1);
-        assert_eq!(parsed.readings.len(), 1);
-        assert_eq!(parsed.events[0].timestamp, parsed.readings[0].observed_at);
+        // snapshot as the later Reading and excludes the one at the earlier
+        // anchor, which holds only while each Reading and the Record beside it
+        // take their instant from the one envelope stamp they were written with.
+        let block = |ts: &str, total: i64, pct: f64| {
+            format!(
+                r#"{{"type":"event_msg","timestamp":"{ts}","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{total},"cached_input_tokens":0,"output_tokens":0,"total_tokens":{total}}}}},"rate_limits":{{"limit_id":"codex","primary":{{"used_percent":{pct},"window_minutes":10080,"resets_at":1786879486}},"secondary":null,"plan_type":"plus"}}}}}}"#
+            )
+        };
+        let parsed = parse_file(
+            &format!(
+                "{}\n{}\n",
+                block("2026-08-10T03:16:19.385Z", 100, 40.0),
+                block("2026-08-10T04:16:19.385Z", 300, 41.0),
+            ),
+            "rollout",
+            "/p/rollout.jsonl",
+        );
+        let stamps: Vec<(i64, i64)> = parsed
+            .readings
+            .iter()
+            .zip(&parsed.events)
+            .map(|(r, e)| (r.observed_at, e.timestamp))
+            .collect();
+        assert_eq!(stamps, vec![(1_786_331_779, 1_786_331_779), (1_786_335_379, 1_786_335_379)]);
+        // So the earlier Record sits exactly at t0, which `t0 < usage.timestamp`
+        // excludes, and the later one exactly at t1, which `<= t1` includes.
+        let (t0, t1) = (parsed.readings[0].observed_at, parsed.readings[1].observed_at);
+        assert!(!(t0 < parsed.events[0].timestamp && parsed.events[0].timestamp <= t1));
+        assert!(t0 < parsed.events[1].timestamp && parsed.events[1].timestamp <= t1);
     }
 
     #[test]
     fn source_order_follows_the_rollout() {
-        let content = format!("{REAL_BLOCK}\n{REAL_BLOCK}\n");
+        let block = |pct: f64| {
+            limits_line(
+                &format!(
+                    r#"{{"limit_id":"codex","primary":{{"used_percent":{pct},"window_minutes":10080,"resets_at":1786879486}},"secondary":null,"plan_type":"plus"}}"#
+                ),
+                // One second, two Readings: the case an order has to settle.
+                "2026-08-10T03:16:19.385Z",
+            )
+        };
+        // Distinct percentages, so both survive as their own stored Reading —
+        // two identical ones are one Reading, and would need no ordering.
+        let first = block(40.0);
+        let content = format!("{first}\n{}\n", block(41.0));
         let orders: Vec<Option<i64>> =
             readings_of(&content).into_iter().map(|r| r.provenance.source_order).collect();
-        // Two Readings of one second need an order to bound anything; the byte
-        // offset gives it, within the one Artifact that wrote them.
-        assert_eq!(orders, vec![Some(0), Some(REAL_BLOCK.len() as i64 + 1)]);
+        assert_eq!(orders, vec![Some(0), Some(first.len() as i64 + 1)]);
     }
 
     #[test]
     fn the_real_block_yields_one_reading_per_window_that_exists() {
         let readings = readings_of(&format!("{REAL_BLOCK}\n"));
         assert_eq!(readings.len(), 1, "a null `secondary` is a window that does not exist");
-        // The figures; what the Reading proves about itself is asserted by
-        // readings_carry_the_evidence_facts_the_rollout_proves.
-        let reading = &readings[0];
+        // The figures. What the Reading proves about itself is asserted by
+        // readings_carry_the_evidence_facts_the_rollout_proves — destructured
+        // rather than compared field by field, so a new field has to be answered
+        // here too instead of quietly going untested.
+        let LimitReading {
+            source,
+            window_key,
+            window_minutes,
+            used_pct,
+            resets_at,
+            observed_at,
+            via,
+            plan,
+            provenance: _,
+        } = &readings[0];
         assert_eq!(
             (
-                reading.source.as_str(),
-                reading.window_key.as_str(),
-                reading.window_minutes,
-                reading.used_pct,
-                reading.resets_at,
+                source.as_str(),
+                window_key.as_str(),
+                *window_minutes,
+                *used_pct,
+                *resets_at,
                 // The envelope timestamp, never the filename date: 123 of 212
                 // local files have a name-date that differs from it (#104).
-                reading.observed_at,
-                reading.via.as_str(),
-                reading.plan.as_deref(),
+                *observed_at,
+                via.as_str(),
+                plan.as_deref(),
             ),
             (
                 "codex", "w10080", Some(10080), 100.0, 1_786_879_486, 1_786_331_779, "logs",
