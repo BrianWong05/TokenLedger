@@ -763,26 +763,28 @@ describe('Export', () => {
   // selector's token fields are non-nullable, so an absent Summary becomes 0 —
   // a figure meaning "unknown". Only the caller can refuse, and it does.
   //
-  // Reaching that state takes two steps, because the fake's hold() is scoped to
+  // Reaching that state takes steps, because the fake's hold() is scoped to
   // the METHOD, not the call: holding 'summary' also holds the Profile-sessions
-  // count that rides with the initial series load. Resolving that first held
-  // call lets allPoints land — which is what ends `loading` and fires the
-  // per-range reload, whose own Summary is then the held call that matters.
-  // Skipping the first resolve leaves the button disabled by `loading` and
-  // tests nothing.
+  // count that rides with each series load — and the first load runs twice,
+  // once as the provisional pre-scan paint and once as the post-scan
+  // reconcile. Resolving those two Profile calls lets both series land (which
+  // is what ends `loading`); every summary still held after that is a window
+  // Summary — the provisional reload's, superseded and discarded, and the
+  // reconcile's, which is the one whose landing enables Export.
   it('withholds Export until the window\'s Summary has landed', async () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
     ledger.hold('summary');
     const { container } = await mountOverview({ ledger });
     const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
 
-    ledger.resolveHeld('summary', 0); // Profile sessions — lets the first load land
+    ledger.resolveHeld('summary', 0); // provisional Profile — the first paint lands
+    await settle();
+    ledger.resolveHeld('summary', 1); // reconcile Profile — the post-scan series lands
     await settle();
     expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
-    expect(ledger.held('summary').length).toBe(2); // [0] profile, [1] the window's
-    expect(exportBtn().disabled).toBe(true);
+    expect(exportBtn().disabled).toBe(true); // the window's Summary is still pending
 
-    ledger.resolveHeld('summary', 1); // the window's own Summary
+    for (let i = 2; i < ledger.held('summary').length; i++) ledger.resolveHeld('summary', i);
     await settle();
     expect(exportBtn().disabled).toBe(false);
   });

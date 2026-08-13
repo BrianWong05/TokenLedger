@@ -143,16 +143,95 @@ describe('overviewStore refresh / scan', () => {
     expect(ledger.calls.series.length).toBeGreaterThan(seriesCalls);
   });
 
-  it('scan() throw sets scanError and skips the series fetch', async () => {
+  it('scan() throw on first load sets scanError but keeps the provisional paint', async () => {
     const clock = fakeClock();
-    const ledger = makeFakeLedger();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
     ledger.failNext('scan', 'scanboom');
     const store = createOverviewStore({ ledger, clock });
     await store.refresh();
+    clock.advance(0);
+    await flush();
     expect(store.getSnapshot().scanError).toBe('scanboom');
-    expect(ledger.calls.series).toHaveLength(0);
-    expect(store.getSnapshot().allPoints).toBeNull();
-    expect(store.getSnapshot().loading).toBe(true);
+    // The persisted Ledger still painted: data behind the error, not zeros.
+    expect(store.getSnapshot().allPoints).toHaveLength(1);
+    expect(store.getSnapshot().loading).toBe(false);
+  });
+
+  it('scan() throw after the first load skips the series fetch', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock);
+    const seriesCalls = ledger.calls.series.length;
+
+    ledger.failNext('scan', 'scanboom');
+    await store.refresh();
+    expect(store.getSnapshot().scanError).toBe('scanboom');
+    expect(ledger.calls.series).toHaveLength(seriesCalls);
+  });
+
+  it('first load paints the persisted Ledger before the scan settles', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock });
+    const refreshing = store.refresh();
+    await flush();
+    clock.advance(0); // the provisional window reload's delay-0 timer
+    await flush();
+
+    // The scan is still running, yet the dashboard already has data.
+    expect(store.getSnapshot().loading).toBe(false);
+    expect(store.getSnapshot().allPoints).toHaveLength(1);
+    expect(store.getSnapshot().summary).not.toBeNull();
+
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+  });
+
+  it('reconciles the provisional paint after the scan even when it reports idle', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock });
+    const refreshing = store.refresh();
+    await flush();
+    clock.advance(0);
+    await flush();
+    const seriesCalls = ledger.calls.series.length;
+
+    // Default scan: zero inserted, no errors — an idle verdict. The idle
+    // gate's premise ("what's rendered IS the Ledger") doesn't hold for a
+    // pre-scan paint, so everything is refetched anyway.
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+    clock.advance(0);
+    await flush();
+    expect(ledger.calls.series.length).toBeGreaterThan(seriesCalls);
+    expect(store.getSnapshot().reloading).toBe(false);
+  });
+
+  it('a window fetched during the launch scan is refetched after it, not replayed', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock });
+    const refreshing = store.refresh();
+    await flush();
+    clock.advance(0);
+    await flush();
+
+    // Mid-scan range click: fetches and caches the week window pre-scan.
+    store.setRange('week');
+    clock.advance(0);
+    await flush();
+    const summaryCalls = ledger.calls.summary.length;
+
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+    clock.advance(0);
+    await flush();
+    // A cache replay would add no summary call; the reconcile must refetch.
+    expect(ledger.calls.summary.length).toBeGreaterThan(summaryCalls);
   });
 });
 
@@ -563,21 +642,31 @@ describe('overviewStore profile', () => {
     });
     const store = await boot(ledger, clock);
 
-    expect(profileCalls(ledger)).toHaveLength(1);
+    // Two on boot: the provisional first paint and the post-scan reconcile.
+    expect(profileCalls(ledger)).toHaveLength(2);
     expect(store.getSnapshot().profileSessions).toBe(37);
 
     store.setRange('day'); // reload runs with day filters — the Profile stays put
     clock.advance(0);
     await flush();
-    expect(profileCalls(ledger)).toHaveLength(1);
+    expect(profileCalls(ledger)).toHaveLength(2);
     expect(store.getSnapshot().profileSessions).toBe(37);
   });
 
   it('leaves the count unknown when its fetch fails, without failing the series', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
-    ledger.failNext('summary', 'no sessions for you');
     const store = await boot(ledger, clock);
+
+    // A non-idle rescan refetches series + Profile; only the Profile fails.
+    ledger.data.scan = {
+      scannedAt: 0,
+      sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
+    };
+    ledger.failNext('summary', 'no sessions for you');
+    await store.refresh();
+    clock.advance(0);
+    await flush();
 
     const snap = store.getSnapshot();
     expect(snap.profileSessions).toBeNull();

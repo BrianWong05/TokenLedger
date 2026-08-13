@@ -193,14 +193,26 @@ class Store implements OverviewStore {
     // so every cached window is suspect — see the cache's comment for why the
     // idle gate below is not a safe substitute.
     this.reloadCache.clear();
+
+    // First load of this store: the Ledger already holds every record the
+    // previous run captured, so paint that now instead of sitting on zeros
+    // for the whole launch scan (the backend runs reads on a separate WAL
+    // connection, so the scan's write hold cannot queue them). Everything
+    // this paints — and anything a range click fetches while the scan is
+    // still running — is provisional; the firstPaint block below refetches
+    // it all once the scan settles.
+    const firstPaint = this.state.allPoints === null ? this.loadSeries(false) : null;
+
     let status: ScanStatus;
     try {
       status = await this.ledger.scan();
     } catch (e) {
+      await firstPaint;
       this.state.scanError = String(e);
       this.publish();
-      return; // scan threw: do not proceed to the series reload
+      return; // scan threw: keep any provisional paint; the next tick retries
     }
+    await firstPaint;
     this.state.scanSources = status.sources;
     const errs = status.sources
       .filter((s) => s.error)
@@ -209,6 +221,20 @@ class Store implements OverviewStore {
     // Backend reports epoch seconds (scan.rs as_secs); scanAt is epoch ms.
     this.state.scanAt = status.scannedAt ? status.scannedAt * 1000 : this.clock.now().getTime();
     this.publish();
+
+    if (firstPaint) {
+      // Everything fetched so far predates this scan, so it is provisional
+      // even when the scan reports idle — the idle gate's premise ("what's
+      // rendered IS the Ledger") only holds for data fetched after a scan,
+      // and zero-insert ≠ unchanged (keep-max upgrades). Drop whatever a
+      // mid-scan range click may have cached, supersede any in-flight reload
+      // so nothing pre-scan can land or be replayed from here on, and refetch.
+      this.reloadCache.clear();
+      this.epoch++;
+      this.publish(); // `reloading` is true from the bump until the refetch lands
+      await this.loadSeries(true);
+      return;
+    }
 
     // Idle tick: nothing ingested, no source errored, data already on screen —
     // the Ledger is bit-identical to what's rendered, so skip the series fetch
@@ -221,6 +247,15 @@ class Store implements OverviewStore {
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
     if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
 
+    await this.loadSeries(false);
+  }
+
+  // The unbounded daily series + the Profile's Session count, then the window
+  // reload. Shared by the provisional first paint and every post-scan fetch.
+  // `mustReload`: a caller that just invalidated the reload pipeline (epoch
+  // bump with nothing scheduled) needs the reschedule even on failure, or
+  // `reloading` would stay latched until the next tick.
+  private async loadSeries(mustReload: boolean) {
     try {
       // The Profile's Session count rides with the unbounded series, not with
       // the per-range reload: both describe the Ledger itself, so both refresh
@@ -245,7 +280,7 @@ class Store implements OverviewStore {
       // First load settles to [] so loading ends; later failures keep prior data.
       if (wasNull) this.state.allPoints = [];
       this.publish();
-      if (wasNull) this.scheduleReload();
+      if (wasNull || mustReload) this.scheduleReload();
     }
   }
 
