@@ -4,6 +4,7 @@ pub mod claude_ctx;
 pub mod cline;
 pub mod codebuddy;
 pub mod codex;
+pub mod copilot;
 pub mod ctx;
 pub mod exec_class;
 pub mod gemini;

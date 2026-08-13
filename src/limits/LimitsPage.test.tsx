@@ -24,6 +24,7 @@ const NOW_MS = 1_786_492_800_000;
 const NOW = NOW_MS / 1000;
 const HOUR = 3600;
 const DAY = 24 * HOUR;
+const LIVE_SOURCES = ['claude', 'codex', 'copilot', 'grok', 'antigravity'];
 
 function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> } = {}): LimitsPort & {
   store: Record<string, string>;
@@ -156,7 +157,7 @@ describe('the opt-in disclosure', () => {
 
     expect(port.store[LIVE_ENABLED_KEY]).toBe('true');
     expect(LIVE_ENABLED_KEY).toBe('tl.limits.liveEnabled.3');
-    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(port.liveCalls).toEqual(LIVE_SOURCES);
     expect(c.querySelector('.tl-lim-optin')).toBeNull();
     // Codex readings flowed from ordinary scans all along, so its card already
     // has history the moment the disclosure is dismissed.
@@ -453,6 +454,7 @@ describe('card states', () => {
     expect(cardEls(c).map((el) => el.querySelector('.tl-lim-name')?.textContent)).toEqual([
       'Claude',
       'Codex',
+      'Copilot',
       'Grok',
       'Antigravity',
     ]);
@@ -599,11 +601,11 @@ describe('fetch policy', () => {
     try {
       const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
       await mount(port);
-      expect(port.liveCalls).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+      expect(port.liveCalls).toEqual(LIVE_SOURCES);
 
       // Nothing polls: time alone adds no calls, however much of it passes.
       await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60_000); });
-      expect(port.liveCalls).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+      expect(port.liveCalls).toEqual(LIVE_SOURCES);
     } finally {
       vi.useRealTimers();
     }
@@ -614,21 +616,17 @@ describe('fetch policy', () => {
     // what permits a call at all, never what exempts it from the floor.
     const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
     const c = await mount(port);
-    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(port.liveCalls).toEqual(LIVE_SOURCES);
 
     await act(async () => btn(c, 'Refresh').click());
     await settle();
-    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual([
-      'claude', 'codex', 'grok', 'antigravity',
-    ]);
+    expect(port.liveCalls, 'inside the floor, Refresh does not fetch').toEqual(LIVE_SOURCES);
 
     // Past the floor, the same press does.
     clock = NOW_MS + 61_000;
     await act(async () => btn(c, 'Refresh').click());
     await settle();
-    expect(port.liveCalls).toEqual([
-      'claude', 'codex', 'grok', 'antigravity', 'claude', 'codex', 'grok', 'antigravity',
-    ]);
+    expect(port.liveCalls).toEqual([...LIVE_SOURCES, ...LIVE_SOURCES]);
   });
 
   it('keeps the floor across tab switches, which unmount the page', async () => {
@@ -637,14 +635,14 @@ describe('fetch policy', () => {
     // and back would fetch again immediately.
     const port = fakePort({ list: () => Promise.resolve([CLAUDE_LIVE]) });
     await mount(port);
-    expect(port.liveCalls).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(port.liveCalls).toEqual(LIVE_SOURCES);
 
     await remount(port, NOW_MS + 30_000);
-    expect(port.liveCalls, 'still inside the floor').toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(port.liveCalls, 'still inside the floor').toEqual(LIVE_SOURCES);
 
     await remount(port, NOW_MS + 61_000);
     expect(port.liveCalls, 'past it, a page open checks again').toEqual([
-      'claude', 'codex', 'grok', 'antigravity', 'claude', 'codex', 'grok', 'antigravity',
+      ...LIVE_SOURCES, ...LIVE_SOURCES,
     ]);
   });
 

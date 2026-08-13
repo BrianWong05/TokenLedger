@@ -819,7 +819,7 @@ mod tests {
 
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
-    // functions. Empty fixture roots => 14 source statuses, zero events.
+    // functions. Empty fixture roots => one status per catalog Source, zero events.
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();
@@ -828,6 +828,7 @@ mod tests {
         let roots = SourceRoots {
             claude: dir.path().join("claude"),
             codex_sessions: vec![dir.path().join("codex")],
+            copilot_db: dir.path().join("copilot/session-store.db"),
             gemini_tmp: dir.path().join("gemini"),
             gemini_projects_json: dir.path().join("projects.json"),
             hermes_db: dir.path().join("state.db"),
@@ -862,7 +863,7 @@ mod tests {
 
         let mut db = state.db.lock().unwrap();
         let status = scan::run_scan(&mut db, &state.roots);
-        assert_eq!(status.sources.len(), 16);
+        assert_eq!(status.sources.len(), 17);
 
         // The IPC read commands query through `read` (the second connection);
         // a scan's committed writes must be visible there.

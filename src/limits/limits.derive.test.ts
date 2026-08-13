@@ -185,17 +185,19 @@ const LOGS_SOURCE = {
 describe('catalog gating', () => {
   it('yields a card only for a Source declaring a limits capability', () => {
     const keys = limitsSources().map((s) => s.meta.key);
-    // All four shipped Sources are `live` now — Codex and Grok each pair a live
-    // Companion with passive log capture; Claude and Antigravity are live-only.
-    expect(keys).toEqual(['claude', 'codex', 'grok', 'antigravity']);
-    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live', 'live']);
+    // All five shipped Sources are `live` now. Copilot's Companion is paired
+    // with its native CLI usage database.
+    expect(keys).toEqual(['claude', 'codex', 'copilot', 'grok', 'antigravity']);
+    expect(limitsSources().map((s) => s.via)).toEqual(['live', 'live', 'live', 'live', 'live']);
   });
 
   it('gives a Source without the capability no card, even holding Readings', () => {
     // Nothing writes Readings for an uncatalogued Source, but if history ever
     // held some, the enum still decides what the page shows.
     const views = cards([held('gemini', [win()])], NOW, 'left');
-    expect(views.map((v) => v.source)).toEqual(['claude', 'codex', 'grok', 'antigravity']);
+    expect(views.map((v) => v.source)).toEqual([
+      'claude', 'codex', 'copilot', 'grok', 'antigravity',
+    ]);
   });
 });
 

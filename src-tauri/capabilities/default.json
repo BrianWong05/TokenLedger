@@ -34,6 +34,11 @@
           "args": false
         },
         {
+          "name": "binaries/copilot-limits",
+          "sidecar": true,
+          "args": false
+        },
+        {
           "name": "binaries/grok-limits",
           "sidecar": true,
           "args": false

@@ -121,7 +121,12 @@ with a bar per Limit, driven by the newest valid Limit Reading. It ignores the
 Overview's date window and Source selection entirely — it is now, not a range.
 A Source that cannot expose Limits gets no card; one that could but has no
 credentials gets a disabled card, so "not signed in" and "unsupported" never
-look alike.
+look alike. Limits describe the subscription even when the Ledger observes
+only some of that Source's surfaces: GitHub Copilot's account-wide Limits may
+therefore include IDE or cloud activity absent from locally observed Usage
+Records, and that gap is never reconstructed from credit changes. Copilot emits
+only finite Limit Readings: its paid plan's Premium Requests render,
+while unlimited Chat and Completions do not.
 _Avoid_: Quotas, Usage, Rate Limits
 
 **Menu Bar Extra**:
@@ -157,7 +162,9 @@ panel; the menu survives only where the platform delivers no icon clicks)
 An independently operated AI coding tool whose local Source Artifacts expose a
 timestamp and non-zero token count. Its identity outlives branding changes;
 alternate surfaces, storage formats, and model backends accessed through that
-tool remain one Source rather than becoming Sources themselves.
+tool remain one Source rather than becoming Sources themselves. GitHub Copilot
+therefore remains one Source across its CLI, IDE extensions, and cloud coding
+agent.
 _Avoid_: Provider, tool, agent, integration
 
 **Source Artifact**:

@@ -96,6 +96,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
     let mut roots = SourceRoots {
         claude: missing.clone(),
         codex_sessions: vec![missing.clone()],
+        copilot_db: missing.clone(),
         gemini_tmp: missing.clone(),
         gemini_projects_json: missing.clone(),
         hermes_db: missing.clone(),
@@ -123,6 +124,7 @@ fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
     match source {
         "claude" => roots.claude = artifact.to_path_buf(),
         "codex" => roots.codex_sessions = vec![artifact.to_path_buf()],
+        "copilot" => roots.copilot_db = artifact.to_path_buf(),
         "gemini" => {
             roots.gemini_tmp = artifact.to_path_buf();
             roots.gemini_projects_json = sibling_projects_json(artifact, &missing);
@@ -317,6 +319,7 @@ fn artifact_schema_fingerprint(source: &str, artifact: &Path) -> Result<String, 
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase());
         if (source == "hermes"
+            || source == "copilot"
             || source == "goose"
             || source == "antigravity"
             || source == "opencode"

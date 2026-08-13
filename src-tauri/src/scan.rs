@@ -10,6 +10,7 @@ use crate::adapters::claude::scan_claude;
 use crate::adapters::cline::scan_cline;
 use crate::adapters::codebuddy::scan_codebuddy;
 use crate::adapters::codex::scan_codex;
+use crate::adapters::copilot::scan_copilot;
 use crate::adapters::gemini::scan_gemini;
 use crate::adapters::goose::scan_goose;
 use crate::adapters::grok::scan_grok;
@@ -29,6 +30,7 @@ use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 pub struct SourceRoots {
     pub claude: PathBuf,
     pub codex_sessions: Vec<PathBuf>,
+    pub copilot_db: PathBuf,
     pub gemini_tmp: PathBuf,
     pub gemini_projects_json: PathBuf,
     pub hermes_db: PathBuf,
@@ -93,6 +95,7 @@ impl SourceRoots {
             std::env::var_os("HERMES_HOME").as_deref(),
             gemini_environment_value().as_deref(),
             grok_environment_value().as_deref(),
+            std::env::var_os("COPILOT_HOME").as_deref(),
             environment_value("cline", "cli-data").as_deref(),
             environment_value("cline", "cli-sandbox").as_deref(),
             environment_value("kilo", "db").as_deref(),
@@ -119,6 +122,7 @@ impl SourceRoots {
             None,
             None,
             None,
+            None,
         )
     }
 
@@ -130,11 +134,15 @@ impl SourceRoots {
         hermes_home: Option<&OsStr>,
         gemini_home: Option<&OsStr>,
         grok_home: Option<&OsStr>,
+        copilot_home: Option<&OsStr>,
         cline_data: Option<&OsStr>,
         cline_sandbox_data: Option<&OsStr>,
         kilo_db: Option<&OsStr>,
     ) -> Self {
         let gemini_home = gemini_home_for(home, gemini_home);
+        let copilot_home = copilot_home
+            .and_then(|value| visible_path(home, value))
+            .unwrap_or_else(|| home.join(".copilot"));
         let mut pi_sessions = vec![catalog_root(home, "pi", "sessions")];
         append_pi_override(&mut pi_sessions, home, "session-dir", session_dir);
         append_pi_override(&mut pi_sessions, home, "agent-dir", agent_dir);
@@ -163,6 +171,8 @@ impl SourceRoots {
         SourceRoots {
             claude: catalog_root(home, "claude", "projects"),
             codex_sessions: codex_session_roots(home, codex_home),
+            copilot_db: copilot_home
+                .join(source_catalog::artifact_filename("copilot", "session-store")),
             gemini_tmp: gemini_home.join(source_catalog::artifact_filename("gemini", "tmp")),
             gemini_projects_json: gemini_home
                 .join(source_catalog::artifact_filename("gemini", "projects")),
@@ -565,6 +575,7 @@ fn run_scan_sources(
             Ok(()) => match source.key.as_str() {
                 "claude" => run_one(&source.key, || scan_claude(conn, &roots.claude)),
                 "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex_sessions)),
+                "copilot" => run_one(&source.key, || scan_copilot(conn, &roots.copilot_db)),
                 "gemini" => run_one(&source.key, || {
                     scan_gemini(conn, &roots.gemini_tmp, &roots.gemini_projects_json)
                 }),
@@ -751,6 +762,7 @@ mod tests {
             [
                 "claude",
                 "codex",
+                "copilot",
                 "gemini",
                 "hermes",
                 "grok",
@@ -779,7 +791,7 @@ mod tests {
                 }
                 && source.prerequisite.is_none()
                 && source.capabilities.model
-                && source.capabilities.project
+                && (source.capabilities.project || source.key == "copilot")
                 && source.capabilities.session
                 && source.capabilities.token_categories
         }));
@@ -800,6 +812,7 @@ mod tests {
             [
                 ("claude", "projects", ".claude/projects"),
                 ("codex", "sessions", ".codex/sessions"),
+                ("copilot", "session-store", ".copilot/session-store.db"),
                 ("gemini", "tmp", ".gemini/tmp"),
                 ("gemini", "projects", ".gemini/projects.json"),
                 ("hermes", "state", ".hermes/state.db"),
@@ -1401,6 +1414,10 @@ mod tests {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         assert!(r.claude.ends_with(".claude/projects"));
         assert!(r.codex_sessions[0].ends_with(".codex/sessions"));
+        let copilot_home = std::env::var_os("COPILOT_HOME")
+            .and_then(|value| visible_path(&home, &value))
+            .unwrap_or_else(|| home.join(".copilot"));
+        assert_eq!(r.copilot_db, copilot_home.join("session-store.db"));
         assert!(r.gemini_tmp.ends_with(".gemini/tmp"));
         assert!(r.gemini_projects_json.ends_with(".gemini/projects.json"));
         assert!(r.hermes_db.ends_with(".hermes/state.db"));
@@ -1656,6 +1673,7 @@ mod tests {
         let roots = SourceRoots {
             claude: root,
             codex_sessions: vec![tmp.path().join("codex")],
+            copilot_db: tmp.path().join("copilot/session-store.db"),
             gemini_tmp: tmp.path().join("gemini/tmp"),
             gemini_projects_json: tmp.path().join("gemini/projects.json"),
             hermes_db: tmp.path().join("hermes/state.db"),
@@ -1720,6 +1738,7 @@ mod tests {
         let roots = SourceRoots {
             claude: base.join("no-claude"),
             codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
@@ -1764,7 +1783,7 @@ mod tests {
         .unwrap();
 
         let status = run_scan(&mut conn, &roots);
-        assert_eq!(status.sources.len(), 16);
+        assert_eq!(status.sources.len(), 17);
         assert_eq!(status.sources.last().unwrap().source, "qoder");
         let pi = find(&status, "pi");
         // 3 assistant Requests + 1 Unattributed tool-result Request.
@@ -2101,6 +2120,7 @@ mod tests {
         let roots = SourceRoots {
             claude: claude_root,
             codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: gemini_root,
             gemini_projects_json: gemini_projects,
             hermes_db: base.join("no-hermes.db"),
@@ -2128,7 +2148,7 @@ mod tests {
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
 
-        assert_eq!(status.sources.len(), 16);
+        assert_eq!(status.sources.len(), 17);
         assert_eq!(status.sources.last().unwrap().source, "qoder");
         assert!(status.scanned_at > 0);
 
@@ -2259,6 +2279,7 @@ mod tests {
         let roots = SourceRoots {
             claude: base.join("no-claude"),
             codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),
@@ -2429,6 +2450,7 @@ mod tests {
         let roots = SourceRoots {
             claude: base.join("no-claude"),
             codex_sessions: vec![base.join("no-codex")],
+            copilot_db: base.join("no-copilot.db"),
             gemini_tmp: base.join("no-gemini"),
             gemini_projects_json: base.join("no-projects.json"),
             hermes_db: base.join("no-hermes.db"),

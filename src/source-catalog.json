@@ -30,6 +30,20 @@
       "prerequisite": null
     },
     {
+      "key": "copilot",
+      "label": "Copilot",
+      "source": "GitHub Copilot",
+      "aliases": ["GitHub Copilot CLI", "Copilot CLI"],
+      "color": "#6e40c9",
+      "icon": "copilot",
+      "artifacts": [
+        { "id": "session-store", "kind": "file", "path": ".copilot/session-store.db", "environment": "COPILOT_HOME", "suffix": null, "platforms": ["all"], "prerequisite": null }
+      ],
+      "capabilities": { "model": true, "project": false, "session": true, "tokenCategories": true, "context": false, "limits": "live" },
+      "platforms": ["all"],
+      "prerequisite": null
+    },
+    {
       "key": "gemini",
       "label": "Gemini",
       "source": "Gemini CLI",

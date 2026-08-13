@@ -5,6 +5,7 @@
 import claude from './icons/claude.svg';
 import codebuddy from './icons/codebuddy.png';
 import codex from './icons/codex.svg';
+import copilot from './icons/copilot.png';
 import gemini from './icons/gemini.svg';
 import hermes from './icons/hermes.svg';
 import grok from './icons/grok.svg';
@@ -28,6 +29,7 @@ export const SOURCE_ICONS: Record<string, string> = {
   claude,
   codebuddy,
   codex,
+  copilot,
   gemini,
   hermes,
   grok,
