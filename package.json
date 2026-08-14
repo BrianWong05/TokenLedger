@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "test": "vitest run && node --test scripts/build-sidecar.node.mjs",
     "perf": "cargo test --manifest-path src-tauri/Cargo.toml --release performance_standard_large_ledger -- --ignored --nocapture --test-threads=1",
+    "perf:limits": "cargo test --manifest-path src-tauri/Cargo.toml --release performance_standard_limits_estimate -- --ignored --nocapture --test-threads=1",
     "bindings": "cd src-tauri && cargo test export_bindings",
     "sidecar": "node scripts/build-sidecar.mjs",
     "sidecar:dev": "node scripts/build-sidecar.mjs --if-needed"

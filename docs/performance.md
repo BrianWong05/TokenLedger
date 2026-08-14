@@ -23,6 +23,29 @@ The benchmark is ignored by the normal test suite because seeding 100,000 rows
 is intentionally heavier than a unit test. It contains no private Source
 Artifacts and prints only record counts, result-row counts, and elapsed time.
 
+A second gate covers the Limits page's estimate read, which has a different
+shape — one table that grows by a row per observation, and a derivation over its
+recent tail:
+
+```bash
+npm run perf:limits
+```
+
+| Workload | Budget | Why it matters |
+| --- | ---: | --- |
+| Limits page open | ≤ 150 ms | Paid on every visit to the tab |
+| Reevaluation after a scan writes Readings | ≤ 150 ms | Paid after every ordinary scan while the page is open |
+| Reevaluation on the `nextEvaluationAt` timer | ≤ 150 ms | Paid whenever time alone can change the answer |
+| A withheld page, reaching Stale reconstruction | ≤ 150 ms | The one super-linear path: one estimator replay per completed epoch |
+
+It also asserts the access shape, not only the clock, and does so by running
+`EXPLAIN QUERY PLAN` over the **exported statement constants** the production
+code prepares (`limits_evidence::MATCHING_USAGE_SQL`,
+`limits_evidence::STORED_READINGS_SQL`, `queries::DISPLAYED_WINDOWS_SQL`). An
+earlier version EXPLAINed a copy typed into the test, which reported the index it
+expected while `account_id` had been deleted from the real clause. EXPLAIN a
+constant the code uses, never a copy of it.
+
 For a local, read-only check against an existing Ledger, provide its path:
 
 ```bash
@@ -192,3 +215,88 @@ launch. `Overview.test.tsx` pins the fan-out at exactly two window Summaries
 per boot so a third pass cannot creep in unmeasured; the committed `npm run
 perf` budgets are unaffected because the benchmark measures the queries, not
 the orchestration.
+
+## Validated result — Limits estimate read (2026-08-14)
+
+Measured on Apple Silicon macOS in a release build. Both columns come from this
+same new harness (`npm run perf:limits`), one run with the per-interval Record
+filter restored and one with it removed, so the comparison is same-machine,
+same-dataset, same-command as the Baseline protocol requires.
+
+The fixture holds 201,300 Limit Readings (about 100x today's real table), a
+121,170-record Ledger of which 21,170 are selectable by the evidence read, and
+twelve completed epochs per Series.
+
+| Workload | Before | After | Improvement |
+| --- | ---: | ---: | ---: |
+| Page open | 960.1 ms | 46.5 ms | 95% lower, 20.6x faster |
+| Withheld page, incl. Stale reconstruction | 509.8 ms | 46.0 ms | 91% lower |
+| Derivation stage alone | 453.5 ms | 9.4 ms | 98% lower |
+
+Two separate causes, found by measuring the stages rather than the page.
+
+Every figure is the first measurement of its path in the process. The stage
+breakdown runs last, deliberately: it reads the same rows, so measuring it first
+would leave the page-open number warm and the Baseline protocol asks for a cold
+user-facing load.
+
+Stage breakdown after both fixes, of a 46.5 ms page open: the in-horizon Readings
+15.5 ms (20,960 rows of 201,300), the Usage seek 6.9 ms (21,170 Records), the
+derivation 9.4 ms, the displayed-window statement 11.6 ms. That accounts for 43.4
+of the 46.5 ms; the rest is the readiness evaluation across ten windows and the
+conversion onto the wire.
+
+### Cause one: a scan above the SQL
+
+Not SQL. Every statement already sought what it could — the
+Usage side reports `SEARCH events USING INDEX idx_events_evidence (source=? AND
+account_id=? AND timestamp>? AND timestamp<?)`. The pass *over* those results
+filtered the whole selected Record set once per candidate interval, so cost grew
+with the product of intervals and Records rather than with either. Grouping the
+Records by Source and account once and seeking each interval's `(t0, t1]` slice by
+binary search removes it. The answer was identical before and after; only the time
+changed.
+
+### Cause two: sorting a Source's whole history to keep one row
+
+The plan pill's statement — `SELECT plan … WHERE source = ?1 AND plan IS NOT NULL
+ORDER BY observed_at DESC LIMIT 1` — reports `SEARCH limit_readings USING INDEX
+… (source=?) | USE TEMP B-TREE FOR ORDER BY`. It seeks the Source and then sorts
+every row of it to keep one, once per card, and that sort grows with the table for
+as long as the app runs. At 201,300 Readings it cost **23.6 ms of a 71 ms page**,
+the largest single stage — larger than the derivation and the displayed-window
+join combined.
+
+The page now takes the label from the Readings it has already read. They are the
+newest ones there are, so the newest of them naming a plan is the newest naming a
+plan; the statement survives only as the fallback for a Source whose whole recent
+history is silent about its plan, which is the case it was written for. No
+migration, no index, no semantic change.
+
+### Measured observations that are not shortfalls
+
+Recorded so nobody optimizes them blind:
+
+- `stored_readings` reports `SCAN limit_readings USING INDEX
+  sqlite_autoindex_limit_readings_1` — no seek, because `observed_at` is the
+  fourth column of the primary key, and not covering either, because the
+  statement selects fifteen columns. 15.0 ms at 201,300 rows. An index would be a
+  migration; the measurement says do not. The gate pins this plan, so adding one
+  fails and forces these numbers to be taken again.
+- `DISPLAYED_WINDOWS_SQL` has no time bound at all by design — which epoch is
+  newest is a fact about the whole table — so it aggregates all of it:
+  `CO-ROUTINE e | SCAN limit_readings USING COVERING INDEX | SCAN e | SEARCH r …
+  | USE TEMP B-TREE FOR GROUP BY | USE TEMP B-TREE FOR ORDER BY`, 11.8 ms at
+  201,300 rows. It is the one statement whose cost grows without bound as the
+  table does.
+- The read takes one horizon from the longest window on the page, so a weekly
+  window drags 84 days of session Readings through a derivation whose answer
+  cannot depend on more than 14 — most of those 20,960 rows. Per-Series horizons
+  would cut the derivation input about fivefold. Worth doing only if this gate
+  starts failing.
+
+Stale reconstruction was measured rather than argued about: a withheld page, where
+every Series has lost its recent candidates and `aged_out_core` replays the policy
+at each completed epoch's own clock, costs 68.7 ms — no more than a Ready page. It
+does not page backwards from the database; it walks the same bounded in-memory
+window newest-first and stops at the first epoch that proves Ready.
