@@ -921,6 +921,12 @@ pub struct EstimateEpochSummary {
     pub positive_movements: usize,
     /// Stable-core membership — the count the row reports, not every candidate.
     pub in_core: bool,
+    // The contract also names a per-summary `reasonCodes`, which is not here:
+    // refusals are tallied per Limit rather than per epoch, so an epoch cannot
+    // yet say why it was passed over. Giving each one its own would be a change
+    // to the estimator, not to this mapping. The window-level `rejections`
+    // carries every reason meanwhile, and the diagnostic path can attribute
+    // them.
 }
 
 /// One reason, and how often it applied.

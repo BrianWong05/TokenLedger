@@ -567,17 +567,6 @@ pub fn matching_usage(
     Ok(out)
 }
 
-/// The whole derivation in one consistent read: what the Ledger and the stored
-/// Readings prove right now, and what they refused.
-pub fn evidence(
-    conn: &Connection,
-    since: i64,
-) -> rusqlite::Result<Result<Evidence, NonFinitePercentage>> {
-    let readings = stored_readings(conn, since)?;
-    let usage = matching_usage(conn, &readings)?;
-    Ok(derive(&readings, &usage))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,7 +1065,10 @@ mod tests {
         )
         .unwrap();
 
-        let evidence = evidence(&conn, T0 - 3_600).unwrap().unwrap();
+        // The three steps the Limits query itself composes, in its order.
+        let readings = stored_readings(&conn, T0 - 3_600).unwrap();
+        let usage = matching_usage(&conn, &readings).unwrap();
+        let evidence = derive(&readings, &usage).unwrap();
         // Canonical tokens: 100 + 20 + 5 + 3 + 2, with reasoning left out
         // because it classifies tokens already counted.
         assert_eq!(
