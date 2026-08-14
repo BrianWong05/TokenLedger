@@ -238,6 +238,13 @@ const BULK_RECORDS: usize = 20_000;
 // Records. Tight enough that the per-interval Record scan #167 removed (963 ms on
 // this same fixture) cannot come back unnoticed.
 const LIMITS_BUDGET: Duration = Duration::from_millis(150);
+// The withheld page is different since #186: its five-hour windows are genuinely
+// Gathering — no provable core anywhere in their history — and proving that now
+// requires paging every stored Reading backwards to exhaustion, as the
+// specification demands ("Stop at the first Ready proof or when history is
+// exhausted"). Measured 1,447 ms over 202,600 Readings; the walk is linear in
+// the table, so this budget is about the whole table's size, not the tail's.
+const EXHAUSTION_BUDGET: Duration = Duration::from_millis(3_000);
 
 /// Readings that form eligible evidence, in the two shapes production actually
 /// writes (#183): proven `live` observations — the Companion's, the only shape
@@ -492,13 +499,16 @@ fn performance_standard_limits_estimate() {
         on_timer.as_secs_f64() * 1e3,
     );
 
-    // ── 4. the withheld path, and with it Stale reconstruction ──
+    // ── 4. the withheld path: Stale reconstruction and Gathering exhaustion ──
     //
     // Withdrawing the newest epochs' coverage drops each Series below three
     // recent candidates, which is the only branch that reaches `aged_out_core` —
     // one full estimator replay per completed epoch, newest-first, stopping at
-    // the first that proves Ready. It is the super-linear path in this read, and
-    // a Ready page never enters it.
+    // the first that proves Ready. The weekly windows find their proof in the
+    // bounded read and reconstruct Stale; the five-hour ones have no provable
+    // core anywhere (their old epochs carry no Usage), so they page the whole
+    // table backwards to exhaustion and stay Gathering — both spec-mandated
+    // shapes, and a Ready page enters neither.
     // 42 days is the weekly window's own recency horizon, so this empties the
     // candidate set of both Series rather than only the short one's — the weekly
     // Series keeps twelve completed epochs inside that horizon and stays Ready if
@@ -587,17 +597,19 @@ fn performance_standard_limits_estimate() {
         t_plan_label.as_secs_f64() * 1e3,
     );
 
-    for (name, elapsed) in [
-        ("page open", page_open),
-        ("after scan", after_scan),
-        ("on timer", on_timer),
-        ("withheld", withheld),
+    for (name, elapsed, budget) in [
+        ("page open", page_open, LIMITS_BUDGET),
+        ("after scan", after_scan, LIMITS_BUDGET),
+        ("on timer", on_timer, LIMITS_BUDGET),
+        // The one path allowed to cost more: a Gathering window pages all of
+        // history to prove nothing older would change its answer (#186).
+        ("withheld", withheld, EXHAUSTION_BUDGET),
     ] {
         assert!(
-            elapsed <= LIMITS_BUDGET,
+            elapsed <= budget,
             "{name} took {:.1} ms with {total} Readings; budget is {} ms",
             elapsed.as_secs_f64() * 1e3,
-            LIMITS_BUDGET.as_millis(),
+            budget.as_millis(),
         );
     }
 

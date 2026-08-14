@@ -36,7 +36,7 @@ npm run perf:limits
 | Limits page open | ≤ 150 ms | Paid on every visit to the tab |
 | Reevaluation after a scan writes Readings | ≤ 150 ms | Paid after every ordinary scan while the page is open |
 | Reevaluation on the `nextEvaluationAt` timer | ≤ 150 ms | Paid whenever time alone can change the answer |
-| A withheld page, reaching Stale reconstruction | ≤ 150 ms | The one super-linear path: one estimator replay per completed epoch |
+| A withheld page: Stale reconstruction plus Gathering's exhaustive walk | ≤ 3,000 ms | Stale replays the policy per completed epoch; a Gathering window then pages ALL stored history backwards to prove nothing older would change its answer (#186) |
 
 It also asserts the access shape, not only the clock, and does so by running
 `EXPLAIN QUERY PLAN` over the **exported statement constants** the production
@@ -295,8 +295,12 @@ Recorded so nobody optimizes them blind:
   would cut the derivation input about fivefold. Worth doing only if this gate
   starts failing.
 
-Stale reconstruction was measured rather than argued about: a withheld page, where
-every Series has lost its recent candidates and `aged_out_core` replays the policy
-at each completed epoch's own clock, costs 68.7 ms — no more than a Ready page. It
-does not page backwards from the database; it walks the same bounded in-memory
-window newest-first and stops at the first epoch that proves Ready.
+Stale reconstruction was measured rather than argued about: a withheld page,
+where every Series has lost its recent candidates and `aged_out_core` replays
+the policy at each completed epoch's own clock, cost 68.7 ms — no more than a
+Ready page — while the replay walked only the bounded two-horizon read. Since
+#186 a window whose bounded read proves nothing (Gathering) additionally pages
+the whole `limit_readings` table backwards until it finds a Ready proof or
+exhausts history, as the specification requires, and the same withheld fixture
+now costs 1,447 ms at 202,600 Readings: linear in the table, paid only by a
+page that is about to answer Gathering or deep Stale, and never by a Ready one.
