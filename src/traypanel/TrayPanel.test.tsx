@@ -2,7 +2,7 @@
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import TrayPanel from './TrayPanel';
 import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
@@ -11,6 +11,17 @@ import type { BreakdownRow, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
+
+// The tray's "I just showed the panel" event is Tauri glue, so jsdom never
+// delivers it; this stands in for the IPC and hands the callbacks back so a
+// test can fire them. `listen` is all anything here imports from the module.
+const { panelShown } = vi.hoisted(() => ({ panelShown: new Set<() => void>() }));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (name: string, cb: () => void) => {
+    if (name === 'panel-shown') panelShown.add(cb);
+    return Promise.resolve(() => panelShown.delete(cb));
+  },
+}));
 
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
@@ -76,10 +87,11 @@ describe('TrayPanel', () => {
 
     // Header: big cost + tokens/req sub. Both summary calls hit the ledger
     // (today + yesterday-so-far); the fake serves the same canned summary,
-    // so the pace delta computes to +0.0% and stays shown.
+    // so the pace delta computes to +0.0% and stays shown. Twice over, because
+    // an open paints from the Ledger and then re-reads behind its own scan.
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
     expect(container.querySelector('.tp-sub')?.textContent).toBe('3.4M tok · 1,912 req');
-    expect(ledger.calls.summary.length).toBe(2);
+    expect(ledger.calls.summary.length).toBe(4);
 
     // Source rows from breakdown('tool'), cost desc, columns split.
     const rows = Array.from(container.querySelectorAll('.tp-sources .tp-row')).map((r) => [
@@ -105,8 +117,9 @@ describe('TrayPanel', () => {
   });
 
   // Unreadable Artifacts (ADR-0017): the panel's token figure is a floor when
-  // one could hold usage in the selected window — the same ≥ the bar title
-  // and the Overview carry, read from the last scan without rescanning.
+  // one could hold usage in the selected window — the same ≥ the bar title and
+  // the Overview carry, read from the persisted per-scan state (see api.ts), so
+  // it is honest from launch rather than only after a scan has run.
   it('marks the token figure ≥ when an Unreadable Artifact could touch the window', async () => {
     const ledger = makeFakeLedger({
       summary,
@@ -181,10 +194,14 @@ describe('TrayPanel', () => {
       ['Scanned', '2 min ago'],
     ]);
 
-    // The extra reads: Models, Projects, the period's series, the Scan time.
-    expect(ledger.calls.breakdown.map((c) => c[0])).toEqual(['tool', 'model', 'project']);
+    // The extra reads: Models, Projects, the period's series, the Scan time —
+    // each twice over, because an open paints from the Ledger and then
+    // re-reads behind its own scan.
+    expect(ledger.calls.breakdown.map((c) => c[0])).toEqual([
+      'tool', 'model', 'project', 'tool', 'model', 'project',
+    ]);
     expect(ledger.calls.series[0]?.[1]).toBe('hour'); // Today buckets hourly
-    expect(ledger.calls.lastScan.length).toBe(1);
+    expect(ledger.calls.lastScan.length).toBe(2);
   });
 
   it('draws the sparkline for the selected period and rebuckets on a switch', async () => {
@@ -329,6 +346,88 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-spark')).toBeNull();
   });
 
+  // The panel is created on demand and destroyed on dismissal (ADR-0007), so
+  // its mount is an open — and an open rescans, or the figures stay as old as
+  // the last scan and Rescan is the only way to current ones. Holding the scan
+  // pins the other half: the paint does not wait on it.
+  it('rescans on open, without holding the paint behind the scan', async () => {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    ledger.hold('scan');
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />);
+    });
+    await settle();
+
+    // Painted from what the Ledger already held, with the scan still in flight
+    // — and the figures pulse to say so.
+    expect(ledger.calls.scan.length).toBe(1);
+    expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
+    expect(container.querySelector('.tp-skel')).toBeNull();
+    expect(ledger.calls.summary.length).toBe(2);
+    expect(container.querySelector('.tp-figures.tp-pulse')).not.toBeNull();
+
+    // The scan lands: re-read, so anything it added shows without a press.
+    await act(async () => ledger.resolveHeld('scan', 0));
+    await settle();
+
+    expect(ledger.calls.summary.length).toBe(4);
+    expect(container.querySelector('.tp-pulse')).toBeNull();
+  });
+
+  // A scan that fails must not take the panel with it: the figures still land,
+  // and the gate still releases — a stranded one would leave Rescan disabled
+  // for the life of the window and swallow every later open.
+  it('survives a failed scan — still paints, and Rescan still works after', async () => {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    ledger.failNext('scan', new Error('scan blew up'));
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />);
+    });
+    await settle();
+
+    expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
+    const rescanBtn = Array.from(container.querySelectorAll('.tp-action')).find((b) =>
+      b.textContent?.startsWith('Rescan'),
+    ) as HTMLButtonElement;
+    expect(rescanBtn.disabled).toBe(false);
+
+    await act(async () => rescanBtn.click());
+    await settle();
+    expect(ledger.calls.scan.length).toBe(2); // the gate let a second one through
+  });
+
+  // A window the tray reshows instead of rebuilding gets no mount, so the
+  // scan-on-open has to hang off panel-shown too.
+  it('rescans again when the tray reshows an existing panel', async () => {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />);
+    });
+    await settle();
+
+    const scansBefore = ledger.calls.scan.length;
+    expect(panelShown.size).toBe(1); // the panel is listening at all
+    await act(async () => {
+      for (const cb of panelShown) cb();
+    });
+    await settle();
+
+    expect(ledger.calls.scan.length).toBe(scansBefore + 1);
+  });
+
   it('Rescan runs the scan through the ledger port and refetches', async () => {
     const ledger = makeFakeLedger({ summary, modelRows: toolRows });
     const settings = makeFakeSettings();
@@ -345,10 +444,11 @@ describe('TrayPanel', () => {
       b.textContent?.startsWith('Rescan'),
     ) as HTMLButtonElement;
     const summariesBefore = ledger.calls.summary.length;
+    const scansBefore = ledger.calls.scan.length; // the open scanned already
     await act(async () => rescan.click());
     await settle();
 
-    expect(ledger.calls.scan.length).toBe(1);
+    expect(ledger.calls.scan.length).toBe(scansBefore + 1);
     expect(ledger.calls.summary.length).toBe(summariesBefore + 2); // refetched
   });
 
@@ -364,7 +464,10 @@ describe('TrayPanel', () => {
     });
     await settle();
 
+    // Hold only from here, so the open's own scan has already landed and the
+    // held one is the button's.
     ledger.hold('scan');
+    const scansBefore = ledger.calls.scan.length;
     const rescan = Array.from(container.querySelectorAll('.tp-action')).find((b) =>
       b.textContent?.startsWith('Rescan'),
     ) as HTMLButtonElement;
@@ -377,7 +480,7 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-figures.tp-pulse')).not.toBeNull();
     expect(rescan.disabled).toBe(true);
     await act(async () => rescan.click());
-    expect(ledger.calls.scan.length).toBe(1);
+    expect(ledger.calls.scan.length).toBe(scansBefore + 1);
 
     await act(async () => ledger.resolveHeld('scan', 0));
     await settle();
