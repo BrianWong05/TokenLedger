@@ -97,6 +97,7 @@ fn run() -> Result<String, String> {
         // second regime, so naming one would be inventing it — and if one ever
         // appears, this identity changes deliberately and a new Series starts.
         metering_regime: Some("claude:usage_limits".to_string()),
+        account_id: account_id(&body),
         usage_resets_available: None,
         windows: windows(&body),
     };
@@ -334,6 +335,17 @@ fn source_wide(kind_or_key: &str) -> Option<&'static SourceWide> {
 /// mapping to the raw Models the Ledger logs. Both stay unknown and the window's
 /// estimate stays Blocked, which is the honest answer until the vendor names a
 /// raw Model.
+/// The response's own `account_uuid`: the vendor's stable opaque identity for
+/// the account it just answered for. A UUID, never an email or anything
+/// reversible. Absent from the payload means absent in the export — a Companion
+/// must never say "the same account as last time".
+fn account_id(body: &Value) -> Option<String> {
+    body.get("account_uuid")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.trim().is_empty())
+        .map(str::to_string)
+}
+
 fn window_evidence(kind_or_key: &str) -> WindowEvidence {
     let identity = source_wide(kind_or_key);
     WindowEvidence {
@@ -602,6 +614,12 @@ mod tests {
                 "account_uuid":"not-a-window"}"#,
         )
         .unwrap();
+
+        // The same key the window walk must skip is the account the export
+        // carries: one field, two consumers, neither confusable with the other.
+        assert_eq!(account_id(&body).as_deref(), Some("not-a-window"));
+        assert_eq!(account_id(&serde_json::json!({"account_uuid": "  "})), None);
+        assert_eq!(account_id(&serde_json::json!({})), None);
 
         let found = windows(&body);
         assert_eq!(

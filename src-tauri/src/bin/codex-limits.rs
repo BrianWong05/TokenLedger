@@ -76,10 +76,15 @@ fn run() -> Result<String, String> {
             .get("plan_type")
             .and_then(|p| p.as_str())
             .map(str::to_string),
-        // Codex proves its evidence facts from the rollouts the scan reads.
-        // Doing it here too waits for the ticket that gives this export an
-        // account identity, since that is what a live Reading still lacks.
-        metering_regime: None,
+        // One meter answers this endpoint — the same rate_limits the rollouts
+        // snapshot — so the regime is the constant the log adapter documents,
+        // spelled identically or a Series would split on the difference.
+        metering_regime: Some("codex:rate_limits".to_string()),
+        // The credential document's own opaque id, already sent as the
+        // `chatgpt-account-id` header on this very fetch: the answer is for
+        // this account, and saying so is what lets a Reading anchor evidence.
+        // Never the token, never anything reversible.
+        account_id: credential.account_id.clone(),
         usage_resets_available: usage_resets_available(&body),
         windows,
     };
@@ -220,14 +225,23 @@ fn window(object: &serde_json::Map<String, Value>, fetched_at: i64) -> Option<Wi
                 .find_map(|k| object.get(*k).and_then(|v| v.as_i64()))
                 .map(|rel| fetched_at + rel)
         })?;
+    let key = window_key(minutes);
     Some(WindowExport {
-        key: window_key(minutes),
+        // The documented one-to-one mapping (the same grammar the log adapter
+        // uses): every window collected here is the main `rate_limit` block's —
+        // `collect_windows` never descends into `additional_rate_limits`,
+        // because an array is not an object — and that block is the codex
+        // entitlement itself, the one whose snapshots the rollouts carry with
+        // `limit_id == "codex"`. The CLI's snapshots and this fetch describe
+        // one meter, so the identity is shared, not guessed.
+        evidence: WindowEvidence {
+            limit_id: Some(format!("codex:{key}")),
+            model_scope: Some("all".to_string()),
+        },
+        key,
         window_minutes: Some(minutes),
         used_pct,
         resets_at,
-        // Codex's live path proves its facts in the ticket that gives the
-        // export an account: from the logs side they are already proven.
-        evidence: WindowEvidence::default(),
     })
 }
 
@@ -285,6 +299,11 @@ mod tests {
         assert_eq!(found.len(), 2, "the main family's two windows and nothing else");
         assert_eq!(found[0].key, "w300", "18000s snaps to the same key the log ingest uses");
         assert_eq!(found[0].used_pct, 42.0);
+        // The same identity grammar the log adapter writes, or a live Reading
+        // and a logs Reading of one window would start two Series.
+        assert_eq!(found[0].evidence.limit_id.as_deref(), Some("codex:w300"));
+        assert_eq!(found[1].evidence.limit_id.as_deref(), Some("codex:w10080"));
+        assert_eq!(found[0].evidence.model_scope.as_deref(), Some("all"));
         assert_eq!(found[0].resets_at, 1_786_517_999, "absolute reset taken as-is");
         assert_eq!(found[1].key, "w10080");
         assert_eq!(

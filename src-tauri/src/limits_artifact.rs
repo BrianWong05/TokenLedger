@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::adapters::unchanged;
@@ -106,10 +106,12 @@ pub fn grok_credit_window(config: &serde_json::Value) -> Option<WindowExport> {
 /// Bump when the shape changes. An Artifact declaring a schema the reader does
 /// not know is a malformed instance of a supported shape (ADR-0015): it warns
 /// and is not read, rather than being guessed at.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;
 
 fn supported_schema(schema: u32) -> bool {
-    schema == 1 || schema == 2 || schema == SCHEMA
+    // An explicit accept-list, never a range: a range pre-accepts every future
+    // bump without a decision. 4 adds `account_id`; 3 added window evidence.
+    schema == 1 || schema == 2 || schema == 3 || schema == SCHEMA
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +130,13 @@ pub struct LimitsExport {
     /// on the export rather than on each of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metering_regime: Option<String>,
+    /// The vendor's own stable opaque account identity, as the Companion read it
+    /// beside the credential it fetched with — Codex's `tokens.account_id`,
+    /// Claude's `account_uuid`. Never an email, token, or anything reversible;
+    /// one fetch answers for one account, so it sits on the export. Absent means
+    /// the Companion could not prove it, never "the same account as last time".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
     /// Codex Usage Resets currently available. This is source-level current
     /// state, not a rolling-window Reading and not history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,10 +225,13 @@ pub fn readings(export: &LimitsExport) -> Vec<LimitReading> {
                 limit_id: w.evidence.limit_id.clone(),
                 metering_regime: export.metering_regime.clone(),
                 model_scope: w.evidence.model_scope.as_deref().and_then(ModelScope::parse),
-                // Account identity and completeness coverage are not a
-                // Companion's to prove: an export says what the vendor answered
-                // now, not who it answered for over the stretch a Record fell in.
-                account_id: None,
+                // The Companion's own fact: it read this identity beside the
+                // credential it fetched with, so every window in the export is
+                // an observation of that account at `fetched_at`.
+                account_id: export.account_id.clone(),
+                // Coverage is not the Companion's to prove — it is a fact about
+                // the scan's own history with this Source, so `ingest` computes
+                // it where that history lives.
                 covered_from: None,
                 // One fetch reports each window once, so `observed_at` already
                 // orders these Readings and no separate order is needed —
@@ -344,9 +356,62 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
         ));
     }
 
-    db::insert_limit_readings(conn, &readings(&export)).map_err(|e| e.to_string())?;
+    let mut rows = readings(&export);
+    let floor = coverage_floor(conn, &export).map_err(|e| e.to_string())?;
+    for row in &mut rows {
+        row.provenance.covered_from = floor;
+    }
+    db::insert_limit_readings(conn, &rows).map_err(|e| e.to_string())?;
     set_file_state(conn, &path.to_string_lossy(), state).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// The earliest instant these Readings may claim local capture covers, or `None`
+/// where nothing can be claimed at all.
+///
+/// Two components, combined by taking the later. The account may only be claimed
+/// forward — from the first observation that named it, never backfilled onto
+/// history the app merely holds files for. And coverage is proven only past the
+/// newest unreadable Artifact, whose content could reach anything up to its own
+/// mtime — the same content-is-never-newer rule ADR-0017's floor marker rests
+/// on. An unreadable whose mtime is unknown bounds nothing, so the pass proves
+/// nothing: the new Readings claim nothing, and stored claims are left alone,
+/// which is the documented rule for a pass that proves nothing.
+///
+/// Withdrawal of stored claims happens at the discovery site
+/// (`db::record_unreadable`), not here — an unchanged export file skips ingest
+/// entirely, and a withdrawal that waited for the vendor to answer differently
+/// would not be one.
+fn coverage_floor(conn: &Connection, export: &LimitsExport) -> rusqlite::Result<Option<i64>> {
+    let Some(account_id) = &export.account_id else {
+        // Coverage is a fact about a Source *and account*; with no account there
+        // is nothing it could make eligible.
+        return Ok(None);
+    };
+
+    let unreadable: Option<(i64, Option<i64>)> = conn
+        .query_row(
+            "SELECT count, max_mtime FROM unreadable_artifacts WHERE source = ?1",
+            [&export.source],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let unreadable_floor = match unreadable {
+        Some((count, Some(max_mtime))) if count > 0 => Some(max_mtime + 1),
+        Some((count, None)) if count > 0 => return Ok(None),
+        _ => None,
+    };
+
+    let first_observed: Option<i64> = conn
+        .query_row(
+            "SELECT MIN(observed_at) FROM limit_readings \
+             WHERE source = ?1 AND account_id = ?2",
+            rusqlite::params![export.source, account_id],
+            |r| r.get(0),
+        )?;
+    let claimed_from = first_observed.unwrap_or(export.fetched_at);
+
+    Ok(Some(unreadable_floor.map_or(claimed_from, |f| f.max(claimed_from))))
 }
 
 #[cfg(test)]
@@ -489,6 +554,7 @@ mod tests {
             fetched_at: 1_786_492_800,
             plan: Some("Max 5x".to_string()),
             metering_regime: Some("claude:usage_limits".to_string()),
+            account_id: None,
             usage_resets_available: None,
             windows: vec![
                 WindowExport {
@@ -548,6 +614,7 @@ mod tests {
             fetched_at: 1_786_492_800,
             plan: None,
             metering_regime: None,
+            account_id: None,
             usage_resets_available: None,
             windows: vec![WindowExport {
                 key: "w10080".to_string(),
@@ -587,6 +654,7 @@ mod tests {
             fetched_at: 1_786_492_800,
             plan: Some("Team 5x".to_string()),
             metering_regime: Some("claude:usage_limits".to_string()),
+            account_id: None,
             usage_resets_available: Some(1),
             windows: vec![WindowExport {
                 key: "five_hour".to_string(),
@@ -611,6 +679,147 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
             .collect();
         assert!(leftovers.is_empty(), "the staging file is renamed, not left behind");
+    }
+
+    /// Ingest helper: one account-bearing export whose only window resets well
+    /// after the fetch, written and ingested. The file's mtime is set to the
+    /// fetch instant so the file-state gate sees every pass as a new file —
+    /// consecutive writes inside one test land in the same wall-clock second.
+    fn ingest_at(conn: &mut Connection, dir: &Path, fetched_at: i64, account: &str) {
+        let export = LimitsExport {
+            schema: SCHEMA,
+            source: "codex".to_string(),
+            fetched_at,
+            plan: Some("plus".to_string()),
+            metering_regime: Some("codex:rate_limits".to_string()),
+            account_id: Some(account.to_string()),
+            usage_resets_available: None,
+            windows: vec![WindowExport {
+                key: "w10080".to_string(),
+                window_minutes: Some(10_080),
+                used_pct: 40.0,
+                resets_at: fetched_at + 500_000,
+                evidence: WindowEvidence {
+                    limit_id: Some("codex:w10080".to_string()),
+                    model_scope: ModelScope::All.stored(),
+                },
+            }],
+        };
+        write(dir, &export).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path_in(dir, "codex"))
+            .unwrap()
+            .set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(fetched_at as u64),
+            )
+            .unwrap();
+        ingest(conn, dir, "codex").unwrap();
+    }
+
+    fn coverage_of(conn: &Connection, observed_at: i64) -> Option<i64> {
+        conn.query_row(
+            "SELECT covered_from FROM limit_readings WHERE observed_at = ?1",
+            [observed_at],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn coverage_is_claimed_forward_from_the_first_observation_of_the_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        // The first pass that names the account starts the clock at itself:
+        // history the app merely holds files for is never claimed.
+        ingest_at(&mut conn, &dir, 1_786_492_800, "acct-a");
+        assert_eq!(coverage_of(&conn, 1_786_492_800), Some(1_786_492_800));
+
+        // A later pass claims from that same first observation, not from its
+        // own fetch — the claim grows at the front, never backfills at the back.
+        ingest_at(&mut conn, &dir, 1_786_496_400, "acct-a");
+        assert_eq!(coverage_of(&conn, 1_786_496_400), Some(1_786_492_800));
+
+        // A different account starts its own clock; acct-a's history is not its.
+        ingest_at(&mut conn, &dir, 1_786_500_000, "acct-b");
+        assert_eq!(coverage_of(&conn, 1_786_500_000), Some(1_786_500_000));
+    }
+
+    #[test]
+    fn an_export_with_no_account_claims_no_coverage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        let mut export = serde_json::from_str::<LimitsExport>(EXPORT).unwrap();
+        export.fetched_at = 1_786_492_800;
+        write(&dir, &export).unwrap();
+        ingest(&mut conn, &dir, "claude").unwrap();
+
+        // Coverage is a fact about a Source and account; with neither proven
+        // there is nothing it could make eligible.
+        assert_eq!(coverage_of(&conn, 1_786_492_800), None);
+    }
+
+    #[test]
+    fn an_unreadable_artifact_bounds_every_claim_after_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        // An unreadable file could hold usage as late as its own mtime, so a
+        // claim may only start past it — however long the account has been
+        // observed.
+        ingest_at(&mut conn, &dir, 1_786_492_800, "acct-a");
+        db::record_unreadable(&conn, &[unreadable("codex", 1, Some(1_786_496_000))]).unwrap();
+        ingest_at(&mut conn, &dir, 1_786_500_000, "acct-a");
+        assert_eq!(coverage_of(&conn, 1_786_500_000), Some(1_786_496_001));
+
+        // One whose mtime is unknown bounds nothing: the pass proves nothing,
+        // and a Reading that proves nothing claims nothing.
+        db::record_unreadable(&conn, &[unreadable("codex", 1, None)]).unwrap();
+        ingest_at(&mut conn, &dir, 1_786_503_600, "acct-a");
+        assert_eq!(coverage_of(&conn, 1_786_503_600), None);
+    }
+
+    #[test]
+    fn a_discovery_withdraws_stored_claims_without_waiting_for_ingest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        // Two stored claims, then the scan finds an unreadable Artifact newer
+        // than one of them. The export file has not changed — no ingest runs —
+        // and the affected claim must still be withdrawn (spec: corrections
+        // take effect on the next evaluation).
+        ingest_at(&mut conn, &dir, 1_786_492_800, "acct-a");
+        ingest_at(&mut conn, &dir, 1_786_496_400, "acct-a");
+        db::record_unreadable(&conn, &[unreadable("codex", 1, Some(1_786_495_000))]).unwrap();
+
+        for observed_at in [1_786_492_800, 1_786_496_400] {
+            assert_eq!(coverage_of(&conn, observed_at), Some(1_786_495_001));
+        }
+
+        // Idempotent, and an older discovery never lowers a raised claim.
+        db::record_unreadable(&conn, &[unreadable("codex", 1, Some(1_786_400_000))]).unwrap();
+        assert_eq!(coverage_of(&conn, 1_786_492_800), Some(1_786_495_001));
+    }
+
+    fn unreadable(
+        source: &str,
+        count: u64,
+        max_mtime: Option<i64>,
+    ) -> crate::types::SourceStatus {
+        crate::types::SourceStatus {
+            source: source.to_string(),
+            events_inserted: 0,
+            lines_skipped: 0,
+            artifacts_unreadable: count,
+            unreadable_max_mtime: max_mtime,
+            error: None,
+        }
     }
 
     #[test]

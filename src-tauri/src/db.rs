@@ -1321,8 +1321,26 @@ pub fn record_unreadable(
         "INSERT OR REPLACE INTO unreadable_artifacts (source, count, max_mtime) \
          VALUES (?1, ?2, ?3)",
     )?;
+    // The discovery is also the withdrawal (spec: completeness corrections take
+    // effect on the next evaluation). An unreadable Artifact could hold usage as
+    // late as its own mtime, so no stored Reading of that Source may go on
+    // claiming coverage from before it: every claim below the new floor is
+    // raised to it, here at the discovery site rather than at ingest, because an
+    // unchanged export file skips ingest entirely. Idempotent — the WHERE fires
+    // only on claims still below the floor — and an unreadable with no mtime
+    // bounds nothing, so it raises nothing (the pass proves nothing; new
+    // Readings' claims are its ingest-side counterpart's business).
+    let mut withdraw = conn.prepare(
+        "UPDATE limit_readings SET covered_from = ?2 \
+         WHERE source = ?1 AND covered_from IS NOT NULL AND covered_from < ?2",
+    )?;
     for s in statuses {
         stmt.execute(params![s.source, s.artifacts_unreadable as i64, s.unreadable_max_mtime])?;
+        if s.artifacts_unreadable > 0 {
+            if let Some(max_mtime) = s.unreadable_max_mtime {
+                withdraw.execute(params![s.source, max_mtime + 1])?;
+            }
+        }
     }
     Ok(())
 }

@@ -525,7 +525,8 @@ pub const MATCHING_USAGE_SQL: &str = "SELECT timestamp, model, \
                 input_tokens + output_tokens + cache_read_tokens \
                   + cache_write_5m_tokens + cache_write_1h_tokens \
          FROM events \
-         WHERE source = ?1 AND account_id = ?2 AND timestamp > ?3 AND timestamp <= ?4";
+         WHERE source = ?1 AND (account_id = ?2 OR account_id IS NULL) \
+           AND timestamp > ?3 AND timestamp <= ?4";
 
 pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<LimitReading>> {
     let mut stmt = conn.prepare(STORED_READINGS_SQL)?;
@@ -555,14 +556,21 @@ pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<Li
     rows.collect()
 }
 
-/// The Usage Records those Readings could ever be paired with: the ones naming
-/// an account, for each Source and account the Readings themselves prove, across
-/// the span they cover. One indexed range scan per Source and account, never one
-/// per candidate interval and never the whole Ledger.
+/// The Usage Records those Readings could ever be paired with, for each Source
+/// and account the Readings themselves prove, across the span they cover. One
+/// indexed range read per Source and account, never one per candidate interval
+/// and never the whole Ledger.
 ///
-/// A Record with no account identity is not selected at all — it cannot
-/// participate, and leaving it out here is the same answer as excluding it
-/// later, reached without carrying it.
+/// A Record carries no account of its own — no Artifact states one, so a stored
+/// account would be a conclusion dressed as a fact (ADR-0024). Its account is
+/// the span's: every span starts at a Reading that *named* the account, every
+/// interval inside it is bounded by two more such Readings, and the derivation
+/// walks the whole timeline, so a stretch across an identity change never forms
+/// an interval at all (#171's settled binding). The claim is only ever forward —
+/// a Record from before the first observation of the account precedes every
+/// span and is selected by nothing, which is what keeps legacy history out
+/// without a per-row mark. A Record that one day *does* carry a stored account
+/// participates only in its own account's span, never as anyone else's.
 pub fn matching_usage(
     conn: &Connection,
     readings: &[LimitReading],
@@ -1137,12 +1145,22 @@ mod tests {
                 event("codex:in", T0 + 100, Some("acct-a"), 100),
                 event("codex:before", T0 - 10, Some("acct-a"), 100),
                 event("codex:anon", T0 + 200, None, 100),
+                event("codex:other", T0 + 300, Some("acct-b"), 100),
             ],
         )
         .unwrap();
-        // Only the account-bearing Record can participate, so only it is read.
+        // The four Records spell out the binding (#171). A Record never names
+        // its own account — no Artifact states one — so the unmarked one INSIDE
+        // the span two acct-a Readings bound belongs to acct-a's interval. A
+        // stored mark, where one ever exists, is only ever a veto: acct-b's
+        // Record sits inside the same span and participates in nothing.
         conn.execute(
             "UPDATE events SET account_id = 'acct-a' WHERE dedup_key IN ('codex:in', 'codex:before')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE events SET account_id = 'acct-b' WHERE dedup_key = 'codex:other'",
             [],
         )
         .unwrap();
@@ -1151,11 +1169,14 @@ mod tests {
         let readings = stored_readings(&conn, T0 - 3_600).unwrap();
         let usage = matching_usage(&conn, &readings).unwrap();
         let evidence = derive(&readings, &usage).unwrap();
-        // Canonical tokens: 100 + 20 + 5 + 3 + 2, with reasoning left out
-        // because it classifies tokens already counted.
+        // Two participating Records of 130 canonical tokens each (100 + 20 +
+        // 5 + 3 + 2, reasoning left out because it classifies tokens already
+        // counted): the marked acct-a one and the unmarked one beside it.
+        // `codex:before` is out by the `(t0, t1]` boundary, `codex:other` by
+        // its contradicting mark.
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 50, tokens: 130, t0: T0, t1: T0 + 600 }],
+            vec![Interval { from_pct: 40, to_pct: 50, tokens: 260, t0: T0, t1: T0 + 600 }],
         );
     }
 
