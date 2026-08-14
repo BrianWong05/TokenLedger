@@ -257,8 +257,8 @@ describe('Overview presentation', () => {
       scan: {
         scannedAt: 1_782_907_202,
         sources: [
-          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
-          { source: 'pi', eventsInserted: 3, linesSkipped: 2, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+          { source: 'pi', eventsInserted: 3, linesSkipped: 2, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
         ],
       },
     });
@@ -569,8 +569,8 @@ describe('Overview presentation', () => {
     const scan: ScanStatus = {
       scannedAt: 0,
       sources: [
-        { source: 'claude', eventsInserted: 412, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
-        { source: 'codex', eventsInserted: 88, linesSkipped: 2, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        { source: 'claude', eventsInserted: 412, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        { source: 'codex', eventsInserted: 88, linesSkipped: 2, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
       ],
     };
     const { container: c } = await mount({
@@ -591,8 +591,8 @@ describe('Overview presentation', () => {
     const scan: ScanStatus = {
       scannedAt: 0,
       sources: [
-        { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
-        { source: 'claude', eventsInserted: 412, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
+        { source: 'claude', eventsInserted: 412, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
       ],
     };
     const { container: c } = await mount({
@@ -641,7 +641,7 @@ describe('Overview presentation', () => {
       scan: {
         scannedAt: 0,
         sources: [
-          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
+          { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
         ],
       },
       exportReport: 'exported 100 Session(s), 4466 generation(s)',
@@ -672,7 +672,7 @@ describe('Overview presentation', () => {
       scan: {
         scannedAt: 0,
         sources: [
-          { source: 'claude', eventsInserted: 412, linesSkipped: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+          { source: 'claude', eventsInserted: 412, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
         ],
       },
     });
@@ -687,7 +687,7 @@ describe('Overview presentation', () => {
       scannedAt: 0,
       sources: [
         // mtime far in the past; the day/week/month ranges all start later.
-        { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, artifactsUnreadable: 100, unreadableMaxMtime: 946_684_800, error: null },
+        { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 100, unreadableMaxMtime: 946_684_800, error: null },
       ],
     };
     const { container: c } = await mount({

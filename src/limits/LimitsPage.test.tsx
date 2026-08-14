@@ -33,12 +33,16 @@ const LIVE_SOURCES = ['claude', 'codex', 'copilot', 'grok', 'antigravity'];
 function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> } = {}): LimitsPort & {
   store: Record<string, string>;
   liveCalls: string[];
+  limitsChanged: () => void;
 } {
   const store = over.store ?? { [LIVE_ENABLED_KEY]: 'true' };
   const liveCalls: string[] = [];
+  const changedListeners: Array<() => void> = [];
   return {
     store,
     liveCalls,
+    // The backend's limits-changed event, hand-cranked.
+    limitsChanged: () => { for (const cb of [...changedListeners]) cb(); },
     list: over.list ?? (() => Promise.resolve([])),
     checkLive:
       over.checkLive ??
@@ -47,6 +51,15 @@ function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> }
         return Promise.resolve();
       }),
     scan: over.scan ?? (() => Promise.resolve(null)),
+    onLimitsChanged:
+      over.onLimitsChanged ??
+      ((cb) => {
+        changedListeners.push(cb);
+        return () => {
+          const at = changedListeners.indexOf(cb);
+          if (at >= 0) changedListeners.splice(at, 1);
+        };
+      }),
     read: (k) => store[k] ?? null,
     write: (k, v) => { store[k] = v; },
   };
@@ -896,6 +909,28 @@ const seen = (el: Element | null | undefined) => {
   for (const hidden of copy.querySelectorAll('.tl-sr-only')) hidden.remove();
   return copy.textContent;
 };
+
+describe('the scan trigger', () => {
+  it('reissues the stored query when a scan lands relevant Reading changes', async () => {
+    // The backend emits limits-changed only when a scan wrote or revised
+    // Readings (spec: "Evaluation timing"); the page's whole part is to
+    // re-read. No vendor is called: the fake's checkLive counter must not move.
+    let lists = 0;
+    const port = fakePort({
+      list: () => {
+        lists += 1;
+        return Promise.resolve([CODEX_WEEKLY]);
+      },
+    });
+    await mount(port);
+    const before = lists;
+    const checks = port.liveCalls.length; // page-open live checks, not the event's
+
+    await act(async () => port.limitsChanged());
+    expect(lists).toBe(before + 1);
+    expect(port.liveCalls.length).toBe(checks);
+  });
+});
 
 describe('the Ready evidence line', () => {
   it('sits under the bar with both approximate figures and the core epoch count', async () => {

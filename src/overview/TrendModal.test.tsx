@@ -369,7 +369,7 @@ describe('Usage-trend Enlarge', () => {
     const { container: c } = await mount({}, undefined, undefined, {
       scannedAt: 0,
       sources: [{
-        source: 'antigravity', eventsInserted: 0, linesSkipped: 0,
+        source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0,
         artifactsUnreadable: 100,
         unreadableMaxMtime: Math.floor(Date.now() / 1000),
         error: null,

@@ -1424,6 +1424,7 @@ mod tests {
             source: source.to_string(),
             events_inserted: 0,
             lines_skipped: 0,
+            limit_readings: 0,
             artifacts_unreadable: count,
             unreadable_max_mtime: mtime,
             error: None,

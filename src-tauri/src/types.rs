@@ -169,6 +169,11 @@ pub struct SourceSessionMeta {
 pub struct SourceScanResult {
     pub events_inserted: u64,
     pub lines_skipped: u64,
+    /// Limit Readings written or genuinely revised this scan — the "relevant
+    /// Reading facts changed" signal an evaluation triggers on (ADR-0024), as
+    /// `insert_limit_readings` returned it. Zero for a scan that re-read
+    /// everything and learned nothing.
+    pub limit_readings: u64,
     /// Unreadable Artifacts seen this scan (ADR-0017): present but permanently
     /// unparseable without violating ADR-0013, so counted — never warned — and
     /// the count marks token totals as floors.
@@ -188,6 +193,10 @@ pub struct SourceStatus {
     pub events_inserted: u64,
     #[ts(type = "number")]
     pub lines_skipped: u64,
+    /// Limit Readings this scan landed or revised — what tells an open Limits
+    /// page to reissue its query (spec: "Evaluation timing").
+    #[ts(type = "number")]
+    pub limit_readings: u64,
     #[ts(type = "number")]
     pub artifacts_unreadable: u64,
     #[ts(type = "number | null")]

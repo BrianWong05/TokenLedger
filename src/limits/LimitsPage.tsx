@@ -153,6 +153,12 @@ export default function LimitsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page-open only, by design
   }, []);
 
+  // A scan elsewhere — the resident cadence, the tray's Scan now — that landed
+  // relevant Reading changes re-issues the same stored read (spec: "Evaluation
+  // timing"). No vendor is called and the live floor is untouched: a scan is
+  // not a person asking.
+  useEffect(() => port.onLimitsChanged(reload), [port, reload]);
+
   const refresh = () => {
     // For a `logs` Source, Refresh is just an ordinary scan — and it shows as
     // one. Without this bracket the button gave no feedback at all inside the

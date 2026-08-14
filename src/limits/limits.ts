@@ -7,6 +7,7 @@
 // process — never the app — presents the credential. Its Readings land in the
 // durable series, so `list` is what renders them; it rejects with the Companion's
 // own failure line, so the page can tell "not signed in" from "could not check".
+import { listen } from '@tauri-apps/api/event';
 import { fetchLimits, checkLiveLimits, scan } from '../api';
 import type { SourceLimits } from '../types';
 
@@ -44,6 +45,12 @@ export interface LimitsPort {
   checkLive(source: string): Promise<void>;
   /** An ordinary scan — how a `logs` Source refreshes. */
   scan(): Promise<unknown>;
+  /**
+   * A scan somewhere else — the resident cadence, the tray's Scan now — landed
+   * relevant Reading changes; the page reissues the ordinary query (spec:
+   * "Evaluation timing"). Subscribe, returns unsubscribe.
+   */
+  onLimitsChanged(cb: () => void): () => void;
   /** Persisted page state. Swallows a storage that refuses to answer. */
   read(key: string): string | null;
   write(key: string, value: string): void;
@@ -53,6 +60,16 @@ export const tauriLimits: LimitsPort = {
   list: fetchLimits,
   checkLive: checkLiveLimits,
   scan,
+  onLimitsChanged(cb) {
+    // listen() is async; the unsubscribe resolves later, so teardown must await
+    // it. Swallow a rejected setup (e.g. no Tauri runtime under test) so it
+    // never surfaces as an unhandled rejection — same shape as pricing.ts.
+    const un = listen('limits-changed', () => cb());
+    un.catch(() => {});
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  },
   read(key) {
     try {
       return localStorage.getItem(key);

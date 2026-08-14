@@ -306,19 +306,20 @@ pub fn write(dir: &Path, export: &LimitsExport) -> std::io::Result<()> {
     std::fs::rename(&staging, &final_path)
 }
 
-/// Read one Source's Limits export out of `dir` and append its Readings.
-/// Absent file → nothing to do, and not an error: a Source whose Companion has
-/// never run is not a Source in trouble.
+/// Read one Source's Limits export out of `dir` and append its Readings,
+/// returning how many were written or genuinely revised — the change signal an
+/// evaluation triggers on. Absent file → nothing to do, and not an error: a
+/// Source whose Companion has never run is not a Source in trouble.
 ///
 /// Idempotent twice over — the file's own state gates the re-read, and the
 /// export carries its own `fetched_at`, so a second read of one export lands on
 /// the Reading already stored — and both the scan and the command that just ran
 /// the Companion can call this freely.
-pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), String> {
+pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<u64, String> {
     let path = path_in(dir, source);
     let raw = match std::fs::read_to_string(&path) {
         Ok(raw) => raw,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(0),
     };
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     let state = FileState {
@@ -332,7 +333,7 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
         byte_offset: 0,
     };
     if unchanged(conn, &path, &state) {
-        return Ok(());
+        return Ok(0);
     }
 
     let export: LimitsExport = match serde_json::from_str::<LimitsExport>(&raw) {
@@ -361,9 +362,9 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
     for row in &mut rows {
         row.provenance.covered_from = floor;
     }
-    db::insert_limit_readings(conn, &rows).map_err(|e| e.to_string())?;
+    let written = db::insert_limit_readings(conn, &rows).map_err(|e| e.to_string())?;
     set_file_state(conn, &path.to_string_lossy(), state).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(written)
 }
 
 /// The earliest instant these Readings may claim local capture covers, or `None`
@@ -464,7 +465,7 @@ mod tests {
         write_file(&dir, &file_name("claude"), EXPORT);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
 
-        assert_eq!(ingest(&mut conn, &dir, "claude"), Ok(()));
+        assert_eq!(ingest(&mut conn, &dir, "claude"), Ok(3), "three windows, three Readings");
         let rows: Vec<(String, Option<i64>, f64, i64, i64, String, Option<String>)> = {
             let mut stmt = conn
                 .prepare(
@@ -490,8 +491,9 @@ mod tests {
         assert_eq!(rows[1].0, "monthly_experiment");
         assert_eq!(rows[1].1, None);
 
-        // Re-reading is free, and a re-read that happens anyway inserts nothing.
-        assert_eq!(ingest(&mut conn, &dir, "claude"), Ok(()));
+        // Re-reading is free, and a re-read that happens anyway inserts nothing —
+        // and says so: a zero is what keeps the scan trigger quiet (#187).
+        assert_eq!(ingest(&mut conn, &dir, "claude"), Ok(0));
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
             .unwrap();
@@ -514,7 +516,7 @@ mod tests {
         );
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
 
-        assert_eq!(ingest(&mut conn, &dir, "antigravity"), Ok(()));
+        assert_eq!(ingest(&mut conn, &dir, "antigravity"), Ok(2));
         let rows: Vec<(String, f64, String)> = conn
             .prepare(
                 "SELECT window_key, used_pct, via FROM limit_readings \
@@ -850,6 +852,7 @@ mod tests {
             source: source.to_string(),
             events_inserted: 0,
             lines_skipped: 0,
+            limit_readings: 0,
             artifacts_unreadable: count,
             unreadable_max_mtime: max_mtime,
             error: None,
@@ -868,7 +871,7 @@ mod tests {
     fn a_source_whose_companion_never_ran_is_not_in_trouble() {
         let tmp = tempfile::tempdir().unwrap();
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        assert_eq!(ingest(&mut conn, &tmp.path().join("nothing-here"), "claude"), Ok(()));
+        assert_eq!(ingest(&mut conn, &tmp.path().join("nothing-here"), "claude"), Ok(0));
     }
 
     // grok_credit_window: the one mapper both Grok producers share. The log
