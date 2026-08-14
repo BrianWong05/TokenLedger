@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and PRDs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+Issues and PRDs are tracked in Jira project `TOKL`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

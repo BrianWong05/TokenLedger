@@ -1,9 +1,11 @@
 # Triage labels
 
 The engineering skills use five canonical workflow roles. Apply the matching
-GitHub label from this table.
+Jira label from this table (labels, not statuses — they are orthogonal to
+`TOKL`'s workflow, which runs Backlog → Selected for Development → In
+Progress → Done).
 
-| Role | GitHub label | Meaning |
+| Role | Jira label | Meaning |
 | --- | --- | --- |
 | `needs-triage` | `needs-triage` | A maintainer needs to evaluate the issue |
 | `needs-info` | `needs-info` | More information is required from the reporter |
