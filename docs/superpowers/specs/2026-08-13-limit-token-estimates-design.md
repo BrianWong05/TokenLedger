@@ -698,17 +698,14 @@ An implementation is complete when automated tests prove all of the following.
     compact large values, plural/count interpolation, and wrapped narrow-card
     layout without truncation or horizontal scrolling.
 
-    The first three clauses are proven by automated tests. The fourth cannot be:
+    The first three clauses are proven by automated tests. The fourth is not:
     jsdom applies no CSS and measures no layout, and this repo has no
-    browser-test harness. **Discharged instead by stylesheet invariants** —
-    `src/limits/limits.css.test.js` asserts that nothing on the line, inside it,
-    or on any ancestor up to the card can clip or refuse to wrap, across the
-    whole chain and including `@media` blindness, with nine mutations each
-    failing it — **plus a recorded manual browser pass** at a 240px card in both
-    locales (zero clipped lines, zero horizontal overflow, numeral unshrunk at
-    26px/62px). Judged sufficient by the closing sweep (#168): a measuring test
-    would need browser infrastructure disproportionate to one clause, and
-    claiming a green that no test produces would be worse than saying so.
+    browser-test harness. It is discharged instead by the stylesheet invariants
+    in `src/limits/limits.css.test.js` — nothing on the line, inside it, or on
+    any ancestor up to the card may clip or refuse to wrap, and an at-rule
+    appearing in the file fails the check rather than hiding half of it from its
+    parser — together with a manual browser pass recorded on #168. Accepted as
+    the discharge by the closing sweep (#168).
 
 ## Implementation handoff
 

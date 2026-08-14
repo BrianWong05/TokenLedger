@@ -599,7 +599,7 @@ describe('the Left/Used toggle', () => {
 
     expect(row().querySelector('.tl-lim-num')?.textContent).toBe('41%');
     const toneBefore = row().querySelector('.tl-lim-bar')?.className;
-    const [readsBefore, callsBefore] = [reads, port.liveCalls.length];
+    const readsBefore = reads;
 
     await act(async () => btn(c, 'Used').click());
     await settle();
@@ -608,7 +608,7 @@ describe('the Left/Used toggle', () => {
     // Readings nor asks a vendor, so the estimate beside the bar is the same
     // one converted differently, never a fresh one.
     expect(reads, 'the toggle re-reads nothing').toBe(readsBefore);
-    expect(port.liveCalls.length, 'the toggle fetches nothing').toBe(callsBefore);
+    expect(port.liveCalls, 'the toggle fetches nothing').toEqual(LIVE_SOURCES);
 
     expect(row().querySelector('.tl-lim-num')?.textContent).toBe('59%');
     expect(row().querySelector('.tl-lim-bar')?.className).toBe(toneBefore);
