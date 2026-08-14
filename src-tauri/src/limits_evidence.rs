@@ -953,6 +953,61 @@ mod tests {
     }
 
     #[test]
+    fn a_record_replaced_in_place_changes_the_answer_with_nothing_to_invalidate() {
+        use crate::db;
+        use crate::types::{CtxTokens, UsageEvent};
+
+        // The other two shapes the specification names beside a late Record:
+        // replacement and coarse-to-fine supersession. Both arrive as the SAME
+        // Ledger row rewritten — one dedup key, a larger canonical sum — which
+        // `insert_events_keep_max_output` is what performs. The derivation holds
+        // no total of its own, so the next read simply counts what is there:
+        // there is no estimate to invalidate, which is the whole claim.
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(&mut conn, &[reading(40.0, T0), reading(50.0, T0 + 600)])
+            .unwrap();
+
+        let record = |output: i64| UsageEvent {
+            dedup_key: "codex:coarse".to_string(),
+            source: "codex".to_string(),
+            timestamp: T0 + 100,
+            model: Some("gpt-5.4-codex".to_string()),
+            project: None,
+            api_calls: 1,
+            input_tokens: 100,
+            output_tokens: output,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            source_file: "rollout.jsonl".to_string(),
+            session_id: None,
+            reasoning_tokens: None,
+            ctx: CtxTokens::default(),
+        };
+
+        // The coarse parse first.
+        db::insert_events(&mut conn, &[record(20)]).unwrap();
+        conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
+        let coarse = {
+            let readings = stored_readings(&conn, T0 - 3_600).unwrap();
+            let usage = matching_usage(&conn, &readings).unwrap();
+            only_intervals(&derive(&readings, &usage).unwrap())[0].tokens
+        };
+        assert_eq!(coarse, 120, "100 input + 20 output");
+
+        // Then the finer one supersedes it in place: same key, more output.
+        db::insert_events_keep_max_output(&mut conn, &[record(400)]).unwrap();
+        conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
+        let fine = {
+            let readings = stored_readings(&conn, T0 - 3_600).unwrap();
+            let usage = matching_usage(&conn, &readings).unwrap();
+            only_intervals(&derive(&readings, &usage).unwrap())[0].tokens
+        };
+        assert_eq!(fine, 500, "the replacement counts, and nothing was invalidated");
+    }
+
+    #[test]
     fn a_decrease_inside_the_jitter_band_rejects_the_grouping() {
         // 90 → 5 → 40 with stamps 117s and 120s apart. Banding on the stamps
         // alone would call all three one epoch and hand the estimator a 5 → 40

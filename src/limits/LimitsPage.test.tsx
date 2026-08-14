@@ -83,6 +83,17 @@ async function mount(port: LimitsPort, at = NOW_MS, inLang: Lang = 'en') {
   return container;
 }
 
+/// Move both clocks together. Advancing only the fake timers leaves the injected
+/// `now()` where it was, so the live floor never elapses and any fetch a timer
+/// made would be swallowed by it — an assertion that no fetch happened would
+/// then be unable to fail.
+async function advance(ms: number) {
+  clock += ms;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
 // Same page, same stored preferences, same language, fresh mount — what a tab
 // switch does.
 async function remount(port: LimitsPort, at = clock) {
@@ -587,15 +598,28 @@ describe('bars', () => {
 
 describe('the Left/Used toggle', () => {
   it('flips every figure, keeps the colors, and remembers the choice', async () => {
-    const port = fakePort({ list: () => Promise.resolve([CODEX_WEEKLY]) });
+    let reads = 0;
+    const port = fakePort({
+      list: () => {
+        reads += 1;
+        return Promise.resolve([CODEX_WEEKLY]);
+      },
+    });
     const c = await mount(port);
     const row = () => rows(cardFor(c, 'Codex'))[0];
 
     expect(row().querySelector('.tl-lim-num')?.textContent).toBe('41%');
     const toneBefore = row().querySelector('.tl-lim-bar')?.className;
+    const readsBefore = reads;
 
     await act(async () => btn(c, 'Used').click());
     await settle();
+
+    // The toggle reframes what is already held: it neither re-reads the stored
+    // Readings nor asks a vendor, so the estimate beside the bar is the same
+    // one converted differently, never a fresh one.
+    expect(reads, 'the toggle re-reads nothing').toBe(readsBefore);
+    expect(port.liveCalls, 'the toggle fetches nothing').toEqual(LIVE_SOURCES);
 
     expect(row().querySelector('.tl-lim-num')?.textContent).toBe('59%');
     expect(row().querySelector('.tl-lim-bar')?.className).toBe(toneBefore);
@@ -617,6 +641,144 @@ describe('the Left/Used toggle', () => {
 });
 
 describe('fetch policy', () => {
+  it('re-reads at nextEvaluationAt, and asks no vendor to do it', async () => {
+    // The spec's fourth evaluation trigger: "at nextEvaluationAt while the page
+    // is open… the frontend runs one local timer and reissues the ordinary
+    // Limits query; it does not fetch a vendor or trigger background polling."
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let reads = 0;
+      const due = NOW + 600;
+      const port = fakePort({
+        list: () => {
+          reads += 1;
+          return Promise.resolve([
+            {
+              ...CODEX_WEEKLY,
+              windows: [
+                {
+                  ...CODEX_WEEKLY.windows[0],
+                  estimate: makeFakeEstimate({ nextEvaluationAt: due }),
+                },
+              ],
+            },
+          ]);
+        },
+      });
+      await mount(port);
+      const readsAfterOpen = reads;
+      const callsAfterOpen = port.liveCalls.length;
+
+      // Nothing before the moment the evaluation named.
+      await advance(599_000);
+      expect(reads, 'nothing re-read before the named second').toBe(readsAfterOpen);
+
+      // And exactly one re-read at it — of the stored Readings, not the vendor.
+      // The injected clock advances with the timers, so by now the live floor is
+      // long past: a fetch here would be permitted, which is what makes the
+      // assertion below able to fail at all.
+      await advance(2_000);
+      await settle();
+      expect(reads, 'the timer reissues the ordinary query').toBe(readsAfterOpen + 1);
+      expect(port.liveCalls.length, 'the timer calls no vendor').toBe(callsAfterOpen);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('sets no timer for a window whose answer no clock can change', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let reads = 0;
+      const port = fakePort({
+        list: () => {
+          reads += 1;
+          // makeFakeEstimate's default: nextEvaluationAt null.
+          return Promise.resolve([CODEX_WEEKLY]);
+        },
+      });
+      await mount(port);
+      const after = reads;
+
+      await advance(6 * 60 * 60_000);
+      expect(reads, 'a null nextEvaluationAt schedules nothing').toBe(after);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('waits for the soonest of the windows, not the last', async () => {
+    // Every window names its own moment; the page has one timer, so it belongs
+    // to the earliest. Taking the latest would leave the nearest answer stale
+    // for as long as the furthest one is away.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let reads = 0;
+      const port = fakePort({
+        list: () => {
+          reads += 1;
+          return Promise.resolve([
+            {
+              ...CLAUDE_LIVE,
+              windows: [
+                {
+                  ...CLAUDE_LIVE.windows[0],
+                  estimate: makeFakeEstimate({ nextEvaluationAt: NOW + 4 * HOUR }),
+                },
+                {
+                  ...CLAUDE_LIVE.windows[1],
+                  estimate: makeFakeEstimate({ nextEvaluationAt: NOW + 600 }),
+                },
+              ],
+            },
+          ]);
+        },
+      });
+      await mount(port);
+      const after = reads;
+
+      await advance(601_000);
+      await settle();
+      expect(reads, 'the soonest window is what the timer waited for').toBe(after + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('schedules nothing for a moment already past', async () => {
+    // An evaluation read from the wire can name a second that has already gone
+    // by — the page held the answer while the clock moved. A negative delay is
+    // an immediate timeout, and a timeout that reloads and reschedules itself is
+    // the background polling the spec forbids, so the past is filtered out.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let reads = 0;
+      const port = fakePort({
+        list: () => {
+          reads += 1;
+          return Promise.resolve([
+            {
+              ...CODEX_WEEKLY,
+              windows: [
+                {
+                  ...CODEX_WEEKLY.windows[0],
+                  estimate: makeFakeEstimate({ nextEvaluationAt: NOW - 3_600 }),
+                },
+              ],
+            },
+          ]);
+        },
+      });
+      await mount(port);
+      const after = reads;
+
+      await advance(60_000);
+      expect(reads, 'a past nextEvaluationAt schedules nothing').toBe(after);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never checks live on a timer', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -837,6 +999,13 @@ describe('the Ready info control', () => {
     expect(info.getAttribute('aria-label')).toBe('About this estimate');
     info.focus();
     expect(document.activeElement).toBe(info);
+    // Keyboard operability comes from being a native button, which the platform
+    // activates on Enter and Space — jsdom synthesises no click from a keydown,
+    // so dispatching one would prove nothing. What IS checkable is that nothing
+    // takes the control out of the tab order or disables it.
+    expect(info.tabIndex, 'the control stays in the tab order').toBeGreaterThanOrEqual(0);
+    expect(info.disabled).toBe(false);
+    expect(info.getAttribute('aria-disabled')).toBeNull();
   });
 
   it('exposes the same explanation to assistive technology whether open or shut', async () => {

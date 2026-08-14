@@ -632,9 +632,16 @@ An implementation is complete when automated tests prove all of the following.
 
 ### Evidence and migration
 
-1. V14 migration preserves current Limit rows and display behavior.
+1. The migration preserves current Limit rows and display behavior. (Written as
+   "V14 migration"; main had reached v17 before implementation began, so the
+   `limit_readings` rebuild landed as **v18** — see #158. The clause is about
+   preserving rows across the rebuild, whichever version carries it.)
 2. Legacy Readings and Usage Records with missing provenance never match and
-   yield Blocked, not zero or a backfilled estimate.
+   yield Blocked, not zero or a backfilled estimate. (Amended by #171 to match
+   the membership rule above: a Usage Record carries no account of its own, so
+   "missing provenance" on the Usage side means falling outside every
+   account-proven stretch — which pre-observation history does, by preceding all
+   of them. A modern unmarked Record inside a proven stretch does participate.)
 3. Exact source re-ingestion deduplicates one Reading identity, while a later
    equal-percentage observation can remain a distinct post-gap anchor.
 4. Account, plan, meter, Limit, epoch, or scope changes separate evidence.
@@ -682,6 +689,13 @@ An implementation is complete when automated tests prove all of the following.
 21. The normal response contains no more than five candidate summaries and no
     Usage Record identity list, includes all rejection reasons as bounded
     counts, and lets diagnostics reconstruct the exact contributors.
+
+    The last clause is structural, not behavioural, and no test can prove more
+    than that: v1 deliberately has no diagnostic path (see "Public shape" — none
+    is required), so what is testable is that a `Candidate` carries the bounds
+    reconstruction would need — its Series plus its own stretch — and that is
+    what `a_candidate_carries_what_its_contributors_can_be_found_by` asserts.
+    Nothing reconstructs anything in v1, and nothing is meant to.
 22. Ready renders the quiet line below the existing bar with two approximate,
     locale-aware, roughly two-significant-digit figures and the core epoch count.
 23. Left/Used changes only the selected equivalent; a used-up row hides that
@@ -694,6 +708,15 @@ An implementation is complete when automated tests prove all of the following.
 26. English and Traditional Chinese tests cover Ready and every withheld state,
     compact large values, plural/count interpolation, and wrapped narrow-card
     layout without truncation or horizontal scrolling.
+
+    The first three clauses are proven by automated tests. The fourth is not:
+    jsdom applies no CSS and measures no layout, and this repo has no
+    browser-test harness. It is discharged instead by the stylesheet invariants
+    in `src/limits/limits.css.test.js` — nothing on the line, inside it, or on
+    any ancestor up to the card may clip or refuse to wrap, and an at-rule
+    appearing in the file fails the check rather than hiding half of it from its
+    parser — together with a manual browser pass recorded on #168. Accepted as
+    the discharge by the closing sweep (#168).
 
 ## Implementation handoff
 
