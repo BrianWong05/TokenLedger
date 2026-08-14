@@ -30,6 +30,21 @@ export function makeTranslator<K extends string>(
 
 const translate = makeTranslator(EN, ZH);
 
+/**
+ * Which of a key pair's two forms a count takes — decided by the reader's own
+ * grammar rather than by English's. Chinese inflects no plural, so every count
+ * takes the `Many` form; English splits at one, and at one only (`0 windows`,
+ * not `0 window`), which a `n === 1` test in a component happens to get right
+ * for exactly these two languages and for no guaranteed reason.
+ *
+ * CLDR has four more categories — `zero`, `two`, `few`, `many` — that neither
+ * language uses. They fold into `Many` because that is the pair this dictionary's
+ * keys come in; a language that needs a third form needs a third key first.
+ */
+export function pluralSuffix(lang: Lang, n: number): 'One' | 'Many' {
+  return new Intl.PluralRules(lang).select(n) === 'one' ? 'One' : 'Many';
+}
+
 interface I18n {
   lang: Lang;
   t: (key: StringKey) => string;
