@@ -94,8 +94,9 @@ impl SeriesKey {
 #[derive(Debug, Clone)]
 pub struct MatchingRecord {
     pub source: String,
-    /// Proven account identity. A Record that cannot name its account cannot
-    /// participate at all, so it never becomes one of these.
+    /// The account of the span that selected this Record — the Series' claim
+    /// over a stretch its Readings bracket, not a fact the Record carries
+    /// (no Artifact states one; see `matching_usage`).
     pub account_id: String,
     pub timestamp: i64,
     /// None is Unattributed Usage — never a sentinel Model.
@@ -557,9 +558,10 @@ pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<Li
 }
 
 /// The Usage Records those Readings could ever be paired with, for each Source
-/// and account the Readings themselves prove, across the span they cover. One
-/// indexed range read per Source and account, never one per candidate interval
-/// and never the whole Ledger.
+/// and account the Readings themselves prove, across the span they cover. Two
+/// index probes per Source and account (a MULTI-INDEX OR: the account's own
+/// marked rows, and the unmarked rows that sort together under NULL), never one
+/// read per candidate interval and never the whole Ledger.
 ///
 /// A Record carries no account of its own — no Artifact states one, so a stored
 /// account would be a conclusion dressed as a fact (ADR-0024). Its account is
@@ -1145,6 +1147,7 @@ mod tests {
                 event("codex:in", T0 + 100, Some("acct-a"), 100),
                 event("codex:before", T0 - 10, Some("acct-a"), 100),
                 event("codex:anon", T0 + 200, None, 100),
+                event("codex:legacy", T0 - 5, None, 100),
                 event("codex:other", T0 + 300, Some("acct-b"), 100),
             ],
         )
@@ -1173,7 +1176,10 @@ mod tests {
         // 5 + 3 + 2, reasoning left out because it classifies tokens already
         // counted): the marked acct-a one and the unmarked one beside it.
         // `codex:before` is out by the `(t0, t1]` boundary, `codex:other` by
-        // its contradicting mark.
+        // its contradicting mark — and `codex:legacy`, unmarked history from
+        // before the first observation naming the account, precedes every span
+        // and is selected by nothing (acceptance test 2's behavior, held by
+        // construction rather than by a per-row check).
         assert_eq!(
             only_intervals(&evidence),
             vec![Interval { from_pct: 40, to_pct: 50, tokens: 260, t0: T0, t1: T0 + 600 }],

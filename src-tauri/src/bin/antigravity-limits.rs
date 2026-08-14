@@ -188,8 +188,6 @@ fn run() -> Result<String, String> {
         // Antigravity is not in the estimate map: nothing has established
         // what each of its pools meters, so it claims nothing.
         metering_regime: None,
-        // No proven account identity on this path yet: absent is honest, never
-        // "the same account as last time".
         account_id: None,
         usage_resets_available: None,
         windows: windows(&body),

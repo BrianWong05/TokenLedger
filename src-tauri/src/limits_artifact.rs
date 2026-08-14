@@ -369,19 +369,28 @@ pub fn ingest(conn: &mut Connection, dir: &Path, source: &str) -> Result<(), Str
 /// The earliest instant these Readings may claim local capture covers, or `None`
 /// where nothing can be claimed at all.
 ///
-/// Two components, combined by taking the later. The account may only be claimed
-/// forward — from the first observation that named it, never backfilled onto
-/// history the app merely holds files for. And coverage is proven only past the
+/// Three components, combined by taking the latest. The account may only be
+/// claimed forward — from the first observation that named it, never backfilled
+/// onto history the app merely holds files for. Coverage is proven only past the
 /// newest unreadable Artifact, whose content could reach anything up to its own
-/// mtime — the same content-is-never-newer rule ADR-0017's floor marker rests
-/// on. An unreadable whose mtime is unknown bounds nothing, so the pass proves
+/// mtime — content is never newer than its file (ADR-0017). And no claim may
+/// fall below one this Source and account already carries: `unreadable_artifacts`
+/// is *current* state, rewritten clean on the next scan after the file is
+/// pruned, and current state is not historical proof — a deleted unreadable is
+/// indistinguishable from a repaired one, and its gap does not close. The
+/// Readings themselves are the durable memory of every floor ever enforced, so
+/// the highest stored claim ratchets every later one.
+///
+/// An unreadable whose mtime is unknown bounds nothing, so that pass proves
 /// nothing: the new Readings claim nothing, and stored claims are left alone,
 /// which is the documented rule for a pass that proves nothing.
 ///
 /// Withdrawal of stored claims happens at the discovery site
 /// (`db::record_unreadable`), not here — an unchanged export file skips ingest
 /// entirely, and a withdrawal that waited for the vendor to answer differently
-/// would not be one.
+/// would not be one. The ratchet is also what keeps the per-row upsert honest:
+/// a new pass computes a floor at least as high as anything stored, so its
+/// newest-proof COALESCE can never quietly lower a withdrawn claim.
 fn coverage_floor(conn: &Connection, export: &LimitsExport) -> rusqlite::Result<Option<i64>> {
     let Some(account_id) = &export.account_id else {
         // Coverage is a fact about a Source *and account*; with no account there
@@ -389,6 +398,8 @@ fn coverage_floor(conn: &Connection, export: &LimitsExport) -> rusqlite::Result<
         return Ok(None);
     };
 
+    // `.optional()` because a Source that never had an unreadable has no row at
+    // all; the aggregate below always yields exactly one row and needs none.
     let unreadable: Option<(i64, Option<i64>)> = conn
         .query_row(
             "SELECT count, max_mtime FROM unreadable_artifacts WHERE source = ?1",
@@ -402,16 +413,20 @@ fn coverage_floor(conn: &Connection, export: &LimitsExport) -> rusqlite::Result<
         _ => None,
     };
 
-    let first_observed: Option<i64> = conn
-        .query_row(
-            "SELECT MIN(observed_at) FROM limit_readings \
-             WHERE source = ?1 AND account_id = ?2",
-            rusqlite::params![export.source, account_id],
-            |r| r.get(0),
-        )?;
+    let (first_observed, highest_claim): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT MIN(observed_at), MAX(covered_from) FROM limit_readings \
+         WHERE source = ?1 AND account_id = ?2",
+        rusqlite::params![export.source, account_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
     let claimed_from = first_observed.unwrap_or(export.fetched_at);
 
-    Ok(Some(unreadable_floor.map_or(claimed_from, |f| f.max(claimed_from))))
+    Ok(Some(
+        [unreadable_floor, highest_claim]
+            .into_iter()
+            .flatten()
+            .fold(claimed_from, i64::max),
+    ))
 }
 
 #[cfg(test)]
@@ -805,6 +820,25 @@ mod tests {
         // Idempotent, and an older discovery never lowers a raised claim.
         db::record_unreadable(&conn, &[unreadable("codex", 1, Some(1_786_400_000))]).unwrap();
         assert_eq!(coverage_of(&conn, 1_786_492_800), Some(1_786_495_001));
+    }
+
+    #[test]
+    fn a_pruned_unreadable_does_not_close_the_gap_it_proved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("limits");
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+
+        // Discovery raises the floor; then the unreadable file is pruned and the
+        // next scan rewrites the source's row CLEAN — current state, which is
+        // not historical proof. The usage that file held is still missing, so a
+        // later pass must not claim back across the gap: the highest stored
+        // claim is the durable memory the current-state table is not.
+        ingest_at(&mut conn, &dir, 1_786_492_800, "acct-a");
+        db::record_unreadable(&conn, &[unreadable("codex", 1, Some(1_786_495_000))]).unwrap();
+        db::record_unreadable(&conn, &[unreadable("codex", 0, None)]).unwrap();
+
+        ingest_at(&mut conn, &dir, 1_786_500_000, "acct-a");
+        assert_eq!(coverage_of(&conn, 1_786_500_000), Some(1_786_495_001));
     }
 
     fn unreadable(

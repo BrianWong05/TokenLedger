@@ -327,14 +327,6 @@ fn source_wide(kind_or_key: &str) -> Option<&'static SourceWide> {
     SOURCE_WIDE.iter().find(|w| w.kind == kind_or_key || w.key == kind_or_key)
 }
 
-/// What a window proves about itself, from either response shape.
-///
-/// A model-scoped window proves neither identity nor scope. `weekly_scoped`
-/// names every one of them alike, so it cannot tell two apart, and what would
-/// tell them apart is `scope.model.display_name` — a display name, which is no
-/// mapping to the raw Models the Ledger logs. Both stay unknown and the window's
-/// estimate stays Blocked, which is the honest answer until the vendor names a
-/// raw Model.
 /// The response's own `account_uuid`: the vendor's stable opaque identity for
 /// the account it just answered for. A UUID, never an email or anything
 /// reversible. Absent from the payload means absent in the export — a Companion
@@ -346,6 +338,14 @@ fn account_id(body: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// What a window proves about itself, from either response shape.
+///
+/// A model-scoped window proves neither identity nor scope. `weekly_scoped`
+/// names every one of them alike, so it cannot tell two apart, and what would
+/// tell them apart is `scope.model.display_name` — a display name, which is no
+/// mapping to the raw Models the Ledger logs. Both stay unknown and the window's
+/// estimate stays Blocked, which is the honest answer until the vendor names a
+/// raw Model.
 fn window_evidence(kind_or_key: &str) -> WindowEvidence {
     let identity = source_wide(kind_or_key);
     WindowEvidence {

@@ -227,13 +227,12 @@ fn window(object: &serde_json::Map<String, Value>, fetched_at: i64) -> Option<Wi
         })?;
     let key = window_key(minutes);
     Some(WindowExport {
-        // The documented one-to-one mapping (the same grammar the log adapter
-        // uses): every window collected here is the main `rate_limit` block's —
-        // `collect_windows` never descends into `additional_rate_limits`,
-        // because an array is not an object — and that block is the codex
-        // entitlement itself, the one whose snapshots the rollouts carry with
-        // `limit_id == "codex"`. The CLI's snapshots and this fetch describe
-        // one meter, so the identity is shared, not guessed.
+        // The documented one-to-one mapping, in the same grammar the log
+        // adapter writes: every window reaching here is the main `rate_limit`
+        // block's (`collect_windows` walls the additional families off), and
+        // that block is the codex entitlement itself — the one whose snapshots
+        // the rollouts carry with `limit_id == "codex"`. One meter, described
+        // twice; the identity is shared, not guessed.
         evidence: WindowEvidence {
             limit_id: Some(format!("codex:{key}")),
             model_scope: Some("all".to_string()),
