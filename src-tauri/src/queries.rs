@@ -1044,6 +1044,12 @@ pub struct SourceLimits {
 /// far narrower than the shortest window Codex reports (300 minutes).
 pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 
+/// How many Readings the Stale reconstruction pages in at a time when it walks
+/// history the bounded read never covered. Large enough that real histories
+/// take a handful of pages; small enough that no page holds a whole Ledger's
+/// Readings and Usage at once.
+const STALE_PAGE_READINGS: usize = 2_000;
+
 /// The current state of every Limit the Ledger holds Readings for: per
 /// (source, window_key) the newest epoch, and within it the highest `used_pct`
 /// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
@@ -1094,27 +1100,24 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
 
     // One horizon for the whole read, from the longest window on the page: one
     // recency horizon for the candidates a Ready answer needs, and one more
-    // behind it so a core that has aged out is still there to be found. Beyond
-    // that, older evidence could not change any answer this query can give.
+    // behind it so the ordinary Stale — a core that aged out recently — is
+    // found without paging. Older history is not unreachable: a Gathering
+    // answer pages backwards through it below.
     let longest = displayed.iter().filter_map(|w| w.2).max();
-    // ponytail: two horizons back — one for the candidates a Ready answer needs
-    // and one behind it so a core that aged out is still findable. A core older
-    // than that reads as Gathering rather than Stale, which is a difference in
-    // copy rather than in any number; widen it, or read backwards in pages, if
-    // a Series ever holds that much history.
     let since = evaluated_at - 2 * recency_horizon(longest);
     let readings = limits_evidence::stored_readings(conn, since)?;
     let usage = limits_evidence::matching_usage(conn, &readings)?;
-    let evidence = limits_evidence::derive(&readings, &usage).map_err(|invariant| {
-        // An invariant failure is a technical error, not a readiness state: it
-        // rejects the whole command rather than being shown as Blocked.
+    // An invariant failure is a technical error, not a readiness state: it
+    // rejects the whole command rather than being shown as Blocked.
+    let broken = |invariant: limits_evidence::NonFinitePercentage| {
         LimitsError::Invariant(format!(
             "{} reported a percentage that is not a number, observed at {}",
             invariant.source, invariant.observed_at
         ))
-    })?;
+    };
+    let mut evidence = limits_evidence::derive(&readings, &usage).map_err(broken)?;
 
-    let mut cards: Vec<SourceLimits> = Vec::new();
+    let mut evaluated = Vec::with_capacity(displayed.len());
     for (source, window_key, window_minutes, used_pct, resets_at, observed_at) in displayed {
         // The Reading the ESTIMATE evaluates from: the newest one that proves
         // its Series, independent of the display Reading (which stays the
@@ -1133,6 +1136,44 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
         };
         let current = newest(true).or_else(|| newest(false));
         let evaluation = limits_readiness::evaluate(current, &evidence.partitions, evaluated_at);
+        evaluated
+            .push((source, window_key, window_minutes, used_pct, resets_at, observed_at, current, evaluation));
+    }
+
+    // Gathering is the one answer that may only mean "not read far enough":
+    // Stale is reconstructed by replaying the policy over completed history,
+    // newest-first, stopping at the first Ready proof or when history is
+    // exhausted (spec: "Readiness state machine"), and the bounded read above
+    // reaches two horizons back at most. So a Gathering window pages older
+    // history in: each page's Readings and Usage are read, derived, and
+    // dropped, and only the Partition summaries accumulate — which is the
+    // memory posture the specification asks for. Every other state is final on
+    // the bounded read, and a Ready page never enters this loop.
+    // ponytail: each page re-runs `evaluate`, whose Stale replay walks every
+    // accumulated clock again — quadratic in a Series' completed epochs. Bound
+    // the re-check to each batch's own clocks if a Series ever holds enough
+    // identity-bearing history for it to show.
+    let mut partitions = std::mem::take(&mut evidence.partitions);
+    let mut cursor = (since, i64::MIN);
+    while evaluated.iter().any(|w| w.7.state == ReadinessState::Gathering) {
+        let (older, next) =
+            limits_evidence::stored_readings_page(conn, cursor, STALE_PAGE_READINGS)?;
+        let Some(next) = next else { break };
+        cursor = next;
+        let older_usage = limits_evidence::matching_usage(conn, &older)?;
+        let paged = limits_evidence::derive(&older, &older_usage).map_err(broken)?;
+        limits_evidence::absorb(&mut partitions, paged.partitions);
+        for window in &mut evaluated {
+            if window.7.state == ReadinessState::Gathering {
+                window.7 = limits_readiness::evaluate(window.6, &partitions, evaluated_at);
+            }
+        }
+    }
+
+    let mut cards: Vec<SourceLimits> = Vec::new();
+    for (source, window_key, window_minutes, used_pct, resets_at, observed_at, current, evaluation) in
+        evaluated
+    {
         // Everything this Limit's evidence refused, beside everything its
         // estimator did: the interval and Reading refusals are most of the
         // twenty-two reasons there are, and a page that reported only the
@@ -2299,6 +2340,65 @@ mod tests {
                 .iter()
                 .any(|r| r.reason_code == ReasonCode::MissingAccountIdentity && r.count == 1),
             "{rejections:?}",
+        );
+    }
+
+    #[test]
+    fn a_stable_core_older_than_the_bounded_read_is_stale_not_gathering() {
+        use crate::types::{CtxTokens, UsageEvent};
+
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+
+        // Three agreeing completed epochs around 100 days back — strictly older
+        // than the two-horizon page-open read (84 days for a weekly window).
+        // The fixed bound alone answered Gathering; the backwards paging must
+        // walk on until it finds the Ready proof, and answer Stale (spec:
+        // "Stop at the first Ready proof or when history is exhausted").
+        const DAY: i64 = 86_400;
+        let mut readings = vec![proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + DAY)];
+        let mut events = Vec::new();
+        for (i, days_ago) in [100i64, 101, 102].iter().enumerate() {
+            let ended = EVALUATED_AT - days_ago * DAY;
+            for step in 0..3i64 {
+                readings.push(proven_reading(
+                    (step * 10) as f64,
+                    ended - 7_200 + step * 3_600,
+                    ended,
+                ));
+            }
+            for step in 0..2i64 {
+                events.push(UsageEvent {
+                    dedup_key: format!("stale-{i}-{step}"),
+                    source: "codex".to_string(),
+                    timestamp: ended - 7_200 + step * 3_600 + 1,
+                    model: Some("gpt-5.4-codex".to_string()),
+                    project: None,
+                    api_calls: 1,
+                    input_tokens: 1_000 + i as i64,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_5m_tokens: 0,
+                    cache_write_1h_tokens: 0,
+                    source_file: "rollout.jsonl".to_string(),
+                    session_id: None,
+                    reasoning_tokens: None,
+                    ctx: CtxTokens::default(),
+                });
+            }
+        }
+        db::insert_limit_readings(&mut conn, &readings).unwrap();
+        db::insert_events(&mut conn, &events).unwrap();
+        // `account_id` sits outside db::COLS, so no insert path writes it (#171).
+        conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let estimate = &cards[0].windows[0].estimate;
+        assert_eq!(estimate.outcome, LimitEstimateOutcome::Stale, "not Gathering");
+        assert!(
+            estimate.explanation.reason_codes.contains(&ReasonCode::HistoricalCoreAgedOut),
+            "{:?}",
+            estimate.explanation.reason_codes,
         );
     }
 

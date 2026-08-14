@@ -578,32 +578,93 @@ pub const MATCHING_USAGE_SQL: &str = "SELECT timestamp, model, \
          WHERE source = ?1 AND (account_id = ?2 OR account_id IS NULL) \
            AND timestamp > ?3 AND timestamp <= ?4";
 
+/// One page of the same columns strictly older than the `(observed_at, rowid)`
+/// keyset cursor, newest first — the Stale reconstruction's backwards walk
+/// (spec: "Page completed-epoch summaries backwards; do not load the whole
+/// Ledger into memory"). The rowid tiebreak is what makes the cursor total:
+/// several Readings share an `observed_at` second, and a cursor of the time
+/// alone would skip the rest of that second on the next page.
+pub const STORED_READINGS_PAGE_SQL: &str =
+    "SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, \
+            plan, account_id, metering_regime, limit_id, model_scope, source_order, \
+            covered_from, external_activity, rowid \
+     FROM limit_readings \
+     WHERE observed_at < ?1 OR (observed_at = ?1 AND rowid < ?2) \
+     ORDER BY observed_at DESC, rowid DESC LIMIT ?3";
+
+fn reading_row(r: &rusqlite::Row) -> rusqlite::Result<LimitReading> {
+    Ok(LimitReading {
+        source: r.get(0)?,
+        window_key: r.get(1)?,
+        window_minutes: r.get(2)?,
+        used_pct: r.get(3)?,
+        resets_at: r.get(4)?,
+        observed_at: r.get(5)?,
+        via: r.get(6)?,
+        plan: r.get(7)?,
+        provenance: ReadingProvenance {
+            account_id: r.get(8)?,
+            metering_regime: r.get(9)?,
+            limit_id: r.get(10)?,
+            model_scope: r
+                .get::<_, Option<String>>(11)?
+                .and_then(|s| ModelScope::parse(&s)),
+            source_order: r.get(12)?,
+            covered_from: r.get(13)?,
+            external_activity: r.get(14)?,
+        },
+    })
+}
+
 pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<LimitReading>> {
     let mut stmt = conn.prepare(STORED_READINGS_SQL)?;
-    let rows = stmt.query_map([since], |r| {
-        Ok(LimitReading {
-            source: r.get(0)?,
-            window_key: r.get(1)?,
-            window_minutes: r.get(2)?,
-            used_pct: r.get(3)?,
-            resets_at: r.get(4)?,
-            observed_at: r.get(5)?,
-            via: r.get(6)?,
-            plan: r.get(7)?,
-            provenance: ReadingProvenance {
-                account_id: r.get(8)?,
-                metering_regime: r.get(9)?,
-                limit_id: r.get(10)?,
-                model_scope: r
-                    .get::<_, Option<String>>(11)?
-                    .and_then(|s| ModelScope::parse(&s)),
-                source_order: r.get(12)?,
-                covered_from: r.get(13)?,
-                external_activity: r.get(14)?,
-            },
-        })
-    })?;
+    let rows = stmt.query_map([since], |r| reading_row(r))?;
     rows.collect()
+}
+
+/// The next page below `cursor`, and the cursor for the one after it — `None`
+/// when history is exhausted. The Readings come back in table order; `derive`
+/// sorts its own timelines, so a page needs no order of its own.
+pub fn stored_readings_page(
+    conn: &Connection,
+    cursor: (i64, i64),
+    limit: usize,
+) -> rusqlite::Result<(Vec<LimitReading>, Option<(i64, i64)>)> {
+    let mut stmt = conn.prepare(STORED_READINGS_PAGE_SQL)?;
+    let rows = stmt.query_map(params![cursor.0, cursor.1, limit as i64], |r| {
+        Ok((reading_row(r)?, r.get::<_, i64>(15)?))
+    })?;
+    let mut page = Vec::new();
+    let mut next = None;
+    for row in rows {
+        let (reading, rowid) = row?;
+        // The statement walks newest-first, so the last row is the oldest.
+        next = Some((reading.observed_at, rowid));
+        page.push(reading);
+    }
+    Ok((page, next))
+}
+
+/// Fold one paged batch's Partitions into the accumulated set. A page boundary
+/// can split an epoch's timeline, so the same `(series, epoch)` may arrive
+/// twice: its intervals merge and re-sort, restoring the whole epoch minus only
+/// the interval that would have spanned the cut itself — evidence lost
+/// conservatively, exactly as the bounded read's own outer edge already loses
+/// it.
+pub fn absorb(partitions: &mut Vec<PartitionEvidence>, older: Vec<PartitionEvidence>) {
+    for partition in older {
+        let twin = partitions
+            .iter_mut()
+            .find(|p| p.series == partition.series && p.epoch == partition.epoch);
+        match twin {
+            Some(existing) => {
+                existing.window_minutes = existing.window_minutes.or(partition.window_minutes);
+                existing.intervals.extend(partition.intervals);
+                existing.intervals.sort_by_key(|i| (i.t0, i.t1));
+            }
+            None => partitions.push(partition),
+        }
+    }
 }
 
 /// The Usage Records those Readings could ever be paired with, for each Source
