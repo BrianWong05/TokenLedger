@@ -30,6 +30,19 @@ export function makeTranslator<K extends string>(
 
 const translate = makeTranslator(EN, ZH);
 
+/**
+ * Which of a key pair's two forms a count takes, decided by the reader's own
+ * grammar rather than by English's: Chinese inflects no plural, so every count
+ * takes `Many`, while English splits at one and at one only.
+ *
+ * Every CLDR category other than `one` folds into `Many` because that is the pair
+ * this dictionary's keys come in — a language needing a third form needs a third
+ * key first.
+ */
+export function pluralSuffix(lang: Lang, n: number): 'One' | 'Many' {
+  return new Intl.PluralRules(lang).select(n) === 'one' ? 'One' : 'Many';
+}
+
 interface I18n {
   lang: Lang;
   t: (key: StringKey) => string;

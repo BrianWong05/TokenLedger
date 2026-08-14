@@ -11,7 +11,7 @@
 // flipper).
 import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import './limits.css';
-import { useT } from '../lib/i18n';
+import { pluralSuffix, useT } from '../lib/i18n';
 import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
@@ -32,6 +32,14 @@ type LiveFailure = 'signed-out' | { detail: string };
 // with it, and flipping away and back would fetch again immediately.
 const LIVE_FLOOR_MS = 60_000;
 const ERROR_FAILURE_PREFIX = 'error:';
+
+// Spelled out rather than built from a template so both keys stay checked
+// against the dictionary — a template literal needs an `as`, and an `as` would
+// let a renamed key compile.
+const ORIGIN_KEYS = {
+  One: 'limits.est.originOne',
+  Many: 'limits.est.originMany',
+} as const;
 
 export default function LimitsPage({
   ports,
@@ -377,9 +385,10 @@ function EstimateLine({ est, mode }: { est: EstimateView; mode: Mode }) {
       </span>
       <span className="dot" aria-hidden="true">·</span>
       <span className="origin">
-        {fill(t(est.epochs === 1 ? 'limits.est.originOne' : 'limits.est.originMany'), {
-          n: est.epochs,
-        })}
+        {fill(
+          t(ORIGIN_KEYS[pluralSuffix(lang, est.epochs)]),
+          { n: est.epochs },
+        )}
       </span>
       {/* A real button, not a hover target: the explanation has to reach someone
           who never touches a pointer. `aria-describedby` carries it whether the

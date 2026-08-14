@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import LimitsPage from './LimitsPage';
 import { LIVE_ENABLED_KEY, MODE_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from './limits';
 import type { SourceLimits } from '../types';
+import { I18nProvider, type Lang } from '../lib/i18n';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -14,6 +15,8 @@ const roots: Root[] = [];
 afterEach(() => {
   for (const r of roots.splice(0)) act(() => r.unmount());
   document.body.replaceChildren();
+  // A locale test must not leak its language into the next test's default.
+  lang = 'en';
 });
 
 async function settle(times = 4) {
@@ -53,21 +56,38 @@ function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> }
 // rather than waited out.
 let clock = NOW_MS;
 
-async function mount(port: LimitsPort, at = NOW_MS) {
+// The language the next mount renders in. Module state rather than a parameter
+// so `remount` cannot drop it: a tab switch does not change anyone's language,
+// and a zh test that remounted into English would assert Chinese copy against an
+// English render and fail for the wrong reason.
+let lang: Lang = 'en';
+
+// Wraps the page the way App.tsx does. Passing 'en' is not a no-op worth
+// skipping: it is the same provider the shipped shell uses, so a locale test and
+// an English test differ in one argument rather than in how they mount.
+async function mount(port: LimitsPort, at = NOW_MS, inLang: Lang = 'en') {
   clock = at;
+  lang = inLang;
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   roots.push(root);
-  await act(async () => root.render(<LimitsPage ports={{ limits: port }} now={() => clock} />));
+  await act(async () =>
+    root.render(
+      <I18nProvider lang={lang}>
+        <LimitsPage ports={{ limits: port }} now={() => clock} />
+      </I18nProvider>,
+    ),
+  );
   await settle();
   return container;
 }
 
-// Same page, same stored preferences, fresh mount — what a tab switch does.
+// Same page, same stored preferences, same language, fresh mount — what a tab
+// switch does.
 async function remount(port: LimitsPort, at = clock) {
   for (const r of roots.splice(0)) act(() => r.unmount());
-  return mount(port, at);
+  return mount(port, at, lang);
 }
 
 const cardEls = (c: HTMLElement) => Array.from(c.querySelectorAll('.tl-lim-card')) as HTMLElement[];
@@ -884,5 +904,129 @@ describe('a withheld estimate', () => {
     // The bar is in danger; the estimate line still says nothing about urgency.
     expect(rows(cardFor(c, 'Codex'))[0].querySelector('.tl-lim-bar')?.className).toContain('dry');
     expect(estOf(c).className).toBe('tl-lim-est');
+  });
+});
+
+// ── the same line in Traditional Chinese (spec "UI → Localization") ──
+
+describe('the evidence line in Traditional Chinese', () => {
+  const zh = (stored: SourceLimits[]) =>
+    mount(fakePort({ list: () => Promise.resolve(stored) }), NOW_MS, 'zh-Hant');
+
+  it('renders Ready from the approved copy, in the reader’s own grouping', async () => {
+    const c = await zh([READY]);
+    const est = estOf(c);
+
+    // Chinese counts in 萬, so the figure English renders "14M" reads "1400萬" —
+    // the same number, grouped the way the reader groups it. A dictionary alone
+    // could not do this; the locale has to reach the formatter.
+    expect(seen(est.querySelector('.main'))).toBe('剩餘 ≈1400萬 個 token');
+    expect(seen(est.querySelector('.rate'))).toBe('≈35萬 / 1%');
+    expect(est.querySelector('.origin')?.textContent).toBe('根據 4 個一致的已完成時段');
+  });
+
+  it('speaks 約 where English speaks "approximately"', async () => {
+    const c = await zh([READY]);
+    const main = estOf(c).querySelector('.main')!;
+
+    // The symbol stays the symbol in both languages; only the spoken word
+    // translates, and it sits where Chinese grammar puts it — ahead of the
+    // figure, inside the phrase, which is why the template places {tokens}
+    // rather than the component prefixing a marker.
+    expect(main.querySelector('[aria-hidden="true"]')?.textContent).toBe('≈');
+    expect(main.querySelector('.tl-sr-only')?.textContent).toBe('約 ');
+  });
+
+  it('flips to the used phrasing rather than translating a word into it', async () => {
+    const port = fakePort({ list: () => Promise.resolve([READY]) });
+    const c = await mount(port, NOW_MS, 'zh-Hant');
+
+    await act(async () => btn(c, '已用').click());
+    await settle();
+
+    expect(seen(estOf(c).querySelector('.main'))).toBe('已用 ≈2100萬 個 token');
+    expect(seen(estOf(c).querySelector('.rate'))).toBe('≈35萬 / 1%');
+  });
+
+  it('carries the whole explanation, including the 100% local equivalent', async () => {
+    const c = await zh([READY]);
+    const info = estOf(c).querySelector('.tl-lim-est-info')!;
+    const note = document.getElementById(info.getAttribute('aria-describedby')!)!;
+
+    expect(info.getAttribute('aria-label')).toBe('關於這個估算');
+    expect(note.textContent).toBe(
+      '根據多個一致且已完成限額時段的相符 token 用量作近似估算。'
+      + '本機 100% 等值：約 3500萬 個 token。這不是供應商提供的 token 限額。',
+    );
+  });
+
+  const WITHHELD_ZH = {
+    gathering: ['資料不足', '最近需要 3 個時段，目前有 2 個'],
+    unstable: ['估算已撤回', '最近的本機歷史並不一致'],
+    stale: ['估算已過期', '最近仍合資格的已完成時段少於 3 個'],
+    blocked: ['無法估算', '無法驗證相符的本機用量或來源完整性'],
+  } as const;
+
+  for (const [state, [title, detail]] of Object.entries(WITHHELD_ZH)) {
+    it(`renders ${state} from the approved copy, still with no figure`, async () => {
+      const c = await zh([withheld(state as 'blocked')]);
+      const est = estOf(c);
+
+      expect(est.getAttribute('data-state')).toBe(state);
+      expect(est.querySelector('.title')?.textContent).toBe(title);
+      expect(est.querySelector('.detail')?.textContent).toBe(detail);
+      // The withheld rule is not an English rule: the hostile fixture's
+      // `tokensPerPct` must not surface in this language either.
+      expect(est.textContent).toBe(title + detail);
+      expect(est.textContent).not.toMatch(/35萬|3500萬|350|≈|token/i);
+    });
+  }
+
+  it('compacts a figure large enough to change unit in one language only', async () => {
+    // 4.82M per point at 41% left is 197M — "200M" in English, "2億" in Chinese.
+    // English rolls at a thousand, Chinese at 萬 and again at 億, so a fixture
+    // that only ever crossed K/M could pass with the locale ignored.
+    const big: SourceLimits = {
+      ...READY,
+      windows: [{ ...READY.windows[0], estimate: makeReadyEstimate(4_820_000, 3) }],
+    };
+
+    const c = await zh([big]);
+    expect(seen(estOf(c).querySelector('.main'))).toBe('剩餘 ≈2億 個 token');
+    expect(seen(estOf(c).querySelector('.rate'))).toBe('≈480萬 / 1%');
+
+    const en = await mount(fakePort({ list: () => Promise.resolve([big]) }), NOW_MS, 'en');
+    expect(seen(estOf(en).querySelector('.main'))).toBe('≈200M tokens left');
+    expect(seen(estOf(en).querySelector('.rate'))).toBe('≈4.8M / 1%');
+  });
+});
+
+describe('the epoch count’s grammar', () => {
+  const withCore = (core: number) => ({
+    ...READY,
+    windows: [{ ...READY.windows[0], estimate: makeReadyEstimate(350_000, core) }],
+  });
+  const origin = (c: HTMLElement) => estOf(c).querySelector('.origin')?.textContent;
+
+  it('splits at one for English, and at one only', async () => {
+    for (const [core, expected] of [
+      [1, 'from 1 consistent completed window'],
+      [2, 'from 2 consistent completed windows'],
+      [5, 'from 5 consistent completed windows'],
+    ] as const) {
+      const c = await mount(fakePort({ list: () => Promise.resolve([withCore(core)]) }), NOW_MS, 'en');
+      expect(origin(c), `core=${core}`).toBe(expected);
+    }
+  });
+
+  it('never inflects for Chinese, which has no plural to inflect', async () => {
+    // Chinese reads the same at one as at five — the count reaches the sentence
+    // through interpolation, never through a second wording.
+    for (const core of [1, 2, 5]) {
+      const c = await mount(
+        fakePort({ list: () => Promise.resolve([withCore(core)]) }), NOW_MS, 'zh-Hant',
+      );
+      expect(origin(c), `core=${core}`).toBe(`根據 ${core} 個一致的已完成時段`);
+    }
   });
 });
