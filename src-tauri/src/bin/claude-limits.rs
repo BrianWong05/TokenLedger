@@ -327,10 +327,24 @@ fn source_wide(kind_or_key: &str) -> Option<&'static SourceWide> {
     SOURCE_WIDE.iter().find(|w| w.kind == kind_or_key || w.key == kind_or_key)
 }
 
-/// The response's own `account_uuid`: the vendor's stable opaque identity for
-/// the account it just answered for. A UUID, never an email or anything
-/// reversible. Absent from the payload means absent in the export — a Companion
-/// must never say "the same account as last time".
+/// The account this answer is for, if the response ever names it.
+///
+/// It does not. A `--shape` run against a live Max account (2026-08-14) returned
+/// no account identity anywhere in the payload: the whole of it is windows,
+/// `spend`, `extra_usage`, and unfamiliar codenames, and the only account-ish
+/// keys are the booleans `extra_usage.user_disabled` and
+/// `member_dashboard_available`. So this reads `account_uuid` and finds nothing,
+/// which is deliberate rather than hopeful — the key is checked because the
+/// response has carried it in an older named-key shape, and because the cost of
+/// looking is nothing next to the cost of a Companion inventing an identity.
+///
+/// The consequence is honest and load-bearing: with no proven account, Claude's
+/// Readings anchor no Limit Evidence Interval and its estimate stays **Blocked**
+/// (spec: "if a current Source cannot populate the contract from data it already
+/// reads, its estimate truthfully remains Blocked"). Giving Claude a real
+/// identity means finding one in a document this tool already reads — the
+/// credential — never a new endpoint, and never a token fingerprint, which the
+/// contract rules out by name.
 fn account_id(body: &Value) -> Option<String> {
     body.get("account_uuid")
         .and_then(|v| v.as_str())
@@ -615,11 +629,15 @@ mod tests {
         )
         .unwrap();
 
-        // The same key the window walk must skip is the account the export
-        // carries: one field, two consumers, neither confusable with the other.
-        assert_eq!(account_id(&body).as_deref(), Some("not-a-window"));
+        // `account_uuid` here is a DECOY: this fixture exists to prove the window
+        // walk skips a non-window key, and the string is deliberately nonsense.
+        // A live Max account's payload carries no account identity at all
+        // (verified by `--shape`, 2026-08-14), so what matters is the empty and
+        // absent cases — a response that names no account must yield none, which
+        // is what keeps Claude honestly Blocked instead of inventing evidence.
+        assert_eq!(account_id(&serde_json::json!({})), None, "the real shape");
         assert_eq!(account_id(&serde_json::json!({"account_uuid": "  "})), None);
-        assert_eq!(account_id(&serde_json::json!({})), None);
+        assert_eq!(account_id(&body).as_deref(), Some("not-a-window"), "the decoy, if present");
 
         let found = windows(&body);
         assert_eq!(
