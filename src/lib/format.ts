@@ -1,4 +1,5 @@
 import { parseLocalDate } from './dateRange';
+import type { Lang } from './i18n';
 
 interface FormatCostOptions {
   adaptivePrecision?: boolean;
@@ -62,6 +63,21 @@ export function formatCompactTokenTotal(total: number, maxFractionDigits = 2): s
 
 export function formatExactTokenTotal(total: number): string {
   return Math.max(0, Math.round(total)).toLocaleString('en-US');
+}
+
+// The Limits row's approximate figure. The three formatters above answer a
+// different question — an exact total, in en-US, to two or three decimals — and
+// the Limit Token Estimate spec forbids bending them to this shape, so this is a
+// fourth rather than a parameter on one of them. Two significant digits is the
+// point: the figure is inferred from a percentage, and a third digit would claim
+// a precision the evidence never had. It is the only token formatter that reads
+// the user's language, because it is the only one whose grouping is the reader's
+// rather than the number's — Chinese counts in 萬, so 12M is 1200萬.
+export function formatApproxTokens(tokens: number, lang: Lang): string {
+  return new Intl.NumberFormat(lang, {
+    notation: 'compact',
+    maximumSignificantDigits: 2,
+  }).format(tokens);
 }
 
 // Compact token formatter for the Overview design (K/M/B with adaptive precision).

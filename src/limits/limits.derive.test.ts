@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
-import { makeFakeEstimate } from './limits.fake';
+import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
   cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
   windowView,
@@ -277,3 +277,112 @@ describe('duration formatting', () => {
     expect(durationParts(0)).toEqual([{ unit: 'm', n: 0 }]);
   });
 });
+
+describe('the estimate view', () => {
+  // 59% used → 41% left. Both framings convert the figure the row is SHOWING,
+  // so whoever multiplies 41 × 350000 gets exactly what the line reports.
+  const ready = (perPct: number, core = 4, spare = 0) =>
+    win({ usedPct: 59, estimate: makeReadyEstimate(perPct, core, spare) });
+
+  it('converts the displayed percentage, and counts only the stable core', () => {
+    const v = windowView(ready(350_000, 4, 3), 'left', NOW);
+
+    expect(v.estimate).toEqual({
+      state: 'ready',
+      selected: 41 * 350_000,
+      perPct: 350_000,
+      total: 35_000_000,
+      epochs: 4,
+    });
+  });
+
+  it('rounds the way the numeral does, so the two figures multiply out', () => {
+    // 40.6% left, shown as "41%".
+    const v = windowView(win({ usedPct: 59.4, estimate: makeReadyEstimate(350_000) }), 'left', NOW);
+    expect(v.estimate).toMatchObject({ selected: 41 * 350_000 });
+  });
+
+  it('changes only the selected figure when the framing flips', () => {
+    const left = windowView(ready(350_000), 'left', NOW).estimate;
+    const used = windowView(ready(350_000), 'used', NOW).estimate;
+
+    expect(left).toMatchObject({ selected: 41 * 350_000 });
+    expect(used).toMatchObject({ selected: 59 * 350_000 });
+    // Everything the estimate itself knows is framing-blind.
+    expect({ ...left, selected: null }).toEqual({ ...used, selected: null });
+  });
+
+  // The rate, the evidence count and (with them) the info control survive every
+  // case that hides the selected figure — they are facts about the evidence, not
+  // about the current Reading.
+  const withoutSelected = {
+    state: 'ready',
+    selected: null,
+    perPct: 350_000,
+    total: 35_000_000,
+    epochs: 4,
+  };
+
+  it('hides the selected figure on a used-up window under either framing', () => {
+    const spent = win({ usedPct: 100, estimate: makeReadyEstimate(350_000) });
+
+    for (const mode of ['left', 'used'] as const) {
+      expect(windowView(spent, mode, NOW).estimate).toEqual(withoutSelected);
+    }
+  });
+
+  it('hides it on a window the row only DISPLAYS as used up', () => {
+    // 99.6% used is not `pctLeft <= 0`, but the numeral rounds to "0%" left and
+    // "100%" used. Guarding on the raw figure let the line read "≈0 tokens left"
+    // beside that 0%, and a whole-window "≈35M tokens used" beside that 100% —
+    // both of them the renderings the spec names as forbidden.
+    const nearly = win({ usedPct: 99.6, estimate: makeReadyEstimate(350_000) });
+
+    for (const mode of ['left', 'used'] as const) {
+      expect(windowView(nearly, mode, NOW).estimate).toEqual(withoutSelected);
+    }
+    // One displayed point of headroom is still a figure worth showing.
+    expect(windowView(win({ usedPct: 99, estimate: makeReadyEstimate(350_000) }), 'left', NOW)
+      .estimate).toMatchObject({ selected: 350_000 });
+  });
+
+  it('hides it on an expired epoch, whose percentage the bar invents', () => {
+    // An expired window renders full and unused (#107) off a `pctLeft` nothing
+    // observed. The backend should already be Blocked here — "an expired
+    // displayed Reading does not prove a new current Partition" — but its
+    // `evaluatedAt` and this page's clock are two different clocks, so the row
+    // must not multiply a ratio by a percentage it made up on its own.
+    const expired = win({
+      usedPct: 0,
+      resetsAt: NOW - HOUR,
+      estimate: makeReadyEstimate(350_000),
+    });
+
+    expect(windowView(expired, 'left', NOW)).toMatchObject({ expired: true, pctLeft: 100 });
+    for (const mode of ['left', 'used'] as const) {
+      expect(windowView(expired, mode, NOW).estimate).toEqual(withoutSelected);
+    }
+  });
+
+  it('carries a withheld state through with the count its copy needs', () => {
+    for (const state of ['gathering', 'unstable', 'stale', 'blocked'] as const) {
+      const base = makeFakeEstimate();
+      const estimate = {
+        ...base,
+        state,
+        explanation: { ...base.explanation, qualifyingEpochs: 2 },
+      };
+      expect(windowView(win({ estimate }), 'left', NOW).estimate).toEqual({ state, qualifying: 2 });
+    }
+  });
+
+  it('draws nothing at all when a ready evaluation brings no usable ratio', () => {
+    // A broken wire promise (see `EstimateView`) is not a withheld estimate, and
+    // must never reach a person as one.
+    for (const tokensPerPct of [undefined, 0, -1, NaN, Infinity]) {
+      const estimate = { ...makeReadyEstimate(350_000), tokensPerPct };
+      expect(windowView(win({ estimate }), 'left', NOW).estimate).toBeNull();
+    }
+  });
+});
+

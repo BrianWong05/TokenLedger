@@ -9,15 +9,15 @@
 // Refresh only, never on the scan timer and never in the background (a floor of
 // LIVE_FLOOR_MS between live checks per Source enforces it against a fast tab
 // flipper).
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import './limits.css';
 import { useT } from '../lib/i18n';
-import { fill } from '../lib/format';
+import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
   cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
-  type CardView, type Mode, type WindowView,
+  type CardView, type EstimateView, type Mode, type WindowView,
 } from './limits.derive';
 import {
   tauriLimits, lastCheckKey, lastFailureKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort,
@@ -327,8 +327,100 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
             />
           )}
         </div>
+        {w.estimate && <EstimateLine est={w.estimate} mode={mode} />}
       </div>
     </div>
+  );
+}
+
+// One quiet line under the bar: what the local evidence says a percentage point
+// is worth, or — far more often — why it says nothing yet. It never colors
+// itself; the scarcity tones belong to the Limit, and borrowing one would let a
+// withheld estimate read as an emergency.
+function EstimateLine({ est, mode }: { est: EstimateView; mode: Mode }) {
+  const { t, lang } = useT();
+  const noteId = useId();
+  const [open, setOpen] = useState(false);
+
+  if (est.state !== 'ready') {
+    return (
+      <div className="tl-lim-est" data-state={est.state}>
+        <span className="title">{t(`limits.est.${est.state}` as 'limits.est.blocked')}</span>
+        <span className="detail">
+          {est.state === 'gathering'
+            ? fill(t('limits.est.gatheringDetail'), { n: est.qualifying })
+            : t(`limits.est.${est.state}Detail` as 'limits.est.blockedDetail')}
+        </span>
+      </div>
+    );
+  }
+
+  const explanation = fill(t('limits.est.explanation'), {
+    total: formatApproxTokens(est.total, lang),
+  });
+
+  return (
+    <div className="tl-lim-est" data-state="ready">
+      {est.selected !== null && (
+        <>
+          <span className="main">
+            <ApproxPhrase
+              template={t(mode === 'left' ? 'limits.est.left' : 'limits.est.used')}
+              tokens={est.selected}
+            />
+          </span>
+          <span className="dot" aria-hidden="true">·</span>
+        </>
+      )}
+      <span className="rate">
+        <ApproxPhrase template={t('limits.est.perPct')} tokens={est.perPct} />
+      </span>
+      <span className="dot" aria-hidden="true">·</span>
+      <span className="origin">
+        {fill(t(est.epochs === 1 ? 'limits.est.originOne' : 'limits.est.originMany'), {
+          n: est.epochs,
+        })}
+      </span>
+      {/* A real button, not a hover target: the explanation has to reach someone
+          who never touches a pointer. `aria-describedby` carries it whether the
+          note is open or not, so assistive technology hears it without having to
+          discover the toggle first. Focus styling comes from the global
+          `button:focus-visible` rule in index.css. */}
+      <button
+        type="button"
+        className="tl-lim-est-info"
+        aria-label={t('limits.est.infoLabel')}
+        aria-describedby={noteId}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span aria-hidden="true">i</span>
+      </button>
+      {/* `.note` when open and the global hidden-text utility when shut — two
+          naming layers on one span because it genuinely has two jobs, and the
+          accessible one never stops. */}
+      <span id={noteId} className={open ? 'note' : 'tl-sr-only'}>
+        {explanation}
+      </span>
+    </div>
+  );
+}
+
+// A phrase with its approximate figure dropped in at the placeholder its own
+// language chose — English leads with the marker, Chinese puts 約 inside the
+// phrase, and a fixed prefix could not serve both. "≈" is for the eye alone and
+// the word is for the ear alone, so neither audience is told the number is exact.
+function ApproxPhrase({ template, tokens }: { template: string; tokens: number }) {
+  const { t, lang } = useT();
+  const [before, after = ''] = template.split('{tokens}');
+  return (
+    <>
+      {before}
+      <span aria-hidden="true">≈</span>
+      <span className="tl-sr-only">{`${t('limits.est.approx')} `}</span>
+      {formatApproxTokens(tokens, lang)}
+      {after}
+    </>
   );
 }
 

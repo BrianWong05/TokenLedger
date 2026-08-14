@@ -3,6 +3,7 @@
 // no `t()`, so every rule the wayfinder map settled is unit-testable against a
 // SourceLimits[] and a clock.
 import type { LimitWindow, SourceLimits } from '../types';
+import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import { SOURCES, type SourceMeta } from '../overview/meta';
 
 // How a Source's Limits are acquired. `logs` flows from ordinary scans; `live`
@@ -23,6 +24,38 @@ export type CardState = 'live' | 'signed-out' | 'error' | 'nothing-recorded';
 /** Scarcity tone. Follows % LEFT alone, whatever the framing. */
 export type Tone = 'ok' | 'low' | 'dry';
 
+/**
+ * What the evidence line draws — the discriminated union the wire does not
+ * have. `tokensPerPct` travels as an optional field, so a caller that has
+ * checked `state === 'ready'` still faces `number | undefined`; this resolves
+ * that once, here, and hands the row figures it can use without asking again.
+ *
+ * Every figure is canonical tokens, unformatted: locale is the renderer's
+ * business, and this file has no language.
+ */
+export type EstimateView =
+  | {
+      state: 'ready';
+      /**
+       * `perPct` × the displayed percentage; null wherever that percentage is
+       * not a fact about now (see `estimateView`).
+       */
+      selected: number | null;
+      perPct: number;
+      /**
+       * `perPct` × 100 — the info control's local equivalent, never a figure the
+       * vendor reported.
+       */
+      total: number;
+      /** Stable-core membership, not every candidate epoch. */
+      epochs: number;
+    }
+  | {
+      state: 'gathering' | 'unstable' | 'stale' | 'blocked';
+      /** Completed epochs that qualified; only Gathering's copy reports it. */
+      qualifying: number;
+    };
+
 export interface WindowView {
   /** The vendor's own key, opaque and never parsed for structure. */
   key: string;
@@ -37,6 +70,8 @@ export interface WindowView {
   tickPct: number | null;
   /** The reading's epoch had already rolled when we read it. */
   expired: boolean;
+  /** The evidence line's content, or null when the wire broke its own rule. */
+  estimate: EstimateView | null;
 }
 
 export interface CardView {
@@ -112,7 +147,7 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
       ? Math.max(0, Math.min(100, (resetsInMin / durationMin) * 100))
       : null;
 
-  return {
+  const bar: Omit<WindowView, 'estimate'> = {
     key: w.windowKey,
     pctLeft,
     pct: framedPct(pctLeft, mode),
@@ -121,7 +156,58 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
     tickPct: timeLeftPct === null ? null : mode === 'left' ? timeLeftPct : 100 - timeLeftPct,
     expired,
   };
+
+  return { ...bar, estimate: estimateView(w.estimate, bar) };
 }
+
+/**
+ * One tagged evaluation, plus the bar it sits under → the evidence line's
+ * figures.
+ *
+ * Ready is the only state that carries any, and only when the wire kept its own
+ * promise (see `EstimateView`). A `ready` evaluation without a finite positive
+ * ratio is a broken contract rather than a state worth describing — the row draws
+ * no line at all, which is quieter than an "≈NaN" and louder than pretending the
+ * estimate was merely withheld.
+ *
+ * It takes the whole bar rather than loose numbers because every figure here is
+ * about what the row DISPLAYS, and its two questions — which percentage to
+ * convert, and whether that percentage is a fact about now — have to be answered
+ * off the same rounding. Asking them separately is what let the line read "≈0
+ * tokens left" beside a bar that was not yet used up.
+ */
+export function estimateView(
+  evaluation: LimitEstimateEvaluation,
+  bar: Omit<WindowView, 'estimate'>,
+): EstimateView | null {
+  if (evaluation.state !== 'ready') {
+    return { state: evaluation.state, qualifying: evaluation.explanation.qualifyingEpochs };
+  }
+  const perPct = evaluation.tokensPerPct;
+  if (perPct === undefined || !Number.isFinite(perPct) || perPct <= 0) return null;
+
+  // The selected figure is hidden wherever the displayed percentage is not a fact
+  // about now: a window the row shows as used up — which would read "≈0 left"
+  // under one framing and as a whole-window figure under the other, both of them
+  // forbidden — and an expired epoch, whose 100% the bar SYNTHESISES. Converting
+  // that second one would invent a full window's worth of tokens out of a Reading
+  // that proves nothing about the current window. Rounded, so the line and the
+  // numeral can never disagree about which of those a window is.
+  //
+  // Everything the evidence itself knows survives either way: tokens per 1%, the
+  // epoch count, and the info control. A used-up Reading may still carry a Ready
+  // historical ratio.
+  const spent = bar.expired || Math.round(bar.pctLeft) <= 0;
+
+  return {
+    state: 'ready',
+    selected: spent ? null : perPct * Math.round(bar.pct),
+    perPct,
+    total: perPct * 100,
+    epochs: evaluation.explanation.candidates.filter((c) => c.inCore).length,
+  };
+}
+
 
 /**
  * Window key → the label parts to render. The known Claude keys and Codex's
