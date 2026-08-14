@@ -542,6 +542,7 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
             source: source.to_string(),
             events_inserted: r.events_inserted,
             lines_skipped: r.lines_skipped,
+            limit_readings: r.limit_readings,
             artifacts_unreadable: r.artifacts_unreadable,
             unreadable_max_mtime: r.unreadable_max_mtime,
             error: r.error,
@@ -550,6 +551,7 @@ fn run_one(source: &str, f: impl FnOnce() -> SourceScanResult) -> SourceStatus {
             source: source.to_string(),
             events_inserted: 0,
             lines_skipped: 0,
+            limit_readings: 0,
             artifacts_unreadable: 0,
             unreadable_max_mtime: None,
             error: Some("adapter panicked".to_string()),
@@ -616,6 +618,7 @@ fn run_scan_sources(
                     source: source.key.clone(),
                     events_inserted: 0,
                     lines_skipped: 0,
+                    limit_readings: 0,
                     artifacts_unreadable: 0,
                     unreadable_max_mtime: None,
                     error: Some("unsupported source catalog entry".to_string()),
@@ -659,11 +662,14 @@ fn merge_limit_exports(
     if source.capabilities.limits.as_deref() != Some("live") || roots.limit_exports.as_os_str().is_empty() {
         return status;
     }
-    if let Err(error) = limits_artifact::ingest(conn, &roots.limit_exports, &source.key) {
-        status.error = Some(match status.error {
-            Some(previous) => format!("{previous}; {error}"),
-            None => error,
-        });
+    match limits_artifact::ingest(conn, &roots.limit_exports, &source.key) {
+        Ok(written) => status.limit_readings += written,
+        Err(error) => {
+            status.error = Some(match status.error {
+                Some(previous) => format!("{previous}; {error}"),
+                None => error,
+            });
+        }
     }
     status
 }
@@ -673,6 +679,7 @@ fn unavailable_source_status(source: &str, error: String) -> SourceStatus {
         source: source.to_string(),
         events_inserted: 0,
         lines_skipped: 0,
+        limit_readings: 0,
         artifacts_unreadable: 0,
         unreadable_max_mtime: None,
         error: Some(error),
@@ -718,6 +725,11 @@ mod tests {
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let status = run_scan(&mut conn, &roots);
         assert!(find(&status, "claude").error.is_none());
+        // The export's Reading is a relevant change, and it signals as one
+        // (#187); a rescan of the unchanged Artifact signals nothing.
+        assert_eq!(find(&status, "claude").limit_readings, 1);
+        let unchanged = run_scan(&mut conn, &roots);
+        assert_eq!(find(&unchanged, "claude").limit_readings, 0);
 
         let cards = queries::limits(&conn, 1_900_000_000).unwrap();
         assert_eq!(cards.len(), 1);

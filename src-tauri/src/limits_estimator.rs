@@ -7,7 +7,7 @@
 //! time. Those read this and are the next ticket's.
 
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::limits_evidence::{Interval, PartitionEvidence, ReasonCode, SeriesKey};
 
@@ -37,6 +37,9 @@ pub struct Run {
     pub movement: i64,
     /// How many separate times it moved, which is not the same as how far.
     pub positive_movements: usize,
+    /// The union of its intervals' raw Model compositions — diagnostic
+    /// metadata, never another weighting system (spec: Clean runs).
+    pub models: BTreeSet<String>,
 }
 
 impl Run {
@@ -81,6 +84,9 @@ pub struct Candidate {
     pub through: i64,
     pub ratio: f64,
     pub quantization: Quantization,
+    /// The representative run's raw Model composition, retained for the
+    /// diagnostic reconstruction path only — the public payload never carries it.
+    pub models: BTreeSet<String>,
 }
 
 /// What the estimator makes of one Series.
@@ -129,6 +135,7 @@ fn runs_of(intervals: &[Interval]) -> Vec<Run> {
                 run.through = interval.t1;
                 run.movement += interval.movement();
                 run.positive_movements += 1;
+                run.models.extend(interval.models.iter().cloned());
             }
             _ => runs.push(Run {
                 tokens: interval.tokens,
@@ -136,6 +143,7 @@ fn runs_of(intervals: &[Interval]) -> Vec<Run> {
                 through: interval.t1,
                 movement: interval.movement(),
                 positive_movements: 1,
+                models: interval.models.clone(),
             }),
         }
         last = Some(interval);
@@ -167,6 +175,7 @@ fn representative(partition: &PartitionEvidence, estimate: &mut Estimate) -> Opt
         through: run.through,
         ratio: run.ratio(),
         quantization: run.quantization(),
+        models: run.models.clone(),
     })
 }
 
@@ -192,8 +201,9 @@ pub fn quantization_intersection(members: &[&Candidate]) -> Option<Quantization>
 
 /// Whether these candidates could be one Limit's constant ratio: their
 /// endpoint-rounding ranges all overlap somewhere, and the widest ratio is no
-/// more than a quarter again the narrowest.
-fn coheres(members: &[&Candidate]) -> Option<ReasonCode> {
+/// more than a quarter again the narrowest. `pub(crate)` because the payload
+/// mapping asks it per excluded candidate, to name why the core left one out.
+pub(crate) fn coheres(members: &[&Candidate]) -> Option<ReasonCode> {
     if quantization_intersection(members).is_none() && !members.is_empty() {
         return Some(ReasonCode::QuantizationRangesDisjoint);
     }
@@ -320,7 +330,14 @@ mod tests {
 
     /// An interval that moved `movement` points and carried `tokens`.
     fn interval(from_pct: i64, movement: i64, tokens: i64, t0: i64) -> Interval {
-        Interval { from_pct, to_pct: from_pct + movement, tokens, t0, t1: t0 + 60 }
+        Interval {
+            from_pct,
+            to_pct: from_pct + movement,
+            tokens,
+            t0,
+            t1: t0 + 60,
+            models: BTreeSet::new(),
+        }
     }
 
     /// Intervals that chain: each starts where the last ended, in time and in
@@ -329,7 +346,14 @@ mod tests {
         let mut out = Vec::new();
         let (mut pct, mut at) = (from_pct, t0);
         for (movement, tokens) in steps {
-            out.push(Interval { from_pct: pct, to_pct: pct + movement, tokens: *tokens, t0: at, t1: at + 60 });
+            out.push(Interval {
+                from_pct: pct,
+                to_pct: pct + movement,
+                tokens: *tokens,
+                t0: at,
+                t1: at + 60,
+                models: BTreeSet::new(),
+            });
             pct += movement;
             at += 60;
         }
@@ -378,8 +402,14 @@ mod tests {
     #[test]
     fn a_run_ratio_is_its_tokens_over_its_movement_with_the_quantization_it_implies() {
         // The specification's own worked example.
-        let run =
-            Run { tokens: 1_000_000, from: 0, through: 60, movement: 10, positive_movements: 2 };
+        let run = Run {
+            tokens: 1_000_000,
+            from: 0,
+            through: 60,
+            movement: 10,
+            positive_movements: 2,
+            models: BTreeSet::new(),
+        };
         assert_eq!(run.ratio(), 100_000.0);
         let quantization = run.quantization();
         assert_eq!(quantization.lower, 1_000_000.0 / 11.0);
@@ -390,7 +420,14 @@ mod tests {
     fn a_single_point_run_has_no_upper_quantization_bound() {
         // `T / (d - 1)` is unbounded at one point, and unbounded is not a number
         // the wire may carry as infinity.
-        let run = Run { tokens: 500, from: 0, through: 60, movement: 1, positive_movements: 1 };
+        let run = Run {
+            tokens: 500,
+            from: 0,
+            through: 60,
+            movement: 1,
+            positive_movements: 1,
+            models: BTreeSet::new(),
+        };
         assert_eq!(run.quantization().upper, None);
     }
 
@@ -525,6 +562,22 @@ mod tests {
     }
 
     #[test]
+    fn a_candidate_retains_the_model_composition_of_its_run() {
+        // Spec (Clean runs): the raw Model composition is retained — diagnostic
+        // metadata for the reconstruction path, never a weighting system and
+        // never a payload field. A run of two intervals carries their union.
+        let mut intervals = chain(0, &[(5, 500), (5, 500)], NOW - 3_600);
+        intervals[0].models = ["gpt-5.4-codex".to_string()].into();
+        intervals[1].models =
+            ["gpt-5.4-codex".to_string(), "gpt-5.3-mini".to_string()].into();
+        let estimate = only(estimates(&[partition(NOW - DAY, intervals)], NOW));
+        assert_eq!(
+            estimate.candidates[0].models,
+            BTreeSet::from(["gpt-5.3-mini".to_string(), "gpt-5.4-codex".to_string()]),
+        );
+    }
+
+    #[test]
     fn three_recent_epochs_are_the_fewest_that_can_carry_a_core() {
         let two = only(estimates(&[epoch(1, 20, 2_000), epoch(2, 20, 2_000)], NOW));
         assert_eq!(two.tokens_per_pct, None);
@@ -612,6 +665,7 @@ mod tests {
             through: 60,
             ratio,
             quantization: Quantization { lower: 0.0, upper: None },
+            models: BTreeSet::new(),
         };
         let inside = [candidate(100.0), candidate(124.0), candidate(110.0)];
         assert_eq!(coheres(&inside.iter().collect::<Vec<_>>()), None);

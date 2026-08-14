@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
+import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
-  cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
-  windowView,
+  cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, planLabel, tone,
+  windowLabel, windowView,
 } from './limits.derive';
 
 // 2026-08-12T00:00:00Z
@@ -278,6 +279,26 @@ describe('duration formatting', () => {
   });
 });
 
+describe('the estimate clock', () => {
+  const at = (nextEvaluationAt: number | null) =>
+    win({ estimate: makeFakeEstimate({ nextEvaluationAt }) });
+
+  it('picks the earliest future stamp across every window', () => {
+    const stored = [
+      held('claude', [at(null), at(NOW + 50)]),
+      held('codex', [at(NOW + 30)]),
+    ];
+    expect(nextDueAt(stored, NOW)).toBe(NOW + 30);
+  });
+
+  it('ignores stamps the clock has already passed, and reports null on none', () => {
+    // A past stamp is the backend's answer ageing, not a timer to spin on.
+    expect(nextDueAt([held('claude', [at(NOW - 10)])], NOW)).toBeNull();
+    expect(nextDueAt([held('claude', [at(null)])], NOW)).toBeNull();
+    expect(nextDueAt([], NOW)).toBeNull();
+  });
+});
+
 describe('the estimate view', () => {
   // 59% used → 41% left. Both framings convert the figure the row is SHOWING,
   // so whoever multiplies 41 × 350000 gets exactly what the line reports.
@@ -300,6 +321,18 @@ describe('the estimate view', () => {
     // 40.6% left, shown as "41%".
     const v = windowView(win({ usedPct: 59.4, estimate: makeReadyEstimate(350_000) }), 'left', NOW);
     expect(v.estimate).toMatchObject({ selected: 41 * 350_000 });
+  });
+
+  it('derives Left from the rounded Used figure, so the framings total 100', () => {
+    // 59.5% used rounds to 60% used, so Left must read 40% — never
+    // round(40.5) = 41, which would put 101 points on screen across the two
+    // framings and convert a percentage the numeral does not show.
+    const at = (mode: 'left' | 'used') =>
+      windowView(win({ usedPct: 59.5, estimate: makeReadyEstimate(350_000) }), mode, NOW);
+
+    expect([at('left').pctShown, at('used').pctShown]).toEqual([40, 60]);
+    expect(at('left').estimate).toMatchObject({ selected: 40 * 350_000 });
+    expect(at('used').estimate).toMatchObject({ selected: 60 * 350_000 });
   });
 
   it('changes only the selected figure when the framing flips', () => {
@@ -380,7 +413,12 @@ describe('the estimate view', () => {
     // A broken wire promise (see `EstimateView`) is not a withheld estimate, and
     // must never reach a person as one.
     for (const tokensPerPct of [undefined, 0, -1, NaN, Infinity]) {
-      const estimate = { ...makeReadyEstimate(350_000), tokensPerPct };
+      // The union has no room for these, so the broken wire is forced past the
+      // compiler on purpose: the runtime guard is what this test pins.
+      const estimate = {
+        ...makeReadyEstimate(350_000),
+        tokensPerPct,
+      } as unknown as LimitEstimateEvaluation;
       expect(windowView(win({ estimate }), 'left', NOW).estimate).toBeNull();
     }
   });

@@ -135,9 +135,12 @@ fn capture_limits(conn: &mut Connection, unified_log: &Path, result: &mut Source
 
     // A write that fails says so in its own words — reporting it as an
     // unreadable log would blame the file for the database's trouble.
-    if let Err(error) = insert_limit_readings(conn, &readings) {
-        result.error = Some(format!("grok: could not record Limit Readings: {error}"));
-        return;
+    match insert_limit_readings(conn, &readings) {
+        Ok(written) => result.limit_readings += written,
+        Err(error) => {
+            result.error = Some(format!("grok: could not record Limit Readings: {error}"));
+            return;
+        }
     }
     let _ = set_file_state(conn, &unified_log.to_string_lossy(), state);
 }

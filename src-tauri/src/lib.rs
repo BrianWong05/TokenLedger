@@ -2,12 +2,11 @@ mod adapters;
 mod db;
 pub mod export_artifact;
 pub mod limits_artifact;
-// The estimator reads the evidence; nothing reads the estimator yet — the
-// readiness machine that will is the next ticket — so both stay `pub` to keep
-// the compiler from pruning a module whose tests are its only caller today.
-pub mod limits_estimator;
-pub mod limits_evidence;
-pub mod limits_readiness;
+// Crate-only: the Limits query is the one reader of the evidence, estimator,
+// and readiness chain, and no companion binary imports any of the three.
+pub(crate) mod limits_estimator;
+pub(crate) mod limits_evidence;
+pub(crate) mod limits_readiness;
 mod pricing;
 pub mod proto;
 mod queries;
@@ -178,6 +177,14 @@ fn lookup_new_unpriced(app: &AppHandle) {
     std::thread::spawn(move || refresh_catalogs(&handle));
 }
 
+/// Whether a scan landed Limit Reading changes an open Limits page should
+/// re-query for (spec: "Evaluation timing" — evaluate after an ordinary Scan
+/// changes relevant facts). A scan that re-read everything and learned nothing
+/// emits nothing, so an idle resident tick never wakes the page.
+fn limits_changed(status: &ScanStatus) -> bool {
+    status.sources.iter().any(|source| source.limit_readings > 0)
+}
+
 // The one scan path, shared by the `scan` command and the tray's "Scan now" so
 // neither duplicates the locking/coalescing policy. Serialize scans: a second
 // caller blocks on scan_lock, then runs its own incremental scan.
@@ -193,6 +200,12 @@ pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
     // Every scan lands here — the command, the tray's "Scan now", and the
     // resident capture — so the panel's freshness read-out cannot miss one.
     state.last_scan.store(status.scanned_at, Ordering::Relaxed);
+    // ... and so an open Limits page cannot miss a scan that changed the
+    // Readings it is showing. Same mechanism as prices-rebuilt: one event, and
+    // the page reissues its ordinary query.
+    if limits_changed(&status) {
+        let _ = app.emit("limits-changed", ());
+    }
     tray::refresh(app);
     // Release scan_lock BEFORE the lookup: it reads the whole prices table to
     // decide, and holding the scan gate across that would delay the next scan for
@@ -384,10 +397,11 @@ async fn check_live_limits(app: tauri::AppHandle, source: String) -> Result<(), 
     }
 
     // The Artifact it just wrote, read through the same schema-checked path the
-    // scan uses — one reader, so the two can never drift.
+    // scan uses — one reader, so the two can never drift. The change count is
+    // not needed here: the page that asked re-queries as this command settles.
     let state = app.state::<AppState>();
     let mut db = state.db.lock().map_err(|e| e.to_string())?;
-    limits_artifact::ingest(&mut db, &dir, &source)
+    limits_artifact::ingest(&mut db, &dir, &source).map(|_| ())
 }
 
 fn limit_exports_dir(app: &AppHandle) -> std::path::PathBuf {
@@ -822,6 +836,27 @@ mod tests {
                 "{key}-limits has no source to build from",
             );
         }
+    }
+
+    /// The scan-to-page seam (spec: "Evaluation timing"): a scan that landed
+    /// Reading changes must notify, one that learned nothing must not — the
+    /// gate `scan_now` emits `limits-changed` through.
+    #[test]
+    fn a_scan_notifies_the_limits_page_exactly_when_readings_changed() {
+        let status = |limit_readings| crate::types::ScanStatus {
+            sources: vec![crate::types::SourceStatus {
+                source: "codex".to_string(),
+                events_inserted: 0,
+                lines_skipped: 0,
+                limit_readings,
+                artifacts_unreadable: 0,
+                unreadable_max_mtime: None,
+                error: None,
+            }],
+            scanned_at: 0,
+        };
+        assert!(super::limits_changed(&status(1)));
+        assert!(!super::limits_changed(&status(0)));
     }
 
     #[test]

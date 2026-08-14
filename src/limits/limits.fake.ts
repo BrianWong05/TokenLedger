@@ -10,7 +10,12 @@ const NOW = 1_786_492_800;
  * the honest default: it is what a Limit says before its evidence exists, and
  * it carries no number for a test to accidentally depend on.
  */
-export function makeFakeEstimate(over: Partial<LimitEstimateEvaluation> = {}): LimitEstimateEvaluation {
+export function makeFakeEstimate(
+  // The discriminant stays out of `over`: a caller that wants another state
+  // spreads this and names the state (and its fields) itself, so the union
+  // keeps checking what belongs beside which state.
+  over: Partial<Omit<LimitEstimateEvaluation, 'state'>> = {},
+): LimitEstimateEvaluation {
   return {
     state: 'gathering',
     evaluatedAt: NOW,
@@ -67,5 +72,6 @@ function epoch(i: number, inCore: boolean): EstimateEpochSummary {
     movementPoints: 12,
     positiveMovements: 3,
     inCore,
+    reasonCodes: [],
   };
 }

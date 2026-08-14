@@ -238,11 +238,23 @@ const BULK_RECORDS: usize = 20_000;
 // Records. Tight enough that the per-interval Record scan #167 removed (963 ms on
 // this same fixture) cannot come back unnoticed.
 const LIMITS_BUDGET: Duration = Duration::from_millis(150);
+// The withheld page is different since #186: its five-hour windows are genuinely
+// Gathering — no provable core anywhere in their history — and proving that now
+// requires paging every stored Reading backwards to exhaustion, as the
+// specification demands ("Stop at the first Ready proof or when history is
+// exhausted"). Measured 1,447 ms over 202,600 Readings; the walk is linear in
+// the table, so this budget is about the whole table's size, not the tail's.
+const EXHAUSTION_BUDGET: Duration = Duration::from_millis(3_000);
 
-/// Readings that form eligible evidence: full provenance, ten rising
-/// observations per epoch, epochs back to back. `epochs_back` places them
-/// relative to `now`, so a caller can seed both the recent tail the estimator
-/// reads and the ancient bulk it must skip.
+/// Readings that form eligible evidence, in the two shapes production actually
+/// writes (#183): proven `live` observations — the Companion's, the only shape
+/// that carries an account — ten rising ones per epoch, with an account-less
+/// `logs` Reading interleaved after each, the way Codex's rollouts land between
+/// Companion checks. The mixed timeline is what the walk's pass-through has to
+/// survive at scale; a fixture of provenance-bearing `logs` rows measured a
+/// timeline production never produces. `epochs_back` places epochs relative to
+/// `now`, so a caller can seed both the recent tail the estimator reads and the
+/// ancient bulk it must skip.
 fn seed_readings(
     conn: &mut rusqlite::Connection,
     now: i64,
@@ -258,14 +270,14 @@ fn seed_readings(
             for age in epochs_back.clone() {
                 let resets_at = now - age * span + span;
                 for step in 0..10i64 {
-                    readings.push(LimitReading {
+                    let proven = LimitReading {
                         source: source.clone(),
                         window_key: format!("w{minutes}"),
                         window_minutes: Some(minutes),
                         used_pct: (step + 1) as f64 * 9.0,
                         resets_at,
                         observed_at: resets_at - span + step * (span / 10),
-                        via: "logs".to_string(),
+                        via: "live".to_string(),
                         plan: Some("perf".to_string()),
                         provenance: ReadingProvenance {
                             account_id: Some(format!("acct-{s}")),
@@ -278,7 +290,17 @@ fn seed_readings(
                             covered_from: Some(resets_at - 4 * span),
                             external_activity: None,
                         },
-                    });
+                    };
+                    // The rollout between two Companion checks: same figure,
+                    // no account, no coverage. Benign, so it must pass through
+                    // rather than end the run it sits inside.
+                    let mut rollout = proven.clone();
+                    rollout.via = "logs".to_string();
+                    rollout.observed_at += span / 20;
+                    rollout.provenance.account_id = None;
+                    rollout.provenance.covered_from = None;
+                    readings.push(proven);
+                    readings.push(rollout);
                 }
             }
         }
@@ -304,11 +326,25 @@ fn plan_of(conn: &rusqlite::Connection, sql: &str) -> String {
     rows.join(" | ")
 }
 
+fn state_of(outcome: &crate::queries::LimitEstimateOutcome) -> String {
+    use crate::queries::LimitEstimateOutcome as O;
+    match outcome {
+        O::Ready { .. } => "Ready",
+        O::Gathering => "Gathering",
+        O::Unstable => "Unstable",
+        O::Stale => "Stale",
+        O::Blocked => "Blocked",
+    }
+    .to_string()
+}
+
 fn ready_windows(cards: &[crate::queries::SourceLimits]) -> usize {
     cards
         .iter()
         .flat_map(|c| &c.windows)
-        .filter(|w| w.estimate.state == crate::limits_readiness::ReadinessState::Ready)
+        .filter(|w| {
+            matches!(w.estimate.outcome, crate::queries::LimitEstimateOutcome::Ready { .. })
+        })
         .count()
 }
 
@@ -463,13 +499,16 @@ fn performance_standard_limits_estimate() {
         on_timer.as_secs_f64() * 1e3,
     );
 
-    // ── 4. the withheld path, and with it Stale reconstruction ──
+    // ── 4. the withheld path: Stale reconstruction and Gathering exhaustion ──
     //
     // Withdrawing the newest epochs' coverage drops each Series below three
     // recent candidates, which is the only branch that reaches `aged_out_core` —
     // one full estimator replay per completed epoch, newest-first, stopping at
-    // the first that proves Ready. It is the super-linear path in this read, and
-    // a Ready page never enters it.
+    // the first that proves Ready. The weekly windows find their proof in the
+    // bounded read and reconstruct Stale; the five-hour ones have no provable
+    // core anywhere (their old epochs carry no Usage), so they page the whole
+    // table backwards to exhaustion and stay Gathering — both spec-mandated
+    // shapes, and a Ready page enters neither.
     // 42 days is the weekly window's own recency horizon, so this empties the
     // candidate set of both Series rather than only the short one's — the weekly
     // Series keeps twelve completed epochs inside that horizon and stays Ready if
@@ -485,7 +524,7 @@ fn performance_standard_limits_estimate() {
     let withheld = started.elapsed();
     let mut states = std::collections::BTreeMap::new();
     for w in withheld_cards.iter().flat_map(|c| &c.windows) {
-        *states.entry(format!("{:?}", w.estimate.state)).or_insert(0) += 1;
+        *states.entry(state_of(&w.estimate.outcome)).or_insert(0) += 1;
     }
     eprintln!(
         "PERF limits_withheld states={states:?} elapsed_ms={:.1}",
@@ -558,17 +597,19 @@ fn performance_standard_limits_estimate() {
         t_plan_label.as_secs_f64() * 1e3,
     );
 
-    for (name, elapsed) in [
-        ("page open", page_open),
-        ("after scan", after_scan),
-        ("on timer", on_timer),
-        ("withheld", withheld),
+    for (name, elapsed, budget) in [
+        ("page open", page_open, LIMITS_BUDGET),
+        ("after scan", after_scan, LIMITS_BUDGET),
+        ("on timer", on_timer, LIMITS_BUDGET),
+        // The one path allowed to cost more: a Gathering window pages all of
+        // history to prove nothing older would change its answer (#186).
+        ("withheld", withheld, EXHAUSTION_BUDGET),
     ] {
         assert!(
-            elapsed <= LIMITS_BUDGET,
+            elapsed <= budget,
             "{name} took {:.1} ms with {total} Readings; budget is {} ms",
             elapsed.as_secs_f64() * 1e3,
-            LIMITS_BUDGET.as_millis(),
+            budget.as_millis(),
         );
     }
 

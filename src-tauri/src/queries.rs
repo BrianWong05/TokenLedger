@@ -104,7 +104,7 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
-use crate::limits_estimator::recency_horizon;
+use crate::limits_estimator::{coheres, recency_horizon, Candidate};
 use crate::limits_evidence::{self, ReasonCode, SeriesKey};
 use crate::limits_readiness::{self, Evaluation, ReadinessState};
 use crate::pricing::RateMap;
@@ -921,12 +921,12 @@ pub struct EstimateEpochSummary {
     pub positive_movements: usize,
     /// Stable-core membership — the count the row reports, not every candidate.
     pub in_core: bool,
-    // The contract also names a per-summary `reasonCodes`, which is not here:
-    // refusals are tallied per Limit rather than per epoch, so an epoch cannot
-    // yet say why it was passed over. Giving each one its own would be a change
-    // to the estimator, not to this mapping. The window-level `rejections`
-    // carries every reason meanwhile, and the diagnostic path can attribute
-    // them.
+    /// Why this epoch sits outside the core, where it does and a core exists:
+    /// adding it back would break the endpoint-rounding intersection or the
+    /// ratio spread, and the code names which. Empty for core members — and for
+    /// every candidate when no core formed at all, where no single epoch can be
+    /// blamed for the set.
+    pub reason_codes: Vec<ReasonCode>,
 }
 
 /// One reason, and how often it applied.
@@ -982,14 +982,23 @@ pub struct LimitEstimateExplanation {
     pub quantization_intersection: Option<EstimateQuantization>,
 }
 
+/// The state-discriminated half of the evaluation (spec: "Public shape").
+/// `tokensPerPct` exists on the Ready variant and nowhere else, so the
+/// generated TypeScript narrows on `state` and "only Ready serializes a finite
+/// positive tokensPerPct" holds by construction rather than by discipline.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub enum LimitEstimateOutcome {
+    #[serde(rename_all = "camelCase")]
+    Ready { tokens_per_pct: f64 },
+    Gathering,
+    Unstable,
+    Stale,
+    Blocked,
+}
+
 /// The tagged evaluation every Limit row carries.
-///
-/// `tokensPerPct` is present exactly when `state` is `ready` and absent
-/// otherwise, which is the specification's rule — but as an optional field
-/// rather than the discriminated union it writes, so **TypeScript will not
-/// narrow on the state**: a caller that has checked `state === 'ready'` still
-/// has to handle `undefined`. The runtime guarantee holds; the compile-time one
-/// does not, and a union of two flat shapes is what would buy it.
 ///
 /// Deliberately absent: pre-rounded used/left figures and any 100% equivalent —
 /// the frontend derives those from the percentage it is already showing.
@@ -997,10 +1006,11 @@ pub struct LimitEstimateExplanation {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct LimitEstimateEvaluation {
-    pub state: ReadinessState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub tokens_per_pct: Option<f64>,
+    /// Flattened, so the wire shape is the spec's union: `state` at the top
+    /// level, with `tokensPerPct` beside it exactly when `state == "ready"`.
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub outcome: LimitEstimateOutcome,
     #[ts(type = "number")]
     pub evaluated_at: i64,
     #[ts(type = "number | null")]
@@ -1034,23 +1044,22 @@ pub struct SourceLimits {
 /// far narrower than the shortest window Codex reports (300 minutes).
 pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 
-/// The current state of every Limit the Ledger holds Readings for: per
-/// (source, window_key) the newest epoch, and within it the highest `used_pct`
-/// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
-/// monotonic within an epoch (#104), so the highest is the latest.
-///
-/// This ignores the Overview's date window and Source selection entirely: the
-/// Limits page is *now*, not a range.
-/// Which window each card draws, and from which Reading — exported so a profile
-/// can `EXPLAIN` and time the statement the page actually issues rather than a
-/// copy of it. It has no time bound by design: a card shows the newest epoch, and
-/// which epoch is newest is a fact about the whole table.
+/// How many Readings the Stale reconstruction pages in at a time when it walks
+/// history the bounded read never covered. Large enough that real histories
+/// take a handful of pages; small enough that no page holds a whole Ledger's
+/// Readings and Usage at once.
+const STALE_PAGE_READINGS: usize = 2_000;
+
 /// The plan pill's text, as of a Source's newest observation. Exported for the
 /// same reason as the statement below it: a profile must EXPLAIN what runs.
 pub const PLAN_LABEL_SQL: &str =
     "SELECT plan FROM limit_readings WHERE source = ?1 AND plan IS NOT NULL \
      ORDER BY observed_at DESC LIMIT 1";
 
+/// Which window each card draws, and from which Reading — exported so a profile
+/// can `EXPLAIN` and time the statement the page actually issues rather than a
+/// copy of it. It has no time bound by design: a card shows the newest epoch, and
+/// which epoch is newest is a fact about the whole table.
 pub const DISPLAYED_WINDOWS_SQL: &str =
     "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
             MAX(r.resets_at), MAX(r.observed_at) \
@@ -1062,6 +1071,13 @@ pub const DISPLAYED_WINDOWS_SQL: &str =
      GROUP BY r.source, r.window_key \
      ORDER BY r.source, MAX(r.window_minutes), r.window_key";
 
+/// The current state of every Limit the Ledger holds Readings for: per
+/// (source, window_key) the newest epoch, and within it the highest `used_pct`
+/// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
+/// monotonic within an epoch (#104), so the highest is the latest.
+///
+/// This ignores the Overview's date window and Source selection entirely: the
+/// Limits page is *now*, not a range.
 pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>, LimitsError> {
     // One snapshot for the whole page. Four statements answer it — the rows, the
     // Readings, their Usage, the plan — and a scan committing between them would
@@ -1084,35 +1100,80 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
 
     // One horizon for the whole read, from the longest window on the page: one
     // recency horizon for the candidates a Ready answer needs, and one more
-    // behind it so a core that has aged out is still there to be found. Beyond
-    // that, older evidence could not change any answer this query can give.
+    // behind it so the ordinary Stale — a core that aged out recently — is
+    // found without paging. Older history is not unreachable: a Gathering
+    // answer pages backwards through it below.
     let longest = displayed.iter().filter_map(|w| w.2).max();
-    // ponytail: two horizons back — one for the candidates a Ready answer needs
-    // and one behind it so a core that aged out is still findable. A core older
-    // than that reads as Gathering rather than Stale, which is a difference in
-    // copy rather than in any number; widen it, or read backwards in pages, if
-    // a Series ever holds that much history.
     let since = evaluated_at - 2 * recency_horizon(longest);
     let readings = limits_evidence::stored_readings(conn, since)?;
     let usage = limits_evidence::matching_usage(conn, &readings)?;
-    let evidence = limits_evidence::derive(&readings, &usage).map_err(|invariant| {
-        // An invariant failure is a technical error, not a readiness state: it
-        // rejects the whole command rather than being shown as Blocked.
+    // An invariant failure is a technical error, not a readiness state: it
+    // rejects the whole command rather than being shown as Blocked.
+    let broken = |invariant: limits_evidence::NonFinitePercentage| {
         LimitsError::Invariant(format!(
             "{} reported a percentage that is not a number, observed at {}",
             invariant.source, invariant.observed_at
         ))
-    })?;
+    };
+    let mut evidence = limits_evidence::derive(&readings, &usage).map_err(broken)?;
+
+    let mut evaluated = Vec::with_capacity(displayed.len());
+    for (source, window_key, window_minutes, used_pct, resets_at, observed_at) in displayed {
+        // The Reading the ESTIMATE evaluates from: the newest one that proves
+        // its Series, independent of the display Reading (which stays the
+        // newest overall, chosen by the SQL above). Codex interleaves
+        // account-less rollout Readings between the Companion's proven ones,
+        // so newest-overall flapped the estimate to Blocked
+        // (missing-account-identity) on every request while the Companion was
+        // signed in (#183). With no identity-bearing Reading at all, the
+        // newest overall stands, so Blocked still names the missing fact.
+        let newest = |proving: bool| {
+            readings
+                .iter()
+                .filter(|r| r.source == source && r.window_key == window_key)
+                .filter(|r| !proving || SeriesKey::of(r).is_ok())
+                .max_by_key(|r| (r.observed_at, r.used_pct.to_bits()))
+        };
+        let current = newest(true).or_else(|| newest(false));
+        let evaluation = limits_readiness::evaluate(current, &evidence.partitions, evaluated_at);
+        evaluated
+            .push((source, window_key, window_minutes, used_pct, resets_at, observed_at, current, evaluation));
+    }
+
+    // Gathering is the one answer that may only mean "not read far enough":
+    // Stale is reconstructed by replaying the policy over completed history,
+    // newest-first, stopping at the first Ready proof or when history is
+    // exhausted (spec: "Readiness state machine"), and the bounded read above
+    // reaches two horizons back at most. So a Gathering window pages older
+    // history in: each page's Readings and Usage are read, derived, and
+    // dropped, and only the Partition summaries accumulate — which is the
+    // memory posture the specification asks for. Every other state is final on
+    // the bounded read, and a Ready page never enters this loop.
+    // ponytail: each page re-runs `evaluate`, whose Stale replay walks every
+    // accumulated clock again — quadratic in a Series' completed epochs. Bound
+    // the re-check to each batch's own clocks if a Series ever holds enough
+    // identity-bearing history for it to show.
+    let mut partitions = std::mem::take(&mut evidence.partitions);
+    let mut cursor = (since, i64::MIN);
+    while evaluated.iter().any(|w| w.7.state == ReadinessState::Gathering) {
+        let (older, next) =
+            limits_evidence::stored_readings_page(conn, cursor, STALE_PAGE_READINGS)?;
+        let Some(next) = next else { break };
+        cursor = next;
+        let older_usage = limits_evidence::matching_usage(conn, &older)?;
+        let paged = limits_evidence::derive(&older, &older_usage).map_err(broken)?;
+        limits_evidence::absorb(&mut partitions, paged.partitions);
+        for window in &mut evaluated {
+            if window.7.state == ReadinessState::Gathering {
+                window.7 = limits_readiness::evaluate(window.6, &partitions, evaluated_at);
+            }
+        }
+    }
 
     let mut cards: Vec<SourceLimits> = Vec::new();
-    for (source, window_key, window_minutes, used_pct, resets_at, observed_at) in displayed {
-        // The Reading the card is showing, with the provenance that decides
-        // whether it can anchor anything.
-        let current = readings
-            .iter()
-            .filter(|r| r.source == source && r.window_key == window_key)
-            .max_by_key(|r| (r.observed_at, r.used_pct.to_bits()));
-        let evaluation = limits_readiness::evaluate(current, &evidence.partitions, evaluated_at);
+    for (source, window_key, window_minutes, used_pct, resets_at, observed_at, current, evaluation) in
+        evaluated
+    {
         // Everything this Limit's evidence refused, beside everything its
         // estimator did: the interval and Reading refusals are most of the
         // twenty-two reasons there are, and a page that reported only the
@@ -1183,12 +1244,32 @@ fn on_the_wire(
                 .candidates
                 .iter()
                 .enumerate()
-                .map(|(index, candidate)| EstimateEpochSummary {
-                    epoch_key: epoch_key(series, candidate.epoch_ended_at),
-                    ended_at: candidate.epoch_ended_at,
-                    movement_points: candidate.movement,
-                    positive_movements: candidate.positive_movements,
-                    in_core: explanation.core.contains(&index),
+                .map(|(index, candidate)| {
+                    let in_core = explanation.core.contains(&index);
+                    // Why the core left this one out, in the estimator's own
+                    // judgment: the core with this candidate added back either
+                    // shares no endpoint rounding or exceeds the spread. A core
+                    // member — or any candidate when no core formed — has
+                    // nothing to answer for, and says nothing.
+                    let reason_codes = if in_core || explanation.core.is_empty() {
+                        Vec::new()
+                    } else {
+                        let mut with: Vec<&Candidate> = explanation
+                            .core
+                            .iter()
+                            .map(|&i| &explanation.candidates[i])
+                            .collect();
+                        with.push(candidate);
+                        coheres(&with).into_iter().collect()
+                    };
+                    EstimateEpochSummary {
+                        epoch_key: epoch_key(series, candidate.epoch_ended_at),
+                        ended_at: candidate.epoch_ended_at,
+                        movement_points: candidate.movement,
+                        positive_movements: candidate.positive_movements,
+                        in_core,
+                        reason_codes,
+                    }
                 })
                 .collect()
         })
@@ -1200,22 +1281,30 @@ fn on_the_wire(
         *rejections.entry(reason).or_insert(0) += count;
     }
 
-    // A ratio that is not finite and positive is not a withheld state but a
-    // fault: the specification calls it an invariant failure, so it rejects the
-    // command rather than shipping a Ready row with nothing in it.
-    if let Some(ratio) = evaluation.tokens_per_pct {
-        if !ratio.is_finite() || ratio <= 0.0 {
-            return Err(LimitsError::Invariant(format!(
-                "an estimate resolved to {ratio}, which is not a token count",
-            )));
-        }
-    }
+    // Only Ready carries a number, held by the variant's own shape — and it
+    // must be a token count: a Ready evaluation without a finite positive
+    // ratio is not a withheld state but a fault, and the specification calls
+    // it an invariant failure, so it rejects the command rather than shipping
+    // a Ready row with nothing in it.
+    let outcome = match evaluation.state {
+        ReadinessState::Ready => match evaluation.tokens_per_pct {
+            Some(ratio) if ratio.is_finite() && ratio > 0.0 => {
+                LimitEstimateOutcome::Ready { tokens_per_pct: ratio }
+            }
+            broken => {
+                return Err(LimitsError::Invariant(format!(
+                    "a Ready estimate resolved to {broken:?}, which is not a token count",
+                )))
+            }
+        },
+        ReadinessState::Gathering => LimitEstimateOutcome::Gathering,
+        ReadinessState::Unstable => LimitEstimateOutcome::Unstable,
+        ReadinessState::Stale => LimitEstimateOutcome::Stale,
+        ReadinessState::Blocked => LimitEstimateOutcome::Blocked,
+    };
 
     Ok(LimitEstimateEvaluation {
-        state: evaluation.state,
-        // Finite and positive, or nothing: a number that is neither is not a
-        // withheld state, it is a fault, and the row shows no figure at all.
-        tokens_per_pct: evaluation.tokens_per_pct,
+        outcome,
         evaluated_at: evaluation.evaluated_at,
         next_evaluation_at: evaluation.next_evaluation_at,
         policy_version: evaluation.policy_version.to_string(),
@@ -2090,6 +2179,8 @@ mod tests {
     }
 
     /// A Reading proving everything, so a test can spoil exactly one fact.
+    /// `via: "live"` because that is the only shape that carries an account in
+    /// production — the Companion's; a rollout Reading never does (#183).
     fn proven_reading(used_pct: f64, observed_at: i64, resets_at: i64) -> LimitReading {
         LimitReading {
             source: "codex".to_string(),
@@ -2098,7 +2189,7 @@ mod tests {
             used_pct,
             resets_at,
             observed_at,
-            via: "logs".to_string(),
+            via: "live".to_string(),
             plan: Some("plus".to_string()),
             provenance: crate::types::ReadingProvenance {
                 account_id: Some("acct-a".to_string()),
@@ -2110,6 +2201,16 @@ mod tests {
                 external_activity: None,
             },
         }
+    }
+
+    /// The rollout's own shape: identity but no account or coverage — what the
+    /// Codex scan stores for every request (#183).
+    fn rollout_reading(used_pct: f64, observed_at: i64, resets_at: i64) -> LimitReading {
+        let mut r = proven_reading(used_pct, observed_at, resets_at);
+        r.via = "logs".to_string();
+        r.provenance.account_id = None;
+        r.provenance.covered_from = None;
+        r
     }
 
     #[test]
@@ -2134,8 +2235,7 @@ mod tests {
             assert_eq!(window.estimate.evaluated_at, EVALUATED_AT);
             assert_eq!(window.estimate.policy_version, "limit-token-estimate-v1");
             // Nothing to be Ready on yet, so no figure — and never a zero.
-            assert_eq!(window.estimate.state, ReadinessState::Gathering);
-            assert_eq!(window.estimate.tokens_per_pct, None);
+            assert_eq!(window.estimate.outcome, LimitEstimateOutcome::Gathering);
         }
     }
 
@@ -2152,8 +2252,7 @@ mod tests {
 
         let cards = limits(&conn, EVALUATED_AT).unwrap();
         let estimate = &cards[0].windows[0].estimate;
-        assert_eq!(estimate.state, ReadinessState::Blocked);
-        assert_eq!(estimate.tokens_per_pct, None);
+        assert_eq!(estimate.outcome, LimitEstimateOutcome::Blocked);
         // Absent on the wire, not null: the shape a frontend narrows on.
         let json = serde_json::to_string(estimate).unwrap();
         assert!(!json.contains("tokensPerPct"), "{json}");
@@ -2163,24 +2262,103 @@ mod tests {
 
     #[test]
     fn the_payload_stays_bounded_and_carries_no_record_identities() {
+        use crate::types::{CtxTokens, UsageEvent};
+
         let dir = tempdir().unwrap();
         let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+
+        // Seven qualifying recent epochs — more than the payload may carry —
+        // so the five-summary bound, the no-identities rule, and the
+        // no-infinity rule are all tested against a payload that actually has
+        // candidates to leak. The original fixture had zero, and every one of
+        // these assertions passed vacuously.
+        const DAY: i64 = 86_400;
+        let mut readings = vec![proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + DAY)];
+        let mut events = Vec::new();
+        for (i, days_ago) in (1i64..=7).enumerate() {
+            let ended = EVALUATED_AT - days_ago * DAY;
+            for step in 0..3i64 {
+                readings.push(proven_reading(
+                    (step * 10) as f64,
+                    ended - 7_200 + step * 3_600,
+                    ended,
+                ));
+            }
+            for step in 0..2i64 {
+                events.push(UsageEvent {
+                    dedup_key: format!("bounded-{i}-{step}"),
+                    source: "codex".to_string(),
+                    timestamp: ended - 7_200 + step * 3_600 + 1,
+                    model: Some("gpt-5.4-codex".to_string()),
+                    project: None,
+                    api_calls: 1,
+                    input_tokens: 1_000 + i as i64,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_5m_tokens: 0,
+                    cache_write_1h_tokens: 0,
+                    source_file: "bounded-rollout.jsonl".to_string(),
+                    session_id: None,
+                    reasoning_tokens: None,
+                    ctx: CtxTokens::default(),
+                });
+            }
+        }
+        db::insert_limit_readings(&mut conn, &readings).unwrap();
+        db::insert_events(&mut conn, &events).unwrap();
+        conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let estimate = &cards[0].windows[0].estimate;
+        assert_eq!(
+            estimate.explanation.candidates.len(),
+            5,
+            "seven qualifying epochs, five summaries: the bound has to bite"
+        );
+        assert_eq!(estimate.explanation.required_epochs, 3);
+
+        let json = serde_json::to_string(estimate).unwrap();
+        // Rejections and candidates travel as counts and summaries, never as
+        // the Records they counted — by value, so any spelling of a leaked
+        // identity fails, not merely the Rust field name.
+        assert!(!json.contains("bounded-"), "{json}");
+        assert!(!json.contains("dedup_key") && !json.contains("sourceFile"), "{json}");
+        // And an unbounded quantization upper is null, never an infinity.
+        assert!(!json.contains("inf"), "{json}");
+    }
+
+    #[test]
+    fn the_estimate_evaluates_from_the_newest_identity_bearing_reading() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // Codex's production timeline: the newest Reading overall is a rollout's
+        // — account-less — while a recent Companion Reading proves the Series.
+        // The evaluation must proceed from the live one rather than flapping to
+        // missing-account-identity Blocked on every request (#183).
         db::insert_limit_readings(
             &mut conn,
-            &[proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400)],
+            &[
+                proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400),
+                rollout_reading(41.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400),
+            ],
         )
         .unwrap();
 
         let cards = limits(&conn, EVALUATED_AT).unwrap();
-        let estimate = &cards[0].windows[0].estimate;
-        assert!(estimate.explanation.candidates.len() <= 5);
-        assert_eq!(estimate.explanation.required_epochs, 3);
-
-        let json = serde_json::to_string(estimate).unwrap();
-        // Rejections travel as counts, never as the things they counted.
-        assert!(!json.contains("dedup_key") && !json.contains("sourceFile"), "{json}");
-        // And an unbounded quantization upper is null, never an infinity.
-        assert!(!json.contains("inf"), "{json}");
+        let window = &cards[0].windows[0];
+        // The display stays the newest overall; only the estimate anchors on
+        // the identity-bearing Reading.
+        assert_eq!(window.used_pct, 41.0);
+        assert_eq!(window.estimate.outcome, LimitEstimateOutcome::Gathering, "not Blocked");
+        assert!(
+            !window
+                .estimate
+                .explanation
+                .reason_codes
+                .contains(&ReasonCode::MissingAccountIdentity),
+            "{:?}",
+            window.estimate.explanation.reason_codes,
+        );
     }
 
     #[test]
@@ -2208,6 +2386,127 @@ mod tests {
                 .any(|r| r.reason_code == ReasonCode::MissingAccountIdentity && r.count == 1),
             "{rejections:?}",
         );
+    }
+
+    #[test]
+    fn a_stable_core_older_than_the_bounded_read_is_stale_not_gathering() {
+        use crate::types::{CtxTokens, UsageEvent};
+
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+
+        // Three agreeing completed epochs around 100 days back — strictly older
+        // than the two-horizon page-open read (84 days for a weekly window).
+        // The fixed bound alone answered Gathering; the backwards paging must
+        // walk on until it finds the Ready proof, and answer Stale (spec:
+        // "Stop at the first Ready proof or when history is exhausted").
+        const DAY: i64 = 86_400;
+        let mut readings = vec![proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + DAY)];
+        let mut events = Vec::new();
+        for (i, days_ago) in [100i64, 101, 102].iter().enumerate() {
+            let ended = EVALUATED_AT - days_ago * DAY;
+            for step in 0..3i64 {
+                readings.push(proven_reading(
+                    (step * 10) as f64,
+                    ended - 7_200 + step * 3_600,
+                    ended,
+                ));
+            }
+            for step in 0..2i64 {
+                events.push(UsageEvent {
+                    dedup_key: format!("stale-{i}-{step}"),
+                    source: "codex".to_string(),
+                    timestamp: ended - 7_200 + step * 3_600 + 1,
+                    model: Some("gpt-5.4-codex".to_string()),
+                    project: None,
+                    api_calls: 1,
+                    input_tokens: 1_000 + i as i64,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_5m_tokens: 0,
+                    cache_write_1h_tokens: 0,
+                    source_file: "rollout.jsonl".to_string(),
+                    session_id: None,
+                    reasoning_tokens: None,
+                    ctx: CtxTokens::default(),
+                });
+            }
+        }
+        db::insert_limit_readings(&mut conn, &readings).unwrap();
+        db::insert_events(&mut conn, &events).unwrap();
+        // `account_id` sits outside db::COLS, so no insert path writes it (#171).
+        conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let estimate = &cards[0].windows[0].estimate;
+        assert_eq!(estimate.outcome, LimitEstimateOutcome::Stale, "not Gathering");
+        assert!(
+            estimate.explanation.reason_codes.contains(&ReasonCode::HistoricalCoreAgedOut),
+            "{:?}",
+            estimate.explanation.reason_codes,
+        );
+    }
+
+    #[test]
+    fn epoch_summaries_carry_their_reason_codes_and_never_their_models() {
+        use crate::limits_evidence::{Interval, PartitionEvidence};
+
+        // Three agreeing epochs and one outlier, evaluated and put on the wire.
+        // The outlier's summary says why it sits outside the core, in codes; a
+        // core member says nothing. And the raw Model composition the internal
+        // candidates retain stays off the wire — the public shape has no
+        // models field (spec: "Public shape").
+        let epoch = |days_ago: i64, tokens: i64| {
+            let ended = EVALUATED_AT - days_ago * 86_400;
+            let interval = |from_pct: i64, tokens: i64, t0: i64| Interval {
+                from_pct,
+                to_pct: from_pct + 10,
+                tokens,
+                t0,
+                t1: t0 + 3_600,
+                models: std::iter::once("gpt-5.4-codex".to_string()).collect(),
+            };
+            PartitionEvidence {
+                series: SeriesKey {
+                    source: "codex".to_string(),
+                    account_id: "acct-a".to_string(),
+                    plan: "plus".to_string(),
+                    metering_regime: "codex:rate_limits".to_string(),
+                    limit_id: "codex:w10080".to_string(),
+                    model_scope: "all".to_string(),
+                },
+                epoch: ended,
+                window_minutes: Some(10_080),
+                intervals: vec![
+                    interval(0, tokens / 2, ended - 7_200),
+                    interval(10, tokens - tokens / 2, ended - 3_600),
+                ],
+            }
+        };
+        let partitions = vec![
+            epoch(1, 2_000),
+            epoch(2, 2_020),
+            epoch(3, 1_980),
+            epoch(4, 8_000),
+        ];
+        let current = proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400);
+        let evaluation = limits_readiness::evaluate(Some(&current), &partitions, EVALUATED_AT);
+        let wire = on_the_wire(evaluation, Some(&current), BTreeMap::new()).unwrap();
+
+        assert!(matches!(wire.outcome, LimitEstimateOutcome::Ready { .. }));
+        let summaries = &wire.explanation.candidates;
+        assert_eq!(summaries.len(), 4);
+        for member in summaries.iter().filter(|s| s.in_core) {
+            assert_eq!(member.reason_codes, vec![], "a core member has nothing to answer for");
+        }
+        let outlier = summaries.iter().find(|s| !s.in_core).expect("one epoch is left out");
+        assert_eq!(outlier.reason_codes, vec![ReasonCode::QuantizationRangesDisjoint]);
+
+        let json = serde_json::to_string(&wire).unwrap();
+        assert!(json.contains("\"state\":\"ready\""), "{json}");
+        assert!(json.contains("\"tokensPerPct\":"), "{json}");
+        assert!(json.contains("\"reasonCodes\""), "{json}");
+        assert!(!json.contains("models") && !json.contains("gpt-5.4-codex"), "{json}");
     }
 
     #[test]

@@ -15,7 +15,8 @@ use crate::types::{
 
 const PARSER_VERSION: i64 = 1;
 
-/// One `rate_limits` slot → a Reading, or None when that window does not exist.
+/// One `rate_limits` slot, with the block's own identity and plan beside it →
+/// a Reading, or None when that window does not exist.
 /// A null slot is an absent window, never a window at zero; a slot missing the
 /// duration or the reset instant cannot be keyed or placed on a time axis, so it
 /// is likewise no window. The key comes from the duration and never from the
@@ -26,8 +27,8 @@ const PARSER_VERSION: i64 = 1;
 /// Convert it here if pre-0.48 Artifacts ever turn up.
 fn slot_reading(
     slot: Option<&Value>,
-    limits: &Value,
     limit_id: &str,
+    plan: Option<&str>,
     observed_at: i64,
     source_order: i64,
 ) -> Option<LimitReading> {
@@ -47,10 +48,7 @@ fn slot_reading(
         resets_at,
         observed_at,
         via: "logs".to_string(),
-        plan: limits
-            .get("plan_type")
-            .and_then(|p| p.as_str())
-            .map(str::to_string),
+        plan: plan.map(str::to_string),
         provenance: evidence(limit_id, window_minutes, source_order),
     })
 }
@@ -125,9 +123,10 @@ pub fn scan_codex(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceSca
         for path in files {
             winners.insert(path.clone());
             match scan_file(conn, &path, index == 0) {
-                Ok((inserted, skipped)) => {
+                Ok((inserted, skipped, readings)) => {
                     result.events_inserted += inserted;
                     result.lines_skipped += skipped;
+                    result.limit_readings += readings;
                 }
                 Err(e) => result.error = Some(e),
             }
@@ -291,14 +290,18 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                         if let (Some(observed_at), Some(limit_id @ "codex")) =
                             (stamp, limits.get("limit_id").and_then(|i| i.as_str()))
                         {
+                            // Extracted beside `limit_id`, so what a Reading is
+                            // made of travels together rather than the block
+                            // being reached back into per slot.
+                            let plan = limits.get("plan_type").and_then(|p| p.as_str());
                             readings.extend(
                                 [limits.get("primary"), limits.get("secondary")]
                                     .into_iter()
                                     .flat_map(|slot| {
                                         slot_reading(
                                             slot,
-                                            limits,
                                             limit_id,
+                                            plan,
                                             observed_at,
                                             line_offset as i64,
                                         )
@@ -410,12 +413,12 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
     ParsedCodexFile { events, tool_rows, readings, skipped }
 }
 
-/// Returns (events_inserted, lines_skipped) for one file.
+/// Returns (events_inserted, lines_skipped, limit_readings_written) for one file.
 fn scan_file(
     conn: &mut Connection,
     path: &Path,
     include_limit_readings: bool,
-) -> Result<(u64, u64), String> {
+) -> Result<(u64, u64, u64), String> {
     let path_str = path.to_string_lossy().to_string();
     let parser_repair = db::get_file_state(conn, &path_str)
         .map_err(|e| e.to_string())?
@@ -436,7 +439,7 @@ fn scan_file(
         byte_offset: PARSER_VERSION,
     };
     if unchanged(conn, path, &state) {
-        return Ok((0, 0));
+        return Ok((0, 0, 0));
     }
 
     let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -457,12 +460,14 @@ fn scan_file(
     } else {
         db::insert_events(conn, &parsed.events).map_err(|e| e.to_string())?
     };
-    if include_limit_readings {
-        db::insert_limit_readings(conn, &parsed.readings).map_err(|e| e.to_string())?;
-    }
+    let readings = if include_limit_readings {
+        db::insert_limit_readings(conn, &parsed.readings).map_err(|e| e.to_string())?
+    } else {
+        0
+    };
     db::add_ctx_tool_rows(conn, "codex", &path_str, &parsed.tool_rows).map_err(|e| e.to_string())?;
     db::set_file_state(conn, &path_str, state).map_err(|e| e.to_string())?;
-    Ok((inserted, parsed.skipped))
+    Ok((inserted, parsed.skipped, readings))
 }
 
 #[cfg(test)]
@@ -1444,7 +1449,7 @@ mod tests {
             &lines.iter().map(String::as_str).collect::<Vec<_>>(),
         );
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
-        scan_codex(&mut conn, std::slice::from_ref(&root));
+        let first = scan_codex(&mut conn, std::slice::from_ref(&root));
         let rows = |conn: &Connection| -> i64 {
             conn.query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0)).unwrap()
         };
@@ -1453,12 +1458,16 @@ mod tests {
             3,
             "each observation is a Reading, the repeat at an unchanged percentage included",
         );
+        // The change signal rides the scan result up to the notification gate
+        // (#187): what landed is what an open Limits page re-queries for.
+        assert_eq!(first.limit_readings, 3);
 
         // Re-scanning the same file — after clearing scan state, so the parse
         // genuinely re-runs — inserts nothing new.
         conn.execute("DELETE FROM scanned_files", []).unwrap();
-        scan_codex(&mut conn, std::slice::from_ref(&root));
+        let again = scan_codex(&mut conn, std::slice::from_ref(&root));
         assert_eq!(rows(&conn), 3, "a re-parse re-reads the same three observations");
+        assert_eq!(again.limit_readings, 0, "nothing changed, so nothing signals");
     }
 
     // ---- pure parse_file core (no DB) ----

@@ -155,14 +155,14 @@ pub fn evaluate(
         partitions.iter().filter(|p| p.series == series).cloned().collect();
     let estimate = estimate_of(&own, evaluated_at);
 
-    let state = if estimate.tokens_per_pct.is_some() {
-        ReadinessState::Ready
-    } else if estimate.candidates.len() >= REQUIRED_EPOCHS {
-        ReadinessState::Unstable
-    } else if aged_out_core(&own, evaluated_at) {
-        ReadinessState::Stale
-    } else {
-        ReadinessState::Gathering
+    // The state and its number are one decision: Ready IS the estimator having
+    // produced a ratio, so "only Ready carries a number" holds by construction
+    // rather than by a guard downstream that could only ever agree.
+    let (state, tokens_per_pct) = match estimate.tokens_per_pct {
+        Some(ratio) => (ReadinessState::Ready, Some(ratio)),
+        None if estimate.candidates.len() >= REQUIRED_EPOCHS => (ReadinessState::Unstable, None),
+        None if aged_out_core(&own, evaluated_at) => (ReadinessState::Stale, None),
+        None => (ReadinessState::Gathering, None),
     };
 
     // The set the answer came from: the core where there is one, and every
@@ -175,10 +175,7 @@ pub fn evaluate(
 
     Evaluation {
         state,
-        // Only Ready carries a number, whatever the estimator found.
-        tokens_per_pct: (state == ReadinessState::Ready)
-            .then_some(estimate.tokens_per_pct)
-            .flatten(),
+        tokens_per_pct,
         evaluated_at,
         next_evaluation_at: next_evaluation_at(
             Some(current),
@@ -336,13 +333,21 @@ mod tests {
             epoch: ended,
             window_minutes: Some(10_080),
             intervals: vec![
-                Interval { from_pct: 0, to_pct: half, tokens: first, t0: ended - 7_200, t1: ended - 3_600 },
+                Interval {
+                    from_pct: 0,
+                    to_pct: half,
+                    tokens: first,
+                    t0: ended - 7_200,
+                    t1: ended - 3_600,
+                    models: Default::default(),
+                },
                 Interval {
                     from_pct: half,
                     to_pct: movement,
                     tokens: second,
                     t0: ended - 3_600,
                     t1: ended - 1_800,
+                    models: Default::default(),
                 },
             ],
         }
@@ -350,7 +355,14 @@ mod tests {
 
     /// One movement only: enough span, not enough movements to qualify.
     fn chain_of(movement: i64, tokens: i64, t0: i64) -> Vec<Interval> {
-        vec![Interval { from_pct: 0, to_pct: movement, tokens, t0, t1: t0 + 60 }]
+        vec![Interval {
+            from_pct: 0,
+            to_pct: movement,
+            tokens,
+            t0,
+            t1: t0 + 60,
+            models: Default::default(),
+        }]
     }
 
     /// Three epochs that agree — the shape of a Ready estimate.

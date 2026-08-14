@@ -4,6 +4,7 @@
 // SourceLimits[] and a clock.
 import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
+import type { LimitEstimateState } from '../bindings/LimitEstimateState';
 import { SOURCES, type SourceMeta } from '../overview/meta';
 
 // How a Source's Limits are acquired. `logs` flows from ordinary scans; `live`
@@ -25,10 +26,8 @@ export type CardState = 'live' | 'signed-out' | 'error' | 'nothing-recorded';
 export type Tone = 'ok' | 'low' | 'dry';
 
 /**
- * What the evidence line draws — the discriminated union the wire does not
- * have. `tokensPerPct` travels as an optional field, so a caller that has
- * checked `state === 'ready'` still faces `number | undefined`; this resolves
- * that once, here, and hands the row figures it can use without asking again.
+ * What the evidence line draws — the wire's union resolved into the row's own
+ * figures, so the renderer never converts or counts anything itself.
  *
  * Every figure is canonical tokens, unformatted: locale is the renderer's
  * business, and this file has no language.
@@ -51,7 +50,7 @@ export type EstimateView =
       epochs: number;
     }
   | {
-      state: 'gathering' | 'unstable' | 'stale' | 'blocked';
+      state: Exclude<LimitEstimateState, 'ready'>;
       /** Completed epochs that qualified; only Gathering's copy reports it. */
       qualifying: number;
     };
@@ -61,8 +60,17 @@ export interface WindowView {
   key: string;
   /** 100 − the vendor's used figure, or 100 for an expired epoch. */
   pctLeft: number;
-  /** The framed figure the numeral and the fill both show. */
+  /** The framed unrounded figure the fill's geometry uses. */
   pct: number;
+  /**
+   * The rounded percentage the row DISPLAYS under this framing. The spec fixes
+   * the order: the USED figure rounds, and Left is 100 − that — so the two
+   * framings always total 100. The numeral, its aria text, and every estimate
+   * conversion read this; `pct` keeps the fraction for the fill.
+   */
+  pctShown: number;
+  /** 100 − the rounded used figure — what "used up" is judged by. */
+  pctLeftShown: number;
   tone: Tone;
   /** Minutes until this window's reset; null when none is scheduled. */
   resetsInMin: number | null;
@@ -120,6 +128,22 @@ export function framedPct(pctLeft: number, mode: Mode): number {
 }
 
 /**
+ * The estimate's own clock (spec: "Evaluation timing"). Each evaluation names
+ * the earliest future second at which time ALONE changes its answer — an epoch
+ * resetting, or a candidate ageing out of recency — and the soonest of those is
+ * the only moment the page has anything to re-ask. A window whose answer no
+ * clock can change reports `null` and contributes nothing; a stamp the clock
+ * has already passed is the backend's answer ageing, not a reason to spin.
+ */
+export function nextDueAt(stored: SourceLimits[], nowSec: number): number | null {
+  const times = stored
+    .flatMap((s) => s.windows)
+    .map((w) => w.estimate.nextEvaluationAt)
+    .filter((at): at is number => at !== null && at > nowSec);
+  return times.length ? Math.min(...times) : null;
+}
+
+/**
  * One stored Reading → the row's drawable state.
  *
  * The tick is time, not a forecast (#107): under Left framing it sits at
@@ -139,6 +163,11 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
   const durationMin = w.windowMinutes ?? null;
   const expired = w.resetsAt <= nowSec;
   const pctLeft = expired ? 100 : Math.max(0, Math.min(100, 100 - w.usedPct));
+  // The spec's displayed percentage: the USED figure rounds, and Left is
+  // 100 − that — never a rounding of the raw remainder, which lands one point
+  // off at the .5 boundary (59.5% used must read 60% used / 40% left, not 41%).
+  const usedShown = expired ? 0 : Math.round(Math.max(0, Math.min(100, w.usedPct)));
+  const pctLeftShown = 100 - usedShown;
 
   const resetsInMin = expired ? null : (w.resetsAt - nowSec) / 60;
 
@@ -151,6 +180,8 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
     key: w.windowKey,
     pctLeft,
     pct: framedPct(pctLeft, mode),
+    pctShown: mode === 'left' ? pctLeftShown : usedShown,
+    pctLeftShown,
     tone: tone(pctLeft),
     resetsInMin,
     tickPct: timeLeftPct === null ? null : mode === 'left' ? timeLeftPct : 100 - timeLeftPct,
@@ -184,24 +215,25 @@ export function estimateView(
     return { state: evaluation.state, qualifying: evaluation.explanation.qualifyingEpochs };
   }
   const perPct = evaluation.tokensPerPct;
-  if (perPct === undefined || !Number.isFinite(perPct) || perPct <= 0) return null;
+  if (!Number.isFinite(perPct) || perPct <= 0) return null;
 
   // The selected figure is hidden wherever the displayed percentage is not a fact
   // about now: a window the row shows as used up — which would read "≈0 left"
   // under one framing and as a whole-window figure under the other, both of them
   // forbidden — and an expired epoch, whose 100% the bar SYNTHESISES. Converting
   // that second one would invent a full window's worth of tokens out of a Reading
-  // that proves nothing about the current window. Rounded, so the line and the
-  // numeral can never disagree about which of those a window is.
+  // that proves nothing about the current window. Judged off `pctShown`'s own
+  // rounding, so the line and the numeral can never disagree about which of
+  // those a window is.
   //
   // Everything the evidence itself knows survives either way: tokens per 1%, the
   // epoch count, and the info control. A used-up Reading may still carry a Ready
   // historical ratio.
-  const spent = bar.expired || Math.round(bar.pctLeft) <= 0;
+  const spent = bar.expired || bar.pctLeftShown <= 0;
 
   return {
     state: 'ready',
-    selected: spent ? null : perPct * Math.round(bar.pct),
+    selected: spent ? null : perPct * bar.pctShown,
     perPct,
     total: perPct * 100,
     epochs: evaluation.explanation.candidates.filter((c) => c.inCore).length,

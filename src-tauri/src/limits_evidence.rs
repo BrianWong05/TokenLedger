@@ -10,7 +10,7 @@
 //! What it deliberately does not do: form runs, choose epoch representatives,
 //! or compute a ratio. Those are the estimator's, one ticket along.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -144,6 +144,10 @@ pub struct Interval {
     /// The exclusive lower bound and inclusive upper bound of membership.
     pub t0: i64,
     pub t1: i64,
+    /// The raw Models the counted Records name — the run's Model composition,
+    /// retained as diagnostic metadata (spec: Clean runs) and never sent on the
+    /// public payload. Unattributed Usage counts tokens but names nothing.
+    pub models: BTreeSet<String>,
 }
 
 impl Interval {
@@ -330,10 +334,19 @@ fn place(
 /// tokens keep accumulating from the last anchor until the percentage moves.
 /// Anything that interrupts the run ends that accumulation — a decrease, a
 /// saturation, a fact that spoils the stretch, and equally a Reading of another
-/// Partition or of none at all standing between the anchor and the movement.
-/// That last case is why the walk sees the whole timeline rather than one
-/// Partition's Readings: a run cannot step over a Reading that says the account,
-/// the meter, the Limit or the window changed in the middle of it.
+/// Partition standing between the anchor and the movement. That last case is
+/// why the walk sees the whole timeline rather than one Partition's Readings: a
+/// run cannot step over a Reading that says the account, the meter, the Limit
+/// or the window changed in the middle of it.
+///
+/// A Reading that proves too little to be placed anywhere is different (#183):
+/// it can never anchor and never admit evidence, but inside a proven stretch it
+/// passes through UNLESS it evidences a run-ending fact — a rounded percentage
+/// below the highest the stretch has shown, saturation at 100, or an
+/// external-activity fact. Veto-only, judged conservatively: Codex interleaves
+/// account-less rollout Readings between the Companion's proven ones on every
+/// request, and ending the run at each of them meant Codex could never
+/// assemble a qualifying run at all.
 fn walk(
     timeline: &[&LimitReading],
     placed: &[Placement],
@@ -347,18 +360,40 @@ fn walk(
     // movement being accumulated. The anchor's own does not: it describes the
     // stretch that ended there, which is the previous interval's business.
     let mut spoiled: Option<ReasonCode> = None;
+    // The highest rounded percentage the current stretch has shown — the
+    // anchor's own, raised by every unproven Reading passed through since. A
+    // later Reading below it is a decrease, whoever proved the higher figure.
+    let mut highest: i64 = 0;
 
     for (reading, placement) in timeline.iter().zip(placed) {
         let Some(here) = placement else {
-            // A Reading that proves too little to be placed is still a Reading
-            // of this Limit, and a run cannot see past it.
-            anchor = None;
-            spoiled = None;
+            // Unproven, and only a veto: outside a stretch there is nothing for
+            // it to end, and inside one it ends the accumulation only when it
+            // evidences a run-ending fact.
+            if anchor.is_some() {
+                let pct = displayed(reading)?;
+                if pct < highest {
+                    evidence.refuse(limit, ReasonCode::PercentageDecrease);
+                    anchor = None;
+                    spoiled = None;
+                } else if pct >= 100 {
+                    evidence.refuse(limit, ReasonCode::PercentageSaturation);
+                    anchor = None;
+                    spoiled = None;
+                } else if reading.provenance.external_activity.is_some() {
+                    evidence.refuse(limit, ReasonCode::KnownExternalActivity);
+                    anchor = None;
+                    spoiled = None;
+                } else {
+                    highest = highest.max(pct);
+                }
+            }
             continue;
         };
         let Some((from, was, scope)) = &anchor else {
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = displayed(reading)?;
             continue;
         };
 
@@ -371,6 +406,7 @@ fn walk(
             evidence.refuse(limit, broke);
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = displayed(reading)?;
             continue;
         }
 
@@ -378,13 +414,17 @@ fn walk(
         if reading.provenance.external_activity.is_some() {
             spoiled = Some(ReasonCode::KnownExternalActivity);
         }
-        if to_pct == from_pct {
-            continue;
-        }
-        if to_pct < from_pct {
+        // Against the highest the stretch has shown, not merely the anchor: an
+        // anchor below what a passed-through unproven Reading evidenced is a
+        // decrease too, and the interval that would have stepped over it dies.
+        if to_pct < highest {
             evidence.refuse(limit, ReasonCode::PercentageDecrease);
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = to_pct;
+            continue;
+        }
+        if to_pct == from_pct {
             continue;
         }
         if to_pct >= 100 {
@@ -393,6 +433,7 @@ fn walk(
             evidence.refuse(limit, ReasonCode::PercentageSaturation);
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = to_pct;
             continue;
         }
 
@@ -412,6 +453,7 @@ fn walk(
         }
         anchor = anchored(reading, here, limit, evidence);
         spoiled = None;
+        highest = to_pct;
     }
     Ok(())
 }
@@ -474,24 +516,31 @@ fn interval(
     let members = &group[lo..hi];
 
     // The scope came from `ModelScope::stored`, so it parses; the Series would
-    // not exist otherwise.
-    let tokens = match scope {
+    // not exist otherwise. Whichever branch counts, the raw Models of what it
+    // counted ride along as the interval's composition.
+    let tokens: i64;
+    let models: BTreeSet<String>;
+    match scope {
         // Source-wide: every Record of this Source and account counts, and
         // Unattributed Usage is Usage.
-        ModelScope::All => members.iter().map(|u| u.tokens).sum(),
-        ModelScope::Models(models) => {
+        ModelScope::All => {
+            tokens = members.iter().map(|u| u.tokens).sum();
+            models = members.iter().filter_map(|u| u.model.clone()).collect();
+        }
+        ModelScope::Models(scoped) => {
             // A Record that might be one of the scoped Models, but cannot say,
             // invalidates the interval rather than being guessed at or ignored.
             if members.iter().any(|u| u.model.is_none()) {
                 return Err(ReasonCode::UnattributedModelUsage);
             }
-            members
+            let matching: Vec<&&MatchingRecord> = members
                 .iter()
-                .filter(|u| u.model.as_ref().is_some_and(|m| models.contains(m)))
-                .map(|u| u.tokens)
-                .sum()
+                .filter(|u| u.model.as_ref().is_some_and(|m| scoped.contains(m)))
+                .collect();
+            tokens = matching.iter().map(|u| u.tokens).sum();
+            models = matching.iter().filter_map(|u| u.model.clone()).collect();
         }
-    };
+    }
 
     // Movement with nothing local behind it is detected non-local activity, not
     // a conversion of zero tokens.
@@ -499,19 +548,10 @@ fn interval(
         return Err(ReasonCode::ZeroLocalUsage);
     }
 
-    Ok(Interval { from_pct, to_pct, tokens, t0, t1 })
+    Ok(Interval { from_pct, to_pct, tokens, t0, t1, models })
 }
 
-/// Stored Limit Readings observed at or after `since`, with the provenance that
-/// decides whether each is evidence.
-///
-/// The horizon is the caller's: evidence has one (ADR-0024 asks for a bounded
-/// read, and the readiness policy is what sets its length), and this table grows
-/// by a row per observation for as long as the app runs, so reading all of it
-/// would cost more every week. The Partition a Reading belongs to cannot be
-/// known without its provenance, so the columns come along and the derivation
-/// sorts them out.
-/// The two statements this module runs, exported so a profile can `EXPLAIN` the
+/// The statements this module runs, exported so a profile can `EXPLAIN` the
 /// query the code actually issues. A hand-typed copy in a test proves nothing
 /// about production: one passed here while `account_id` had been removed from the
 /// clause below, reporting an index it was no longer using.
@@ -529,32 +569,102 @@ pub const MATCHING_USAGE_SQL: &str = "SELECT timestamp, model, \
          WHERE source = ?1 AND (account_id = ?2 OR account_id IS NULL) \
            AND timestamp > ?3 AND timestamp <= ?4";
 
+/// One page of the same columns strictly older than the `(observed_at, rowid)`
+/// keyset cursor, newest first — the Stale reconstruction's backwards walk
+/// (spec: "Page completed-epoch summaries backwards; do not load the whole
+/// Ledger into memory"). The rowid tiebreak is what makes the cursor total:
+/// several Readings share an `observed_at` second, and a cursor of the time
+/// alone would skip the rest of that second on the next page.
+pub const STORED_READINGS_PAGE_SQL: &str =
+    "SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, \
+            plan, account_id, metering_regime, limit_id, model_scope, source_order, \
+            covered_from, external_activity, rowid \
+     FROM limit_readings \
+     WHERE observed_at < ?1 OR (observed_at = ?1 AND rowid < ?2) \
+     ORDER BY observed_at DESC, rowid DESC LIMIT ?3";
+
+fn reading_row(r: &rusqlite::Row) -> rusqlite::Result<LimitReading> {
+    Ok(LimitReading {
+        source: r.get(0)?,
+        window_key: r.get(1)?,
+        window_minutes: r.get(2)?,
+        used_pct: r.get(3)?,
+        resets_at: r.get(4)?,
+        observed_at: r.get(5)?,
+        via: r.get(6)?,
+        plan: r.get(7)?,
+        provenance: ReadingProvenance {
+            account_id: r.get(8)?,
+            metering_regime: r.get(9)?,
+            limit_id: r.get(10)?,
+            model_scope: r
+                .get::<_, Option<String>>(11)?
+                .and_then(|s| ModelScope::parse(&s)),
+            source_order: r.get(12)?,
+            covered_from: r.get(13)?,
+            external_activity: r.get(14)?,
+        },
+    })
+}
+
+/// Stored Limit Readings observed at or after `since`, with the provenance that
+/// decides whether each is evidence.
+///
+/// The horizon is the caller's: evidence has one (ADR-0024 asks for a bounded
+/// read, and the readiness policy is what sets its length), and this table grows
+/// by a row per observation for as long as the app runs, so reading all of it
+/// would cost more every week. The Partition a Reading belongs to cannot be
+/// known without its provenance, so the columns come along and the derivation
+/// sorts them out.
 pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<LimitReading>> {
     let mut stmt = conn.prepare(STORED_READINGS_SQL)?;
-    let rows = stmt.query_map([since], |r| {
-        Ok(LimitReading {
-            source: r.get(0)?,
-            window_key: r.get(1)?,
-            window_minutes: r.get(2)?,
-            used_pct: r.get(3)?,
-            resets_at: r.get(4)?,
-            observed_at: r.get(5)?,
-            via: r.get(6)?,
-            plan: r.get(7)?,
-            provenance: ReadingProvenance {
-                account_id: r.get(8)?,
-                metering_regime: r.get(9)?,
-                limit_id: r.get(10)?,
-                model_scope: r
-                    .get::<_, Option<String>>(11)?
-                    .and_then(|s| ModelScope::parse(&s)),
-                source_order: r.get(12)?,
-                covered_from: r.get(13)?,
-                external_activity: r.get(14)?,
-            },
-        })
-    })?;
+    let rows = stmt.query_map([since], |r| reading_row(r))?;
     rows.collect()
+}
+
+/// The next page below `cursor`, and the cursor for the one after it — `None`
+/// when history is exhausted. The Readings come back in table order; `derive`
+/// sorts its own timelines, so a page needs no order of its own.
+pub fn stored_readings_page(
+    conn: &Connection,
+    cursor: (i64, i64),
+    limit: usize,
+) -> rusqlite::Result<(Vec<LimitReading>, Option<(i64, i64)>)> {
+    let mut stmt = conn.prepare(STORED_READINGS_PAGE_SQL)?;
+    let rows = stmt.query_map(params![cursor.0, cursor.1, limit as i64], |r| {
+        Ok((reading_row(r)?, r.get::<_, i64>(15)?))
+    })?;
+    let mut page = Vec::new();
+    let mut next = None;
+    for row in rows {
+        let (reading, rowid) = row?;
+        // The statement walks newest-first, so the last row is the oldest.
+        next = Some((reading.observed_at, rowid));
+        page.push(reading);
+    }
+    Ok((page, next))
+}
+
+/// Fold one paged batch's Partitions into the accumulated set. A page boundary
+/// can split an epoch's timeline, so the same `(series, epoch)` may arrive
+/// twice: its intervals merge and re-sort, restoring the whole epoch minus only
+/// the interval that would have spanned the cut itself — evidence lost
+/// conservatively, exactly as the bounded read's own outer edge already loses
+/// it.
+pub fn absorb(partitions: &mut Vec<PartitionEvidence>, older: Vec<PartitionEvidence>) {
+    for partition in older {
+        let twin = partitions
+            .iter_mut()
+            .find(|p| p.series == partition.series && p.epoch == partition.epoch);
+        match twin {
+            Some(existing) => {
+                existing.window_minutes = existing.window_minutes.or(partition.window_minutes);
+                existing.intervals.extend(partition.intervals);
+                existing.intervals.sort_by_key(|i| (i.t0, i.t1));
+            }
+            None => partitions.push(partition),
+        }
+    }
 }
 
 /// The Usage Records those Readings could ever be paired with, for each Source
@@ -659,6 +769,11 @@ mod tests {
         record(timestamp, None, tokens)
     }
 
+    /// The Model composition an interval over these fixtures' Records retains.
+    fn models(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
     /// A Record of another Source or account, carrying a figure large enough that
     /// counting it anywhere would be unmistakable.
     fn foreign(source: &str, account_id: &str, timestamp: i64) -> MatchingRecord {
@@ -691,7 +806,14 @@ mod tests {
         );
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 50, tokens: 1_000, t0: T0, t1: T0 + 600 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 50,
+                tokens: 1_000,
+                t0: T0,
+                t1: T0 + 600,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
         assert_eq!(only_intervals(&evidence)[0].movement(), 10);
     }
@@ -763,8 +885,33 @@ mod tests {
         );
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 42, tokens: 300, t0: T0, t1: T0 + 300 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 42,
+                tokens: 300,
+                t0: T0,
+                t1: T0 + 300,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
+    }
+
+    #[test]
+    fn an_interval_retains_the_raw_model_composition_of_what_it_counted() {
+        // Spec (Clean runs): retain raw Model composition. Diagnostic only —
+        // the payload mapping proves it never travels; this proves it is there
+        // to reconstruct from. Unattributed Usage counts tokens, names nothing.
+        let evidence = derived(
+            &[reading(40.0, T0), reading(50.0, T0 + 600)],
+            &[
+                usage(T0 + 100, 400),
+                record(T0 + 200, Some("gpt-5.3-mini"), 100),
+                unattributed(T0 + 300, 500),
+            ],
+        );
+        let interval = &only_intervals(&evidence)[0];
+        assert_eq!(interval.tokens, 1_000);
+        assert_eq!(interval.models, models(&["gpt-5.3-mini", "gpt-5.4-codex"]));
     }
 
     #[test]
@@ -893,6 +1040,7 @@ mod tests {
                 tokens: 1_500,
                 t0: T0 + 600,
                 t1: T0 + 1_200,
+                models: models(&["gpt-5.4-codex"]),
             }],
         );
     }
@@ -1029,7 +1177,14 @@ mod tests {
         assert_eq!(evidence.partitions[0].epoch, RESET + 117);
         assert_eq!(
             evidence.partitions[0].intervals,
-            vec![Interval { from_pct: 5, to_pct: 40, tokens: 5_000, t0: T0 + 100, t1: T0 + 200 }],
+            vec![Interval {
+                from_pct: 5,
+                to_pct: 40,
+                tokens: 5_000,
+                t0: T0 + 100,
+                t1: T0 + 200,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
         // And the fall itself is a reset, not a decrease inside one window.
         assert_eq!(refused(&evidence, ReasonCode::ResetBoundary), 1);
@@ -1051,16 +1206,91 @@ mod tests {
         assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 2);
     }
 
+    /// The Companion's own shape: a live Reading proving everything (#171).
+    fn live(used_pct: f64, observed_at: i64) -> LimitReading {
+        let mut r = reading(used_pct, observed_at);
+        r.via = "live".to_string();
+        r
+    }
+
+    /// The rollout's own shape: a logs Reading proving identity but no account
+    /// or coverage — what the Codex scan writes for every request (#183).
+    fn rollout(used_pct: f64, observed_at: i64) -> LimitReading {
+        let mut r = reading(used_pct, observed_at);
+        r.provenance.account_id = None;
+        r.provenance.covered_from = None;
+        r
+    }
+
     #[test]
-    fn a_reading_that_proves_nothing_ends_the_run_it_interrupts() {
-        let mut unprovable = reading(40.0, T0 + 300);
-        unprovable.provenance.account_id = None;
+    fn an_unproven_reading_inside_a_proven_stretch_passes_through() {
+        // Codex's production timeline: the Companion's proven Readings with the
+        // rollouts' account-less ones interleaved (#183). The rollout can never
+        // anchor, but it evidences nothing run-ending here, so the stretch
+        // survives it: ONE interval spanning the two live anchors, carrying the
+        // usage between them.
         let evidence = derived(
-            &[reading(40.0, T0), unprovable, reading(50.0, T0 + 600)],
+            &[live(40.0, T0), rollout(45.0, T0 + 300), live(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000), usage(T0 + 400, 500)],
+        );
+        assert_eq!(
+            only_intervals(&evidence),
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 50,
+                tokens: 1_500,
+                t0: T0,
+                t1: T0 + 600,
+                models: models(&["gpt-5.4-codex"]),
+            }],
+        );
+    }
+
+    #[test]
+    fn an_unproven_decrease_still_ends_the_run() {
+        // Veto-only: an unproven Reading can never admit evidence, but a fall it
+        // witnessed is a fall, and the stretch it interrupted proves nothing.
+        let evidence = derived(
+            &[live(40.0, T0), rollout(35.0, T0 + 300), live(50.0, T0 + 600)],
             &[usage(T0 + 100, 1_000)],
         );
         assert!(only_intervals(&evidence).is_empty());
-        assert_eq!(refused(&evidence, ReasonCode::MissingAccountIdentity), 1);
+        assert_eq!(refused(&evidence, ReasonCode::PercentageDecrease), 1);
+    }
+
+    #[test]
+    fn an_unproven_saturation_still_ends_the_run() {
+        let evidence = derived(
+            &[live(40.0, T0), rollout(100.0, T0 + 300), live(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::PercentageSaturation), 1);
+    }
+
+    #[test]
+    fn an_unproven_external_activity_fact_still_ends_the_run() {
+        let mut spoiler = rollout(45.0, T0 + 300);
+        spoiler.provenance.external_activity = Some("codex-web".to_string());
+        let evidence = derived(
+            &[live(40.0, T0), spoiler, live(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::KnownExternalActivity), 1);
+    }
+
+    #[test]
+    fn a_later_anchor_below_a_passed_unproven_percentage_is_a_decrease() {
+        // The rollout evidenced 50; the next proven Reading says 45. Whichever
+        // figure is right, the stretch fell somewhere inside itself, and
+        // 40 → 45 must not form across it.
+        let evidence = derived(
+            &[live(40.0, T0), rollout(50.0, T0 + 300), live(45.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::PercentageDecrease), 1);
     }
 
     #[test]
@@ -1237,7 +1467,14 @@ mod tests {
         // construction rather than by a per-row check).
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 50, tokens: 260, t0: T0, t1: T0 + 600 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 50,
+                tokens: 260,
+                t0: T0,
+                t1: T0 + 600,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
     }
 

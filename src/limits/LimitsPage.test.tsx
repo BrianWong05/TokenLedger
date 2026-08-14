@@ -33,12 +33,16 @@ const LIVE_SOURCES = ['claude', 'codex', 'copilot', 'grok', 'antigravity'];
 function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> } = {}): LimitsPort & {
   store: Record<string, string>;
   liveCalls: string[];
+  limitsChanged: () => void;
 } {
   const store = over.store ?? { [LIVE_ENABLED_KEY]: 'true' };
   const liveCalls: string[] = [];
+  const changedListeners: Array<() => void> = [];
   return {
     store,
     liveCalls,
+    // The backend's limits-changed event, hand-cranked.
+    limitsChanged: () => { for (const cb of [...changedListeners]) cb(); },
     list: over.list ?? (() => Promise.resolve([])),
     checkLive:
       over.checkLive ??
@@ -47,6 +51,15 @@ function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> }
         return Promise.resolve();
       }),
     scan: over.scan ?? (() => Promise.resolve(null)),
+    onLimitsChanged:
+      over.onLimitsChanged ??
+      ((cb) => {
+        changedListeners.push(cb);
+        return () => {
+          const at = changedListeners.indexOf(cb);
+          if (at >= 0) changedListeners.splice(at, 1);
+        };
+      }),
     read: (k) => store[k] ?? null,
     write: (k, v) => { store[k] = v; },
   };
@@ -871,15 +884,16 @@ const withheld = (state: 'gathering' | 'unstable' | 'stale' | 'blocked'): Source
     ...CODEX_WEEKLY,
     windows: [{
       ...CODEX_WEEKLY.windows[0],
+      // Hostile on purpose: a figure the backend's union cannot even spell
+      // beside a withheld state, forced past the compiler so the row proves it
+      // reads the state rather than reaching for a number that happens to be
+      // in the payload.
       estimate: {
         ...base,
         state,
-        // Hostile on purpose: a figure the backend would never send with a
-        // withheld state. The row must read the state, not reach for a number
-        // that happens to be there.
         tokensPerPct: 350_000,
         explanation: { ...base.explanation, qualifyingEpochs: 2 },
-      },
+      } as unknown as SourceLimits['windows'][number]['estimate'],
     }],
   };
 };
@@ -895,6 +909,28 @@ const seen = (el: Element | null | undefined) => {
   for (const hidden of copy.querySelectorAll('.tl-sr-only')) hidden.remove();
   return copy.textContent;
 };
+
+describe('the scan trigger', () => {
+  it('reissues the stored query when a scan lands relevant Reading changes', async () => {
+    // The backend emits limits-changed only when a scan wrote or revised
+    // Readings (spec: "Evaluation timing"); the page's whole part is to
+    // re-read. No vendor is called: the fake's checkLive counter must not move.
+    let lists = 0;
+    const port = fakePort({
+      list: () => {
+        lists += 1;
+        return Promise.resolve([CODEX_WEEKLY]);
+      },
+    });
+    await mount(port);
+    const before = lists;
+    const checks = port.liveCalls.length; // page-open live checks, not the event's
+
+    await act(async () => port.limitsChanged());
+    expect(lists).toBe(before + 1);
+    expect(port.liveCalls.length).toBe(checks);
+  });
+});
 
 describe('the Ready evidence line', () => {
   it('sits under the bar with both approximate figures and the core epoch count', async () => {
@@ -974,7 +1010,12 @@ describe('the Ready evidence line', () => {
       ...READY,
       windows: [{
         ...READY.windows[0],
-        estimate: { ...makeReadyEstimate(350_000), tokensPerPct: undefined },
+        // A ready payload whose number went missing — impossible in the union,
+        // forced past the compiler so the runtime guard is what gets tested.
+        estimate: {
+          ...makeReadyEstimate(350_000),
+          tokensPerPct: undefined,
+        } as unknown as SourceLimits['windows'][number]['estimate'],
       }],
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([broken]) }));
@@ -1125,7 +1166,7 @@ describe('the evidence line in Traditional Chinese', () => {
     expect(info.getAttribute('aria-label')).toBe('關於這個估算');
     expect(note.textContent).toBe(
       '根據多個一致且已完成限額時段的相符 token 用量作近似估算。'
-      + '本機 100% 等值：約 3500萬 個 token。這不是供應商提供的 token 限額。',
+      + '本機 100% 等值：約 3500萬 個 token。這不是供應商回報的 token 數字。',
     );
   });
 

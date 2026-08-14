@@ -106,11 +106,9 @@ fn run() -> Result<String, String> {
         // remote settings, so the live plan label costs a second call. Non-fatal:
         // a card with no pill beats a failed check.
         plan: plan(base, &access_token, credential.user_id.as_deref()),
-        // Grok is not in the estimate map; its Readings stay display-only.
-        metering_regime: None,
-        account_id: None,
-        usage_resets_available: None,
         windows,
+        // Grok is not in the estimate map; its Readings stay display-only.
+        ..Default::default()
     };
 
     if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
