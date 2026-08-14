@@ -632,7 +632,10 @@ An implementation is complete when automated tests prove all of the following.
 
 ### Evidence and migration
 
-1. V14 migration preserves current Limit rows and display behavior.
+1. The migration preserves current Limit rows and display behavior. (Written as
+   "V14 migration"; main had reached v17 before implementation began, so the
+   `limit_readings` rebuild landed as **v18** — see #158. The clause is about
+   preserving rows across the rebuild, whichever version carries it.)
 2. Legacy Readings and Usage Records with missing provenance never match and
    yield Blocked, not zero or a backfilled estimate.
 3. Exact source re-ingestion deduplicates one Reading identity, while a later
@@ -694,6 +697,18 @@ An implementation is complete when automated tests prove all of the following.
 26. English and Traditional Chinese tests cover Ready and every withheld state,
     compact large values, plural/count interpolation, and wrapped narrow-card
     layout without truncation or horizontal scrolling.
+
+    The first three clauses are proven by automated tests. The fourth cannot be:
+    jsdom applies no CSS and measures no layout, and this repo has no
+    browser-test harness. **Discharged instead by stylesheet invariants** —
+    `src/limits/limits.css.test.js` asserts that nothing on the line, inside it,
+    or on any ancestor up to the card can clip or refuse to wrap, across the
+    whole chain and including `@media` blindness, with nine mutations each
+    failing it — **plus a recorded manual browser pass** at a 240px card in both
+    locales (zero clipped lines, zero horizontal overflow, numeral unshrunk at
+    26px/62px). Judged sufficient by the closing sweep (#168): a measuring test
+    would need browser infrastructure disproportionate to one clause, and
+    claiming a green that no test produces would be worse than saying so.
 
 ## Implementation handoff
 

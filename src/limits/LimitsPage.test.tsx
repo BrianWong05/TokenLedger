@@ -587,15 +587,28 @@ describe('bars', () => {
 
 describe('the Left/Used toggle', () => {
   it('flips every figure, keeps the colors, and remembers the choice', async () => {
-    const port = fakePort({ list: () => Promise.resolve([CODEX_WEEKLY]) });
+    let reads = 0;
+    const port = fakePort({
+      list: () => {
+        reads += 1;
+        return Promise.resolve([CODEX_WEEKLY]);
+      },
+    });
     const c = await mount(port);
     const row = () => rows(cardFor(c, 'Codex'))[0];
 
     expect(row().querySelector('.tl-lim-num')?.textContent).toBe('41%');
     const toneBefore = row().querySelector('.tl-lim-bar')?.className;
+    const [readsBefore, callsBefore] = [reads, port.liveCalls.length];
 
     await act(async () => btn(c, 'Used').click());
     await settle();
+
+    // The toggle reframes what is already held: it neither re-reads the stored
+    // Readings nor asks a vendor, so the estimate beside the bar is the same
+    // one converted differently, never a fresh one.
+    expect(reads, 'the toggle re-reads nothing').toBe(readsBefore);
+    expect(port.liveCalls.length, 'the toggle fetches nothing').toBe(callsBefore);
 
     expect(row().querySelector('.tl-lim-num')?.textContent).toBe('59%');
     expect(row().querySelector('.tl-lim-bar')?.className).toBe(toneBefore);
