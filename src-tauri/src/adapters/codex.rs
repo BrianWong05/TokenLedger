@@ -15,7 +15,8 @@ use crate::types::{
 
 const PARSER_VERSION: i64 = 1;
 
-/// One `rate_limits` slot → a Reading, or None when that window does not exist.
+/// One `rate_limits` slot, with the block's own identity and plan beside it →
+/// a Reading, or None when that window does not exist.
 /// A null slot is an absent window, never a window at zero; a slot missing the
 /// duration or the reset instant cannot be keyed or placed on a time axis, so it
 /// is likewise no window. The key comes from the duration and never from the
@@ -26,8 +27,8 @@ const PARSER_VERSION: i64 = 1;
 /// Convert it here if pre-0.48 Artifacts ever turn up.
 fn slot_reading(
     slot: Option<&Value>,
-    limits: &Value,
     limit_id: &str,
+    plan: Option<&str>,
     observed_at: i64,
     source_order: i64,
 ) -> Option<LimitReading> {
@@ -47,10 +48,7 @@ fn slot_reading(
         resets_at,
         observed_at,
         via: "logs".to_string(),
-        plan: limits
-            .get("plan_type")
-            .and_then(|p| p.as_str())
-            .map(str::to_string),
+        plan: plan.map(str::to_string),
         provenance: evidence(limit_id, window_minutes, source_order),
     })
 }
@@ -292,14 +290,18 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                         if let (Some(observed_at), Some(limit_id @ "codex")) =
                             (stamp, limits.get("limit_id").and_then(|i| i.as_str()))
                         {
+                            // Extracted beside `limit_id`, so what a Reading is
+                            // made of travels together rather than the block
+                            // being reached back into per slot.
+                            let plan = limits.get("plan_type").and_then(|p| p.as_str());
                             readings.extend(
                                 [limits.get("primary"), limits.get("secondary")]
                                     .into_iter()
                                     .flat_map(|slot| {
                                         slot_reading(
                                             slot,
-                                            limits,
                                             limit_id,
+                                            plan,
                                             observed_at,
                                             line_offset as i64,
                                         )

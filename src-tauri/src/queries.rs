@@ -1050,23 +1050,16 @@ pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 /// Readings and Usage at once.
 const STALE_PAGE_READINGS: usize = 2_000;
 
-/// The current state of every Limit the Ledger holds Readings for: per
-/// (source, window_key) the newest epoch, and within it the highest `used_pct`
-/// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
-/// monotonic within an epoch (#104), so the highest is the latest.
-///
-/// This ignores the Overview's date window and Source selection entirely: the
-/// Limits page is *now*, not a range.
-/// Which window each card draws, and from which Reading — exported so a profile
-/// can `EXPLAIN` and time the statement the page actually issues rather than a
-/// copy of it. It has no time bound by design: a card shows the newest epoch, and
-/// which epoch is newest is a fact about the whole table.
 /// The plan pill's text, as of a Source's newest observation. Exported for the
 /// same reason as the statement below it: a profile must EXPLAIN what runs.
 pub const PLAN_LABEL_SQL: &str =
     "SELECT plan FROM limit_readings WHERE source = ?1 AND plan IS NOT NULL \
      ORDER BY observed_at DESC LIMIT 1";
 
+/// Which window each card draws, and from which Reading — exported so a profile
+/// can `EXPLAIN` and time the statement the page actually issues rather than a
+/// copy of it. It has no time bound by design: a card shows the newest epoch, and
+/// which epoch is newest is a fact about the whole table.
 pub const DISPLAYED_WINDOWS_SQL: &str =
     "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
             MAX(r.resets_at), MAX(r.observed_at) \
@@ -1078,6 +1071,13 @@ pub const DISPLAYED_WINDOWS_SQL: &str =
      GROUP BY r.source, r.window_key \
      ORDER BY r.source, MAX(r.window_minutes), r.window_key";
 
+/// The current state of every Limit the Ledger holds Readings for: per
+/// (source, window_key) the newest epoch, and within it the highest `used_pct`
+/// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
+/// monotonic within an epoch (#104), so the highest is the latest.
+///
+/// This ignores the Overview's date window and Source selection entirely: the
+/// Limits page is *now*, not a range.
 pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>, LimitsError> {
     // One snapshot for the whole page. Four statements answer it — the rows, the
     // Readings, their Usage, the plan — and a scan committing between them would
@@ -2262,21 +2262,66 @@ mod tests {
 
     #[test]
     fn the_payload_stays_bounded_and_carries_no_record_identities() {
+        use crate::types::{CtxTokens, UsageEvent};
+
         let dir = tempdir().unwrap();
         let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
-        db::insert_limit_readings(
-            &mut conn,
-            &[proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400)],
-        )
-        .unwrap();
+
+        // Seven qualifying recent epochs — more than the payload may carry —
+        // so the five-summary bound, the no-identities rule, and the
+        // no-infinity rule are all tested against a payload that actually has
+        // candidates to leak. The original fixture had zero, and every one of
+        // these assertions passed vacuously.
+        const DAY: i64 = 86_400;
+        let mut readings = vec![proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + DAY)];
+        let mut events = Vec::new();
+        for (i, days_ago) in (1i64..=7).enumerate() {
+            let ended = EVALUATED_AT - days_ago * DAY;
+            for step in 0..3i64 {
+                readings.push(proven_reading(
+                    (step * 10) as f64,
+                    ended - 7_200 + step * 3_600,
+                    ended,
+                ));
+            }
+            for step in 0..2i64 {
+                events.push(UsageEvent {
+                    dedup_key: format!("bounded-{i}-{step}"),
+                    source: "codex".to_string(),
+                    timestamp: ended - 7_200 + step * 3_600 + 1,
+                    model: Some("gpt-5.4-codex".to_string()),
+                    project: None,
+                    api_calls: 1,
+                    input_tokens: 1_000 + i as i64,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_5m_tokens: 0,
+                    cache_write_1h_tokens: 0,
+                    source_file: "bounded-rollout.jsonl".to_string(),
+                    session_id: None,
+                    reasoning_tokens: None,
+                    ctx: CtxTokens::default(),
+                });
+            }
+        }
+        db::insert_limit_readings(&mut conn, &readings).unwrap();
+        db::insert_events(&mut conn, &events).unwrap();
+        conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
 
         let cards = limits(&conn, EVALUATED_AT).unwrap();
         let estimate = &cards[0].windows[0].estimate;
-        assert!(estimate.explanation.candidates.len() <= 5);
+        assert_eq!(
+            estimate.explanation.candidates.len(),
+            5,
+            "seven qualifying epochs, five summaries: the bound has to bite"
+        );
         assert_eq!(estimate.explanation.required_epochs, 3);
 
         let json = serde_json::to_string(estimate).unwrap();
-        // Rejections travel as counts, never as the things they counted.
+        // Rejections and candidates travel as counts and summaries, never as
+        // the Records they counted — by value, so any spelling of a leaked
+        // identity fails, not merely the Rust field name.
+        assert!(!json.contains("bounded-"), "{json}");
         assert!(!json.contains("dedup_key") && !json.contains("sourceFile"), "{json}");
         // And an unbounded quantization upper is null, never an infinity.
         assert!(!json.contains("inf"), "{json}");

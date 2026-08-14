@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 use tokenledger_lib::limits_artifact::{
-    self, LimitsExport, WindowEvidence, WindowExport, NOT_SIGNED_IN,
+    self, LimitsExport, WindowExport, NOT_SIGNED_IN,
 };
 use tokenledger_lib::time::iso_to_epoch;
 
@@ -55,11 +55,10 @@ fn limits_export(body: &Value, fetched_at: i64) -> Result<LimitsExport, String> 
         source: "copilot".to_string(),
         fetched_at,
         plan: Some(plan.to_string()),
-        // Copilot is not in the estimate map; its Readings stay display-only.
-        metering_regime: None,
-        account_id: None,
-        usage_resets_available: None,
         windows: vec![premium_requests(body)?],
+        // Copilot is not in the estimate map; its Readings stay display-only,
+        // and what it does not prove stays unwritten.
+        ..Default::default()
     })
 }
 
@@ -238,10 +237,10 @@ fn premium_requests(body: &Value) -> Result<WindowExport, String> {
 
     Ok(WindowExport {
         key: "premium_requests".to_string(),
-        window_minutes: None,
         used_pct: (entitlement - remaining) * 100.0 / entitlement,
         resets_at,
-        evidence: WindowEvidence::default(),
+        // No vendor-named duration, and no evidence proven: both stay unknown.
+        ..Default::default()
     })
 }
 

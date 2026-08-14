@@ -105,8 +105,8 @@ fn run() -> Result<String, String> {
         // appears, this identity changes deliberately and a new Series starts.
         metering_regime: Some("claude:usage_limits".to_string()),
         account_id: account_id(&body),
-        usage_resets_available: None,
         windows: windows(&body),
+        ..Default::default()
     };
 
     // The durable Artifact is how the reading reaches the app at all — the scan

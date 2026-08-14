@@ -551,16 +551,7 @@ fn interval(
     Ok(Interval { from_pct, to_pct, tokens, t0, t1, models })
 }
 
-/// Stored Limit Readings observed at or after `since`, with the provenance that
-/// decides whether each is evidence.
-///
-/// The horizon is the caller's: evidence has one (ADR-0024 asks for a bounded
-/// read, and the readiness policy is what sets its length), and this table grows
-/// by a row per observation for as long as the app runs, so reading all of it
-/// would cost more every week. The Partition a Reading belongs to cannot be
-/// known without its provenance, so the columns come along and the derivation
-/// sorts them out.
-/// The two statements this module runs, exported so a profile can `EXPLAIN` the
+/// The statements this module runs, exported so a profile can `EXPLAIN` the
 /// query the code actually issues. A hand-typed copy in a test proves nothing
 /// about production: one passed here while `account_id` had been removed from the
 /// clause below, reporting an index it was no longer using.
@@ -616,6 +607,15 @@ fn reading_row(r: &rusqlite::Row) -> rusqlite::Result<LimitReading> {
     })
 }
 
+/// Stored Limit Readings observed at or after `since`, with the provenance that
+/// decides whether each is evidence.
+///
+/// The horizon is the caller's: evidence has one (ADR-0024 asks for a bounded
+/// read, and the readiness policy is what sets its length), and this table grows
+/// by a row per observation for as long as the app runs, so reading all of it
+/// would cost more every week. The Partition a Reading belongs to cannot be
+/// known without its provenance, so the columns come along and the derivation
+/// sorts them out.
 pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<LimitReading>> {
     let mut stmt = conn.prepare(STORED_READINGS_SQL)?;
     let rows = stmt.query_map([since], |r| reading_row(r))?;

@@ -2,12 +2,11 @@ mod adapters;
 mod db;
 pub mod export_artifact;
 pub mod limits_artifact;
-// The estimator reads the evidence; nothing reads the estimator yet — the
-// readiness machine that will is the next ticket — so both stay `pub` to keep
-// the compiler from pruning a module whose tests are its only caller today.
-pub mod limits_estimator;
-pub mod limits_evidence;
-pub mod limits_readiness;
+// Crate-only: the Limits query is the one reader of the evidence, estimator,
+// and readiness chain, and no companion binary imports any of the three.
+pub(crate) mod limits_estimator;
+pub(crate) mod limits_evidence;
+pub(crate) mod limits_readiness;
 mod pricing;
 pub mod proto;
 mod queries;

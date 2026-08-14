@@ -51,7 +51,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 
 use tokenledger_lib::limits_artifact::{
-    self, LimitsExport, WindowEvidence, WindowExport, NOT_SIGNED_IN,
+    self, LimitsExport, WindowExport, NOT_SIGNED_IN,
 };
 
 /// Both release-channel frontends, `daily-` first — because that is the one
@@ -185,12 +185,10 @@ fn run() -> Result<String, String> {
         source: "antigravity".to_string(),
         fetched_at,
         plan: plan(&assist),
+        windows: windows(&body),
         // Antigravity is not in the estimate map: nothing has established
         // what each of its pools meters, so it claims nothing.
-        metering_regime: None,
-        account_id: None,
-        usage_resets_available: None,
-        windows: windows(&body),
+        ..Default::default()
     };
 
     // A failed write is a failed run: the Artifact is how the reading reaches
@@ -714,7 +712,7 @@ fn bucket_window(bucket: &Value) -> Option<WindowExport> {
         resets_at,
         // Antigravity is not in the estimate map; its Readings stay
         // display-only until a ticket proves what each pool meters.
-        evidence: WindowEvidence::default(),
+        ..Default::default()
     })
 }
 

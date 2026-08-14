@@ -99,7 +99,7 @@ pub fn grok_credit_window(config: &serde_json::Value) -> Option<WindowExport> {
         resets_at,
         // Grok's credit window is not in the estimate map; its Readings stay
         // display-only until a ticket proves what it meters.
-        evidence: WindowEvidence::default(),
+        ..Default::default()
     })
 }
 
@@ -145,7 +145,26 @@ pub struct LimitsExport {
     pub windows: Vec<WindowExport>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `..Default::default()` in a producer means "nothing proven beyond the
+/// fields it names": no plan, no regime, no account, no source state, no
+/// windows — and always the CURRENT schema, so a construction leaning on it
+/// can never accidentally claim an old or unknown shape.
+impl Default for LimitsExport {
+    fn default() -> Self {
+        LimitsExport {
+            schema: SCHEMA,
+            source: String::new(),
+            fetched_at: 0,
+            plan: None,
+            metering_regime: None,
+            account_id: None,
+            usage_resets_available: None,
+            windows: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WindowExport {
     /// How the Reading's window is addressed: the vendor's own response key
     /// where there is one (`five_hour`, `seven_day_opus`, or one nobody has seen
