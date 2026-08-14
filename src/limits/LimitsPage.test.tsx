@@ -1166,7 +1166,7 @@ describe('the evidence line in Traditional Chinese', () => {
     expect(info.getAttribute('aria-label')).toBe('關於這個估算');
     expect(note.textContent).toBe(
       '根據多個一致且已完成限額時段的相符 token 用量作近似估算。'
-      + '本機 100% 等值：約 3500萬 個 token。這不是供應商提供的 token 限額。',
+      + '本機 100% 等值：約 3500萬 個 token。這不是供應商回報的 token 數字。',
     );
   });
 

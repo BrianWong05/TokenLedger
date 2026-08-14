@@ -55,4 +55,21 @@ describe('strings', () => {
       }
     }
   });
+
+  // 限額 is the domain word for Limit itself (the tab is titled with it), and
+  // 限額時段 — a Limit window — is its one legitimate estimate use. The compound
+  // "token 限額" is different: it names the vendor token quota the estimate must
+  // never claim or deny being — denying it contradicts the row (the English
+  // "token limit" rationale), and asserting it is the barred quota sense. The
+  // estimate denies being a vendor-reported *figure* (數字), nothing more.
+  it('never says "token 限額" in an estimate string, and denies only the figure', () => {
+    for (const [lang, entries] of Object.entries(limits)) {
+      for (const [key, value] of Object.entries(entries as Record<string, string>)) {
+        if (!key.startsWith('limits.est.')) continue;
+        expect(value, `limits.${lang}.${key}`).not.toContain('token 限額');
+      }
+    }
+    const zh = (limits['zh-Hant'] as Record<string, string>)['limits.est.explanation'];
+    expect(zh).toMatch(/這不是供應商回報的 token 數字。$/);
+  });
 });

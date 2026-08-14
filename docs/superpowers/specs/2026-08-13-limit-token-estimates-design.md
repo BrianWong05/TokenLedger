@@ -588,8 +588,13 @@ substitute either: a Limit is exactly what this estimate measures, so denying
 being one would contradict the row it sits under. *Figure* keeps the shape of
 `CONTEXT.md`'s own sentence for **Limit Token Estimate** — "never a
 vendor-reported token quota" — without reaching for a glossary term that means
-something else here. The approved Traditional Chinese is unchanged; it already
-said 限額, the domain word.
+something else here. The Traditional Chinese follows the same rewording: 限額
+is the domain word for Limit itself, so the original closing 「這不是供應商提供的
+token 限額」 denied being the very thing the row measures — the contradiction
+this paragraph rejects for "token limit" — while also reading as the barred
+quota sense. It now denies the *figure*: 「這不是供應商回報的 token 數字」.
+(限額時段 — a Limit window — earlier in the same sentence is the domain word
+used correctly and stays.)
 
 ### Withheld states
 
@@ -622,7 +627,7 @@ Unstable: 估算已撤回 — 最近的本機歷史並不一致
 Stale: 估算已過期 — 最近仍合資格的已完成時段少於 3 個
 Blocked: 無法估算 — 無法驗證相符的本機用量或來源完整性
 Explanation: 根據多個一致且已完成限額時段的相符 token 用量作近似估算。
-             本機 100% 等值：約 {total} 個 token。這不是供應商提供的 token 限額。
+             本機 100% 等值：約 {total} 個 token。這不是供應商回報的 token 數字。
 ```
 
 Use `Intl.NumberFormat(locale, { notation: 'compact',

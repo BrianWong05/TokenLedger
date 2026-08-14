@@ -167,6 +167,10 @@ export const limits = {
 
     // The evidence line, in the spec's approved Traditional Chinese. The count
     // has no plural to inflect, so both origin keys carry the one phrase.
+    // The explanation closes by denying a vendor-reported *figure* (數字),
+    // mirroring the English rewording: 限額 is the domain word for Limit, so
+    // 「這不是…token 限額」 denied the very thing the row measures — and read as
+    // the barred quota sense besides (strings.test.ts pins both).
     'limits.est.approx': '約',
     'limits.est.left': '剩餘 {tokens} 個 token',
     'limits.est.used': '已用 {tokens} 個 token',
@@ -175,7 +179,7 @@ export const limits = {
     'limits.est.originMany': '根據 {n} 個一致的已完成時段',
     'limits.est.infoLabel': '關於這個估算',
     'limits.est.explanation':
-      '根據多個一致且已完成限額時段的相符 token 用量作近似估算。本機 100% 等值：約 {total} 個 token。這不是供應商提供的 token 限額。',
+      '根據多個一致且已完成限額時段的相符 token 用量作近似估算。本機 100% 等值：約 {total} 個 token。這不是供應商回報的 token 數字。',
 
     'limits.est.gathering': '資料不足',
     'limits.est.gatheringDetail': '最近需要 3 個時段，目前有 {n} 個',
