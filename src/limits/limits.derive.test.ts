@@ -3,8 +3,8 @@ import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
-  cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
-  windowView,
+  cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, planLabel, tone,
+  windowLabel, windowView,
 } from './limits.derive';
 
 // 2026-08-12T00:00:00Z
@@ -276,6 +276,26 @@ describe('duration formatting', () => {
     // Minutes are noise beside a day.
     expect(durationParts(4 * 1440 + 7)).toEqual([{ unit: 'd', n: 4 }]);
     expect(durationParts(0)).toEqual([{ unit: 'm', n: 0 }]);
+  });
+});
+
+describe('the estimate clock', () => {
+  const at = (nextEvaluationAt: number | null) =>
+    win({ estimate: makeFakeEstimate({ nextEvaluationAt }) });
+
+  it('picks the earliest future stamp across every window', () => {
+    const stored = [
+      held('claude', [at(null), at(NOW + 50)]),
+      held('codex', [at(NOW + 30)]),
+    ];
+    expect(nextDueAt(stored, NOW)).toBe(NOW + 30);
+  });
+
+  it('ignores stamps the clock has already passed, and reports null on none', () => {
+    // A past stamp is the backend's answer ageing, not a timer to spin on.
+    expect(nextDueAt([held('claude', [at(NOW - 10)])], NOW)).toBeNull();
+    expect(nextDueAt([held('claude', [at(null)])], NOW)).toBeNull();
+    expect(nextDueAt([], NOW)).toBeNull();
   });
 });
 

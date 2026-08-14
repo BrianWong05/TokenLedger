@@ -4,6 +4,7 @@
 // SourceLimits[] and a clock.
 import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
+import type { LimitEstimateState } from '../bindings/LimitEstimateState';
 import { SOURCES, type SourceMeta } from '../overview/meta';
 
 // How a Source's Limits are acquired. `logs` flows from ordinary scans; `live`
@@ -49,7 +50,7 @@ export type EstimateView =
       epochs: number;
     }
   | {
-      state: 'gathering' | 'unstable' | 'stale' | 'blocked';
+      state: Exclude<LimitEstimateState, 'ready'>;
       /** Completed epochs that qualified; only Gathering's copy reports it. */
       qualifying: number;
     };
@@ -124,6 +125,22 @@ export function tone(pctLeft: number): Tone {
 /** The percentage this window shows under the current framing. */
 export function framedPct(pctLeft: number, mode: Mode): number {
   return mode === 'left' ? pctLeft : 100 - pctLeft;
+}
+
+/**
+ * The estimate's own clock (spec: "Evaluation timing"). Each evaluation names
+ * the earliest future second at which time ALONE changes its answer — an epoch
+ * resetting, or a candidate ageing out of recency — and the soonest of those is
+ * the only moment the page has anything to re-ask. A window whose answer no
+ * clock can change reports `null` and contributes nothing; a stamp the clock
+ * has already passed is the backend's answer ageing, not a reason to spin.
+ */
+export function nextDueAt(stored: SourceLimits[], nowSec: number): number | null {
+  const times = stored
+    .flatMap((s) => s.windows)
+    .map((w) => w.estimate.nextEvaluationAt)
+    .filter((at): at is number => at !== null && at > nowSec);
+  return times.length ? Math.min(...times) : null;
 }
 
 /**

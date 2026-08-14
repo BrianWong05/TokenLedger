@@ -16,7 +16,7 @@ import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
-  cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
+  cards, durationParts, freshness, limitsSources, nextDueAt, planLabel, windowLabel,
   type CardView, type EstimateView, type Mode, type WindowView,
 } from './limits.derive';
 import {
@@ -39,6 +39,22 @@ const ERROR_FAILURE_PREFIX = 'error:';
 const ORIGIN_KEYS = {
   One: 'limits.est.originOne',
   Many: 'limits.est.originMany',
+} as const;
+
+// The withheld states' keys, spelled out for the same reason. Gathering's
+// detail is absent on purpose: its copy interpolates a count, so it renders
+// through `fill` on its own branch.
+const WITHHELD_TITLE_KEYS = {
+  gathering: 'limits.est.gathering',
+  unstable: 'limits.est.unstable',
+  stale: 'limits.est.stale',
+  blocked: 'limits.est.blocked',
+} as const;
+
+const WITHHELD_DETAIL_KEYS = {
+  unstable: 'limits.est.unstableDetail',
+  stale: 'limits.est.staleDetail',
+  blocked: 'limits.est.blockedDetail',
 } as const;
 
 export default function LimitsPage({
@@ -188,21 +204,11 @@ export default function LimitsPage({
 
   const views = useMemo(() => cards(stored, nowSec, mode, failures), [stored, nowSec, mode, failures]);
 
-  // The estimate's own clock (spec: "Evaluation timing"). Each evaluation names
-  // the earliest future second at which time ALONE changes its answer — an epoch
-  // resetting, or a candidate ageing out of recency — and the soonest of those is
-  // the only moment this page has anything to re-ask. So one timer, for the
-  // nearest one, which re-reads the stored Readings and nothing else: no vendor
-  // is called, and the fetch floor is untouched, because time passing is not a
-  // person asking. A window whose answer no clock can change reports `null` and
-  // contributes no timer at all.
-  const dueAt = useMemo(() => {
-    const times = stored
-      .flatMap((s) => s.windows)
-      .map((w) => w.estimate.nextEvaluationAt)
-      .filter((at): at is number => at !== null && at > nowSec);
-    return times.length ? Math.min(...times) : null;
-  }, [stored, nowSec]);
+  // One timer for the nearest due evaluation (`nextDueAt`, unit-tested with the
+  // rest of the derivation): it re-reads the stored Readings and nothing else —
+  // no vendor is called, and the fetch floor is untouched, because time passing
+  // is not a person asking.
+  const dueAt = useMemo(() => nextDueAt(stored, nowSec), [stored, nowSec]);
 
   useEffect(() => {
     if (dueAt === null) return;
@@ -383,11 +389,11 @@ function EstimateLine({ est, mode }: { est: EstimateView; mode: Mode }) {
   if (est.state !== 'ready') {
     return (
       <div className="tl-lim-est" data-state={est.state}>
-        <span className="title">{t(`limits.est.${est.state}` as 'limits.est.blocked')}</span>
+        <span className="title">{t(WITHHELD_TITLE_KEYS[est.state])}</span>
         <span className="detail">
           {est.state === 'gathering'
             ? fill(t('limits.est.gatheringDetail'), { n: est.qualifying })
-            : t(`limits.est.${est.state}Detail` as 'limits.est.blockedDetail')}
+            : t(WITHHELD_DETAIL_KEYS[est.state])}
         </span>
       </div>
     );
