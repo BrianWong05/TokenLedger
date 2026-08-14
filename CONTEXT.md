@@ -35,12 +35,15 @@ One pass over the Source Artifacts on this machine, parsing what they hold into
 Usage Records and adding them to the Ledger. A Scan only ever reads: it never
 writes to a Source's files and never talks to a Source's servers. It happens on
 launch, every few hours on a resident cadence so a hidden app keeps recording,
-on the Overview's auto-refresh timer while that window is focused, and on
-demand when a person presses Rescan. Only the auto-refresh timer is the
-reader's to set, and it is the only one they can turn off — the resident
-cadence is not theirs to stop, because a Ledger that recorded only while
-someone watched would lose the logs its Sources prune. Turning the timer off
-therefore stops this window re-reading, never the recording.
+on the Overview's auto-refresh timer while that window is focused, whenever the
+Menu Bar Extra's panel is opened, and on demand when a person presses Rescan.
+An opened panel paints what the Ledger already holds before that Scan lands, so
+the Scan brings its figures current rather than gating them. Only the
+auto-refresh timer is the reader's to set, and it is the only one they can turn
+off — the resident cadence is not theirs to stop, because a Ledger that
+recorded only while someone watched would lose the logs its Sources prune.
+Turning the timer off therefore stops this window re-reading, never the
+recording.
 _Avoid_: Sync, import, fetch — each suggests usage arriving from somewhere
 else; a Scan only reads what is already on this machine
 

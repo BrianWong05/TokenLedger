@@ -111,6 +111,10 @@ export default function TrayPanel({
     reason: '',
   });
   const [scanning, setScanning] = useState(false);
+  // The gate rescan() reads, mirroring useAutoRefresh's busyRef: `scanning`
+  // is for the view, and a memoized rescan() would close over a stale copy of
+  // it forever — while listing it as a dep would re-fire the open effect.
+  const scanningRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('today');
   // The sparkline's hover inspector: which bucket the pointer is nearest, null
@@ -192,17 +196,53 @@ export default function TrayPanel({
     return () => document.body.classList.remove('tp-window', `tp-${platform}`);
   }, [platform]);
 
-  // Initial load + refetch every time the tray shows the panel — both with
-  // the loading beat; background refetches (rescan) skip it.
+  // Scan, then re-read what it added. The Rescan button's action, and the
+  // second half of every open. Only the scan is gated — coalescing the read
+  // as well would leave an open that lands mid-scan showing the figures from
+  // the open before it. The release is in `finally` because a throw out of
+  // `refresh` would otherwise strand the gate: a permanently disabled Rescan
+  // and every later open swallowed (the bug useAutoRefresh's gate records).
+  const rescan = useCallback(async () => {
+    if (scanningRef.current) return;
+    scanningRef.current = true;
+    setScanning(true);
+    // A fast no-change scan must still visibly happen: hold the spinner and
+    // the pulsing figures for ≥1s.
+    const minDone = new Promise((r) => setTimeout(r, minLoadingMs()));
+    try {
+      // Scan errors surface in the Overview, not here — but the re-read still
+      // runs, so a failed scan doesn't also freeze the figures.
+      await ledger.scan().catch(() => {});
+      await refresh();
+      await minDone;
+    } finally {
+      scanningRef.current = false;
+      setScanning(false);
+    }
+  }, [ledger, refresh]);
+
+  // What an open is: paint what the Ledger already holds, then bring it
+  // current, so nobody has to press Rescan for today's figures. The read does
+  // not wait on the scan — reads have their own connection (lib.rs's read_db)
+  // precisely so a scan cannot queue a paint — and the scan's own re-read
+  // repaints when it lands, including the "Scanned" read-out.
+  const open = useCallback(async () => {
+    await refresh(true);
+    await rescan();
+  }, [refresh, rescan]);
+
+  // Initial load + every time the tray shows the panel. The panel is created
+  // on demand and destroyed on dismissal (ADR-0007), so mount is the usual
+  // open; panel-shown covers a reused window.
   useEffect(() => {
-    void refresh(true);
+    void open();
     let un: (() => void) | undefined;
     Promise.resolve()
-      .then(() => listen('panel-shown', () => void refresh(true)))
+      .then(() => listen('panel-shown', () => void open()))
       .then((f) => { un = f; })
       .catch(() => {});
     return () => un?.();
-  }, [refresh]);
+  }, [open]);
 
   // Size the window to the rendered content on every height change —
   // skeleton → figures, period switches, row counts. Measuring on a state
@@ -248,22 +288,6 @@ export default function TrayPanel({
     periodRef.current = p;
     setPeriod(p);
     void refresh(); // no skeleton beat on a switch — it should feel snappy
-  };
-
-  const rescan = async () => {
-    if (scanning) return; // coalesce double-clicks; scans serialize anyway
-    setScanning(true);
-    // Same minimum beat as the open-skeleton: a fast no-change scan must
-    // still visibly happen (spinner + pulsing figures for ≥1s).
-    const minDone = new Promise((r) => setTimeout(r, minLoadingMs()));
-    try {
-      await ledger.scan();
-    } catch {
-      /* scan errors surface in the Overview, not here */
-    }
-    await refresh();
-    await minDone;
-    setScanning(false);
   };
 
   return (
