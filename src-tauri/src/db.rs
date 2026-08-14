@@ -2977,7 +2977,7 @@ mod tests {
         add_ctx_skill_rows(&mut conn, "claude", "f1.jsonl", &[
             ("grilling".into(), 2400, 1, ts),
             ("grilling".into(), 2400, 1, ts + 60),
-            ("superpowers:brainstorming".into(), 3900, 1, ts),
+            ("playground:playground".into(), 3900, 1, ts),
         ]).unwrap();
         add_ctx_skill_rows(&mut conn, "claude", "f2.jsonl", &[
             ("grilling".into(), 100, 1, ts),

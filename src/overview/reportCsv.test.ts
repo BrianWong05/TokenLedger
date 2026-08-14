@@ -308,7 +308,7 @@ describe('context blocks', () => {
       ],
       ctxTools: [{ source: 'claude', category: 'File', name: 'Read', estTokens: 200, calls: 40 }],
       ctxMcp: [{ source: 'claude', name: 'chrome-devtools', estTokens: 80, calls: 12 }],
-      ctxSkills: [{ source: 'claude', name: 'superpowers:brainstorming', estTokens: 30, uses: 3 }],
+      ctxSkills: [{ source: 'claude', name: 'playground:playground', estTokens: 30, uses: 3 }],
       // cmd carries the whole two-word signature, exactly as exec_class emits
       // it and as the Bash drill-down displays it — not the argument alone.
       ctxExec: [{ source: 'claude', exe: 'git', cmd: 'git commit', estTokens: 90, calls: 25 }],
@@ -372,7 +372,7 @@ describe('context blocks', () => {
     expect(block(csv, 'mcp_server')[0]).toBe('mcp_server,source,est_tokens,calls');
     expect(block(csv, 'mcp_server')[1]).toBe('chrome-devtools,claude,80,12');
     expect(block(csv, 'skill')[0]).toBe('skill,source,est_tokens,uses');
-    expect(block(csv, 'skill')[1]).toBe('superpowers:brainstorming,claude,30,3');
+    expect(block(csv, 'skill')[1]).toBe('playground:playground,claude,30,3');
   });
 
   it('writes a Bash row as the displayed signature plus its executable', () => {

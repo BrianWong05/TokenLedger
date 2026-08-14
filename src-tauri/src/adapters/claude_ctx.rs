@@ -143,10 +143,10 @@ mod tests {
 
     #[test]
     fn skill_body_name_reconstructs_the_invoked_name() {
-        // Plugin skill: invoked `superpowers:brainstorming`.
+        // Plugin skill: invoked `playground:playground`.
         assert_eq!(
-            skill_body_name(&body("/Users/b/.claude/plugins/cache/claude-plugins-official/superpowers/6.1.1/skills/brainstorming")),
-            Some("superpowers:brainstorming".to_string()),
+            skill_body_name(&body("/Users/b/.claude/plugins/cache/claude-plugins-official/playground/1.0.0/skills/playground")),
+            Some("playground:playground".to_string()),
         );
         // Plugin that groups skills into category directories.
         assert_eq!(

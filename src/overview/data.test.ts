@@ -655,14 +655,14 @@ describe('bucketView', () => {
 describe('skillBars', () => {
   const rows: CtxSkillRow[] = [
     { source: 'claude', name: 'grilling', estTokens: 5000, uses: 3 },
-    { source: 'claude', name: 'superpowers:brainstorming', estTokens: 900, uses: 1 },
+    { source: 'claude', name: 'playground:playground', estTokens: 900, uses: 1 },
     { source: 'claude', name: 'prototype', estTokens: 400, uses: 1 },
     { source: 'codex', name: 'other', estTokens: 9999, uses: 9 },
   ];
 
   it('keeps only the selected Source, in the order the query returned', () => {
     const bars = skillBars(rows, 'claude');
-    expect(bars.map((b) => b.name)).toEqual(['grilling', 'superpowers:brainstorming', 'prototype']);
+    expect(bars.map((b) => b.name)).toEqual(['grilling', 'playground:playground', 'prototype']);
     expect(bars[0]).toEqual({ name: 'grilling', tokens: 5000, uses: 3, rest: 0 });
   });
 

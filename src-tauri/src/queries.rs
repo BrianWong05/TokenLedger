@@ -2120,7 +2120,7 @@ mod tests {
         db::add_ctx_skill_rows(&mut conn, "claude", "f1", &[
             ("grilling".to_string(), 2400, 1, DAY1_TS),
             ("grilling".to_string(), 2400, 1, DAY2_TS),
-            ("superpowers:brainstorming".to_string(), 900, 1, DAY1_TS),
+            ("playground:playground".to_string(), 900, 1, DAY1_TS),
         ]).unwrap();
 
         // Summed across days and files, heaviest first — the ordering is what
@@ -2128,7 +2128,7 @@ mod tests {
         let all = ctx_skills(&conn, &Filters::default()).unwrap();
         assert_eq!(all[0].name, "grilling");
         assert_eq!((all[0].est_tokens, all[0].uses), (4800, 2));
-        assert_eq!(all[1].name, "superpowers:brainstorming");
+        assert_eq!(all[1].name, "playground:playground");
 
         // Day window narrows it like every other ctx query.
         let f = Filters { start_ts: Some(DAY1_START), end_ts: Some(DAY2_START), ..Filters::default() };
