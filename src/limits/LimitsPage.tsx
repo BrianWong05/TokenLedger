@@ -182,6 +182,30 @@ export default function LimitsPage({
 
   const views = useMemo(() => cards(stored, nowSec, mode, failures), [stored, nowSec, mode, failures]);
 
+  // The estimate's own clock (spec: "Evaluation timing"). Each evaluation names
+  // the earliest future second at which time ALONE changes its answer — an epoch
+  // resetting, or a candidate ageing out of recency — and the soonest of those is
+  // the only moment this page has anything to re-ask. So one timer, for the
+  // nearest one, which re-reads the stored Readings and nothing else: no vendor
+  // is called, and the fetch floor is untouched, because time passing is not a
+  // person asking. A window whose answer no clock can change reports `null` and
+  // contributes no timer at all.
+  const dueAt = useMemo(() => {
+    const times = stored
+      .flatMap((s) => s.windows)
+      .map((w) => w.estimate.nextEvaluationAt)
+      .filter((at): at is number => at !== null && at > nowSec);
+    return times.length ? Math.min(...times) : null;
+  }, [stored, nowSec]);
+
+  useEffect(() => {
+    if (dueAt === null) return;
+    // `+1` so the reload lands after the second in question rather than on its
+    // boundary, where the backend would still answer with the old horizon.
+    const timer = setTimeout(reload, (dueAt - nowSec + 1) * 1_000);
+    return () => clearTimeout(timer);
+  }, [dueAt, nowSec, reload]);
+
   return (
     <div className="tl-page tl-page-limits">
       {/* the toolbar's empty stretch is a window-drag handle (frameless window) */}

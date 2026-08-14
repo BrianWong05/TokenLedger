@@ -443,12 +443,19 @@ mod tests {
         // stops supporting it, with no grace period and no former answer kept.
         let mut outweighed = one_outlier;
         outweighed.push(epoch(5, 20, 41_000));
+        let withdrawn_from = outweighed.clone();
         let withdrawn = evaluate(Some(&current()), &outweighed, NOW);
         assert_eq!(withdrawn.state, ReadinessState::Unstable);
         assert_eq!(withdrawn.tokens_per_pct, None);
 
-        // And restored by nothing more than the evidence agreeing again.
-        assert_eq!(evaluate(Some(&current()), &ready, NOW).state, ReadinessState::Ready);
+        // And restored by nothing more than the evidence agreeing again — from
+        // the withdrawn set, by the outliers ageing out of it. Re-running the
+        // original vector would assert only that `evaluate` is deterministic.
+        let mut restored_set = withdrawn_from;
+        restored_set.retain(|p| p.epoch != epoch(4, 20, 40_000).epoch && p.epoch != epoch(5, 20, 41_000).epoch);
+        let restored = evaluate(Some(&current()), &restored_set, NOW);
+        assert_eq!(restored.state, ReadinessState::Ready);
+        assert_eq!(restored.tokens_per_pct, Some(100.0));
     }
 
     #[test]
