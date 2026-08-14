@@ -209,6 +209,30 @@ that accumulation; a later clean Reading may start a new run.
 | Claude model-scoped window | Participate only when the stored vendor scope maps to exact raw Claude Model values. `scope.model.display_name`, a `seven_day_*` key tail, or its slug is not proof. Missing raw identity or mapping makes the current estimate Blocked. |
 | Future Source | May participate without estimator changes when it supplies every required fact, exact raw Model mapping where scoped, completeness coverage, and known external-activity provenance. Adding estimation never justifies another vendor call. |
 
+**Claude has no account identity available at all, verified 2026-08-14.** A
+`--shape` run against a live Max account returned no account field anywhere in the
+usage response — the payload is windows, `spend`, `extra_usage`, and unfamiliar
+codenames, and its only account-ish keys are the booleans
+`extra_usage.user_disabled` and `member_dashboard_available`. A
+`--credential-shape` run (every value redacted) found none in the stored sign-in
+either: two 108-character tokens, two expiry numbers, five scopes, the plan tier,
+`subscriptionType`, and a 43-character `trustedDeviceToken`. Nothing
+UUID-shaped.
+
+`trustedDeviceToken` is the one thing that looks like a candidate and is not, on
+two independent grounds. It is a token, and this contract bars token fingerprints
+by name; and it identifies a *device*, so one account on two machines would read
+as two accounts while two accounts on one machine would read as one — the
+opposite of a stable account identity. Do not reach for it.
+
+So Claude's estimate stays **Blocked**, which is what this specification
+prescribes rather than a gap in it: a Source that cannot populate the contract
+from data it already reads does not get the proof invented for it. Claude can
+only leave Blocked if the vendor adds an account identity to the usage response,
+because the alternatives — a new endpoint, or a token-derived identity — are both
+ruled out above. Codex is unaffected: its `tokens.account_id` comes from the
+credential document its Companion already reads to make the fetch.
+
 The current v14 history does not contain account identity or historical
 completeness. Claude's current model-scoped key also does not prove raw Model
 identity. Such evidence remains usable for the existing Limit display but is

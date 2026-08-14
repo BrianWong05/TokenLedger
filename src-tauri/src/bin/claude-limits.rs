@@ -87,6 +87,13 @@ fn run() -> Result<String, String> {
     if std::env::args().skip(1).any(|a| a == "--shape") {
         return Ok(limits_artifact::shape(&body));
     }
+    // `--credential-shape` answers a different question: whether the stored
+    // sign-in carries a stable opaque account identity, which is what Claude's
+    // estimate lacks. Every value is redacted, so the answer can be pasted into
+    // a transcript.
+    if std::env::args().skip(1).any(|a| a == "--credential-shape") {
+        return Ok(credential_shape(&credential_document()?));
+    }
     let export = LimitsExport {
         schema: limits_artifact::SCHEMA,
         source: "claude".to_string(),
@@ -127,14 +134,20 @@ struct Credential {
 }
 
 fn credential() -> Result<Credential, String> {
-    // The keystore route first where there is one, then the credential file —
-    // the sole source elsewhere, and on macOS a fallback that must lose to a
-    // valid keystore read.
+    parse_credential(&credential_document()?)
+}
+
+/// The credential document as stored, before parsing.
+///
+/// The keystore route first where there is one, then the credential file — the
+/// sole source elsewhere, and on macOS a fallback that must lose to a valid
+/// keystore read.
+fn credential_document() -> Result<String, String> {
     let mut trouble: Option<String> = None;
     if cfg!(target_os = "macos") {
         for service in service_candidates() {
             match keystore_read(&service) {
-                Ok(Some(raw)) => return parse_credential(&raw),
+                Ok(Some(raw)) => return Ok(raw),
                 Ok(None) => {}
                 // Hold the failure: a later candidate may still be a clean hit,
                 // and if none is, this is what the card must say.
@@ -143,10 +156,63 @@ fn credential() -> Result<Credential, String> {
         }
     }
     match credential_file().and_then(|path| std::fs::read_to_string(path).ok()) {
-        Some(raw) => parse_credential(&raw),
+        Some(raw) => Ok(raw),
         None => Err(trouble.unwrap_or_else(|| {
             format!("{NOT_SIGNED_IN}: no Claude Code sign-in found on this computer")
         })),
+    }
+}
+
+/// The credential document's structure, with **every value redacted**.
+///
+/// Hand-run only, like `--shape`: the app's sidecar allowlist carries no
+/// arguments, so neither flag can be reached from the running app.
+///
+/// Stricter than `--shape` on purpose. That one prints short strings verbatim
+/// because a vendor's enum values are the thing being diagnosed; this prints no
+/// string from the document at all. A credential's short values may still be
+/// secrets, and the question this exists to answer — is there a stable opaque
+/// account identity in here, and what shape is it — needs only lengths. Booleans
+/// and nulls carry nothing beyond presence, so they show as themselves; numbers
+/// do not, because an expiry is a number.
+fn credential_shape(raw: &str) -> String {
+    let Ok(document) = serde_json::from_str::<Value>(raw) else {
+        return "the stored Claude sign-in is not JSON".to_string();
+    };
+    let mut lines = Vec::new();
+    walk_redacted(&document, "", &mut lines);
+    lines.sort();
+    lines.join("\n")
+}
+
+fn walk_redacted(node: &Value, prefix: &str, out: &mut Vec<String>) {
+    match node {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                walk_redacted(value, &format!("{prefix}.{key}"), out);
+            }
+        }
+        // Element structure without element values: an array of scopes should
+        // report how many there are and how long each is, never which they are.
+        Value::Array(items) => {
+            out.push(format!("{prefix}: [{} items]", items.len()));
+            for (i, item) in items.iter().enumerate() {
+                walk_redacted(item, &format!("{prefix}[{i}]"), out);
+            }
+        }
+        Value::String(value) => {
+            let uuidish = value.len() == 36
+                && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+                && value.matches('-').count() == 4;
+            out.push(format!(
+                "{prefix}: <str len={}{}>",
+                value.len(),
+                if uuidish { " UUID-SHAPED" } else { "" },
+            ));
+        }
+        Value::Number(_) => out.push(format!("{prefix}: <number>")),
+        Value::Bool(value) => out.push(format!("{prefix}: {value}")),
+        Value::Null => out.push(format!("{prefix}: null")),
     }
 }
 
@@ -695,6 +761,51 @@ mod tests {
         // The refresh token has no field to land in — the cheapest possible
         // guarantee that it is never spent (ADR-0019 bound 1).
         assert!(!std::any::type_name::<Credential>().contains("Refresh"));
+    }
+
+    #[test]
+    fn the_credential_shape_echoes_no_value_from_the_document() {
+        // The whole point of this diagnostic is that its output is safe to paste.
+        // Every string below is a value a leak would expose, and none may appear
+        // in what it prints — not the token, and not the short strings `--shape`
+        // would have shown verbatim.
+        let raw = r#"{"claudeAiOauth":{
+            "accessToken":"sk-ant-oat01-SUPERSECRET-TOKEN",
+            "refreshToken":"sk-ant-ort01-ANOTHER-SECRET",
+            "rateLimitTier":"Max5x",
+            "subscriptionType":"max",
+            "scopes":["user:inference","user:profile"],
+            "expiresAt":1786492800,
+            "isMax":true,
+            "organizationUuid":"8f14e45f-ceea-467a-9c1b-3f4b2d5a6e70",
+            "nothing":null}}"#;
+
+        let printed = credential_shape(raw);
+        for secret in [
+            "SUPERSECRET",
+            "ANOTHER-SECRET",
+            "sk-ant",
+            "Max5x",
+            "user:inference",
+            "user:profile",
+            "8f14e45f",
+            "1786492800",
+        ] {
+            assert!(!printed.contains(secret), "leaked {secret}:\n{printed}");
+        }
+
+        // What it may say: where each key is, how long its value is, and that one
+        // of them is shaped like the account identity this is hunting for.
+        assert!(printed.contains(".claudeAiOauth.accessToken: <str len=30>"), "{printed}");
+        assert!(
+            printed.contains(".claudeAiOauth.organizationUuid: <str len=36 UUID-SHAPED>"),
+            "{printed}",
+        );
+        assert!(printed.contains(".claudeAiOauth.scopes: [2 items]"), "{printed}");
+        assert!(printed.contains(".claudeAiOauth.scopes[0]: <str len=14>"), "{printed}");
+        assert!(printed.contains(".claudeAiOauth.expiresAt: <number>"), "{printed}");
+        assert!(printed.contains(".claudeAiOauth.isMax: true"), "{printed}");
+        assert!(printed.contains(".claudeAiOauth.nothing: null"), "{printed}");
     }
 
     #[test]
