@@ -9,14 +9,14 @@
 // Refresh only, never on the scan timer and never in the background (a floor of
 // LIVE_FLOOR_MS between live checks per Source enforces it against a fast tab
 // flipper).
-import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import './limits.css';
-import { useT, type Lang } from '../lib/i18n';
-import { fill } from '../lib/format';
+import { useT } from '../lib/i18n';
+import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
-  approxTokens, cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
+  cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
   type CardView, type EstimateView, type Mode, type WindowView,
 } from './limits.derive';
 import {
@@ -41,7 +41,7 @@ export default function LimitsPage({
   now?: () => number;
 } = {}) {
   const port = ports?.limits ?? tauriLimits;
-  const { t, lang } = useT();
+  const { t } = useT();
 
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
@@ -202,15 +202,7 @@ export default function LimitsPage({
       {liveEnabled ? (
         <div className="tl-lim-grid">
           {views.map((card) => (
-            <Card
-              key={card.source}
-              card={card}
-              mode={mode}
-              nowSec={nowSec}
-              t={t}
-              lang={lang}
-              onRetry={() => checkLive()}
-            />
+            <Card key={card.source} card={card} mode={mode} nowSec={nowSec} t={t} onRetry={() => checkLive()} />
           ))}
         </div>
       ) : (
@@ -232,8 +224,8 @@ function signedOut(detail: string): boolean {
 }
 
 function Card({
-  card, mode, nowSec, t, lang, onRetry,
-}: { card: CardView; mode: Mode; nowSec: number; t: T; lang: Lang; onRetry: () => void }) {
+  card, mode, nowSec, t, onRetry,
+}: { card: CardView; mode: Mode; nowSec: number; t: T; onRetry: () => void }) {
   const icon = sourceIcon(card.meta.icon);
   const fresh = card.state === 'live' ? freshness(card, nowSec) : null;
 
@@ -272,9 +264,7 @@ function Card({
       </div>
 
       {card.state === 'live' ? (
-        card.windows.map((w) => (
-          <Row key={w.key} w={w} source={card.source} mode={mode} t={t} lang={lang} />
-        ))
+        card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)
       ) : (
         <Trouble card={card} t={t} onRetry={onRetry} />
       )}
@@ -282,9 +272,7 @@ function Card({
   );
 }
 
-function Row({
-  w, source, mode, t, lang,
-}: { w: WindowView; source: string; mode: Mode; t: T; lang: Lang }) {
+function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
   const label = windowLabel(w.key, source);
   const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
   const spent = w.pctLeft <= 0;
@@ -339,7 +327,7 @@ function Row({
             />
           )}
         </div>
-        {w.estimate && <EstimateLine est={w.estimate} mode={mode} t={t} lang={lang} />}
+        {w.estimate && <EstimateLine est={w.estimate} mode={mode} />}
       </div>
     </div>
   );
@@ -349,9 +337,8 @@ function Row({
 // is worth, or — far more often — why it says nothing yet. It never colors
 // itself; the scarcity tones belong to the Limit, and borrowing one would let a
 // withheld estimate read as an emergency.
-function EstimateLine({
-  est, mode, t, lang,
-}: { est: EstimateView; mode: Mode; t: T; lang: Lang }) {
+function EstimateLine({ est, mode }: { est: EstimateView; mode: Mode }) {
+  const { t, lang } = useT();
   const noteId = useId();
   const [open, setOpen] = useState(false);
 
@@ -369,7 +356,7 @@ function EstimateLine({
   }
 
   const explanation = fill(t('limits.est.explanation'), {
-    total: approxTokens(est.total, lang),
+    total: formatApproxTokens(est.total, lang),
   });
 
   return (
@@ -377,12 +364,17 @@ function EstimateLine({
       {est.selected !== null && (
         <>
           <span className="main">
-            {marked(t(mode === 'left' ? 'limits.est.left' : 'limits.est.used'), est.selected, t, lang)}
+            <ApproxPhrase
+              template={t(mode === 'left' ? 'limits.est.left' : 'limits.est.used')}
+              tokens={est.selected}
+            />
           </span>
           <span className="dot" aria-hidden="true">·</span>
         </>
       )}
-      <span className="rate">{marked(t('limits.est.perPct'), est.perPct, t, lang)}</span>
+      <span className="rate">
+        <ApproxPhrase template={t('limits.est.perPct')} tokens={est.perPct} />
+      </span>
       <span className="dot" aria-hidden="true">·</span>
       <span className="origin">
         {fill(t(est.epochs === 1 ? 'limits.est.originOne' : 'limits.est.originMany'), {
@@ -404,24 +396,29 @@ function EstimateLine({
       >
         <span aria-hidden="true">i</span>
       </button>
-      <span id={noteId} className={open ? 'note' : 'tl-lim-sr'}>
+      {/* `.note` when open and the global hidden-text utility when shut — two
+          naming layers on one span because it genuinely has two jobs, and the
+          accessible one never stops. */}
+      <span id={noteId} className={open ? 'note' : 'tl-sr-only'}>
         {explanation}
       </span>
     </div>
   );
 }
 
-// A figure with its approximation marker, dropped into the phrase at the
-// placeholder its language chose. "≈" is for the eye alone and the word is for
-// the ear alone, so neither audience is told the number is exact.
-function marked(template: string, tokens: number, t: T, lang: Lang): ReactNode {
+// A phrase with its approximate figure dropped in at the placeholder its own
+// language chose — English leads with the marker, Chinese puts 約 inside the
+// phrase, and a fixed prefix could not serve both. "≈" is for the eye alone and
+// the word is for the ear alone, so neither audience is told the number is exact.
+function ApproxPhrase({ template, tokens }: { template: string; tokens: number }) {
+  const { t, lang } = useT();
   const [before, after = ''] = template.split('{tokens}');
   return (
     <>
       {before}
       <span aria-hidden="true">≈</span>
-      <span className="tl-lim-sr">{`${t('limits.est.approx')} `}</span>
-      {approxTokens(tokens, lang)}
+      <span className="tl-sr-only">{`${t('limits.est.approx')} `}</span>
+      {formatApproxTokens(tokens, lang)}
       {after}
     </>
   );

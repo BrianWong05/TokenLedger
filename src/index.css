@@ -203,6 +203,25 @@ button:focus-visible {
   outline-offset: 1px;
 }
 
+/* Read out, never seen. The repo's usual reach is `aria-label` + `aria-hidden`,
+   which swaps one string for another; this is for the case where the eye and the
+   ear need DIFFERENT words in the same sentence — "≈" beside the figure, and
+   "approximately" spoken in its place. Global rather than page-scoped because
+   the mechanism has nothing to do with any one page, and any page that hides a
+   word this way must hide it the same way. Removing this rule makes hidden text
+   visible, so index.css.test.js pins it. */
+.tl-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ---- hero card ---- */
 
 .hero-card {

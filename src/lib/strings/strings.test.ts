@@ -17,10 +17,12 @@ describe('strings', () => {
       for (const [lang, entries] of Object.entries(dict)) {
         for (const [key, value] of Object.entries(entries as Record<string, string>)) {
           // A Limit is a rolling *window* (CONTEXT.md), so the plural is domain
-          // vocabulary the Limits tab has to be able to say. Only the domain
-          // phrases are excused, each one deliberately; "on Windows" and any
-          // other bare mention still trip the guard.
-          const copy = value.replace(/\b(vendor|completed|Limit) windows\b/gi, '');
+          // vocabulary the Limits tab has to be able to say. Only these exact
+          // phrases are excused, each one deliberately — and only with the noun
+          // lowercase, because the operating system is a proper noun and always
+          // capitalised. "completed Windows updates" still trips the guard, as
+          // does any bare mention.
+          const copy = value.replace(/\b(?:[Vv]endor|[Cc]ompleted|[Ll]imit) windows\b/g, '');
           expect(copy, `${name}.${lang}.${key}`).not.toMatch(
             /\bmac\b|\bmacs\b|macos|\bosx\b|windows|\blinux\b/i,
           );

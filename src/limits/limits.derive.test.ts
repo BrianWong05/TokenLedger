@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
-  approxTokens, cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone,
-  windowLabel, windowView,
+  cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
+  windowView,
 } from './limits.derive';
 
 // 2026-08-12T00:00:00Z
@@ -312,19 +312,55 @@ describe('the estimate view', () => {
     expect({ ...left, selected: null }).toEqual({ ...used, selected: null });
   });
 
+  // The rate, the evidence count and (with them) the info control survive every
+  // case that hides the selected figure — they are facts about the evidence, not
+  // about the current Reading.
+  const withoutSelected = {
+    state: 'ready',
+    selected: null,
+    perPct: 350_000,
+    total: 35_000_000,
+    epochs: 4,
+  };
+
   it('hides the selected figure on a used-up window under either framing', () => {
     const spent = win({ usedPct: 100, estimate: makeReadyEstimate(350_000) });
 
     for (const mode of ['left', 'used'] as const) {
-      // Neither "≈0 left" nor a whole-window figure — but the rate, the
-      // evidence count and (with them) the info control all survive.
-      expect(windowView(spent, mode, NOW).estimate).toEqual({
-        state: 'ready',
-        selected: null,
-        perPct: 350_000,
-        total: 35_000_000,
-        epochs: 4,
-      });
+      expect(windowView(spent, mode, NOW).estimate).toEqual(withoutSelected);
+    }
+  });
+
+  it('hides it on a window the row only DISPLAYS as used up', () => {
+    // 99.6% used is not `pctLeft <= 0`, but the numeral rounds to "0%" left and
+    // "100%" used. Guarding on the raw figure let the line read "≈0 tokens left"
+    // beside that 0%, and a whole-window "≈35M tokens used" beside that 100% —
+    // both of them the renderings the spec names as forbidden.
+    const nearly = win({ usedPct: 99.6, estimate: makeReadyEstimate(350_000) });
+
+    for (const mode of ['left', 'used'] as const) {
+      expect(windowView(nearly, mode, NOW).estimate).toEqual(withoutSelected);
+    }
+    // One displayed point of headroom is still a figure worth showing.
+    expect(windowView(win({ usedPct: 99, estimate: makeReadyEstimate(350_000) }), 'left', NOW)
+      .estimate).toMatchObject({ selected: 350_000 });
+  });
+
+  it('hides it on an expired epoch, whose percentage the bar invents', () => {
+    // An expired window renders full and unused (#107) off a `pctLeft` nothing
+    // observed. The backend should already be Blocked here — "an expired
+    // displayed Reading does not prove a new current Partition" — but its
+    // `evaluatedAt` and this page's clock are two different clocks, so the row
+    // must not multiply a ratio by a percentage it made up on its own.
+    const expired = win({
+      usedPct: 0,
+      resetsAt: NOW - HOUR,
+      estimate: makeReadyEstimate(350_000),
+    });
+
+    expect(windowView(expired, 'left', NOW)).toMatchObject({ expired: true, pctLeft: 100 });
+    for (const mode of ['left', 'used'] as const) {
+      expect(windowView(expired, mode, NOW).estimate).toEqual(withoutSelected);
     }
   });
 
@@ -341,9 +377,8 @@ describe('the estimate view', () => {
   });
 
   it('draws nothing at all when a ready evaluation brings no usable ratio', () => {
-    // The wire promises `tokensPerPct` exactly when the state is ready, but as
-    // an optional field — nothing in the type system holds it to that. A broken
-    // promise is not a withheld estimate, and must never reach a person as one.
+    // A broken wire promise (see `EstimateView`) is not a withheld estimate, and
+    // must never reach a person as one.
     for (const tokensPerPct of [undefined, 0, -1, NaN, Infinity]) {
       const estimate = { ...makeReadyEstimate(350_000), tokensPerPct };
       expect(windowView(win({ estimate }), 'left', NOW).estimate).toBeNull();
@@ -351,13 +386,3 @@ describe('the estimate view', () => {
   });
 });
 
-describe('approximate token figures', () => {
-  it('keeps two significant digits, compact, in the reader’s own locale', () => {
-    expect(approxTokens(12_345_678, 'en')).toBe('12M');
-    expect(approxTokens(350_000, 'en')).toBe('350K');
-    expect(approxTokens(1_234, 'en')).toBe('1.2K');
-    // Chinese groups by 萬, not by thousand — the whole reason the locale is
-    // passed rather than the figure being formatted once and translated.
-    expect(approxTokens(12_345_678, 'zh-Hant')).toBe('1200萬');
-  });
-});

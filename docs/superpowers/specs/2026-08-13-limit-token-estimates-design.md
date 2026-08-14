@@ -531,10 +531,24 @@ focus-visible styling, and an explanation available to keyboard, pointer, and
 assistive-technology users. Ready explanation:
 
 > Approximation from matching token use across consistent completed Limit
-> windows. Local equivalent at 100%: {total} tokens. It is not the vendor's
-> token quota.
+> windows. Local equivalent at 100%: approximately {total} tokens. It is not a
+> vendor-reported token figure.
 
-The 100% local equivalent uses the same locale-aware approximate formatting.
+The 100% local equivalent uses the same locale-aware approximate formatting, so
+the word "approximately" appears in the sentence rather than the `≈` symbol —
+this string is read aloud as well as displayed, and accessible copy may not lean
+on the symbol.
+
+The closing sentence originally read "It is not the vendor's token quota."
+`CONTEXT.md` lists *quota* among the synonyms **Limit** rejects, and
+`src/lib/strings/strings.test.ts` enforces that across every Limits string in
+both languages, so the literal copy could not ship. "Token limit" is not a
+substitute either: a Limit is exactly what this estimate measures, so denying
+being one would contradict the row it sits under. *Figure* keeps the shape of
+`CONTEXT.md`'s own sentence for **Limit Token Estimate** — "never a
+vendor-reported token quota" — without reaching for a glossary term that means
+something else here. The approved Traditional Chinese is unchanged; it already
+said 限額, the domain word.
 
 ### Withheld states
 
@@ -567,7 +581,7 @@ Unstable: 估算已撤回 — 最近的本機歷史並不一致
 Stale: 估算已過期 — 最近仍合資格的已完成時段少於 3 個
 Blocked: 無法估算 — 無法驗證相符的本機用量或來源完整性
 Explanation: 根據多個一致且已完成限額時段的相符 token 用量作近似估算。
-             本機 100% 等值：{total} 個 token。這不是供應商提供的 token 限額。
+             本機 100% 等值：約 {total} 個 token。這不是供應商提供的 token 限額。
 ```
 
 Use `Intl.NumberFormat(locale, { notation: 'compact',

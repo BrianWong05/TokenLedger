@@ -710,7 +710,7 @@ const estOf = (c: HTMLElement) => rows(cardFor(c, 'Codex'))[0].querySelector('.t
 const seen = (el: Element | null | undefined) => {
   if (!el) return null;
   const copy = el.cloneNode(true) as HTMLElement;
-  for (const hidden of copy.querySelectorAll('.tl-lim-sr')) hidden.remove();
+  for (const hidden of copy.querySelectorAll('.tl-sr-only')) hidden.remove();
   return copy.textContent;
 };
 
@@ -737,10 +737,10 @@ describe('the Ready evidence line', () => {
     const main = estOf(c).querySelector('.main')!;
 
     expect(main.querySelector('[aria-hidden="true"]')?.textContent).toBe('≈');
-    expect(main.querySelector('.tl-lim-sr')?.textContent).toBe('approximately ');
+    expect(main.querySelector('.tl-sr-only')?.textContent).toBe('approximately ');
     // The two never both reach one audience: the symbol is hidden from the
     // accessibility tree, the word is hidden from the eye.
-    expect(main.querySelector('.tl-lim-sr')?.getAttribute('aria-hidden')).toBeNull();
+    expect(main.querySelector('.tl-sr-only')?.getAttribute('aria-hidden')).toBeNull();
   });
 
   it('changes only the selected figure when the framing flips', async () => {
@@ -829,7 +829,7 @@ describe('the Ready info control', () => {
     const expected =
       'Approximation from matching token use across consistent completed Limit windows. ' +
       'Local equivalent at 100%: approximately 35M tokens. ' +
-      'It is not a vendor-reported token limit.';
+      'It is not a vendor-reported token figure.';
     expect(described().textContent).toBe(expected);
 
     expect(info.getAttribute('aria-expanded')).toBe('false');
@@ -841,7 +841,7 @@ describe('the Ready info control', () => {
 
     await act(async () => info.click());
     expect(info.getAttribute('aria-expanded')).toBe('false');
-    expect(described().className).toBe('tl-lim-sr');
+    expect(described().className).toBe('tl-sr-only');
   });
 });
 

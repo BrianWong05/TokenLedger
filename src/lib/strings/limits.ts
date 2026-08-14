@@ -89,12 +89,15 @@ export const limits = {
     'limits.est.originOne': 'from {n} consistent completed window',
     'limits.est.originMany': 'from {n} consistent completed windows',
     'limits.est.infoLabel': 'About this estimate',
-    // The spec's approved copy closes "It is not the vendor's token quota." The
-    // word is barred from this module (strings.test.ts), and the approved
-    // Traditional Chinese never used it either — it says 限額, the domain word —
-    // so English says the same thing the same way.
+    // The spec's approved copy closes "It is not the vendor's token quota." That
+    // word is barred from this module (strings.test.ts) as a synonym CONTEXT.md
+    // rejects. "token limit" cannot stand in for it either — a Limit is exactly
+    // what this estimate measures, so denying being one would contradict the row
+    // it sits under. CONTEXT.md's own entry for Limit Token Estimate supplies the
+    // shape ("never a vendor-reported token quota"); "figure" carries it without
+    // reaching for a glossary term that means something else here.
     'limits.est.explanation':
-      'Approximation from matching token use across consistent completed Limit windows. Local equivalent at 100%: approximately {total} tokens. It is not a vendor-reported token limit.',
+      'Approximation from matching token use across consistent completed Limit windows. Local equivalent at 100%: approximately {total} tokens. It is not a vendor-reported token figure.',
 
     // Withheld states: a neutral title and the one fact behind it. No withheld
     // state may show a figure — not a prior estimate, not a diagnostic one —

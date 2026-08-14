@@ -264,7 +264,7 @@
 .tl-lim-est .main,
 .tl-lim-est .title {
   color: var(--text-secondary);
-  font-weight: 620;
+  font-weight: 650;
 }
 .tl-lim-est .rate {
   color: var(--text-secondary);
@@ -292,20 +292,6 @@
 .tl-lim-est-info:hover {
   border-color: var(--border-strong);
   color: var(--text-primary);
-}
-/* Read out, never seen: "≈" carries the approximation to the eye, and this
-   carries the same word to a screen reader, which would announce the symbol as
-   nothing at all. */
-.tl-lim-sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  border: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 /* ── trouble states ── */
