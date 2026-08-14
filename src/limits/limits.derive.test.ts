@@ -303,6 +303,18 @@ describe('the estimate view', () => {
     expect(v.estimate).toMatchObject({ selected: 41 * 350_000 });
   });
 
+  it('derives Left from the rounded Used figure, so the framings total 100', () => {
+    // 59.5% used rounds to 60% used, so Left must read 40% — never
+    // round(40.5) = 41, which would put 101 points on screen across the two
+    // framings and convert a percentage the numeral does not show.
+    const at = (mode: 'left' | 'used') =>
+      windowView(win({ usedPct: 59.5, estimate: makeReadyEstimate(350_000) }), mode, NOW);
+
+    expect([at('left').pctShown, at('used').pctShown]).toEqual([40, 60]);
+    expect(at('left').estimate).toMatchObject({ selected: 40 * 350_000 });
+    expect(at('used').estimate).toMatchObject({ selected: 60 * 350_000 });
+  });
+
   it('changes only the selected figure when the framing flips', () => {
     const left = windowView(ready(350_000), 'left', NOW).estimate;
     const used = windowView(ready(350_000), 'used', NOW).estimate;

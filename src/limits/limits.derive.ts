@@ -59,8 +59,17 @@ export interface WindowView {
   key: string;
   /** 100 − the vendor's used figure, or 100 for an expired epoch. */
   pctLeft: number;
-  /** The framed figure the numeral and the fill both show. */
+  /** The framed unrounded figure the fill's geometry uses. */
   pct: number;
+  /**
+   * The rounded percentage the row DISPLAYS under this framing. The spec fixes
+   * the order: the USED figure rounds, and Left is 100 − that — so the two
+   * framings always total 100. The numeral, its aria text, and every estimate
+   * conversion read this; `pct` keeps the fraction for the fill.
+   */
+  pctShown: number;
+  /** 100 − the rounded used figure — what "used up" is judged by. */
+  pctLeftShown: number;
   tone: Tone;
   /** Minutes until this window's reset; null when none is scheduled. */
   resetsInMin: number | null;
@@ -137,6 +146,11 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
   const durationMin = w.windowMinutes ?? null;
   const expired = w.resetsAt <= nowSec;
   const pctLeft = expired ? 100 : Math.max(0, Math.min(100, 100 - w.usedPct));
+  // The spec's displayed percentage: the USED figure rounds, and Left is
+  // 100 − that — never a rounding of the raw remainder, which lands one point
+  // off at the .5 boundary (59.5% used must read 60% used / 40% left, not 41%).
+  const usedShown = expired ? 0 : Math.round(Math.max(0, Math.min(100, w.usedPct)));
+  const pctLeftShown = 100 - usedShown;
 
   const resetsInMin = expired ? null : (w.resetsAt - nowSec) / 60;
 
@@ -149,6 +163,8 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
     key: w.windowKey,
     pctLeft,
     pct: framedPct(pctLeft, mode),
+    pctShown: mode === 'left' ? pctLeftShown : usedShown,
+    pctLeftShown,
     tone: tone(pctLeft),
     resetsInMin,
     tickPct: timeLeftPct === null ? null : mode === 'left' ? timeLeftPct : 100 - timeLeftPct,
@@ -189,17 +205,18 @@ export function estimateView(
   // under one framing and as a whole-window figure under the other, both of them
   // forbidden — and an expired epoch, whose 100% the bar SYNTHESISES. Converting
   // that second one would invent a full window's worth of tokens out of a Reading
-  // that proves nothing about the current window. Rounded, so the line and the
-  // numeral can never disagree about which of those a window is.
+  // that proves nothing about the current window. Judged off `pctShown`'s own
+  // rounding, so the line and the numeral can never disagree about which of
+  // those a window is.
   //
   // Everything the evidence itself knows survives either way: tokens per 1%, the
   // epoch count, and the info control. A used-up Reading may still carry a Ready
   // historical ratio.
-  const spent = bar.expired || Math.round(bar.pctLeft) <= 0;
+  const spent = bar.expired || bar.pctLeftShown <= 0;
 
   return {
     state: 'ready',
-    selected: spent ? null : perPct * Math.round(bar.pct),
+    selected: spent ? null : perPct * bar.pctShown,
     perPct,
     total: perPct * 100,
     epochs: evaluation.explanation.candidates.filter((c) => c.inCore).length,

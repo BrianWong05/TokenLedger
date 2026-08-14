@@ -313,7 +313,7 @@ function Card({
 function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
   const label = windowLabel(w.key, source);
   const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
-  const spent = w.pctLeft <= 0;
+  const spent = w.pctLeftShown <= 0;
 
   return (
     <div className="tl-lim-row">
@@ -323,7 +323,7 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
         <span className="tl-lim-num" aria-hidden="true" />
       ) : (
         <span className={'tl-lim-num ' + w.tone}>
-          {Math.round(w.pct)}
+          {w.pctShown}
           <span className="pct">%</span>
         </span>
       )}
@@ -351,7 +351,7 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
           className={'tl-lim-bar ' + w.tone}
           role="img"
           aria-label={fill(t(mode === 'left' ? 'limits.pctLeft' : 'limits.pctUsed'), {
-            pct: Math.round(w.pct),
+            pct: w.pctShown,
           })}
         >
           <div className="fill" style={{ width: `${w.pct}%` }} />
