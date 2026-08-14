@@ -229,22 +229,26 @@ twelve completed epochs per Series.
 
 | Workload | Before | After | Improvement |
 | --- | ---: | ---: | ---: |
-| Page open | 960.1 ms | 69.6 ms | 93% lower, 13.8x faster |
-| Withheld page, incl. Stale reconstruction | 509.8 ms | 68.7 ms | 87% lower |
-| Derivation stage alone | 453.5 ms | 9.1 ms | 98% lower |
+| Page open | 960.1 ms | 46.5 ms | 95% lower, 20.6x faster |
+| Withheld page, incl. Stale reconstruction | 509.8 ms | 46.0 ms | 91% lower |
+| Derivation stage alone | 453.5 ms | 9.4 ms | 98% lower |
+
+Two separate causes, found by measuring the stages rather than the page.
 
 Every figure is the first measurement of its path in the process. The stage
 breakdown runs last, deliberately: it reads the same rows, so measuring it first
 would leave the page-open number warm and the Baseline protocol asks for a cold
 user-facing load.
 
-Stage breakdown after the fix, of a 72.4 ms page open: the in-horizon Readings
-15.0 ms (20,960 rows of 201,300), the Usage seek 7.0 ms (21,170 Records), the
-derivation 9.2 ms, the displayed-window statement 11.8 ms. The remaining ~30 ms is
-the per-Source plan lookups, the readiness evaluation across ten windows, and the
+Stage breakdown after both fixes, of a 46.5 ms page open: the in-horizon Readings
+15.5 ms (20,960 rows of 201,300), the Usage seek 6.9 ms (21,170 Records), the
+derivation 9.4 ms, the displayed-window statement 11.6 ms. That accounts for 43.4
+of the 46.5 ms; the rest is the readiness evaluation across ten windows and the
 conversion onto the wire.
 
-The root cause was not SQL. Every statement already sought what it could — the
+### Cause one: a scan above the SQL
+
+Not SQL. Every statement already sought what it could — the
 Usage side reports `SEARCH events USING INDEX idx_events_evidence (source=? AND
 account_id=? AND timestamp>? AND timestamp<?)`. The pass *over* those results
 filtered the whole selected Record set once per candidate interval, so cost grew
@@ -253,8 +257,25 @@ Records by Source and account once and seeking each interval's `(t0, t1]` slice 
 binary search removes it. The answer was identical before and after; only the time
 changed.
 
-Three measured observations that are not shortfalls, recorded so nobody optimizes
-them blind:
+### Cause two: sorting a Source's whole history to keep one row
+
+The plan pill's statement — `SELECT plan … WHERE source = ?1 AND plan IS NOT NULL
+ORDER BY observed_at DESC LIMIT 1` — reports `SEARCH limit_readings USING INDEX
+… (source=?) | USE TEMP B-TREE FOR ORDER BY`. It seeks the Source and then sorts
+every row of it to keep one, once per card, and that sort grows with the table for
+as long as the app runs. At 201,300 Readings it cost **23.6 ms of a 71 ms page**,
+the largest single stage — larger than the derivation and the displayed-window
+join combined.
+
+The page now takes the label from the Readings it has already read. They are the
+newest ones there are, so the newest of them naming a plan is the newest naming a
+plan; the statement survives only as the fallback for a Source whose whole recent
+history is silent about its plan, which is the case it was written for. No
+migration, no index, no semantic change.
+
+### Measured observations that are not shortfalls
+
+Recorded so nobody optimizes them blind:
 
 - `stored_readings` reports `SCAN limit_readings USING INDEX
   sqlite_autoindex_limit_readings_1` — no seek, because `observed_at` is the

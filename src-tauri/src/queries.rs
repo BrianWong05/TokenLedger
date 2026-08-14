@@ -1045,6 +1045,12 @@ pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 /// can `EXPLAIN` and time the statement the page actually issues rather than a
 /// copy of it. It has no time bound by design: a card shows the newest epoch, and
 /// which epoch is newest is a fact about the whole table.
+/// The plan pill's text, as of a Source's newest observation. Exported for the
+/// same reason as the statement below it: a profile must EXPLAIN what runs.
+pub const PLAN_LABEL_SQL: &str =
+    "SELECT plan FROM limit_readings WHERE source = ?1 AND plan IS NOT NULL \
+     ORDER BY observed_at DESC LIMIT 1";
+
 pub const DISPLAYED_WINDOWS_SQL: &str =
     "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
             MAX(r.resets_at), MAX(r.observed_at) \
@@ -1131,16 +1137,28 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
         }
     }
 
-    // The plan label as of the newest observation of that Source — one lookup
-    // rather than a column on every window, since a card shows one pill.
-    let mut plan_stmt = conn.prepare(
-        "SELECT plan FROM limit_readings WHERE source = ?1 AND plan IS NOT NULL \
-         ORDER BY observed_at DESC LIMIT 1",
-    )?;
+    // The plan label as of the newest observation of that Source — one pill per
+    // card, so one answer per Source rather than a column on every window.
+    //
+    // Taken from the Readings already in hand wherever they carry it. They are the
+    // newest ones there are, so the newest of them naming a plan IS the newest
+    // naming a plan; the statement only has to run for a Source whose whole recent
+    // history is silent about its plan, which is the case it was written for.
+    // Asking SQLite every time cost 23.6 ms of a 71 ms page at 201,300 Readings:
+    // it seeks the Source and then sorts every row of it to keep one, and that
+    // sort grows with the table for as long as the app runs.
+    let mut plan_stmt = conn.prepare(PLAN_LABEL_SQL)?;
     for card in &mut cards {
-        card.plan = plan_stmt
-            .query_row([&card.source], |r| r.get(0))
-            .optional()?;
+        card.plan = readings
+            .iter()
+            .filter(|r| r.source == card.source && r.plan.is_some())
+            .max_by_key(|r| r.observed_at)
+            .and_then(|r| r.plan.clone());
+        if card.plan.is_none() {
+            card.plan = plan_stmt
+                .query_row([&card.source], |r| r.get(0))
+                .optional()?;
+        }
     }
     drop(plan_stmt);
     drop(stmt);

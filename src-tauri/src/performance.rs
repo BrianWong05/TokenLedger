@@ -425,6 +425,8 @@ fn performance_standard_limits_estimate() {
     // whole table. Reported so the cost of that is visible rather than implied.
     let displayed_plan = plan_of(&conn, queries::DISPLAYED_WINDOWS_SQL);
     eprintln!("PERF limits_displayed_plan {displayed_plan}");
+    let plan_label_plan = plan_of(&conn, queries::PLAN_LABEL_SQL);
+    eprintln!("PERF limits_plan_label_plan {plan_label_plan}");
 
     // ── 1. page open: the first read of this data in this process ──
     let started = Instant::now();
@@ -531,9 +533,21 @@ fn performance_standard_limits_estimate() {
         .unwrap();
     let t_displayed = started.elapsed();
     assert_eq!(displayed as usize, LIMIT_SOURCES * WINDOW_MINUTES.len());
+    // What the plan-label statement costs when it has to run. It is the fallback
+    // now — the page takes the label from the Readings it already holds — so this
+    // is the cost avoided rather than a cost paid, and it is measured to keep that
+    // decision honest if anyone reverts it.
+    let started = Instant::now();
+    for s in 0..LIMIT_SOURCES {
+        let _: Option<String> = conn
+            .query_row(queries::PLAN_LABEL_SQL, [format!("limsrc-{s}")], |r| r.get(0))
+            .unwrap();
+    }
+    let t_plan_label = started.elapsed();
     eprintln!(
         "PERF limits_stages in_horizon_readings={} matching_records={} partitions={} \
-         read_readings_ms={:.1} read_usage_ms={:.1} derive_ms={:.1} displayed_windows_ms={:.1}",
+         read_readings_ms={:.1} read_usage_ms={:.1} derive_ms={:.1} displayed_windows_ms={:.1} \
+         plan_label_fallback_ms={:.1}",
         staged.len(),
         staged_usage.len(),
         staged_evidence.partitions.len(),
@@ -541,6 +555,7 @@ fn performance_standard_limits_estimate() {
         t_usage.as_secs_f64() * 1e3,
         t_derive.as_secs_f64() * 1e3,
         t_displayed.as_secs_f64() * 1e3,
+        t_plan_label.as_secs_f64() * 1e3,
     );
 
     for (name, elapsed) in [
