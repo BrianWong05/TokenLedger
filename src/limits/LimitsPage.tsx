@@ -33,6 +33,14 @@ type LiveFailure = 'signed-out' | { detail: string };
 const LIVE_FLOOR_MS = 60_000;
 const ERROR_FAILURE_PREFIX = 'error:';
 
+// Spelled out rather than built from a template so both keys stay checked
+// against the dictionary — a template literal needs an `as`, and an `as` would
+// let a renamed key compile.
+const ORIGIN_KEYS = {
+  One: 'limits.est.originOne',
+  Many: 'limits.est.originMany',
+} as const;
+
 export default function LimitsPage({
   ports,
   now = () => Date.now(),
@@ -378,7 +386,7 @@ function EstimateLine({ est, mode }: { est: EstimateView; mode: Mode }) {
       <span className="dot" aria-hidden="true">·</span>
       <span className="origin">
         {fill(
-          t(`limits.est.origin${pluralSuffix(lang, est.epochs)}` as 'limits.est.originMany'),
+          t(ORIGIN_KEYS[pluralSuffix(lang, est.epochs)]),
           { n: est.epochs },
         )}
       </span>

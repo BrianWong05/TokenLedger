@@ -247,16 +247,18 @@
    it starts where the labels and the bar start and the big percentage keeps its
    own column untouched. It wraps rather than truncating — a long translation
    takes a second line, and nothing here may scroll sideways or shrink the
-   numeral. Deliberately toneless: --success/--warning/--danger say how much of
-   the Limit is left, and an estimate that is merely absent must not borrow one
-   of those and read as an emergency. */
+   numeral. The shrinking is `.tl-lim-body`'s `min-width: 0` doing the work, as
+   the flex child of `.tl-lim-row`; this line is a block box inside it, and a
+   `min-width` of its own would be inert. Deliberately toneless:
+   --success/--warning/--danger say how much of the Limit is left, and an
+   estimate that is merely absent must not borrow one of those and read as an
+   emergency. */
 .tl-lim-est {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 3px 6px;
   margin-top: 6px;
-  min-width: 0;
   font-size: 10.5px;
   line-height: 1.35;
   color: var(--text-tertiary);

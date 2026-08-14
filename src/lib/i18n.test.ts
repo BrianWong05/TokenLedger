@@ -24,8 +24,7 @@ describe('makeTranslator', () => {
 describe('pluralSuffix', () => {
   it('splits English at one, and at one only', () => {
     expect(pluralSuffix('en', 1)).toBe('One');
-    // Zero takes the plural in English — "0 windows" — which is the case a
-    // `n === 1` test in a component gets right by luck rather than by rule.
+    // Zero takes the plural in English: "0 windows", not "0 window".
     expect(pluralSuffix('en', 0)).toBe('Many');
     expect(pluralSuffix('en', 2)).toBe('Many');
     expect(pluralSuffix('en', 11)).toBe('Many');

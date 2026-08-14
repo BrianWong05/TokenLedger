@@ -15,6 +15,8 @@ const roots: Root[] = [];
 afterEach(() => {
   for (const r of roots.splice(0)) act(() => r.unmount());
   document.body.replaceChildren();
+  // A locale test must not leak its language into the next test's default.
+  lang = 'en';
 });
 
 async function settle(times = 4) {
@@ -54,11 +56,18 @@ function fakePort(over: Partial<LimitsPort> & { store?: Record<string, string> }
 // rather than waited out.
 let clock = NOW_MS;
 
-// `lang` wraps the page the way App.tsx does. Passing 'en' is not a no-op worth
+// The language the next mount renders in. Module state rather than a parameter
+// so `remount` cannot drop it: a tab switch does not change anyone's language,
+// and a zh test that remounted into English would assert Chinese copy against an
+// English render and fail for the wrong reason.
+let lang: Lang = 'en';
+
+// Wraps the page the way App.tsx does. Passing 'en' is not a no-op worth
 // skipping: it is the same provider the shipped shell uses, so a locale test and
 // an English test differ in one argument rather than in how they mount.
-async function mount(port: LimitsPort, at = NOW_MS, lang: Lang = 'en') {
+async function mount(port: LimitsPort, at = NOW_MS, inLang: Lang = 'en') {
   clock = at;
+  lang = inLang;
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
@@ -74,10 +83,11 @@ async function mount(port: LimitsPort, at = NOW_MS, lang: Lang = 'en') {
   return container;
 }
 
-// Same page, same stored preferences, fresh mount — what a tab switch does.
+// Same page, same stored preferences, same language, fresh mount — what a tab
+// switch does.
 async function remount(port: LimitsPort, at = clock) {
   for (const r of roots.splice(0)) act(() => r.unmount());
-  return mount(port, at);
+  return mount(port, at, lang);
 }
 
 const cardEls = (c: HTMLElement) => Array.from(c.querySelectorAll('.tl-lim-card')) as HTMLElement[];
@@ -1010,9 +1020,8 @@ describe('the epoch count’s grammar', () => {
   });
 
   it('never inflects for Chinese, which has no plural to inflect', async () => {
-    // The point is that the rule comes from the locale rather than from an
-    // `n === 1` test: Chinese takes the same form at one as at five, and would
-    // have taken the English singular key had the component decided.
+    // Chinese reads the same at one as at five — the count reaches the sentence
+    // through interpolation, never through a second wording.
     for (const core of [1, 2, 5]) {
       const c = await mount(
         fakePort({ list: () => Promise.resolve([withCore(core)]) }), NOW_MS, 'zh-Hant',
