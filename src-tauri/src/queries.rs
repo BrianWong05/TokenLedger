@@ -1041,23 +1041,28 @@ pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 ///
 /// This ignores the Overview's date window and Source selection entirely: the
 /// Limits page is *now*, not a range.
+/// Which window each card draws, and from which Reading — exported so a profile
+/// can `EXPLAIN` and time the statement the page actually issues rather than a
+/// copy of it. It has no time bound by design: a card shows the newest epoch, and
+/// which epoch is newest is a fact about the whole table.
+pub const DISPLAYED_WINDOWS_SQL: &str =
+    "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
+            MAX(r.resets_at), MAX(r.observed_at) \
+     FROM limit_readings r \
+     JOIN (SELECT source, window_key, MAX(resets_at) AS newest FROM limit_readings \
+           GROUP BY source, window_key) e \
+       ON e.source = r.source AND e.window_key = r.window_key \
+     WHERE r.resets_at >= e.newest - ?1 \
+     GROUP BY r.source, r.window_key \
+     ORDER BY r.source, MAX(r.window_minutes), r.window_key";
+
 pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>, LimitsError> {
     // One snapshot for the whole page. Four statements answer it — the rows, the
     // Readings, their Usage, the plan — and a scan committing between them would
     // otherwise let a row be drawn from one view of the database and its estimate
     // from another.
     let read = conn.unchecked_transaction()?;
-    let mut stmt = conn.prepare(
-        "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
-                MAX(r.resets_at), MAX(r.observed_at) \
-         FROM limit_readings r \
-         JOIN (SELECT source, window_key, MAX(resets_at) AS newest FROM limit_readings \
-               GROUP BY source, window_key) e \
-           ON e.source = r.source AND e.window_key = r.window_key \
-         WHERE r.resets_at >= e.newest - ?1 \
-         GROUP BY r.source, r.window_key \
-         ORDER BY r.source, MAX(r.window_minutes), r.window_key",
-    )?;
+    let mut stmt = conn.prepare(DISPLAYED_WINDOWS_SQL)?;
     let rows = stmt.query_map([EPOCH_JITTER_SECS], |r| {
         Ok((
             r.get::<_, String>(0)?,

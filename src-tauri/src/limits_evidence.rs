@@ -462,8 +462,6 @@ fn interval(
         _ => return Err(ReasonCode::UnprovenSourceCompleteness),
     }
 
-    // The scope came from `ModelScope::stored`, so it parses; the Series would
-    // not exist otherwise.
     // `(t0, t1]`, found by seeking a sorted group rather than filtering all of
     // them. Both bounds use `<=` against the sort key, so `lo` lands past the
     // last Record at or before `t0` and `hi` past the last at or before `t1`.
@@ -474,6 +472,8 @@ fn interval(
     let hi = group.partition_point(|u| u.timestamp <= t1);
     let members = &group[lo..hi];
 
+    // The scope came from `ModelScope::stored`, so it parses; the Series would
+    // not exist otherwise.
     let tokens = match scope {
         // Source-wide: every Record of this Source and account counts, and
         // Unattributed Usage is Usage.
@@ -510,14 +510,25 @@ fn interval(
 /// would cost more every week. The Partition a Reading belongs to cannot be
 /// known without its provenance, so the columns come along and the derivation
 /// sorts them out.
+/// The two statements this module runs, exported so a profile can `EXPLAIN` the
+/// query the code actually issues. A hand-typed copy in a test proves nothing
+/// about production: one passed here while `account_id` had been removed from the
+/// clause below, reporting an index it was no longer using.
+pub const STORED_READINGS_SQL: &str =
+    "SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, \
+            plan, account_id, metering_regime, limit_id, model_scope, source_order, \
+            covered_from, external_activity \
+     FROM limit_readings WHERE observed_at >= ?1 \
+     ORDER BY source, window_key, resets_at, observed_at";
+
+pub const MATCHING_USAGE_SQL: &str = "SELECT timestamp, model, \
+                input_tokens + output_tokens + cache_read_tokens \
+                  + cache_write_5m_tokens + cache_write_1h_tokens \
+         FROM events \
+         WHERE source = ?1 AND account_id = ?2 AND timestamp > ?3 AND timestamp <= ?4";
+
 pub fn stored_readings(conn: &Connection, since: i64) -> rusqlite::Result<Vec<LimitReading>> {
-    let mut stmt = conn.prepare(
-        "SELECT source, window_key, window_minutes, used_pct, resets_at, observed_at, via, \
-                plan, account_id, metering_regime, limit_id, model_scope, source_order, \
-                covered_from, external_activity \
-         FROM limit_readings WHERE observed_at >= ?1 \
-         ORDER BY source, window_key, resets_at, observed_at",
-    )?;
+    let mut stmt = conn.prepare(STORED_READINGS_SQL)?;
     let rows = stmt.query_map([since], |r| {
         Ok(LimitReading {
             source: r.get(0)?,
@@ -567,13 +578,7 @@ pub fn matching_usage(
         span.1 = span.1.max(reading.observed_at);
     }
 
-    let mut stmt = conn.prepare(
-        "SELECT timestamp, model, \
-                input_tokens + output_tokens + cache_read_tokens \
-                  + cache_write_5m_tokens + cache_write_1h_tokens \
-         FROM events \
-         WHERE source = ?1 AND account_id = ?2 AND timestamp > ?3 AND timestamp <= ?4",
-    )?;
+    let mut stmt = conn.prepare(MATCHING_USAGE_SQL)?;
     let mut out = Vec::new();
     for ((source, account_id), (from, through)) in spans {
         // `>` on the low bound: the earliest Reading is an anchor, and nothing at
@@ -644,6 +649,16 @@ mod tests {
         record(timestamp, None, tokens)
     }
 
+    /// A Record of another Source or account, carrying a figure large enough that
+    /// counting it anywhere would be unmistakable.
+    fn foreign(source: &str, account_id: &str, timestamp: i64) -> MatchingRecord {
+        MatchingRecord {
+            source: source.to_string(),
+            account_id: account_id.to_string(),
+            ..usage(timestamp, 1_000_000)
+        }
+    }
+
     /// Every fixture but the invariant one is well-formed evidence.
     fn derived(readings: &[LimitReading], usage: &[MatchingRecord]) -> Evidence {
         derive(readings, usage).expect("fixture percentages are finite")
@@ -690,13 +705,6 @@ mod tests {
         // order (the group is sorted before it is searched), and Records of
         // another Source or account sitting in the same seconds — excluded by
         // belonging to a different group rather than by a comparison per Record.
-        let foreign = |source: &str, account: &str, timestamp: i64| MatchingRecord {
-            source: source.to_string(),
-            account_id: account.to_string(),
-            timestamp,
-            model: Some("gpt-5.4-codex".to_string()),
-            tokens: 1_000_000,
-        };
         let evidence = derived(
             &[reading(40.0, T0), reading(50.0, T0 + 600)],
             &[
@@ -723,13 +731,7 @@ mod tests {
         // could not be.
         let evidence = derived(
             &[reading(40.0, T0), reading(50.0, T0 + 600)],
-            &[MatchingRecord {
-                source: "codex".to_string(),
-                account_id: "acct-b".to_string(),
-                timestamp: T0 + 300,
-                model: Some("gpt-5.4-codex".to_string()),
-                tokens: 1_000_000,
-            }],
+            &[foreign("codex", "acct-b", T0 + 300)],
         );
         assert!(only_intervals(&evidence).is_empty());
         assert_eq!(refused(&evidence, ReasonCode::ZeroLocalUsage), 1);

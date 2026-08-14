@@ -211,50 +211,47 @@ fn cached_local_bucketing_matches_sqlite_reference() {
 
 // ── the Limits page's estimate read ──
 //
-// `limit_readings` is the one table that grows by a row per observation for as
-// long as the app runs, and three statements in `queries::limits` touch it. The
-// spec's posture (Evaluation timing, final paragraph) is "start with direct
-// indexed range queries … do not scan unrelated Ledger history per row … add no
-// cache until profiling demonstrates a need", so this measures the three paths a
-// person actually pays for and asserts the access shape rather than only the
-// clock.
+// `limit_readings` grows by a row per observation for as long as the app runs,
+// and three statements in `queries::limits` touch it. The specification's posture
+// (Evaluation timing, final paragraph) is "start with direct indexed range
+// queries … do not scan unrelated Ledger history per row … add no cache until
+// profiling demonstrates a need", so this measures the paths a person pays for
+// and asserts the access shape of the statements the code actually issues.
 const LIMIT_SOURCES: usize = 5;
-// Two windows per Source — a session and a weekly — which is the shipped shape.
 const WINDOW_MINUTES: [i64; 2] = [300, 10_080];
-// Deliberately far past today's real table (about 2,200 rows) and past a year of
-// heavy use: the question is whether an old, large table slows a page whose
-// answer only ever depends on its recent tail.
+// Past today's real table (about 2,200 rows) and past a year of heavy use: the
+// question is whether an old, large table slows a page whose answer depends only
+// on its recent tail.
 const READING_COUNT: usize = 200_000;
-// Completed epochs with Usage behind them. Twelve, so the newest five
-// representatives are a comfortable core and Stale reconstruction has history to
-// walk back through.
+// Epochs seeded with Usage behind them, the newest of which is still active and
+// so never trains. Twelve completed ones leave the newest five representatives a
+// comfortable core and give Stale reconstruction history to walk back through.
 const RECENT_EPOCHS: i64 = 13;
-// Nine intervals of this each, over a 9→90 percentage rise: 810,000 tokens across
-// 81 points is 10,000 per point, identical in every epoch.
+// Nine intervals of this across a 9→90 rise: 10,000 tokens per point, identical
+// in every epoch, so the epochs cohere and the page reaches Ready. Noisy amounts
+// would time the withheld path instead, which is measured separately below.
 const INTERVAL_TOKENS: i64 = 90_000;
-// A plausible heavy Ledger inside the evidence horizon: about 240 Records a day
-// for 84 days. Nothing about this is extreme.
+// A plausible heavy Ledger inside one evidence horizon: about 240 Records a day
+// for 84 days.
 const BULK_RECORDS: usize = 20_000;
-// Measured 62-69 ms across all three paths at 201,300 Readings and 21,170
-// participating Records. The headroom matches the range-reload gate's: tight
-// enough that the per-interval Record scan this ticket removed (963 ms on the
-// same fixture) cannot come back unnoticed.
+// Measured 62-69 ms across every path at 201,300 Readings and 21,170 selectable
+// Records. Tight enough that the per-interval Record scan #167 removed (963 ms on
+// this same fixture) cannot come back unnoticed.
 const LIMITS_BUDGET: Duration = Duration::from_millis(150);
 
 /// Readings that form eligible evidence: full provenance, ten rising
-/// observations per epoch, epochs back to back. `age_epochs` places the epoch
+/// observations per epoch, epochs back to back. `epochs_back` places them
 /// relative to `now`, so a caller can seed both the recent tail the estimator
 /// reads and the ancient bulk it must skip.
 fn seed_readings(
     conn: &mut rusqlite::Connection,
     now: i64,
-    sources: usize,
     epochs_back: std::ops::Range<i64>,
 ) -> u64 {
     use crate::types::{LimitReading, ModelScope, ReadingProvenance};
 
     let mut readings = Vec::new();
-    for s in 0..sources {
+    for s in 0..LIMIT_SOURCES {
         let source = format!("limsrc-{s}");
         for minutes in WINDOW_MINUTES {
             let span = minutes * 60;
@@ -265,8 +262,6 @@ fn seed_readings(
                         source: source.clone(),
                         window_key: format!("w{minutes}"),
                         window_minutes: Some(minutes),
-                        // Ten rising points: enough for a qualifying run, and the
-                        // same ratio in every epoch so a stable core exists.
                         used_pct: (step + 1) as f64 * 9.0,
                         resets_at,
                         observed_at: resets_at - span + step * (span / 10),
@@ -278,8 +273,8 @@ fn seed_readings(
                             limit_id: Some(format!("perf:w{minutes}")),
                             model_scope: Some(ModelScope::All),
                             source_order: Some(step),
-                            // Coverage reaching back before the epoch, so every
-                            // interval is complete rather than refused.
+                            // Reaching back before the epoch, so coverage is
+                            // proven and the intervals are complete.
                             covered_from: Some(resets_at - 4 * span),
                             external_activity: None,
                         },
@@ -291,16 +286,30 @@ fn seed_readings(
     db::insert_limit_readings(conn, &readings).unwrap()
 }
 
-/// The one access-shape assertion that matters: the Usage side must find its
-/// Records through `idx_events_evidence`, not by walking the Ledger.
+/// The access plan of a statement, joined into one line.
+///
+/// The parameters are bound to NULL only so the statement can be stepped: SQLite
+/// fixes the plan when it prepares, before any value arrives, so what is bound
+/// cannot change what this reports.
 fn plan_of(conn: &rusqlite::Connection, sql: &str) -> String {
     let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    let unbound: Vec<Option<i64>> = vec![None; stmt.parameter_count()];
     let rows = stmt
-        .query_map([], |r| r.get::<_, String>(3))
+        .query_map(rusqlite::params_from_iter(unbound), |r| {
+            r.get::<_, String>(3)
+        })
         .unwrap()
         .collect::<rusqlite::Result<Vec<_>>>()
         .unwrap();
     rows.join(" | ")
+}
+
+fn ready_windows(cards: &[crate::queries::SourceLimits]) -> usize {
+    cards
+        .iter()
+        .flat_map(|c| &c.windows)
+        .filter(|w| w.estimate.state == crate::limits_readiness::ReadinessState::Ready)
+        .count()
 }
 
 #[test]
@@ -320,11 +329,8 @@ fn performance_standard_limits_estimate() {
     db::insert_events(&mut conn, &events).unwrap();
     drop(events);
 
-    // Usage Records that CAN participate, one inside each interval the recent
-    // Readings bound, carrying a fixed token amount. Fixed on purpose: a noisy
-    // amount gives each epoch a different run ratio, the cores stop cohering, and
-    // the page reads Unstable — which would time the withheld path rather than
-    // the estimator, and prove nothing.
+    // Usage Records that can participate, one inside each interval the recent
+    // Readings bound, carrying a fixed token amount.
     let mut participating = Vec::new();
     for s in 0..LIMIT_SOURCES {
         for minutes in WINDOW_MINUTES {
@@ -348,8 +354,20 @@ fn performance_standard_limits_estimate() {
             }
         }
     }
+    // Selectable but idle: inside the span `matching_usage` covers, so they are
+    // read and carried, but in the 42-84 day band where no candidate epoch sits,
+    // so the answer is unchanged and the two page timings differ only in volume.
+    for s in 0..LIMIT_SOURCES {
+        for i in 0..(BULK_RECORDS / LIMIT_SOURCES) {
+            let mut event = synthetic_event(i);
+            event.dedup_key = format!("limbulk-{s}-{i}");
+            event.source = format!("limsrc-{s}");
+            event.timestamp = now - 42 * DAY_SECONDS - (i as i64 * 90) % (42 * DAY_SECONDS);
+            participating.push(event);
+        }
+    }
     db::insert_events(&mut conn, &participating).unwrap();
-    // `account_id` sits outside db::COLS, so the scan cannot write it yet (#171).
+    // `account_id` sits outside db::COLS, so no scan can write it yet (#171).
     conn.execute(
         "UPDATE events SET account_id = 'acct-' || substr(source, 8) \
          WHERE source LIKE 'limsrc-%'",
@@ -358,50 +376,138 @@ fn performance_standard_limits_estimate() {
     .unwrap();
     drop(participating);
 
-    // The recent tail the estimator actually reads, then the ancient bulk it must
-    // skip past. Epoch 0 is active (never trains); 1..13 are completed.
-    let recent = seed_readings(&mut conn, now, LIMIT_SOURCES, 0..RECENT_EPOCHS);
-    let mut ancient = 0u64;
+    // The recent tail the estimator reads, then the ancient bulk it must skip.
+    let mut total = seed_readings(&mut conn, now, 0..RECENT_EPOCHS);
     let mut age = RECENT_EPOCHS;
-    while recent + ancient < READING_COUNT as u64 {
-        ancient += seed_readings(&mut conn, now, LIMIT_SOURCES, age..age + 40);
+    while total < READING_COUNT as u64 {
+        total += seed_readings(&mut conn, now, age..age + 40);
         age += 40;
     }
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
-        .unwrap();
     let ledger: i64 = conn
         .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
         .unwrap();
 
-    // Access shape, before any timing: the Usage side must seek.
-    let usage_plan = plan_of(
-        &conn,
-        "SELECT timestamp, model, input_tokens FROM events \
-         WHERE source = 'limsrc-0' AND account_id = 'acct-0' \
-           AND timestamp > 0 AND timestamp <= 1",
-    );
+    // ── access shape, on the statements the code issues ──
+    //
+    // EXPLAINing the exported constants rather than a copy typed here: a copy
+    // reports whatever it says regardless of what production does, which this
+    // very assertion did until #167's review caught it passing with `account_id`
+    // deleted from the real clause.
+    let usage_plan = plan_of(&conn, crate::limits_evidence::MATCHING_USAGE_SQL);
     eprintln!("PERF limits_usage_plan {usage_plan}");
     assert!(
-        usage_plan.contains("idx_events_evidence"),
-        "matching_usage must seek idx_events_evidence, got: {usage_plan}"
+        usage_plan.contains("idx_events_evidence")
+            && usage_plan.contains("source=?")
+            && usage_plan.contains("account_id=?")
+            && usage_plan.contains("timestamp>?"),
+        "matching_usage must seek idx_events_evidence on all three fields, got: {usage_plan}"
     );
     assert!(
         !usage_plan.contains("SCAN events"),
         "matching_usage must not scan the Ledger, got: {usage_plan}"
     );
 
-    let readings_plan = plan_of(
-        &conn,
-        "SELECT source, observed_at FROM limit_readings WHERE observed_at >= 0 \
-         ORDER BY source, window_key, resets_at, observed_at",
-    );
+    // There is no seek to assert here, and that is the finding: `observed_at` is
+    // the fourth column of the primary key, so the horizon filter cannot seek and
+    // SQLite walks the index end to end. Not covering either — the statement
+    // selects fifteen columns, so every row is fetched from the table as well.
+    // Pinned as it stands so that adding an `observed_at` index fails this and
+    // forces the numbers in docs/performance.md to be taken again, rather than
+    // improving silently and leaving the doc wrong.
+    let readings_plan = plan_of(&conn, crate::limits_evidence::STORED_READINGS_SQL);
     eprintln!("PERF limits_readings_plan {readings_plan}");
+    assert!(
+        readings_plan.starts_with("SCAN limit_readings USING INDEX"),
+        "stored_readings' plan changed — re-measure and update docs/performance.md; got: {readings_plan}"
+    );
 
-    // Where the time actually goes, measured on the same statements the query
-    // runs. Reported rather than asserted: the budget belongs on the whole page
-    // read, and a stage breakdown is what tells anyone which of the three to look
-    // at when it fails.
+    // No time bound on this one by design (see its doc), so it aggregates the
+    // whole table. Reported so the cost of that is visible rather than implied.
+    let displayed_plan = plan_of(&conn, queries::DISPLAYED_WINDOWS_SQL);
+    eprintln!("PERF limits_displayed_plan {displayed_plan}");
+
+    // ── 1. page open: the first read of this data in this process ──
+    let started = Instant::now();
+    let cards = queries::limits(&conn, now).unwrap();
+    let page_open = started.elapsed();
+    let ready = ready_windows(&cards);
+    let windows: usize = cards.iter().map(|c| c.windows.len()).sum();
+    eprintln!(
+        "PERF limits_page_open readings={total} ledger={ledger} cards={} windows={windows} ready={ready} elapsed_ms={:.1} budget_ms={}",
+        cards.len(),
+        page_open.as_secs_f64() * 1e3,
+        LIMITS_BUDGET.as_millis(),
+    );
+    // Every window Ready, not merely one: a Blocked or Gathering window measures
+    // a fast path and proves nothing about the estimator, and a fixture that
+    // half-worked would hide behind `> 0`.
+    assert_eq!(
+        ready,
+        LIMIT_SOURCES * WINDOW_MINUTES.len(),
+        "fixture must reach Ready on every window to time the estimator"
+    );
+
+    // ── 2. after a scan writes Readings, and 3. on the nextEvaluationAt timer ──
+    seed_readings(&mut conn, now + 3_600, 0..1);
+    let started = Instant::now();
+    queries::limits(&conn, now + 3_600).unwrap();
+    let after_scan = started.elapsed();
+    let started = Instant::now();
+    queries::limits(&conn, now + 7_200).unwrap();
+    let on_timer = started.elapsed();
+    eprintln!(
+        "PERF limits_reevaluation after_scan_ms={:.1} on_timer_ms={:.1}",
+        after_scan.as_secs_f64() * 1e3,
+        on_timer.as_secs_f64() * 1e3,
+    );
+
+    // ── 4. the withheld path, and with it Stale reconstruction ──
+    //
+    // Withdrawing the newest epochs' coverage drops each Series below three
+    // recent candidates, which is the only branch that reaches `aged_out_core` —
+    // one full estimator replay per completed epoch, newest-first, stopping at
+    // the first that proves Ready. It is the super-linear path in this read, and
+    // a Ready page never enters it.
+    // 42 days is the weekly window's own recency horizon, so this empties the
+    // candidate set of both Series rather than only the short one's — the weekly
+    // Series keeps twelve completed epochs inside that horizon and stays Ready if
+    // only the newest few are withdrawn.
+    conn.execute(
+        "UPDATE limit_readings SET external_activity = 'perf:withdrawn' \
+         WHERE resets_at > ?1",
+        [now - 42 * DAY_SECONDS],
+    )
+    .unwrap();
+    let started = Instant::now();
+    let withheld_cards = queries::limits(&conn, now).unwrap();
+    let withheld = started.elapsed();
+    let mut states = std::collections::BTreeMap::new();
+    for w in withheld_cards.iter().flat_map(|c| &c.windows) {
+        *states.entry(format!("{:?}", w.estimate.state)).or_insert(0) += 1;
+    }
+    eprintln!(
+        "PERF limits_withheld states={states:?} elapsed_ms={:.1}",
+        withheld.as_secs_f64() * 1e3,
+    );
+    assert_eq!(
+        ready_windows(&withheld_cards),
+        0,
+        "withheld fixture still reads Ready"
+    );
+    // Stale is the proof that `aged_out_core` ran and found an older clock that
+    // would have been Ready. Gathering would mean it walked every clock and found
+    // nothing, which times the same loop but does not prove it reached a verdict.
+    assert!(
+        states.contains_key("Stale"),
+        "withheld fixture never reached Stale, so the replay was not exercised: {states:?}"
+    );
+
+    // ── where the time goes ──
+    //
+    // Reported, not asserted: the budget belongs on the whole page read, and a
+    // stage breakdown is what says which statement to look at when it fails.
+    // Runs last so it cannot warm the caches the page-open number is measured
+    // against, and re-derives against the Readings as they now stand.
     let since = now - 2 * crate::limits_estimator::recency_horizon(Some(10_080));
     let started = Instant::now();
     let staged = crate::limits_evidence::stored_readings(&conn, since).unwrap();
@@ -412,109 +518,65 @@ fn performance_standard_limits_estimate() {
     let started = Instant::now();
     let staged_evidence = crate::limits_evidence::derive(&staged, &staged_usage).unwrap();
     let t_derive = started.elapsed();
+    // The two statements the stage trio does not cover, both named in
+    // queries::limits: the newest-epoch self-join that decides which windows the
+    // page draws, and the per-Source plan lookup.
+    let started = Instant::now();
+    let displayed: i64 = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM ({})", queries::DISPLAYED_WINDOWS_SQL),
+            [600],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let t_displayed = started.elapsed();
+    assert_eq!(displayed as usize, LIMIT_SOURCES * WINDOW_MINUTES.len());
     eprintln!(
-        "PERF limits_stages in_horizon_readings={} matching_records={} partitions={}          read_readings_ms={:.1} read_usage_ms={:.1} derive_ms={:.1}",
+        "PERF limits_stages in_horizon_readings={} matching_records={} partitions={} \
+         read_readings_ms={:.1} read_usage_ms={:.1} derive_ms={:.1} displayed_windows_ms={:.1}",
         staged.len(),
         staged_usage.len(),
         staged_evidence.partitions.len(),
         t_readings.as_secs_f64() * 1e3,
         t_usage.as_secs_f64() * 1e3,
         t_derive.as_secs_f64() * 1e3,
-    );
-
-    // 1. Page open — the cold read a person pays for on every visit to the tab.
-    let started = Instant::now();
-    let cards = queries::limits(&conn, now).unwrap();
-    let page_open = started.elapsed();
-    let ready = cards
-        .iter()
-        .flat_map(|c| &c.windows)
-        .filter(|w| w.estimate.state == crate::limits_readiness::ReadinessState::Ready)
-        .count();
-    eprintln!(
-        "PERF limits_page_open readings={total} ledger={ledger} cards={} windows={} ready={ready} elapsed_ms={:.1} budget_ms={}",
-        cards.len(),
-        cards.iter().map(|c| c.windows.len()).sum::<usize>(),
-        page_open.as_secs_f64() * 1e3,
-        LIMITS_BUDGET.as_millis(),
-    );
-    // A Blocked page would measure the fast path and prove nothing about the
-    // estimator, so the fixture has to actually reach Ready.
-    assert!(ready > 0, "fixture produced no Ready estimate to time");
-
-    // 2. Scan-triggered reevaluation: a scan wrote new Readings, the page reruns
-    //    the same query.
-    seed_readings(&mut conn, now + 3_600, LIMIT_SOURCES, 0..1);
-    let started = Instant::now();
-    queries::limits(&conn, now + 3_600).unwrap();
-    let after_scan = started.elapsed();
-
-    // 3. The nextEvaluationAt timer: same data, later instant, no vendor call.
-    let started = Instant::now();
-    queries::limits(&conn, now + 7_200).unwrap();
-    let on_timer = started.elapsed();
-
-    eprintln!(
-        "PERF limits_reevaluation after_scan_ms={:.1} on_timer_ms={:.1}",
-        after_scan.as_secs_f64() * 1e3,
-        on_timer.as_secs_f64() * 1e3,
-    );
-
-    // A heavy Ledger. These Records sit in the 42-84 day band: inside the span
-    // `matching_usage` selects, so they are carried and cost what they cost, but
-    // outside every candidate epoch, so the Ready answer above is unchanged and
-    // the two numbers differ only in Record volume.
-    let mut bulk = Vec::new();
-    for s in 0..LIMIT_SOURCES {
-        for i in 0..(BULK_RECORDS / LIMIT_SOURCES) {
-            let mut event = synthetic_event(i);
-            event.dedup_key = format!("limbulk-{s}-{i}");
-            event.source = format!("limsrc-{s}");
-            event.timestamp =
-                now - 42 * DAY_SECONDS - (i as i64 * 90) % (42 * DAY_SECONDS);
-            bulk.push(event);
-        }
-    }
-    db::insert_events(&mut conn, &bulk).unwrap();
-    conn.execute(
-        "UPDATE events SET account_id = 'acct-' || substr(source, 8)          WHERE source LIKE 'limsrc-%' AND account_id IS NULL",
-        [],
-    )
-    .unwrap();
-    drop(bulk);
-
-    let started = Instant::now();
-    let heavy_cards = queries::limits(&conn, now).unwrap();
-    let heavy = started.elapsed();
-    let heavy_ready = heavy_cards
-        .iter()
-        .flat_map(|c| &c.windows)
-        .filter(|w| w.estimate.state == crate::limits_readiness::ReadinessState::Ready)
-        .count();
-    let heavy_records =
-        crate::limits_evidence::matching_usage(&conn, &staged).unwrap().len();
-    eprintln!(
-        "PERF limits_heavy_ledger matching_records={heavy_records} ready={heavy_ready}          elapsed_ms={:.1}",
-        heavy.as_secs_f64() * 1e3,
-    );
-    assert_eq!(heavy_ready, ready, "bulk Records must not change the answer");
-    assert!(
-        heavy <= LIMITS_BUDGET,
-        "page open with {heavy_records} matching Records took {:.1} ms; budget is {} ms",
-        heavy.as_secs_f64() * 1e3,
-        LIMITS_BUDGET.as_millis(),
+        t_displayed.as_secs_f64() * 1e3,
     );
 
     for (name, elapsed) in [
         ("page open", page_open),
         ("after scan", after_scan),
         ("on timer", on_timer),
+        ("withheld", withheld),
     ] {
         assert!(
             elapsed <= LIMITS_BUDGET,
             "{name} took {:.1} ms with {total} Readings; budget is {} ms",
             elapsed.as_secs_f64() * 1e3,
             LIMITS_BUDGET.as_millis(),
+        );
+    }
+
+    // Optional private-data check, the same recipe the Overview gate uses: open
+    // read-only, report cardinality and timing, never row data. A real Ledger
+    // today has no proven account identity (#171), so this measures the Blocked
+    // path — which is the one every real user is on until that ticket lands.
+    if let Some(path) = std::env::var_os("TOKENLEDGER_PERF_DB") {
+        let real =
+            rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        db::register_query_functions(&real).unwrap();
+        let readings: i64 = real
+            .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
+            .unwrap();
+        let started = Instant::now();
+        let real_cards = queries::limits(&real, now).unwrap();
+        let elapsed = started.elapsed();
+        eprintln!(
+            "PERF real_limits readings={readings} cards={} windows={} ready={} elapsed_ms={:.1}",
+            real_cards.len(),
+            real_cards.iter().map(|c| c.windows.len()).sum::<usize>(),
+            ready_windows(&real_cards),
+            elapsed.as_secs_f64() * 1e3,
         );
     }
 }
