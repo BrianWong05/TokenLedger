@@ -106,6 +106,31 @@ pub struct MatchingRecord {
     pub tokens: i64,
 }
 
+/// The participating Records grouped by the identity that can claim them and
+/// sorted by time, so an interval finds its own members by seeking rather than by
+/// reading past everyone else's.
+///
+/// Built once per derivation. Without it each candidate interval filtered the
+/// whole selected set, which is the per-row scan the specification rules out —
+/// the SQL never did it, but the pass over the SQL's results did, and it cost
+/// 850ms on a Ledger holding 20,000 participating Records in one horizon while
+/// changing no answer.
+type UsageIndex<'a> = BTreeMap<(&'a str, &'a str), Vec<&'a MatchingRecord>>;
+
+fn index_usage(usage: &[MatchingRecord]) -> UsageIndex<'_> {
+    let mut index: UsageIndex<'_> = BTreeMap::new();
+    for record in usage {
+        index
+            .entry((record.source.as_str(), record.account_id.as_str()))
+            .or_default()
+            .push(record);
+    }
+    for group in index.values_mut() {
+        group.sort_unstable_by_key(|r| r.timestamp);
+    }
+    index
+}
+
 /// A positive movement between two comparable Readings, and the canonical tokens
 /// that landed inside it.
 #[derive(Debug, Clone, PartialEq)]
@@ -224,6 +249,8 @@ pub fn derive(
             .push(reading);
     }
 
+    let indexed = index_usage(usage);
+
     for (limit, mut timeline) in timelines {
         // Observation order only. `source_order` could break a tie, but it is a
         // byte offset with no Artifact identity beside it, so it cannot prove
@@ -232,7 +259,7 @@ pub fn derive(
         // refuses to trust to bound.
         timeline.sort_by_key(|r| r.observed_at);
         let placed = place(&timeline, limit, &mut evidence)?;
-        walk(&timeline, &placed, usage, limit, &mut evidence, &mut intervals)?;
+        walk(&timeline, &placed, &indexed, limit, &mut evidence, &mut intervals)?;
     }
 
     for ((series, epoch), (window_minutes, intervals)) in intervals {
@@ -309,7 +336,7 @@ fn place(
 fn walk(
     timeline: &[&LimitReading],
     placed: &[Placement],
-    usage: &[MatchingRecord],
+    usage: &UsageIndex<'_>,
     limit: (&str, &str),
     evidence: &mut Evidence,
     out: &mut Accumulated,
@@ -413,7 +440,7 @@ fn interval(
     to: &LimitReading,
     from_pct: i64,
     to_pct: i64,
-    usage: &[MatchingRecord],
+    usage: &UsageIndex<'_>,
     series: &SeriesKey,
     scope: &ModelScope,
 ) -> Result<Interval, ReasonCode> {
@@ -437,15 +464,15 @@ fn interval(
 
     // The scope came from `ModelScope::stored`, so it parses; the Series would
     // not exist otherwise.
-    let members: Vec<&MatchingRecord> = usage
-        .iter()
-        .filter(|u| {
-            u.source == series.source
-                && u.account_id == series.account_id
-                && t0 < u.timestamp
-                && u.timestamp <= t1
-        })
-        .collect();
+    // `(t0, t1]`, found by seeking a sorted group rather than filtering all of
+    // them. Both bounds use `<=` against the sort key, so `lo` lands past the
+    // last Record at or before `t0` and `hi` past the last at or before `t1`.
+    let group = usage
+        .get(&(series.source.as_str(), series.account_id.as_str()))
+        .map_or(&[][..], |group| group.as_slice());
+    let lo = group.partition_point(|u| u.timestamp <= t0);
+    let hi = group.partition_point(|u| u.timestamp <= t1);
+    let members = &group[lo..hi];
 
     let tokens = match scope {
         // Source-wide: every Record of this Source and account counts, and
@@ -653,6 +680,59 @@ mod tests {
             &[usage(T0, 999), usage(T0 + 600, 500), usage(T0 + 601, 999)],
         );
         assert_eq!(only_intervals(&evidence)[0].tokens, 500);
+    }
+
+    #[test]
+    fn membership_seeks_its_own_group_and_takes_every_record_on_a_bound() {
+        // Three things the grouped seek must get right that a per-interval filter
+        // got right for free: several Records sharing a bound's exact second (the
+        // search has to land past all of them, not one), Records arriving out of
+        // order (the group is sorted before it is searched), and Records of
+        // another Source or account sitting in the same seconds — excluded by
+        // belonging to a different group rather than by a comparison per Record.
+        let foreign = |source: &str, account: &str, timestamp: i64| MatchingRecord {
+            source: source.to_string(),
+            account_id: account.to_string(),
+            timestamp,
+            model: Some("gpt-5.4-codex".to_string()),
+            tokens: 1_000_000,
+        };
+        let evidence = derived(
+            &[reading(40.0, T0), reading(50.0, T0 + 600)],
+            &[
+                usage(T0 + 601, 999),
+                usage(T0 + 600, 200),
+                usage(T0, 999),
+                usage(T0 + 300, 50),
+                usage(T0 + 600, 300),
+                usage(T0, 999),
+                foreign("codex", "acct-b", T0 + 300),
+                foreign("claude", "acct-a", T0 + 600),
+            ],
+        );
+        // Both Records at t1 counted, both at t0 excluded, the one between
+        // counted, and neither foreign million anywhere near the total.
+        assert_eq!(only_intervals(&evidence)[0].tokens, 550);
+    }
+
+    #[test]
+    fn a_series_with_no_records_of_its_own_is_zero_local_usage_not_someone_elses() {
+        // The Records are all another account's. Reaching a group that is not the
+        // Series' own would read as movement this account paid for, which is the
+        // one way a grouped lookup can be wrong that a per-Record comparison
+        // could not be.
+        let evidence = derived(
+            &[reading(40.0, T0), reading(50.0, T0 + 600)],
+            &[MatchingRecord {
+                source: "codex".to_string(),
+                account_id: "acct-b".to_string(),
+                timestamp: T0 + 300,
+                model: Some("gpt-5.4-codex".to_string()),
+                tokens: 1_000_000,
+            }],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::ZeroLocalUsage), 1);
     }
 
     #[test]

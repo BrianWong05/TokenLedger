@@ -23,6 +23,21 @@ The benchmark is ignored by the normal test suite because seeding 100,000 rows
 is intentionally heavier than a unit test. It contains no private Source
 Artifacts and prints only record counts, result-row counts, and elapsed time.
 
+A second gate covers the Limits page's estimate read, which has a different
+shape — one table that grows by a row per observation, and a derivation over its
+recent tail:
+
+```bash
+npm run perf:limits
+```
+
+| Workload | Budget | Why it matters |
+| --- | ---: | --- |
+| Limits page open, scan reevaluation, and timer reevaluation | ≤ 150 ms each | Paid on every visit to the tab, after every scan, and at every `nextEvaluationAt` |
+
+It also asserts the access shape, not only the clock: the Usage side must reach
+its Records through `idx_events_evidence` rather than walking the Ledger.
+
 For a local, read-only check against an existing Ledger, provide its path:
 
 ```bash
@@ -192,3 +207,41 @@ launch. `Overview.test.tsx` pins the fan-out at exactly two window Summaries
 per boot so a third pass cannot creep in unmeasured; the committed `npm run
 perf` budgets are unaffected because the benchmark measures the queries, not
 the orchestration.
+
+## Validated result — Limits estimate read (2026-08-14)
+
+Measured on Apple Silicon macOS in a release build, via `npm run perf:limits`.
+The fixture holds 201,300 Limit Readings (about 100x today's real table), a
+100,000-record unrelated Ledger, and a heavy-Ledger variant adding 20,000
+participating Usage Records inside one evidence horizon.
+
+| Workload | Before | After | Improvement |
+| --- | ---: | ---: | ---: |
+| Page open, 1,170 participating Records | 113.7 ms | 65.0 ms | 43% lower |
+| Page open, 21,170 participating Records | 962.6 ms | 66.4 ms | 93% lower, 14.5x faster |
+| Derivation stage alone | 60.4 ms | 8.7 ms | 85% lower |
+
+Stage breakdown after the fix: reading the in-horizon Readings 14.1 ms (20,860
+of 201,300 rows), the Usage seek 1.3 ms, the derivation 8.7 ms.
+
+The root cause was not SQL. Every statement already sought correctly — the Usage
+side reports `SEARCH events USING INDEX idx_events_evidence (source=? AND
+account_id=? AND timestamp>? AND timestamp<?)`. The pass *over* those results
+filtered the whole selected Record set once per candidate interval, so cost grew
+with the product of intervals and Records rather than with either. Grouping the
+Records by Source and account once and seeking each interval's `(t0, t1]` slice
+by binary search removes it, and the heavy-Ledger case now costs almost the same
+as the light one — which is the point, since the answer was always identical.
+
+Two measured observations that are not shortfalls, recorded so nobody optimizes
+them blind:
+
+- `limit_readings` has no index on `observed_at` — it is the fourth column of the
+  primary key, so the horizon filter reports `SCAN limit_readings USING COVERING
+  INDEX`. At 201,300 rows that scan costs 14.1 ms. An index would be a migration;
+  the measurement says do not.
+- The read uses one horizon for the whole page, taken from the longest window on
+  it. A page with a weekly window therefore reads 84 days of session Readings
+  when that Series' own answer cannot depend on more than 14 days, which is most
+  of the 20,860 rows above. Per-Series horizons would cut the derivation input
+  about fivefold. Worth doing only if this gate starts failing.
