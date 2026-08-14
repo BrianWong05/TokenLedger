@@ -17,9 +17,10 @@ describe('strings', () => {
       for (const [lang, entries] of Object.entries(dict)) {
         for (const [key, value] of Object.entries(entries as Record<string, string>)) {
           // A Limit is a rolling *window* (CONTEXT.md), so the plural is domain
-          // vocabulary the Limits tab has to be able to say. Only that exact
-          // phrase is excused; "on Windows" still trips the guard.
-          const copy = value.replace(/\bvendor windows\b/gi, '');
+          // vocabulary the Limits tab has to be able to say. Only the domain
+          // phrases are excused, each one deliberately; "on Windows" and any
+          // other bare mention still trip the guard.
+          const copy = value.replace(/\b(vendor|completed|Limit) windows\b/gi, '');
           expect(copy, `${name}.${lang}.${key}`).not.toMatch(
             /\bmac\b|\bmacs\b|macos|\bosx\b|windows|\blinux\b/i,
           );

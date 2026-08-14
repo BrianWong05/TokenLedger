@@ -77,6 +77,38 @@ export const limits = {
       'Only when you open this page or press Refresh — never on a timer. Your saved sign-in is never changed, and never sent anywhere but the vendor it belongs to. Some tools need a fresh access pass first; TokenLedger gets one the way the tool itself does, uses it once, and never keeps it.',
     'limits.optinButton': 'Enable live limit checks',
 
+    // ── the evidence line ──
+    // The approximation marker is NOT in these templates. "≈" is drawn beside
+    // the figure for the eye and "approximately" is read out in its place, so a
+    // template that baked in either would leave one audience without it. Each
+    // language decides where the marked figure sits by placing {tokens}.
+    'limits.est.approx': 'approximately',
+    'limits.est.left': '{tokens} tokens left',
+    'limits.est.used': '{tokens} tokens used',
+    'limits.est.perPct': '{tokens} / 1%',
+    'limits.est.originOne': 'from {n} consistent completed window',
+    'limits.est.originMany': 'from {n} consistent completed windows',
+    'limits.est.infoLabel': 'About this estimate',
+    // The spec's approved copy closes "It is not the vendor's token quota." The
+    // word is barred from this module (strings.test.ts), and the approved
+    // Traditional Chinese never used it either — it says 限額, the domain word —
+    // so English says the same thing the same way.
+    'limits.est.explanation':
+      'Approximation from matching token use across consistent completed Limit windows. Local equivalent at 100%: approximately {total} tokens. It is not a vendor-reported token limit.',
+
+    // Withheld states: a neutral title and the one fact behind it. No withheld
+    // state may show a figure — not a prior estimate, not a diagnostic one —
+    // anywhere a person or a screen reader could reach.
+    'limits.est.gathering': 'Not enough data',
+    'limits.est.gatheringDetail': '{n} of 3 recent completed windows collected',
+    'limits.est.unstable': 'Estimate withdrawn',
+    'limits.est.unstableDetail': 'Recent local history does not form one consistent evidence set',
+    'limits.est.stale': 'Estimate out of date',
+    'limits.est.staleDetail': 'Fewer than 3 qualifying completed windows remain recent',
+    'limits.est.blocked': 'Estimate unavailable',
+    'limits.est.blockedDetail':
+      'Matching local Usage Records or Source completeness cannot be verified',
+
     'limits.t.d': '{n}d',
     'limits.t.h': '{n}h',
     'limits.t.m': '{n}m',
@@ -129,6 +161,27 @@ export const limits = {
     'limits.optinBounds':
       '只在開啟此頁或按「重新查詢」時查詢——絕不定時輪詢。你儲存的登入不會被修改，也不會傳送到它所屬供應商以外的任何地方。有些工具需要先換取臨時通行證；TokenLedger 會以該工具本身的做法換取一次，用完即棄，絕不保留。',
     'limits.optinButton': '啟用即時限額查詢',
+
+    // The evidence line, in the spec's approved Traditional Chinese. The count
+    // has no plural to inflect, so both origin keys carry the one phrase.
+    'limits.est.approx': '約',
+    'limits.est.left': '剩餘 {tokens} 個 token',
+    'limits.est.used': '已用 {tokens} 個 token',
+    'limits.est.perPct': '{tokens} / 1%',
+    'limits.est.originOne': '根據 {n} 個一致的已完成時段',
+    'limits.est.originMany': '根據 {n} 個一致的已完成時段',
+    'limits.est.infoLabel': '關於這個估算',
+    'limits.est.explanation':
+      '根據多個一致且已完成限額時段的相符 token 用量作近似估算。本機 100% 等值：約 {total} 個 token。這不是供應商提供的 token 限額。',
+
+    'limits.est.gathering': '資料不足',
+    'limits.est.gatheringDetail': '最近需要 3 個時段，目前有 {n} 個',
+    'limits.est.unstable': '估算已撤回',
+    'limits.est.unstableDetail': '最近的本機歷史並不一致',
+    'limits.est.stale': '估算已過期',
+    'limits.est.staleDetail': '最近仍合資格的已完成時段少於 3 個',
+    'limits.est.blocked': '無法估算',
+    'limits.est.blockedDetail': '無法驗證相符的本機用量或來源完整性',
 
     'limits.t.d': '{n} 天',
     'limits.t.h': '{n} 小時',

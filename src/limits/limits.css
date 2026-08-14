@@ -242,6 +242,72 @@
   background: var(--text-secondary);
 }
 
+/* ── the evidence line ──
+   Variant A of the presentation prototype: one quiet line inside the body, so
+   it starts where the labels and the bar start and the big percentage keeps its
+   own column untouched. It wraps rather than truncating — a long translation
+   takes a second line, and nothing here may scroll sideways or shrink the
+   numeral. Deliberately toneless: --success/--warning/--danger say how much of
+   the Limit is left, and an estimate that is merely absent must not borrow one
+   of those and read as an emergency. */
+.tl-lim-est {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 6px;
+  margin-top: 6px;
+  min-width: 0;
+  font-size: 10.5px;
+  line-height: 1.35;
+  color: var(--text-tertiary);
+}
+.tl-lim-est .main,
+.tl-lim-est .title {
+  color: var(--text-secondary);
+  font-weight: 620;
+}
+.tl-lim-est .rate {
+  color: var(--text-secondary);
+}
+.tl-lim-est .note {
+  /* its own row under the line, never a second column beside it */
+  flex: 0 0 100%;
+  line-height: 1.45;
+}
+.tl-lim-est-info {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--border-default);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+.tl-lim-est-info:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+/* Read out, never seen: "≈" carries the approximation to the eye, and this
+   carries the same word to a screen reader, which would announce the symbol as
+   nothing at all. */
+.tl-lim-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 /* ── trouble states ── */
 .tl-lim-trouble {
   display: flex;

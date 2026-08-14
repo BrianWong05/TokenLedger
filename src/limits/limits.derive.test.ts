@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
-import { makeFakeEstimate } from './limits.fake';
+import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
-  cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
-  windowView,
+  approxTokens, cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone,
+  windowLabel, windowView,
 } from './limits.derive';
 
 // 2026-08-12T00:00:00Z
@@ -275,5 +275,89 @@ describe('duration formatting', () => {
     // Minutes are noise beside a day.
     expect(durationParts(4 * 1440 + 7)).toEqual([{ unit: 'd', n: 4 }]);
     expect(durationParts(0)).toEqual([{ unit: 'm', n: 0 }]);
+  });
+});
+
+describe('the estimate view', () => {
+  // 59% used → 41% left. Both framings convert the figure the row is SHOWING,
+  // so whoever multiplies 41 × 350000 gets exactly what the line reports.
+  const ready = (perPct: number, core = 4, spare = 0) =>
+    win({ usedPct: 59, estimate: makeReadyEstimate(perPct, core, spare) });
+
+  it('converts the displayed percentage, and counts only the stable core', () => {
+    const v = windowView(ready(350_000, 4, 3), 'left', NOW);
+
+    expect(v.estimate).toEqual({
+      state: 'ready',
+      selected: 41 * 350_000,
+      perPct: 350_000,
+      total: 35_000_000,
+      epochs: 4,
+    });
+  });
+
+  it('rounds the way the numeral does, so the two figures multiply out', () => {
+    // 40.6% left, shown as "41%".
+    const v = windowView(win({ usedPct: 59.4, estimate: makeReadyEstimate(350_000) }), 'left', NOW);
+    expect(v.estimate).toMatchObject({ selected: 41 * 350_000 });
+  });
+
+  it('changes only the selected figure when the framing flips', () => {
+    const left = windowView(ready(350_000), 'left', NOW).estimate;
+    const used = windowView(ready(350_000), 'used', NOW).estimate;
+
+    expect(left).toMatchObject({ selected: 41 * 350_000 });
+    expect(used).toMatchObject({ selected: 59 * 350_000 });
+    // Everything the estimate itself knows is framing-blind.
+    expect({ ...left, selected: null }).toEqual({ ...used, selected: null });
+  });
+
+  it('hides the selected figure on a used-up window under either framing', () => {
+    const spent = win({ usedPct: 100, estimate: makeReadyEstimate(350_000) });
+
+    for (const mode of ['left', 'used'] as const) {
+      // Neither "≈0 left" nor a whole-window figure — but the rate, the
+      // evidence count and (with them) the info control all survive.
+      expect(windowView(spent, mode, NOW).estimate).toEqual({
+        state: 'ready',
+        selected: null,
+        perPct: 350_000,
+        total: 35_000_000,
+        epochs: 4,
+      });
+    }
+  });
+
+  it('carries a withheld state through with the count its copy needs', () => {
+    for (const state of ['gathering', 'unstable', 'stale', 'blocked'] as const) {
+      const base = makeFakeEstimate();
+      const estimate = {
+        ...base,
+        state,
+        explanation: { ...base.explanation, qualifyingEpochs: 2 },
+      };
+      expect(windowView(win({ estimate }), 'left', NOW).estimate).toEqual({ state, qualifying: 2 });
+    }
+  });
+
+  it('draws nothing at all when a ready evaluation brings no usable ratio', () => {
+    // The wire promises `tokensPerPct` exactly when the state is ready, but as
+    // an optional field — nothing in the type system holds it to that. A broken
+    // promise is not a withheld estimate, and must never reach a person as one.
+    for (const tokensPerPct of [undefined, 0, -1, NaN, Infinity]) {
+      const estimate = { ...makeReadyEstimate(350_000), tokensPerPct };
+      expect(windowView(win({ estimate }), 'left', NOW).estimate).toBeNull();
+    }
+  });
+});
+
+describe('approximate token figures', () => {
+  it('keeps two significant digits, compact, in the reader’s own locale', () => {
+    expect(approxTokens(12_345_678, 'en')).toBe('12M');
+    expect(approxTokens(350_000, 'en')).toBe('350K');
+    expect(approxTokens(1_234, 'en')).toBe('1.2K');
+    // Chinese groups by 萬, not by thousand — the whole reason the locale is
+    // passed rather than the figure being formatted once and translated.
+    expect(approxTokens(12_345_678, 'zh-Hant')).toBe('1200萬');
   });
 });

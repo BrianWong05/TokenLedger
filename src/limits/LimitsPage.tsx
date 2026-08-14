@@ -9,15 +9,15 @@
 // Refresh only, never on the scan timer and never in the background (a floor of
 // LIVE_FLOOR_MS between live checks per Source enforces it against a fast tab
 // flipper).
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import './limits.css';
-import { useT } from '../lib/i18n';
+import { useT, type Lang } from '../lib/i18n';
 import { fill } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
-  cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
-  type CardView, type Mode, type WindowView,
+  approxTokens, cards, durationParts, freshness, limitsSources, planLabel, windowLabel,
+  type CardView, type EstimateView, type Mode, type WindowView,
 } from './limits.derive';
 import {
   tauriLimits, lastCheckKey, lastFailureKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort,
@@ -41,7 +41,7 @@ export default function LimitsPage({
   now?: () => number;
 } = {}) {
   const port = ports?.limits ?? tauriLimits;
-  const { t } = useT();
+  const { t, lang } = useT();
 
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
@@ -202,7 +202,15 @@ export default function LimitsPage({
       {liveEnabled ? (
         <div className="tl-lim-grid">
           {views.map((card) => (
-            <Card key={card.source} card={card} mode={mode} nowSec={nowSec} t={t} onRetry={() => checkLive()} />
+            <Card
+              key={card.source}
+              card={card}
+              mode={mode}
+              nowSec={nowSec}
+              t={t}
+              lang={lang}
+              onRetry={() => checkLive()}
+            />
           ))}
         </div>
       ) : (
@@ -224,8 +232,8 @@ function signedOut(detail: string): boolean {
 }
 
 function Card({
-  card, mode, nowSec, t, onRetry,
-}: { card: CardView; mode: Mode; nowSec: number; t: T; onRetry: () => void }) {
+  card, mode, nowSec, t, lang, onRetry,
+}: { card: CardView; mode: Mode; nowSec: number; t: T; lang: Lang; onRetry: () => void }) {
   const icon = sourceIcon(card.meta.icon);
   const fresh = card.state === 'live' ? freshness(card, nowSec) : null;
 
@@ -264,7 +272,9 @@ function Card({
       </div>
 
       {card.state === 'live' ? (
-        card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)
+        card.windows.map((w) => (
+          <Row key={w.key} w={w} source={card.source} mode={mode} t={t} lang={lang} />
+        ))
       ) : (
         <Trouble card={card} t={t} onRetry={onRetry} />
       )}
@@ -272,7 +282,9 @@ function Card({
   );
 }
 
-function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
+function Row({
+  w, source, mode, t, lang,
+}: { w: WindowView; source: string; mode: Mode; t: T; lang: Lang }) {
   const label = windowLabel(w.key, source);
   const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
   const spent = w.pctLeft <= 0;
@@ -327,8 +339,91 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
             />
           )}
         </div>
+        {w.estimate && <EstimateLine est={w.estimate} mode={mode} t={t} lang={lang} />}
       </div>
     </div>
+  );
+}
+
+// One quiet line under the bar: what the local evidence says a percentage point
+// is worth, or — far more often — why it says nothing yet. It never colors
+// itself; the scarcity tones belong to the Limit, and borrowing one would let a
+// withheld estimate read as an emergency.
+function EstimateLine({
+  est, mode, t, lang,
+}: { est: EstimateView; mode: Mode; t: T; lang: Lang }) {
+  const noteId = useId();
+  const [open, setOpen] = useState(false);
+
+  if (est.state !== 'ready') {
+    return (
+      <div className="tl-lim-est" data-state={est.state}>
+        <span className="title">{t(`limits.est.${est.state}` as 'limits.est.blocked')}</span>
+        <span className="detail">
+          {est.state === 'gathering'
+            ? fill(t('limits.est.gatheringDetail'), { n: est.qualifying })
+            : t(`limits.est.${est.state}Detail` as 'limits.est.blockedDetail')}
+        </span>
+      </div>
+    );
+  }
+
+  const explanation = fill(t('limits.est.explanation'), {
+    total: approxTokens(est.total, lang),
+  });
+
+  return (
+    <div className="tl-lim-est" data-state="ready">
+      {est.selected !== null && (
+        <>
+          <span className="main">
+            {marked(t(mode === 'left' ? 'limits.est.left' : 'limits.est.used'), est.selected, t, lang)}
+          </span>
+          <span className="dot" aria-hidden="true">·</span>
+        </>
+      )}
+      <span className="rate">{marked(t('limits.est.perPct'), est.perPct, t, lang)}</span>
+      <span className="dot" aria-hidden="true">·</span>
+      <span className="origin">
+        {fill(t(est.epochs === 1 ? 'limits.est.originOne' : 'limits.est.originMany'), {
+          n: est.epochs,
+        })}
+      </span>
+      {/* A real button, not a hover target: the explanation has to reach someone
+          who never touches a pointer. `aria-describedby` carries it whether the
+          note is open or not, so assistive technology hears it without having to
+          discover the toggle first. Focus styling comes from the global
+          `button:focus-visible` rule in index.css. */}
+      <button
+        type="button"
+        className="tl-lim-est-info"
+        aria-label={t('limits.est.infoLabel')}
+        aria-describedby={noteId}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span aria-hidden="true">i</span>
+      </button>
+      <span id={noteId} className={open ? 'note' : 'tl-lim-sr'}>
+        {explanation}
+      </span>
+    </div>
+  );
+}
+
+// A figure with its approximation marker, dropped into the phrase at the
+// placeholder its language chose. "≈" is for the eye alone and the word is for
+// the ear alone, so neither audience is told the number is exact.
+function marked(template: string, tokens: number, t: T, lang: Lang): ReactNode {
+  const [before, after = ''] = template.split('{tokens}');
+  return (
+    <>
+      {before}
+      <span aria-hidden="true">≈</span>
+      <span className="tl-lim-sr">{`${t('limits.est.approx')} `}</span>
+      {approxTokens(tokens, lang)}
+      {after}
+    </>
   );
 }
 

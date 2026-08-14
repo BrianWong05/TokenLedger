@@ -1,3 +1,4 @@
+import type { EstimateEpochSummary } from '../bindings/EstimateEpochSummary';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 
 // An arbitrary instant. No test asserts it: what these fixtures are for is a
@@ -27,5 +28,44 @@ export function makeFakeEstimate(over: Partial<LimitEstimateEvaluation> = {}): L
       quantizationIntersection: null,
     },
     ...over,
+  };
+}
+
+/**
+ * A Ready evaluation: `core` epochs inside the stable core and `spare` weighed
+ * but left out of it. The two counts are separate on purpose — the row reports
+ * core membership, and a fixture where the two agree could not tell the
+ * difference.
+ */
+export function makeReadyEstimate(
+  tokensPerPct: number,
+  core = 4,
+  spare = 0,
+): LimitEstimateEvaluation {
+  const base = makeFakeEstimate();
+  return {
+    ...base,
+    state: 'ready',
+    tokensPerPct,
+    explanation: {
+      ...base.explanation,
+      reasonCodes: [],
+      qualifyingEpochs: core,
+      newestCompletedEpochAt: NOW - 3600,
+      candidates: [
+        ...Array.from({ length: core }, (_, i) => epoch(i, true)),
+        ...Array.from({ length: spare }, (_, i) => epoch(core + i, false)),
+      ],
+    },
+  };
+}
+
+function epoch(i: number, inCore: boolean): EstimateEpochSummary {
+  return {
+    epochKey: `epoch-${i}`,
+    endedAt: NOW - (i + 1) * 24 * 3600,
+    movementPoints: 12,
+    positiveMovements: 3,
+    inCore,
   };
 }

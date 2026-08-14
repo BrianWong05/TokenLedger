@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import LimitsPage from './LimitsPage';
 import { LIVE_ENABLED_KEY, MODE_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from './limits';
 import type { SourceLimits } from '../types';
-import { makeFakeEstimate } from './limits.fake';
+import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -671,5 +671,218 @@ describe('fetch policy', () => {
     await settle();
     expect(scans).toBe(1);
     expect(btn(c, 'Refresh')).toBeTruthy();
+  });
+});
+
+// ── the evidence line (spec "UI → Ready" and "UI → Withheld states") ──
+
+// 59% used, so 41% left. 350K per point makes the figures land on round
+// numbers a reader could check by hand: 41 × 350K = 14.35M -> "14M".
+const READY: SourceLimits = {
+  ...CODEX_WEEKLY,
+  windows: [{ ...CODEX_WEEKLY.windows[0], estimate: makeReadyEstimate(350_000, 4, 3) }],
+};
+
+const withheld = (state: 'gathering' | 'unstable' | 'stale' | 'blocked'): SourceLimits => {
+  const base = makeFakeEstimate();
+  return {
+    ...CODEX_WEEKLY,
+    windows: [{
+      ...CODEX_WEEKLY.windows[0],
+      estimate: {
+        ...base,
+        state,
+        // Hostile on purpose: a figure the backend would never send with a
+        // withheld state. The row must read the state, not reach for a number
+        // that happens to be there.
+        tokensPerPct: 350_000,
+        explanation: { ...base.explanation, qualifyingEpochs: 2 },
+      },
+    }],
+  };
+};
+
+const estOf = (c: HTMLElement) => rows(cardFor(c, 'Codex'))[0].querySelector('.tl-lim-est')!;
+
+// What a reader actually sees: the screen-reader-only words come out, so an
+// assertion about the visible line can never be satisfied by text only a screen
+// reader hears (and the reverse assertions below catch the mirror mistake).
+const seen = (el: Element | null | undefined) => {
+  if (!el) return null;
+  const copy = el.cloneNode(true) as HTMLElement;
+  for (const hidden of copy.querySelectorAll('.tl-lim-sr')) hidden.remove();
+  return copy.textContent;
+};
+
+describe('the Ready evidence line', () => {
+  it('sits under the bar with both approximate figures and the core epoch count', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([READY]) }));
+    const row = rows(cardFor(c, 'Codex'))[0];
+    const est = estOf(c);
+
+    // Beneath the bar, inside the body — so the big numeral keeps its column.
+    expect(est.previousElementSibling?.className).toContain('tl-lim-bar');
+    expect(est.parentElement?.className).toBe('tl-lim-body');
+    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('41%');
+
+    expect(seen(est.querySelector('.main'))).toBe('≈14M tokens left');
+    expect(seen(est.querySelector('.rate'))).toBe('≈350K / 1%');
+    // Four of the seven candidates are in the stable core; the line reports the
+    // four, never the seven.
+    expect(est.querySelector('.origin')?.textContent).toBe('from 4 consistent completed windows');
+  });
+
+  it('says "approximately" to a screen reader rather than leaning on the symbol', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([READY]) }));
+    const main = estOf(c).querySelector('.main')!;
+
+    expect(main.querySelector('[aria-hidden="true"]')?.textContent).toBe('≈');
+    expect(main.querySelector('.tl-lim-sr')?.textContent).toBe('approximately ');
+    // The two never both reach one audience: the symbol is hidden from the
+    // accessibility tree, the word is hidden from the eye.
+    expect(main.querySelector('.tl-lim-sr')?.getAttribute('aria-hidden')).toBeNull();
+  });
+
+  it('changes only the selected figure when the framing flips', async () => {
+    const port = fakePort({ list: () => Promise.resolve([READY]) });
+    const c = await mount(port);
+    const rate = () => seen(estOf(c).querySelector('.rate'));
+    const origin = () => seen(estOf(c).querySelector('.origin'));
+    const [rateBefore, originBefore] = [rate(), origin()];
+
+    expect(seen(estOf(c).querySelector('.main'))).toBe('≈14M tokens left');
+
+    await act(async () => btn(c, 'Used').click());
+    await settle();
+
+    expect(seen(estOf(c).querySelector('.main'))).toBe('≈21M tokens used');
+    expect(rate()).toBe(rateBefore);
+    expect(origin()).toBe(originBefore);
+  });
+
+  it('hides the selected figure on a used-up window, keeping the rest', async () => {
+    const spent: SourceLimits = {
+      ...READY,
+      windows: [{ ...READY.windows[0], usedPct: 100 }],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([spent]) }));
+    const est = estOf(c);
+
+    // Neither "≈0 tokens left" nor a prominent whole-window figure.
+    expect(est.querySelector('.main')).toBeNull();
+    expect(est.textContent).not.toMatch(/tokens (left|used)/);
+    expect(seen(est.querySelector('.rate'))).toBe('≈350K / 1%');
+    expect(est.querySelector('.origin')?.textContent).toBe('from 4 consistent completed windows');
+    expect(est.querySelector('.tl-lim-est-info')).not.toBeNull();
+  });
+
+  it('says "window" singular when one epoch carries the core', async () => {
+    const one: SourceLimits = {
+      ...READY,
+      windows: [{ ...READY.windows[0], estimate: makeReadyEstimate(350_000, 1) }],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([one]) }));
+    expect(estOf(c).querySelector('.origin')?.textContent).toBe(
+      'from 1 consistent completed window',
+    );
+  });
+
+  it('draws no line at all when a ready evaluation brings no usable ratio', async () => {
+    const broken: SourceLimits = {
+      ...READY,
+      windows: [{
+        ...READY.windows[0],
+        estimate: { ...makeReadyEstimate(350_000), tokensPerPct: undefined },
+      }],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([broken]) }));
+
+    // A broken contract is not a withheld estimate and must not wear its face —
+    // and above all must not reach a person as "≈NaN".
+    expect(rows(cardFor(c, 'Codex'))[0].querySelector('.tl-lim-est')).toBeNull();
+    expect(cardFor(c, 'Codex').textContent).not.toMatch(/NaN/);
+  });
+});
+
+describe('the Ready info control', () => {
+  const infoOf = (c: HTMLElement) =>
+    estOf(c).querySelector('.tl-lim-est-info') as HTMLButtonElement;
+
+  it('is a real focusable button, not a hover target', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([READY]) }));
+    const info = infoOf(c);
+
+    expect(info.tagName).toBe('BUTTON');
+    expect(info.type).toBe('button');
+    expect(info.getAttribute('aria-label')).toBe('About this estimate');
+    info.focus();
+    expect(document.activeElement).toBe(info);
+  });
+
+  it('exposes the same explanation to assistive technology whether open or shut', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([READY]) }));
+    const info = infoOf(c);
+    const described = () => document.getElementById(info.getAttribute('aria-describedby')!)!;
+
+    // 350K per point → 35M at 100%, labelled as a LOCAL equivalent and
+    // explicitly not something the vendor reported.
+    const expected =
+      'Approximation from matching token use across consistent completed Limit windows. ' +
+      'Local equivalent at 100%: approximately 35M tokens. ' +
+      'It is not a vendor-reported token limit.';
+    expect(described().textContent).toBe(expected);
+
+    expect(info.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => info.click());
+    // Opening reveals the same node to the eye; it never swaps in other words.
+    expect(info.getAttribute('aria-expanded')).toBe('true');
+    expect(described().className).toBe('note');
+    expect(described().textContent).toBe(expected);
+
+    await act(async () => info.click());
+    expect(info.getAttribute('aria-expanded')).toBe('false');
+    expect(described().className).toBe('tl-lim-sr');
+  });
+});
+
+describe('a withheld estimate', () => {
+  const COPY = {
+    gathering: ['Not enough data', '2 of 3 recent completed windows collected'],
+    unstable: ['Estimate withdrawn', 'Recent local history does not form one consistent evidence set'],
+    stale: ['Estimate out of date', 'Fewer than 3 qualifying completed windows remain recent'],
+    blocked: ['Estimate unavailable', 'Matching local Usage Records or Source completeness cannot be verified'],
+  } as const;
+
+  for (const [state, [title, detail]] of Object.entries(COPY)) {
+    it(`renders the approved neutral copy for ${state}, and no figure anywhere`, async () => {
+      const port = fakePort({ list: () => Promise.resolve([withheld(state as 'blocked')]) });
+      const c = await mount(port);
+      const est = estOf(c);
+
+      expect(est.getAttribute('data-state')).toBe(state);
+      expect(est.querySelector('.title')?.textContent).toBe(title);
+      expect(est.querySelector('.detail')?.textContent).toBe(detail);
+
+      // No estimate reaches the eye, the accessibility tree, or a tooltip: the
+      // whole line is the copy above, there is no info control to open, and
+      // nothing carries a title.
+      expect(est.querySelector('.tl-lim-est-info')).toBeNull();
+      expect(est.querySelector('[title]')).toBeNull();
+      expect(est.querySelector('[aria-label]')).toBeNull();
+      expect(est.textContent).toBe(title + detail);
+      expect(est.textContent).not.toMatch(/350|35M|≈|token/i);
+    });
+  }
+
+  it('borrows none of the scarcity tones, whatever the Limit is doing', async () => {
+    const dry: SourceLimits = {
+      ...withheld('blocked'),
+      windows: [{ ...withheld('blocked').windows[0], usedPct: 95 }],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }));
+
+    // The bar is in danger; the estimate line still says nothing about urgency.
+    expect(rows(cardFor(c, 'Codex'))[0].querySelector('.tl-lim-bar')?.className).toContain('dry');
+    expect(estOf(c).className).toBe('tl-lim-est');
   });
 });
