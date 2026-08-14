@@ -999,6 +999,13 @@ describe('the Ready info control', () => {
     expect(info.getAttribute('aria-label')).toBe('About this estimate');
     info.focus();
     expect(document.activeElement).toBe(info);
+    // Keyboard operability comes from being a native button, which the platform
+    // activates on Enter and Space — jsdom synthesises no click from a keydown,
+    // so dispatching one would prove nothing. What IS checkable is that nothing
+    // takes the control out of the tab order or disables it.
+    expect(info.tabIndex, 'the control stays in the tab order').toBeGreaterThanOrEqual(0);
+    expect(info.disabled).toBe(false);
+    expect(info.getAttribute('aria-disabled')).toBeNull();
   });
 
   it('exposes the same explanation to assistive technology whether open or shut', async () => {
