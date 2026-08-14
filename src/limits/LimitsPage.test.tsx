@@ -871,15 +871,16 @@ const withheld = (state: 'gathering' | 'unstable' | 'stale' | 'blocked'): Source
     ...CODEX_WEEKLY,
     windows: [{
       ...CODEX_WEEKLY.windows[0],
+      // Hostile on purpose: a figure the backend's union cannot even spell
+      // beside a withheld state, forced past the compiler so the row proves it
+      // reads the state rather than reaching for a number that happens to be
+      // in the payload.
       estimate: {
         ...base,
         state,
-        // Hostile on purpose: a figure the backend would never send with a
-        // withheld state. The row must read the state, not reach for a number
-        // that happens to be there.
         tokensPerPct: 350_000,
         explanation: { ...base.explanation, qualifyingEpochs: 2 },
-      },
+      } as unknown as SourceLimits['windows'][number]['estimate'],
     }],
   };
 };
@@ -974,7 +975,12 @@ describe('the Ready evidence line', () => {
       ...READY,
       windows: [{
         ...READY.windows[0],
-        estimate: { ...makeReadyEstimate(350_000), tokensPerPct: undefined },
+        // A ready payload whose number went missing — impossible in the union,
+        // forced past the compiler so the runtime guard is what gets tested.
+        estimate: {
+          ...makeReadyEstimate(350_000),
+          tokensPerPct: undefined,
+        } as unknown as SourceLimits['windows'][number]['estimate'],
       }],
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([broken]) }));

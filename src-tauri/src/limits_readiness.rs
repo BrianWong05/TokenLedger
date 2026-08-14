@@ -336,13 +336,21 @@ mod tests {
             epoch: ended,
             window_minutes: Some(10_080),
             intervals: vec![
-                Interval { from_pct: 0, to_pct: half, tokens: first, t0: ended - 7_200, t1: ended - 3_600 },
+                Interval {
+                    from_pct: 0,
+                    to_pct: half,
+                    tokens: first,
+                    t0: ended - 7_200,
+                    t1: ended - 3_600,
+                    models: Default::default(),
+                },
                 Interval {
                     from_pct: half,
                     to_pct: movement,
                     tokens: second,
                     t0: ended - 3_600,
                     t1: ended - 1_800,
+                    models: Default::default(),
                 },
             ],
         }
@@ -350,7 +358,14 @@ mod tests {
 
     /// One movement only: enough span, not enough movements to qualify.
     fn chain_of(movement: i64, tokens: i64, t0: i64) -> Vec<Interval> {
-        vec![Interval { from_pct: 0, to_pct: movement, tokens, t0, t1: t0 + 60 }]
+        vec![Interval {
+            from_pct: 0,
+            to_pct: movement,
+            tokens,
+            t0,
+            t1: t0 + 60,
+            models: Default::default(),
+        }]
     }
 
     /// Three epochs that agree — the shape of a Ready estimate.

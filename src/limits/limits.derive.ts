@@ -25,10 +25,8 @@ export type CardState = 'live' | 'signed-out' | 'error' | 'nothing-recorded';
 export type Tone = 'ok' | 'low' | 'dry';
 
 /**
- * What the evidence line draws — the discriminated union the wire does not
- * have. `tokensPerPct` travels as an optional field, so a caller that has
- * checked `state === 'ready'` still faces `number | undefined`; this resolves
- * that once, here, and hands the row figures it can use without asking again.
+ * What the evidence line draws — the wire's union resolved into the row's own
+ * figures, so the renderer never converts or counts anything itself.
  *
  * Every figure is canonical tokens, unformatted: locale is the renderer's
  * business, and this file has no language.
@@ -184,7 +182,7 @@ export function estimateView(
     return { state: evaluation.state, qualifying: evaluation.explanation.qualifyingEpochs };
   }
   const perPct = evaluation.tokensPerPct;
-  if (perPct === undefined || !Number.isFinite(perPct) || perPct <= 0) return null;
+  if (!Number.isFinite(perPct) || perPct <= 0) return null;
 
   // The selected figure is hidden wherever the displayed percentage is not a fact
   // about now: a window the row shows as used up — which would read "≈0 left"

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LimitWindow, SourceLimits } from '../types';
+import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
   cards, durationParts, framedPct, freshness, limitsSources, planLabel, tone, windowLabel,
@@ -380,7 +381,12 @@ describe('the estimate view', () => {
     // A broken wire promise (see `EstimateView`) is not a withheld estimate, and
     // must never reach a person as one.
     for (const tokensPerPct of [undefined, 0, -1, NaN, Infinity]) {
-      const estimate = { ...makeReadyEstimate(350_000), tokensPerPct };
+      // The union has no room for these, so the broken wire is forced past the
+      // compiler on purpose: the runtime guard is what this test pins.
+      const estimate = {
+        ...makeReadyEstimate(350_000),
+        tokensPerPct,
+      } as unknown as LimitEstimateEvaluation;
       expect(windowView(win({ estimate }), 'left', NOW).estimate).toBeNull();
     }
   });

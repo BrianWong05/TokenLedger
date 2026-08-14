@@ -10,7 +10,7 @@
 //! What it deliberately does not do: form runs, choose epoch representatives,
 //! or compute a ratio. Those are the estimator's, one ticket along.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -144,6 +144,10 @@ pub struct Interval {
     /// The exclusive lower bound and inclusive upper bound of membership.
     pub t0: i64,
     pub t1: i64,
+    /// The raw Models the counted Records name — the run's Model composition,
+    /// retained as diagnostic metadata (spec: Clean runs) and never sent on the
+    /// public payload. Unattributed Usage counts tokens but names nothing.
+    pub models: BTreeSet<String>,
 }
 
 impl Interval {
@@ -512,24 +516,31 @@ fn interval(
     let members = &group[lo..hi];
 
     // The scope came from `ModelScope::stored`, so it parses; the Series would
-    // not exist otherwise.
-    let tokens = match scope {
+    // not exist otherwise. Whichever branch counts, the raw Models of what it
+    // counted ride along as the interval's composition.
+    let tokens: i64;
+    let models: BTreeSet<String>;
+    match scope {
         // Source-wide: every Record of this Source and account counts, and
         // Unattributed Usage is Usage.
-        ModelScope::All => members.iter().map(|u| u.tokens).sum(),
-        ModelScope::Models(models) => {
+        ModelScope::All => {
+            tokens = members.iter().map(|u| u.tokens).sum();
+            models = members.iter().filter_map(|u| u.model.clone()).collect();
+        }
+        ModelScope::Models(scoped) => {
             // A Record that might be one of the scoped Models, but cannot say,
             // invalidates the interval rather than being guessed at or ignored.
             if members.iter().any(|u| u.model.is_none()) {
                 return Err(ReasonCode::UnattributedModelUsage);
             }
-            members
+            let matching: Vec<&&MatchingRecord> = members
                 .iter()
-                .filter(|u| u.model.as_ref().is_some_and(|m| models.contains(m)))
-                .map(|u| u.tokens)
-                .sum()
+                .filter(|u| u.model.as_ref().is_some_and(|m| scoped.contains(m)))
+                .collect();
+            tokens = matching.iter().map(|u| u.tokens).sum();
+            models = matching.iter().filter_map(|u| u.model.clone()).collect();
         }
-    };
+    }
 
     // Movement with nothing local behind it is detected non-local activity, not
     // a conversion of zero tokens.
@@ -537,7 +548,7 @@ fn interval(
         return Err(ReasonCode::ZeroLocalUsage);
     }
 
-    Ok(Interval { from_pct, to_pct, tokens, t0, t1 })
+    Ok(Interval { from_pct, to_pct, tokens, t0, t1, models })
 }
 
 /// Stored Limit Readings observed at or after `since`, with the provenance that
@@ -697,6 +708,11 @@ mod tests {
         record(timestamp, None, tokens)
     }
 
+    /// The Model composition an interval over these fixtures' Records retains.
+    fn models(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
     /// A Record of another Source or account, carrying a figure large enough that
     /// counting it anywhere would be unmistakable.
     fn foreign(source: &str, account_id: &str, timestamp: i64) -> MatchingRecord {
@@ -729,7 +745,14 @@ mod tests {
         );
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 50, tokens: 1_000, t0: T0, t1: T0 + 600 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 50,
+                tokens: 1_000,
+                t0: T0,
+                t1: T0 + 600,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
         assert_eq!(only_intervals(&evidence)[0].movement(), 10);
     }
@@ -801,8 +824,33 @@ mod tests {
         );
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 42, tokens: 300, t0: T0, t1: T0 + 300 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 42,
+                tokens: 300,
+                t0: T0,
+                t1: T0 + 300,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
+    }
+
+    #[test]
+    fn an_interval_retains_the_raw_model_composition_of_what_it_counted() {
+        // Spec (Clean runs): retain raw Model composition. Diagnostic only —
+        // the payload mapping proves it never travels; this proves it is there
+        // to reconstruct from. Unattributed Usage counts tokens, names nothing.
+        let evidence = derived(
+            &[reading(40.0, T0), reading(50.0, T0 + 600)],
+            &[
+                usage(T0 + 100, 400),
+                record(T0 + 200, Some("gpt-5.3-mini"), 100),
+                unattributed(T0 + 300, 500),
+            ],
+        );
+        let interval = &only_intervals(&evidence)[0];
+        assert_eq!(interval.tokens, 1_000);
+        assert_eq!(interval.models, models(&["gpt-5.3-mini", "gpt-5.4-codex"]));
     }
 
     #[test]
@@ -931,6 +979,7 @@ mod tests {
                 tokens: 1_500,
                 t0: T0 + 600,
                 t1: T0 + 1_200,
+                models: models(&["gpt-5.4-codex"]),
             }],
         );
     }
@@ -1067,7 +1116,14 @@ mod tests {
         assert_eq!(evidence.partitions[0].epoch, RESET + 117);
         assert_eq!(
             evidence.partitions[0].intervals,
-            vec![Interval { from_pct: 5, to_pct: 40, tokens: 5_000, t0: T0 + 100, t1: T0 + 200 }],
+            vec![Interval {
+                from_pct: 5,
+                to_pct: 40,
+                tokens: 5_000,
+                t0: T0 + 100,
+                t1: T0 + 200,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
         // And the fall itself is a reset, not a decrease inside one window.
         assert_eq!(refused(&evidence, ReasonCode::ResetBoundary), 1);
@@ -1118,7 +1174,14 @@ mod tests {
         );
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 50, tokens: 1_500, t0: T0, t1: T0 + 600 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 50,
+                tokens: 1_500,
+                t0: T0,
+                t1: T0 + 600,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
     }
 
@@ -1343,7 +1406,14 @@ mod tests {
         // construction rather than by a per-row check).
         assert_eq!(
             only_intervals(&evidence),
-            vec![Interval { from_pct: 40, to_pct: 50, tokens: 260, t0: T0, t1: T0 + 600 }],
+            vec![Interval {
+                from_pct: 40,
+                to_pct: 50,
+                tokens: 260,
+                t0: T0,
+                t1: T0 + 600,
+                models: models(&["gpt-5.4-codex"]),
+            }],
         );
     }
 

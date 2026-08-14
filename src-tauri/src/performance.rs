@@ -319,11 +319,25 @@ fn plan_of(conn: &rusqlite::Connection, sql: &str) -> String {
     rows.join(" | ")
 }
 
+fn state_of(outcome: &crate::queries::LimitEstimateOutcome) -> String {
+    use crate::queries::LimitEstimateOutcome as O;
+    match outcome {
+        O::Ready { .. } => "Ready",
+        O::Gathering => "Gathering",
+        O::Unstable => "Unstable",
+        O::Stale => "Stale",
+        O::Blocked => "Blocked",
+    }
+    .to_string()
+}
+
 fn ready_windows(cards: &[crate::queries::SourceLimits]) -> usize {
     cards
         .iter()
         .flat_map(|c| &c.windows)
-        .filter(|w| w.estimate.state == crate::limits_readiness::ReadinessState::Ready)
+        .filter(|w| {
+            matches!(w.estimate.outcome, crate::queries::LimitEstimateOutcome::Ready { .. })
+        })
         .count()
 }
 
@@ -500,7 +514,7 @@ fn performance_standard_limits_estimate() {
     let withheld = started.elapsed();
     let mut states = std::collections::BTreeMap::new();
     for w in withheld_cards.iter().flat_map(|c| &c.windows) {
-        *states.entry(format!("{:?}", w.estimate.state)).or_insert(0) += 1;
+        *states.entry(state_of(&w.estimate.outcome)).or_insert(0) += 1;
     }
     eprintln!(
         "PERF limits_withheld states={states:?} elapsed_ms={:.1}",

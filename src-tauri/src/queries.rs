@@ -104,7 +104,7 @@ use std::collections::{BTreeMap, HashMap};
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
-use crate::limits_estimator::recency_horizon;
+use crate::limits_estimator::{coheres, recency_horizon, Candidate};
 use crate::limits_evidence::{self, ReasonCode, SeriesKey};
 use crate::limits_readiness::{self, Evaluation, ReadinessState};
 use crate::pricing::RateMap;
@@ -921,12 +921,12 @@ pub struct EstimateEpochSummary {
     pub positive_movements: usize,
     /// Stable-core membership — the count the row reports, not every candidate.
     pub in_core: bool,
-    // The contract also names a per-summary `reasonCodes`, which is not here:
-    // refusals are tallied per Limit rather than per epoch, so an epoch cannot
-    // yet say why it was passed over. Giving each one its own would be a change
-    // to the estimator, not to this mapping. The window-level `rejections`
-    // carries every reason meanwhile, and the diagnostic path can attribute
-    // them.
+    /// Why this epoch sits outside the core, where it does and a core exists:
+    /// adding it back would break the endpoint-rounding intersection or the
+    /// ratio spread, and the code names which. Empty for core members — and for
+    /// every candidate when no core formed at all, where no single epoch can be
+    /// blamed for the set.
+    pub reason_codes: Vec<ReasonCode>,
 }
 
 /// One reason, and how often it applied.
@@ -982,14 +982,23 @@ pub struct LimitEstimateExplanation {
     pub quantization_intersection: Option<EstimateQuantization>,
 }
 
+/// The state-discriminated half of the evaluation (spec: "Public shape").
+/// `tokensPerPct` exists on the Ready variant and nowhere else, so the
+/// generated TypeScript narrows on `state` and "only Ready serializes a finite
+/// positive tokensPerPct" holds by construction rather than by discipline.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(tag = "state", rename_all = "lowercase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub enum LimitEstimateOutcome {
+    #[serde(rename_all = "camelCase")]
+    Ready { tokens_per_pct: f64 },
+    Gathering,
+    Unstable,
+    Stale,
+    Blocked,
+}
+
 /// The tagged evaluation every Limit row carries.
-///
-/// `tokensPerPct` is present exactly when `state` is `ready` and absent
-/// otherwise, which is the specification's rule — but as an optional field
-/// rather than the discriminated union it writes, so **TypeScript will not
-/// narrow on the state**: a caller that has checked `state === 'ready'` still
-/// has to handle `undefined`. The runtime guarantee holds; the compile-time one
-/// does not, and a union of two flat shapes is what would buy it.
 ///
 /// Deliberately absent: pre-rounded used/left figures and any 100% equivalent —
 /// the frontend derives those from the percentage it is already showing.
@@ -997,10 +1006,11 @@ pub struct LimitEstimateExplanation {
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct LimitEstimateEvaluation {
-    pub state: ReadinessState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub tokens_per_pct: Option<f64>,
+    /// Flattened, so the wire shape is the spec's union: `state` at the top
+    /// level, with `tokensPerPct` beside it exactly when `state == "ready"`.
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub outcome: LimitEstimateOutcome,
     #[ts(type = "number")]
     pub evaluated_at: i64,
     #[ts(type = "number | null")]
@@ -1193,12 +1203,32 @@ fn on_the_wire(
                 .candidates
                 .iter()
                 .enumerate()
-                .map(|(index, candidate)| EstimateEpochSummary {
-                    epoch_key: epoch_key(series, candidate.epoch_ended_at),
-                    ended_at: candidate.epoch_ended_at,
-                    movement_points: candidate.movement,
-                    positive_movements: candidate.positive_movements,
-                    in_core: explanation.core.contains(&index),
+                .map(|(index, candidate)| {
+                    let in_core = explanation.core.contains(&index);
+                    // Why the core left this one out, in the estimator's own
+                    // judgment: the core with this candidate added back either
+                    // shares no endpoint rounding or exceeds the spread. A core
+                    // member — or any candidate when no core formed — has
+                    // nothing to answer for, and says nothing.
+                    let reason_codes = if in_core || explanation.core.is_empty() {
+                        Vec::new()
+                    } else {
+                        let mut with: Vec<&Candidate> = explanation
+                            .core
+                            .iter()
+                            .map(|&i| &explanation.candidates[i])
+                            .collect();
+                        with.push(candidate);
+                        coheres(&with).into_iter().collect()
+                    };
+                    EstimateEpochSummary {
+                        epoch_key: epoch_key(series, candidate.epoch_ended_at),
+                        ended_at: candidate.epoch_ended_at,
+                        movement_points: candidate.movement,
+                        positive_movements: candidate.positive_movements,
+                        in_core,
+                        reason_codes,
+                    }
                 })
                 .collect()
         })
@@ -1210,22 +1240,30 @@ fn on_the_wire(
         *rejections.entry(reason).or_insert(0) += count;
     }
 
-    // A ratio that is not finite and positive is not a withheld state but a
-    // fault: the specification calls it an invariant failure, so it rejects the
-    // command rather than shipping a Ready row with nothing in it.
-    if let Some(ratio) = evaluation.tokens_per_pct {
-        if !ratio.is_finite() || ratio <= 0.0 {
-            return Err(LimitsError::Invariant(format!(
-                "an estimate resolved to {ratio}, which is not a token count",
-            )));
-        }
-    }
+    // Only Ready carries a number, held by the variant's own shape — and it
+    // must be a token count: a Ready evaluation without a finite positive
+    // ratio is not a withheld state but a fault, and the specification calls
+    // it an invariant failure, so it rejects the command rather than shipping
+    // a Ready row with nothing in it.
+    let outcome = match evaluation.state {
+        ReadinessState::Ready => match evaluation.tokens_per_pct {
+            Some(ratio) if ratio.is_finite() && ratio > 0.0 => {
+                LimitEstimateOutcome::Ready { tokens_per_pct: ratio }
+            }
+            broken => {
+                return Err(LimitsError::Invariant(format!(
+                    "a Ready estimate resolved to {broken:?}, which is not a token count",
+                )))
+            }
+        },
+        ReadinessState::Gathering => LimitEstimateOutcome::Gathering,
+        ReadinessState::Unstable => LimitEstimateOutcome::Unstable,
+        ReadinessState::Stale => LimitEstimateOutcome::Stale,
+        ReadinessState::Blocked => LimitEstimateOutcome::Blocked,
+    };
 
     Ok(LimitEstimateEvaluation {
-        state: evaluation.state,
-        // Finite and positive, or nothing: a number that is neither is not a
-        // withheld state, it is a fault, and the row shows no figure at all.
-        tokens_per_pct: evaluation.tokens_per_pct,
+        outcome,
         evaluated_at: evaluation.evaluated_at,
         next_evaluation_at: evaluation.next_evaluation_at,
         policy_version: evaluation.policy_version.to_string(),
@@ -2156,8 +2194,7 @@ mod tests {
             assert_eq!(window.estimate.evaluated_at, EVALUATED_AT);
             assert_eq!(window.estimate.policy_version, "limit-token-estimate-v1");
             // Nothing to be Ready on yet, so no figure — and never a zero.
-            assert_eq!(window.estimate.state, ReadinessState::Gathering);
-            assert_eq!(window.estimate.tokens_per_pct, None);
+            assert_eq!(window.estimate.outcome, LimitEstimateOutcome::Gathering);
         }
     }
 
@@ -2174,8 +2211,7 @@ mod tests {
 
         let cards = limits(&conn, EVALUATED_AT).unwrap();
         let estimate = &cards[0].windows[0].estimate;
-        assert_eq!(estimate.state, ReadinessState::Blocked);
-        assert_eq!(estimate.tokens_per_pct, None);
+        assert_eq!(estimate.outcome, LimitEstimateOutcome::Blocked);
         // Absent on the wire, not null: the shape a frontend narrows on.
         let json = serde_json::to_string(estimate).unwrap();
         assert!(!json.contains("tokensPerPct"), "{json}");
@@ -2227,7 +2263,7 @@ mod tests {
         // The display stays the newest overall; only the estimate anchors on
         // the identity-bearing Reading.
         assert_eq!(window.used_pct, 41.0);
-        assert_eq!(window.estimate.state, ReadinessState::Gathering, "not Blocked");
+        assert_eq!(window.estimate.outcome, LimitEstimateOutcome::Gathering, "not Blocked");
         assert!(
             !window
                 .estimate
@@ -2264,6 +2300,68 @@ mod tests {
                 .any(|r| r.reason_code == ReasonCode::MissingAccountIdentity && r.count == 1),
             "{rejections:?}",
         );
+    }
+
+    #[test]
+    fn epoch_summaries_carry_their_reason_codes_and_never_their_models() {
+        use crate::limits_evidence::{Interval, PartitionEvidence};
+
+        // Three agreeing epochs and one outlier, evaluated and put on the wire.
+        // The outlier's summary says why it sits outside the core, in codes; a
+        // core member says nothing. And the raw Model composition the internal
+        // candidates retain stays off the wire — the public shape has no
+        // models field (spec: "Public shape").
+        let epoch = |days_ago: i64, tokens: i64| {
+            let ended = EVALUATED_AT - days_ago * 86_400;
+            let interval = |from_pct: i64, tokens: i64, t0: i64| Interval {
+                from_pct,
+                to_pct: from_pct + 10,
+                tokens,
+                t0,
+                t1: t0 + 3_600,
+                models: std::iter::once("gpt-5.4-codex".to_string()).collect(),
+            };
+            PartitionEvidence {
+                series: SeriesKey {
+                    source: "codex".to_string(),
+                    account_id: "acct-a".to_string(),
+                    plan: "plus".to_string(),
+                    metering_regime: "codex:rate_limits".to_string(),
+                    limit_id: "codex:w10080".to_string(),
+                    model_scope: "all".to_string(),
+                },
+                epoch: ended,
+                window_minutes: Some(10_080),
+                intervals: vec![
+                    interval(0, tokens / 2, ended - 7_200),
+                    interval(10, tokens - tokens / 2, ended - 3_600),
+                ],
+            }
+        };
+        let partitions = vec![
+            epoch(1, 2_000),
+            epoch(2, 2_020),
+            epoch(3, 1_980),
+            epoch(4, 8_000),
+        ];
+        let current = proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400);
+        let evaluation = limits_readiness::evaluate(Some(&current), &partitions, EVALUATED_AT);
+        let wire = on_the_wire(evaluation, Some(&current), BTreeMap::new()).unwrap();
+
+        assert!(matches!(wire.outcome, LimitEstimateOutcome::Ready { .. }));
+        let summaries = &wire.explanation.candidates;
+        assert_eq!(summaries.len(), 4);
+        for member in summaries.iter().filter(|s| s.in_core) {
+            assert_eq!(member.reason_codes, vec![], "a core member has nothing to answer for");
+        }
+        let outlier = summaries.iter().find(|s| !s.in_core).expect("one epoch is left out");
+        assert_eq!(outlier.reason_codes, vec![ReasonCode::QuantizationRangesDisjoint]);
+
+        let json = serde_json::to_string(&wire).unwrap();
+        assert!(json.contains("\"state\":\"ready\""), "{json}");
+        assert!(json.contains("\"tokensPerPct\":"), "{json}");
+        assert!(json.contains("\"reasonCodes\""), "{json}");
+        assert!(!json.contains("models") && !json.contains("gpt-5.4-codex"), "{json}");
     }
 
     #[test]
