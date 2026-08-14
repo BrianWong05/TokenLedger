@@ -1,6 +1,7 @@
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 
-// 2026-08-12T00:00:00Z, the instant the Limits fixtures are written around.
+// An arbitrary instant. No test asserts it: what these fixtures are for is a
+// window that needs an evaluation, not an evaluation that needs checking.
 const NOW = 1_786_492_800;
 
 /**
@@ -8,7 +9,7 @@ const NOW = 1_786_492_800;
  * the honest default: it is what a Limit says before its evidence exists, and
  * it carries no number for a test to accidentally depend on.
  */
-export function estimate(over: Partial<LimitEstimateEvaluation> = {}): LimitEstimateEvaluation {
+export function makeFakeEstimate(over: Partial<LimitEstimateEvaluation> = {}): LimitEstimateEvaluation {
   return {
     state: 'gathering',
     evaluatedAt: NOW,

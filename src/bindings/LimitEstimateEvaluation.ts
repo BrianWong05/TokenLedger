@@ -5,10 +5,14 @@ import type { LimitEstimateState } from "./LimitEstimateState";
 /**
  * The tagged evaluation every Limit row carries.
  *
- * Equivalent to the specification's discriminated union: `tokensPerPct` is
- * present exactly when `state` is `ready`, and absent otherwise, so a frontend
- * that narrows on the state gets the same guarantee a union would give it.
+ * `tokensPerPct` is present exactly when `state` is `ready` and absent
+ * otherwise, which is the specification's rule — but as an optional field
+ * rather than the discriminated union it writes, so **TypeScript will not
+ * narrow on the state**: a caller that has checked `state === 'ready'` still
+ * has to handle `undefined`. The runtime guarantee holds; the compile-time one
+ * does not, and a union of two flat shapes is what would buy it.
+ *
  * Deliberately absent: pre-rounded used/left figures and any 100% equivalent —
  * the frontend derives those from the percentage it is already showing.
  */
-export type LimitEstimateEvaluation = { state: LimitEstimateState, tokensPerPct?: number, evaluatedAt: number, nextEvaluationAt: number | null, policyVersion: string, explanation: LimitEstimateExplanation, };
+export type LimitEstimateEvaluation = { state: LimitEstimateState, tokensPerPct?: number, evaluatedAt: number, nextEvaluationAt: number | null, policyVersion: "limit-token-estimate-v1", explanation: LimitEstimateExplanation, };

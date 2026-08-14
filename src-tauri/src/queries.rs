@@ -100,7 +100,7 @@ pub struct BreakdownRow {
     pub unattributed_tokens: i64,
 }
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -902,18 +902,6 @@ pub struct LimitWindow {
     pub estimate: LimitEstimateEvaluation,
 }
 
-/// Whether an estimate may be shown, on the wire.
-#[derive(Debug, Serialize, TS, PartialEq)]
-#[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "../../src/bindings/")]
-pub enum LimitEstimateState {
-    Ready,
-    Gathering,
-    Unstable,
-    Stale,
-    Blocked,
-}
-
 /// One completed epoch the policy weighed. Compact by design: the exact
 /// contributing Readings and Usage Records stay reconstructible from the Series
 /// and this stretch, and are never sent on a page load.
@@ -975,7 +963,8 @@ pub struct LimitEstimateExplanation {
     pub rejections: Vec<EstimateRejection>,
     #[ts(type = "number")]
     pub qualifying_epochs: usize,
-    #[ts(type = "number")]
+    /// Always three — the contract pins the figure, not merely its type.
+    #[ts(type = "3")]
     pub required_epochs: usize,
     #[ts(type = "number")]
     pub recent_cutoff_at: i64,
@@ -989,16 +978,20 @@ pub struct LimitEstimateExplanation {
 
 /// The tagged evaluation every Limit row carries.
 ///
-/// Equivalent to the specification's discriminated union: `tokensPerPct` is
-/// present exactly when `state` is `ready`, and absent otherwise, so a frontend
-/// that narrows on the state gets the same guarantee a union would give it.
+/// `tokensPerPct` is present exactly when `state` is `ready` and absent
+/// otherwise, which is the specification's rule — but as an optional field
+/// rather than the discriminated union it writes, so **TypeScript will not
+/// narrow on the state**: a caller that has checked `state === 'ready'` still
+/// has to handle `undefined`. The runtime guarantee holds; the compile-time one
+/// does not, and a union of two flat shapes is what would buy it.
+///
 /// Deliberately absent: pre-rounded used/left figures and any 100% equivalent —
 /// the frontend derives those from the percentage it is already showing.
 #[derive(Debug, Serialize, TS, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct LimitEstimateEvaluation {
-    pub state: LimitEstimateState,
+    pub state: ReadinessState,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tokens_per_pct: Option<f64>,
@@ -1006,6 +999,7 @@ pub struct LimitEstimateEvaluation {
     pub evaluated_at: i64,
     #[ts(type = "number | null")]
     pub next_evaluation_at: Option<i64>,
+    #[ts(type = "\"limit-token-estimate-v1\"")]
     pub policy_version: String,
     pub explanation: LimitEstimateExplanation,
 }
@@ -1042,6 +1036,11 @@ pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 /// This ignores the Overview's date window and Source selection entirely: the
 /// Limits page is *now*, not a range.
 pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>, LimitsError> {
+    // One snapshot for the whole page. Four statements answer it — the rows, the
+    // Readings, their Usage, the plan — and a scan committing between them would
+    // otherwise let a row be drawn from one view of the database and its estimate
+    // from another.
+    let read = conn.unchecked_transaction()?;
     let mut stmt = conn.prepare(
         "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
                 MAX(r.resets_at), MAX(r.observed_at) \
@@ -1071,8 +1070,15 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
     // behind it so a core that has aged out is still there to be found. Beyond
     // that, older evidence could not change any answer this query can give.
     let longest = displayed.iter().filter_map(|w| w.2).max();
+    // ponytail: two horizons back — one for the candidates a Ready answer needs
+    // and one behind it so a core that aged out is still findable. A core older
+    // than that reads as Gathering rather than Stale, which is a difference in
+    // copy rather than in any number; widen it, or read backwards in pages, if
+    // a Series ever holds that much history.
     let since = evaluated_at - 2 * recency_horizon(longest);
-    let evidence = limits_evidence::evidence(conn, since)?.map_err(|invariant| {
+    let readings = limits_evidence::stored_readings(conn, since)?;
+    let usage = limits_evidence::matching_usage(conn, &readings)?;
+    let evidence = limits_evidence::derive(&readings, &usage).map_err(|invariant| {
         // An invariant failure is a technical error, not a readiness state: it
         // rejects the whole command rather than being shown as Blocked.
         LimitsError::Invariant(format!(
@@ -1080,7 +1086,6 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
             invariant.source, invariant.observed_at
         ))
     })?;
-    let readings = limits_evidence::stored_readings(conn, since)?;
 
     let mut cards: Vec<SourceLimits> = Vec::new();
     for (source, window_key, window_minutes, used_pct, resets_at, observed_at) in displayed {
@@ -1091,13 +1096,18 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
             .filter(|r| r.source == source && r.window_key == window_key)
             .max_by_key(|r| (r.observed_at, r.used_pct.to_bits()));
         let evaluation = limits_readiness::evaluate(current, &evidence.partitions, evaluated_at);
+        // Everything this Limit's evidence refused, beside everything its
+        // estimator did: the interval and Reading refusals are most of the
+        // twenty-two reasons there are, and a page that reported only the
+        // estimator's would explain almost nothing.
+        let refusals = evidence.refusals(&source, &window_key);
         let window = LimitWindow {
             window_key,
             window_minutes,
             used_pct,
             resets_at,
             observed_at,
-            estimate: on_the_wire(evaluation, current),
+            estimate: on_the_wire(evaluation, current, refusals)?,
         };
         match cards.last_mut() {
             Some(card) if card.source == source => card.windows.push(window),
@@ -1121,46 +1131,68 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
             .query_row([&card.source], |r| r.get(0))
             .optional()?;
     }
+    drop(plan_stmt);
+    drop(stmt);
+    read.finish()?;
     Ok(cards)
 }
 
 /// An evaluation, reduced to what the page is allowed to see.
-fn on_the_wire(evaluation: Evaluation, current: Option<&LimitReading>) -> LimitEstimateEvaluation {
+fn on_the_wire(
+    evaluation: Evaluation,
+    current: Option<&LimitReading>,
+    evidence_refusals: BTreeMap<ReasonCode, usize>,
+) -> Result<LimitEstimateEvaluation, LimitsError> {
     let explanation = evaluation.explanation;
+    // A candidate exists only where the current Reading proved its Series, so
+    // there is always a key to make one with.
     let series = current.and_then(|r| SeriesKey::of(r).ok());
-    let candidates = explanation
-        .candidates
-        .iter()
-        .enumerate()
-        .map(|(index, candidate)| EstimateEpochSummary {
-            epoch_key: epoch_key(series.as_ref(), candidate.epoch_ended_at),
-            ended_at: candidate.epoch_ended_at,
-            movement_points: candidate.movement,
-            positive_movements: candidate.positive_movements,
-            in_core: explanation.core.contains(&index),
+    let candidates = series
+        .as_ref()
+        .map(|series| {
+            explanation
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| EstimateEpochSummary {
+                    epoch_key: epoch_key(series, candidate.epoch_ended_at),
+                    ended_at: candidate.epoch_ended_at,
+                    movement_points: candidate.movement,
+                    positive_movements: candidate.positive_movements,
+                    in_core: explanation.core.contains(&index),
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
 
-    LimitEstimateEvaluation {
-        state: match evaluation.state {
-            ReadinessState::Ready => LimitEstimateState::Ready,
-            ReadinessState::Gathering => LimitEstimateState::Gathering,
-            ReadinessState::Unstable => LimitEstimateState::Unstable,
-            ReadinessState::Stale => LimitEstimateState::Stale,
-            ReadinessState::Blocked => LimitEstimateState::Blocked,
-        },
+    // One tally per reason, whichever stage refused it.
+    let mut rejections = evidence_refusals;
+    for (reason, count) in explanation.rejections {
+        *rejections.entry(reason).or_insert(0) += count;
+    }
+
+    // A ratio that is not finite and positive is not a withheld state but a
+    // fault: the specification calls it an invariant failure, so it rejects the
+    // command rather than shipping a Ready row with nothing in it.
+    if let Some(ratio) = evaluation.tokens_per_pct {
+        if !ratio.is_finite() || ratio <= 0.0 {
+            return Err(LimitsError::Invariant(format!(
+                "an estimate resolved to {ratio}, which is not a token count",
+            )));
+        }
+    }
+
+    Ok(LimitEstimateEvaluation {
+        state: evaluation.state,
         // Finite and positive, or nothing: a number that is neither is not a
         // withheld state, it is a fault, and the row shows no figure at all.
-        tokens_per_pct: evaluation
-            .tokens_per_pct
-            .filter(|v| v.is_finite() && *v > 0.0),
+        tokens_per_pct: evaluation.tokens_per_pct,
         evaluated_at: evaluation.evaluated_at,
         next_evaluation_at: evaluation.next_evaluation_at,
         policy_version: evaluation.policy_version.to_string(),
         explanation: LimitEstimateExplanation {
             reason_codes: explanation.reason_codes,
-            rejections: explanation
-                .rejections
+            rejections: rejections
                 .into_iter()
                 .map(|(reason_code, count)| EstimateRejection { reason_code, count })
                 .collect(),
@@ -1176,17 +1208,14 @@ fn on_the_wire(evaluation: Evaluation, current: Option<&LimitReading>) -> LimitE
                 EstimateQuantization { lower: q.lower, upper: q.upper }
             }),
         },
-    }
+    })
 }
 
 /// A diagnostic identity for one epoch of one Series: enough to tell two apart
 /// and to recognise the same one twice, and nothing that can be read back into
 /// an account. The Series carries an opaque account identity, so it is digested
 /// rather than sent.
-fn epoch_key(series: Option<&SeriesKey>, epoch: i64) -> String {
-    let Some(series) = series else {
-        return format!("unkeyed:{epoch}");
-    };
+fn epoch_key(series: &SeriesKey, epoch: i64) -> String {
     let mut digest = Sha256::new();
     for part in [
         series.source.as_str(),
@@ -2076,7 +2105,7 @@ mod tests {
             assert_eq!(window.estimate.evaluated_at, EVALUATED_AT);
             assert_eq!(window.estimate.policy_version, "limit-token-estimate-v1");
             // Nothing to be Ready on yet, so no figure — and never a zero.
-            assert_eq!(window.estimate.state, LimitEstimateState::Gathering);
+            assert_eq!(window.estimate.state, ReadinessState::Gathering);
             assert_eq!(window.estimate.tokens_per_pct, None);
         }
     }
@@ -2094,7 +2123,7 @@ mod tests {
 
         let cards = limits(&conn, EVALUATED_AT).unwrap();
         let estimate = &cards[0].windows[0].estimate;
-        assert_eq!(estimate.state, LimitEstimateState::Blocked);
+        assert_eq!(estimate.state, ReadinessState::Blocked);
         assert_eq!(estimate.tokens_per_pct, None);
         // Absent on the wire, not null: the shape a frontend narrows on.
         let json = serde_json::to_string(estimate).unwrap();
@@ -2126,6 +2155,33 @@ mod tests {
     }
 
     #[test]
+    fn a_windows_explanation_carries_what_its_own_evidence_refused() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // A Reading proving nothing, then one proving everything: the first is
+        // refused for the fact it lacks, and that refusal is this window's.
+        let mut unprovable = proven_reading(30.0, EVALUATED_AT - 900, EVALUATED_AT + 86_400);
+        unprovable.provenance.account_id = None;
+        db::insert_limit_readings(
+            &mut conn,
+            &[unprovable, proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let rejections = &cards[0].windows[0].estimate.explanation.rejections;
+        // An evidence-stage reason, not an estimator one: most of the
+        // twenty-two live at that stage, and a page reporting only the
+        // estimator's would explain almost nothing.
+        assert!(
+            rejections
+                .iter()
+                .any(|r| r.reason_code == ReasonCode::MissingAccountIdentity && r.count == 1),
+            "{rejections:?}",
+        );
+    }
+
+    #[test]
     fn an_epoch_key_tells_epochs_apart_without_telling_on_the_account() {
         let series = SeriesKey {
             source: "codex".to_string(),
@@ -2135,13 +2191,13 @@ mod tests {
             limit_id: "codex:w10080".to_string(),
             model_scope: "all".to_string(),
         };
-        let first = epoch_key(Some(&series), 1_000);
-        assert_eq!(first, epoch_key(Some(&series), 1_000), "the same epoch keys the same");
-        assert_ne!(first, epoch_key(Some(&series), 2_000), "a later epoch keys differently");
+        let first = epoch_key(&series, 1_000);
+        assert_eq!(first, epoch_key(&series, 1_000), "the same epoch keys the same");
+        assert_ne!(first, epoch_key(&series, 2_000), "a later epoch keys differently");
 
         let mut elsewhere = series.clone();
         elsewhere.account_id = "acct-other".to_string();
-        assert_ne!(first, epoch_key(Some(&elsewhere), 1_000), "another account, another key");
+        assert_ne!(first, epoch_key(&elsewhere, 1_000), "another account, another key");
         assert!(!first.contains("acct"), "and the account is not in it: {first}");
     }
 

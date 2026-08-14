@@ -14,7 +14,11 @@ export type LimitEstimateExplanation = { reasonCodes: Array<ReasonCode>,
  * Aggregated to counts so a page load stays bounded however long a Series
  * has been running.
  */
-rejections: Array<EstimateRejection>, qualifyingEpochs: number, requiredEpochs: number, recentCutoffAt: number, newestCompletedEpochAt: number | null, 
+rejections: Array<EstimateRejection>, qualifyingEpochs: number, 
+/**
+ * Always three — the contract pins the figure, not merely its type.
+ */
+requiredEpochs: 3, recentCutoffAt: number, newestCompletedEpochAt: number | null, 
 /**
  * At most five.
  */

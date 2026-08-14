@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import LimitsPage from './LimitsPage';
 import { LIVE_ENABLED_KEY, MODE_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from './limits';
 import type { SourceLimits } from '../types';
-import { estimate } from './limits.fixture';
+import { makeFakeEstimate } from './limits.fake';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -82,7 +82,7 @@ const CODEX_WEEKLY: SourceLimits = {
   plan: 'plus',
   usageResetsAvailable: 1,
   windows: [
-    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, estimate: estimate() },
+    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, estimate: makeFakeEstimate() },
   ],
 };
 
@@ -91,9 +91,9 @@ const CLAUDE_LIVE: SourceLimits = {
   plan: 'Team 5x',
   usageResetsAvailable: null,
   windows: [
-    { windowKey: 'five_hour', windowMinutes: 300, usedPct: 18, resetsAt: NOW + 185 * 60, observedAt: NOW - 12, estimate: estimate() },
-    { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, estimate: estimate() },
-    { windowKey: 'seven_day_zephyr', windowMinutes: 10080, usedPct: 37, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, estimate: estimate() },
+    { windowKey: 'five_hour', windowMinutes: 300, usedPct: 18, resetsAt: NOW + 185 * 60, observedAt: NOW - 12, estimate: makeFakeEstimate() },
+    { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, estimate: makeFakeEstimate() },
+    { windowKey: 'seven_day_zephyr', windowMinutes: 10080, usedPct: 37, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, estimate: makeFakeEstimate() },
   ],
 };
 
@@ -103,10 +103,10 @@ const ANTIGRAVITY_LIVE: SourceLimits = {
   plan: 'Pro',
   usageResetsAvailable: null,
   windows: [
-    { windowKey: '3p:w300', windowMinutes: 300, usedPct: 12, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, estimate: estimate() },
-    { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 58, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, estimate: estimate() },
-    { windowKey: '3p:w10080', windowMinutes: 10080, usedPct: 18, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, estimate: estimate() },
-    { windowKey: 'gemini:w10080', windowMinutes: 10080, usedPct: 31, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, estimate: estimate() },
+    { windowKey: '3p:w300', windowMinutes: 300, usedPct: 12, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, estimate: makeFakeEstimate() },
+    { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 58, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, estimate: makeFakeEstimate() },
+    { windowKey: '3p:w10080', windowMinutes: 10080, usedPct: 18, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, estimate: makeFakeEstimate() },
+    { windowKey: 'gemini:w10080', windowMinutes: 10080, usedPct: 31, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, estimate: makeFakeEstimate() },
   ],
 };
 
@@ -115,7 +115,7 @@ const GROK_CREDITS: SourceLimits = {
   plan: 'SuperGrok',
   usageResetsAvailable: null,
   windows: [
-    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 16, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, estimate: estimate() },
+    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 16, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, estimate: makeFakeEstimate() },
   ],
 };
 
@@ -508,7 +508,7 @@ describe('bars', () => {
         source: 'antigravity',
         plan: null,
         usageResetsAvailable: null,
-        windows: [{ windowKey: 'zephyr:w300', windowMinutes: 300, usedPct: 10, resetsAt: NOW + HOUR, observedAt: NOW, estimate: estimate() }],
+        windows: [{ windowKey: 'zephyr:w300', windowMinutes: 300, usedPct: 10, resetsAt: NOW + HOUR, observedAt: NOW, estimate: makeFakeEstimate() }],
       }]),
     }));
     expect(rows(cardFor(c, 'Antigravity'))[0].querySelector('.tl-lim-label')?.textContent)
@@ -536,7 +536,7 @@ describe('bars', () => {
       plan: 'plus',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW + HOUR, observedAt: NOW - 60, estimate: estimate() },
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW + HOUR, observedAt: NOW - 60, estimate: makeFakeEstimate() },
       ],
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }));
@@ -555,7 +555,7 @@ describe('bars', () => {
       plan: 'plus',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW - HOUR, observedAt: NOW - 2 * HOUR, estimate: estimate() },
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW - HOUR, observedAt: NOW - 2 * HOUR, estimate: makeFakeEstimate() },
       ],
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([stale]) }));

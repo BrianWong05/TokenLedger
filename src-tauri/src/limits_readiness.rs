@@ -10,6 +10,9 @@
 
 use std::collections::BTreeMap;
 
+use serde::Serialize;
+use ts_rs::TS;
+
 use crate::limits_estimator::{
     estimates, quantization_intersection, ratio_range, recency_horizon, Candidate, Estimate,
     Quantization,
@@ -26,7 +29,12 @@ pub const POLICY_VERSION: &str = "limit-token-estimate-v1";
 /// How many recent completed epochs a core needs.
 const REQUIRED_EPOCHS: usize = 3;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// On the wire this is `LimitEstimateState`: the contract's name for the same
+/// five states, so the domain enum travels rather than being copied into a
+/// parallel one — the treatment `ReasonCode` already gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "../../src/bindings/", rename = "LimitEstimateState")]
 pub enum ReadinessState {
     /// The current identity or Source completeness is unproven, so there is
     /// nothing to be sure about yet.
