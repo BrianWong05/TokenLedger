@@ -13,13 +13,19 @@
 use std::collections::BTreeMap;
 
 use rusqlite::{params, Connection};
+use serde::Serialize;
+use ts_rs::TS;
 
 use crate::queries;
 use crate::types::{LimitReading, ModelScope, ReadingProvenance};
 
 /// Why evidence was refused. The backend returns codes and values, never
-/// localized prose (spec: "Reason codes").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// localized prose (spec: "Reason codes"). The wire spelling is the variant's
+/// own name in kebab-case, which is exactly the specification's list — one
+/// definition rather than a table to keep in step with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export, export_to = "../../src/bindings/")]
 pub enum ReasonCode {
     NoCurrentReading,
     MissingAccountIdentity,
@@ -43,36 +49,6 @@ pub enum ReasonCode {
     RatioSpreadExceeded,
     CompetingStableCores,
     HistoricalCoreAgedOut,
-}
-
-impl ReasonCode {
-    /// The wire spelling the specification fixes.
-    pub fn code(self) -> &'static str {
-        match self {
-            ReasonCode::NoCurrentReading => "no-current-reading",
-            ReasonCode::MissingAccountIdentity => "missing-account-identity",
-            ReasonCode::MissingPlanIdentity => "missing-plan-identity",
-            ReasonCode::MissingMeteringRegime => "missing-metering-regime",
-            ReasonCode::MissingLimitIdentity => "missing-limit-identity",
-            ReasonCode::MissingModelScope => "missing-model-scope",
-            ReasonCode::UnprovenSourceCompleteness => "unproven-source-completeness",
-            ReasonCode::AmbiguousReadingOrder => "ambiguous-reading-order",
-            ReasonCode::IdentityChange => "identity-change",
-            ReasonCode::ResetBoundary => "reset-boundary",
-            ReasonCode::PercentageDecrease => "percentage-decrease",
-            ReasonCode::PercentageSaturation => "percentage-saturation",
-            ReasonCode::ZeroLocalUsage => "zero-local-usage",
-            ReasonCode::KnownExternalActivity => "known-external-activity",
-            ReasonCode::UnattributedModelUsage => "unattributed-model-usage",
-            ReasonCode::NoQualifyingRun => "no-qualifying-run",
-            ReasonCode::AmbiguousGreatestRun => "ambiguous-greatest-run",
-            ReasonCode::InsufficientRecentEpochs => "insufficient-recent-epochs",
-            ReasonCode::QuantizationRangesDisjoint => "quantization-ranges-disjoint",
-            ReasonCode::RatioSpreadExceeded => "ratio-spread-exceeded",
-            ReasonCode::CompetingStableCores => "competing-stable-cores",
-            ReasonCode::HistoricalCoreAgedOut => "historical-core-aged-out",
-        }
-    }
 }
 
 /// The identity comparable Readings share. Every field is proven or the Reading
@@ -167,14 +143,30 @@ pub struct PartitionEvidence {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Evidence {
     pub partitions: Vec<PartitionEvidence>,
-    /// Bounded counts, so the normal payload stays small; the diagnostic path is
-    /// what expands them to contributors.
-    pub rejections: BTreeMap<ReasonCode, usize>,
+    /// Bounded counts, kept per Limit as the card addresses it: a refusal
+    /// belongs to the Limit it was refused for, and one shared tally would show
+    /// a window another window's troubles. The diagnostic path is what expands
+    /// them back to contributors.
+    pub rejections: BTreeMap<(String, String), BTreeMap<ReasonCode, usize>>,
 }
 
 impl Evidence {
-    fn refuse(&mut self, reason: ReasonCode) {
-        *self.rejections.entry(reason).or_insert(0) += 1;
+    /// Count one refusal against the Limit whose timeline it happened on.
+    fn refuse(&mut self, limit: (&str, &str), reason: ReasonCode) {
+        *self
+            .rejections
+            .entry((limit.0.to_string(), limit.1.to_string()))
+            .or_default()
+            .entry(reason)
+            .or_insert(0) += 1;
+    }
+
+    /// What was refused for one Limit, however addressed elsewhere.
+    pub fn refusals(&self, source: &str, window_key: &str) -> BTreeMap<ReasonCode, usize> {
+        self.rejections
+            .get(&(source.to_string(), window_key.to_string()))
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -232,15 +224,15 @@ pub fn derive(
             .push(reading);
     }
 
-    for mut timeline in timelines.into_values() {
+    for (limit, mut timeline) in timelines {
         // Observation order only. `source_order` could break a tie, but it is a
         // byte offset with no Artifact identity beside it, so it cannot prove
         // that two Readings of one instant are even comparable — and a run that
         // trusted it to sort would be trusting what the interval rule below
         // refuses to trust to bound.
         timeline.sort_by_key(|r| r.observed_at);
-        let placed = place(&timeline, &mut evidence)?;
-        walk(&timeline, &placed, usage, &mut evidence, &mut intervals)?;
+        let placed = place(&timeline, limit, &mut evidence)?;
+        walk(&timeline, &placed, usage, limit, &mut evidence, &mut intervals)?;
     }
 
     for ((series, epoch), (window_minutes, intervals)) in intervals {
@@ -264,6 +256,7 @@ pub fn derive(
 /// grouping question, and the decrease between them is the walk's to refuse.
 fn place(
     timeline: &[&LimitReading],
+    limit: (&str, &str),
     evidence: &mut Evidence,
 ) -> Result<Vec<Placement>, NonFinitePercentage> {
     // Per Series: the epoch being accumulated and the highest percentage in it.
@@ -274,7 +267,7 @@ fn place(
         let series = match SeriesKey::of(reading) {
             Ok(series) => series,
             Err(missing) => {
-                evidence.refuse(missing);
+                evidence.refuse(limit, missing);
                 placed.push(None);
                 continue;
             }
@@ -317,6 +310,7 @@ fn walk(
     timeline: &[&LimitReading],
     placed: &[Placement],
     usage: &[MatchingRecord],
+    limit: (&str, &str),
     evidence: &mut Evidence,
     out: &mut Accumulated,
 ) -> Result<(), NonFinitePercentage> {
@@ -335,18 +329,19 @@ fn walk(
             continue;
         };
         let Some((from, was, scope)) = &anchor else {
-            anchor = anchored(reading, here, evidence);
+            anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
             continue;
         };
 
         if *was != here {
-            evidence.refuse(if was.0 == here.0 {
+            let broke = if was.0 == here.0 {
                 ReasonCode::ResetBoundary
             } else {
                 ReasonCode::IdentityChange
-            });
-            anchor = anchored(reading, here, evidence);
+            };
+            evidence.refuse(limit, broke);
+            anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
             continue;
         }
@@ -359,16 +354,16 @@ fn walk(
             continue;
         }
         if to_pct < from_pct {
-            evidence.refuse(ReasonCode::PercentageDecrease);
-            anchor = anchored(reading, here, evidence);
+            evidence.refuse(limit, ReasonCode::PercentageDecrease);
+            anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
             continue;
         }
         if to_pct >= 100 {
             // Saturation: the window is full, and what filled the last points of
             // it cannot be told from what would have overflowed.
-            evidence.refuse(ReasonCode::PercentageSaturation);
-            anchor = anchored(reading, here, evidence);
+            evidence.refuse(limit, ReasonCode::PercentageSaturation);
+            anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
             continue;
         }
@@ -385,9 +380,9 @@ fn walk(
                 partition.0 = partition.0.or(reading.window_minutes);
                 partition.1.push(interval);
             }
-            Err(reason) => evidence.refuse(reason),
+            Err(reason) => evidence.refuse(limit, reason),
         }
-        anchor = anchored(reading, here, evidence);
+        anchor = anchored(reading, here, limit, evidence);
         spoiled = None;
     }
     Ok(())
@@ -400,12 +395,13 @@ fn walk(
 fn anchored<'a>(
     reading: &'a LimitReading,
     here: &'a (SeriesKey, i64),
+    limit: (&str, &str),
     evidence: &mut Evidence,
 ) -> Option<(&'a LimitReading, &'a (SeriesKey, i64), ModelScope)> {
     match ModelScope::parse(&here.0.model_scope) {
         Some(scope) => Some((reading, here, scope)),
         None => {
-            evidence.refuse(ReasonCode::MissingModelScope);
+            evidence.refuse(limit, ReasonCode::MissingModelScope);
             None
         }
     }
@@ -571,17 +567,6 @@ pub fn matching_usage(
     Ok(out)
 }
 
-/// The whole derivation in one consistent read: what the Ledger and the stored
-/// Readings prove right now, and what they refused.
-pub fn evidence(
-    conn: &Connection,
-    since: i64,
-) -> rusqlite::Result<Result<Evidence, NonFinitePercentage>> {
-    let readings = stored_readings(conn, since)?;
-    let usage = matching_usage(conn, &readings)?;
-    Ok(derive(&readings, &usage))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,8 +626,9 @@ mod tests {
         evidence.partitions.iter().flat_map(|p| p.intervals.clone()).collect()
     }
 
+    /// How often one reason was refused, across every Limit in the fixture.
     fn refused(evidence: &Evidence, reason: ReasonCode) -> usize {
-        evidence.rejections.get(&reason).copied().unwrap_or(0)
+        evidence.rejections.values().filter_map(|counts| counts.get(&reason)).copied().sum()
     }
 
     #[test]
@@ -749,8 +735,8 @@ mod tests {
             let mut from = reading(40.0, T0);
             spoil(&mut from);
             let evidence = derived(&[from, reading(50.0, T0 + 600)], &[usage(T0 + 100, 1_000)]);
-            assert!(only_intervals(&evidence).is_empty(), "{}", reason.code());
-            assert_eq!(refused(&evidence, reason), 1, "{}", reason.code());
+            assert!(only_intervals(&evidence).is_empty(), "{reason:?}");
+            assert_eq!(refused(&evidence, reason), 1, "{reason:?}");
         }
     }
 
@@ -942,8 +928,9 @@ mod tests {
             readings.push(r);
         }
         let evidence = derived(&readings, &[usage(T0 + 50, 1_000), usage(T0 + 150, 1_000)]);
-        let movements =
-            only_intervals(&evidence).len() + evidence.rejections.values().sum::<usize>();
+        let refusals: usize =
+            evidence.rejections.values().flat_map(|counts| counts.values()).sum();
+        let movements = only_intervals(&evidence).len() + refusals;
         assert_eq!(movements, 2, "every pair is either an interval or a reason: {evidence:?}");
     }
 
@@ -963,6 +950,39 @@ mod tests {
             let evidence = derived(&[reading(40.0, T0), moved], &[usage(T0 + 100, 1_000)]);
             assert!(only_intervals(&evidence).is_empty());
             assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 1);
+        }
+    }
+
+    #[test]
+    fn every_reason_code_is_spelled_as_the_specification_fixes_it() {
+        // The backend returns codes, never prose, and these exact strings are
+        // what the contract and its translations are keyed on.
+        let spelled = |reason: ReasonCode| serde_json::to_string(&reason).unwrap();
+        for (reason, wire) in [
+            (ReasonCode::NoCurrentReading, "no-current-reading"),
+            (ReasonCode::MissingAccountIdentity, "missing-account-identity"),
+            (ReasonCode::MissingPlanIdentity, "missing-plan-identity"),
+            (ReasonCode::MissingMeteringRegime, "missing-metering-regime"),
+            (ReasonCode::MissingLimitIdentity, "missing-limit-identity"),
+            (ReasonCode::MissingModelScope, "missing-model-scope"),
+            (ReasonCode::UnprovenSourceCompleteness, "unproven-source-completeness"),
+            (ReasonCode::AmbiguousReadingOrder, "ambiguous-reading-order"),
+            (ReasonCode::IdentityChange, "identity-change"),
+            (ReasonCode::ResetBoundary, "reset-boundary"),
+            (ReasonCode::PercentageDecrease, "percentage-decrease"),
+            (ReasonCode::PercentageSaturation, "percentage-saturation"),
+            (ReasonCode::ZeroLocalUsage, "zero-local-usage"),
+            (ReasonCode::KnownExternalActivity, "known-external-activity"),
+            (ReasonCode::UnattributedModelUsage, "unattributed-model-usage"),
+            (ReasonCode::NoQualifyingRun, "no-qualifying-run"),
+            (ReasonCode::AmbiguousGreatestRun, "ambiguous-greatest-run"),
+            (ReasonCode::InsufficientRecentEpochs, "insufficient-recent-epochs"),
+            (ReasonCode::QuantizationRangesDisjoint, "quantization-ranges-disjoint"),
+            (ReasonCode::RatioSpreadExceeded, "ratio-spread-exceeded"),
+            (ReasonCode::CompetingStableCores, "competing-stable-cores"),
+            (ReasonCode::HistoricalCoreAgedOut, "historical-core-aged-out"),
+        ] {
+            assert_eq!(spelled(reason), format!("\"{wire}\""));
         }
     }
 
@@ -1045,7 +1065,10 @@ mod tests {
         )
         .unwrap();
 
-        let evidence = evidence(&conn, T0 - 3_600).unwrap().unwrap();
+        // The three steps the Limits query itself composes, in its order.
+        let readings = stored_readings(&conn, T0 - 3_600).unwrap();
+        let usage = matching_usage(&conn, &readings).unwrap();
+        let evidence = derive(&readings, &usage).unwrap();
         // Canonical tokens: 100 + 20 + 5 + 3 + 2, with reasoning left out
         // because it classifies tokens already counted.
         assert_eq!(

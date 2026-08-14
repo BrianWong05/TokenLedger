@@ -719,7 +719,7 @@ mod tests {
         let status = run_scan(&mut conn, &roots);
         assert!(find(&status, "claude").error.is_none());
 
-        let cards = queries::limits(&conn).unwrap();
+        let cards = queries::limits(&conn, 1_900_000_000).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].source, "claude");
         assert_eq!(cards[0].plan.as_deref(), Some("Team 5x"));

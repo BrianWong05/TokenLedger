@@ -111,9 +111,9 @@ pub struct AppState {
 /// Run a read on the read connection. The db-vs-read_db choice every read
 /// makes, made in one place so the next read cannot silently pick the write
 /// connection and queue behind a scan.
-fn read<T>(
+fn read<T, E: std::fmt::Display>(
     state: &AppState,
-    f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    f: impl FnOnce(&Connection) -> Result<T, E>,
 ) -> Result<T, String> {
     let db = state.read_db.lock().map_err(|e| e.to_string())?;
     f(&db).map_err(|e| e.to_string())
@@ -221,7 +221,7 @@ fn last_scan(state: State<'_, AppState>) -> i64 {
 /// marker on its own window's token figure.
 #[tauri::command(async)]
 fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadable> {
-    read(&state, |db| Ok(db::load_unreadable(db))).unwrap_or_default()
+    read(&state, |db| Ok::<_, rusqlite::Error>(db::load_unreadable(db))).unwrap_or_default()
 }
 
 /// Decrypt Antigravity's `.pb` Sessions by running the `antigravity-export`
@@ -323,7 +323,14 @@ fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecR
 /// date window and Source selection entirely.
 #[tauri::command(async)]
 fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<SourceLimits>, String> {
-    let mut cards = read(&state, queries::limits)?;
+    // One evaluation instant for the whole page, injected here: every window's
+    // estimate is answered as of the same second, and a storage fault or a
+    // broken invariant rejects the command rather than appearing as a state.
+    let evaluated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .map_err(|e| e.to_string())?;
+    let mut cards = read(&state, |db| queries::limits(db, evaluated_at))?;
     if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
         if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
             card.usage_resets_available = export.usage_resets_available;

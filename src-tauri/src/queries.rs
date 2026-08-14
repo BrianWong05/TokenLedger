@@ -100,9 +100,15 @@ pub struct BreakdownRow {
     pub unattributed_tokens: i64,
 }
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use rusqlite::{params_from_iter, types::Value, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+
+use crate::limits_estimator::recency_horizon;
+use crate::limits_evidence::{self, ReasonCode, SeriesKey};
+use crate::limits_readiness::{self, Evaluation, ReadinessState};
 use crate::pricing::RateMap;
+use crate::types::LimitReading;
 
 // Builds the dynamic WHERE fragment (empty vec = no constraint; end_ts exclusive).
 fn build_where(f: &Filters) -> (String, Vec<Value>) {
@@ -891,6 +897,117 @@ pub struct LimitWindow {
     pub resets_at: i64,
     #[ts(type = "number")]
     pub observed_at: i64,
+    /// Exactly one tagged evaluation, sharing this query's single
+    /// `evaluatedAt` with every other window in the response.
+    pub estimate: LimitEstimateEvaluation,
+}
+
+/// One completed epoch the policy weighed. Compact by design: the exact
+/// contributing Readings and Usage Records stay reconstructible from the Series
+/// and this stretch, and are never sent on a page load.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct EstimateEpochSummary {
+    /// A privacy-safe diagnostic identity: a digest of the Series and the epoch,
+    /// so two epochs can be told apart and neither can be read back into an
+    /// account.
+    pub epoch_key: String,
+    #[ts(type = "number")]
+    pub ended_at: i64,
+    #[ts(type = "number")]
+    pub movement_points: i64,
+    #[ts(type = "number")]
+    pub positive_movements: usize,
+    /// Stable-core membership — the count the row reports, not every candidate.
+    pub in_core: bool,
+    // The contract also names a per-summary `reasonCodes`, which is not here:
+    // refusals are tallied per Limit rather than per epoch, so an epoch cannot
+    // yet say why it was passed over. Giving each one its own would be a change
+    // to the estimator, not to this mapping. The window-level `rejections`
+    // carries every reason meanwhile, and the diagnostic path can attribute
+    // them.
+}
+
+/// One reason, and how often it applied.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct EstimateRejection {
+    pub reason_code: ReasonCode,
+    #[ts(type = "number")]
+    pub count: usize,
+}
+
+/// The narrowest and widest ratio in the set the answer came from.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct EstimateRatioRange {
+    pub min: f64,
+    pub max: f64,
+}
+
+/// Where that set's endpoint rounding agrees. `upper` is `null` when unbounded —
+/// never a JSON infinity.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct EstimateQuantization {
+    pub lower: f64,
+    #[ts(type = "number | null")]
+    pub upper: Option<f64>,
+}
+
+/// What was weighed, in codes and counts. The frontend writes the prose; this
+/// never does.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LimitEstimateExplanation {
+    pub reason_codes: Vec<ReasonCode>,
+    /// Aggregated to counts so a page load stays bounded however long a Series
+    /// has been running.
+    pub rejections: Vec<EstimateRejection>,
+    #[ts(type = "number")]
+    pub qualifying_epochs: usize,
+    /// Always three — the contract pins the figure, not merely its type.
+    #[ts(type = "3")]
+    pub required_epochs: usize,
+    #[ts(type = "number")]
+    pub recent_cutoff_at: i64,
+    #[ts(type = "number | null")]
+    pub newest_completed_epoch_at: Option<i64>,
+    /// At most five.
+    pub candidates: Vec<EstimateEpochSummary>,
+    pub ratio_range: Option<EstimateRatioRange>,
+    pub quantization_intersection: Option<EstimateQuantization>,
+}
+
+/// The tagged evaluation every Limit row carries.
+///
+/// `tokensPerPct` is present exactly when `state` is `ready` and absent
+/// otherwise, which is the specification's rule — but as an optional field
+/// rather than the discriminated union it writes, so **TypeScript will not
+/// narrow on the state**: a caller that has checked `state === 'ready'` still
+/// has to handle `undefined`. The runtime guarantee holds; the compile-time one
+/// does not, and a union of two flat shapes is what would buy it.
+///
+/// Deliberately absent: pre-rounded used/left figures and any 100% equivalent —
+/// the frontend derives those from the percentage it is already showing.
+#[derive(Debug, Serialize, TS, PartialEq)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LimitEstimateEvaluation {
+    pub state: ReadinessState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tokens_per_pct: Option<f64>,
+    #[ts(type = "number")]
+    pub evaluated_at: i64,
+    #[ts(type = "number | null")]
+    pub next_evaluation_at: Option<i64>,
+    #[ts(type = "\"limit-token-estimate-v1\"")]
+    pub policy_version: String,
+    pub explanation: LimitEstimateExplanation,
 }
 
 #[derive(Debug, Serialize, TS, PartialEq)]
@@ -924,7 +1041,12 @@ pub(crate) const EPOCH_JITTER_SECS: i64 = 600;
 ///
 /// This ignores the Overview's date window and Source selection entirely: the
 /// Limits page is *now*, not a range.
-pub fn limits(conn: &Connection) -> rusqlite::Result<Vec<SourceLimits>> {
+pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>, LimitsError> {
+    // One snapshot for the whole page. Four statements answer it — the rows, the
+    // Readings, their Usage, the plan — and a scan committing between them would
+    // otherwise let a row be drawn from one view of the database and its estimate
+    // from another.
+    let read = conn.unchecked_transaction()?;
     let mut stmt = conn.prepare(
         "SELECT r.source, r.window_key, MAX(r.window_minutes), MAX(r.used_pct), \
                 MAX(r.resets_at), MAX(r.observed_at) \
@@ -939,19 +1061,60 @@ pub fn limits(conn: &Connection) -> rusqlite::Result<Vec<SourceLimits>> {
     let rows = stmt.query_map([EPOCH_JITTER_SECS], |r| {
         Ok((
             r.get::<_, String>(0)?,
-            LimitWindow {
-                window_key: r.get(1)?,
-                window_minutes: r.get(2)?,
-                used_pct: r.get(3)?,
-                resets_at: r.get(4)?,
-                observed_at: r.get(5)?,
-            },
+            r.get::<_, String>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+            r.get::<_, f64>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+        ))
+    })?;
+    let displayed: Vec<(String, String, Option<i64>, f64, i64, i64)> =
+        rows.collect::<rusqlite::Result<_>>()?;
+
+    // One horizon for the whole read, from the longest window on the page: one
+    // recency horizon for the candidates a Ready answer needs, and one more
+    // behind it so a core that has aged out is still there to be found. Beyond
+    // that, older evidence could not change any answer this query can give.
+    let longest = displayed.iter().filter_map(|w| w.2).max();
+    // ponytail: two horizons back — one for the candidates a Ready answer needs
+    // and one behind it so a core that aged out is still findable. A core older
+    // than that reads as Gathering rather than Stale, which is a difference in
+    // copy rather than in any number; widen it, or read backwards in pages, if
+    // a Series ever holds that much history.
+    let since = evaluated_at - 2 * recency_horizon(longest);
+    let readings = limits_evidence::stored_readings(conn, since)?;
+    let usage = limits_evidence::matching_usage(conn, &readings)?;
+    let evidence = limits_evidence::derive(&readings, &usage).map_err(|invariant| {
+        // An invariant failure is a technical error, not a readiness state: it
+        // rejects the whole command rather than being shown as Blocked.
+        LimitsError::Invariant(format!(
+            "{} reported a percentage that is not a number, observed at {}",
+            invariant.source, invariant.observed_at
         ))
     })?;
 
     let mut cards: Vec<SourceLimits> = Vec::new();
-    for row in rows {
-        let (source, window) = row?;
+    for (source, window_key, window_minutes, used_pct, resets_at, observed_at) in displayed {
+        // The Reading the card is showing, with the provenance that decides
+        // whether it can anchor anything.
+        let current = readings
+            .iter()
+            .filter(|r| r.source == source && r.window_key == window_key)
+            .max_by_key(|r| (r.observed_at, r.used_pct.to_bits()));
+        let evaluation = limits_readiness::evaluate(current, &evidence.partitions, evaluated_at);
+        // Everything this Limit's evidence refused, beside everything its
+        // estimator did: the interval and Reading refusals are most of the
+        // twenty-two reasons there are, and a page that reported only the
+        // estimator's would explain almost nothing.
+        let refusals = evidence.refusals(&source, &window_key);
+        let window = LimitWindow {
+            window_key,
+            window_minutes,
+            used_pct,
+            resets_at,
+            observed_at,
+            estimate: on_the_wire(evaluation, current, refusals)?,
+        };
         match cards.last_mut() {
             Some(card) if card.source == source => card.windows.push(window),
             _ => cards.push(SourceLimits {
@@ -974,7 +1137,129 @@ pub fn limits(conn: &Connection) -> rusqlite::Result<Vec<SourceLimits>> {
             .query_row([&card.source], |r| r.get(0))
             .optional()?;
     }
+    drop(plan_stmt);
+    drop(stmt);
+    read.finish()?;
     Ok(cards)
+}
+
+/// An evaluation, reduced to what the page is allowed to see.
+fn on_the_wire(
+    evaluation: Evaluation,
+    current: Option<&LimitReading>,
+    evidence_refusals: BTreeMap<ReasonCode, usize>,
+) -> Result<LimitEstimateEvaluation, LimitsError> {
+    let explanation = evaluation.explanation;
+    // A candidate exists only where the current Reading proved its Series, so
+    // there is always a key to make one with.
+    let series = current.and_then(|r| SeriesKey::of(r).ok());
+    let candidates = series
+        .as_ref()
+        .map(|series| {
+            explanation
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| EstimateEpochSummary {
+                    epoch_key: epoch_key(series, candidate.epoch_ended_at),
+                    ended_at: candidate.epoch_ended_at,
+                    movement_points: candidate.movement,
+                    positive_movements: candidate.positive_movements,
+                    in_core: explanation.core.contains(&index),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // One tally per reason, whichever stage refused it.
+    let mut rejections = evidence_refusals;
+    for (reason, count) in explanation.rejections {
+        *rejections.entry(reason).or_insert(0) += count;
+    }
+
+    // A ratio that is not finite and positive is not a withheld state but a
+    // fault: the specification calls it an invariant failure, so it rejects the
+    // command rather than shipping a Ready row with nothing in it.
+    if let Some(ratio) = evaluation.tokens_per_pct {
+        if !ratio.is_finite() || ratio <= 0.0 {
+            return Err(LimitsError::Invariant(format!(
+                "an estimate resolved to {ratio}, which is not a token count",
+            )));
+        }
+    }
+
+    Ok(LimitEstimateEvaluation {
+        state: evaluation.state,
+        // Finite and positive, or nothing: a number that is neither is not a
+        // withheld state, it is a fault, and the row shows no figure at all.
+        tokens_per_pct: evaluation.tokens_per_pct,
+        evaluated_at: evaluation.evaluated_at,
+        next_evaluation_at: evaluation.next_evaluation_at,
+        policy_version: evaluation.policy_version.to_string(),
+        explanation: LimitEstimateExplanation {
+            reason_codes: explanation.reason_codes,
+            rejections: rejections
+                .into_iter()
+                .map(|(reason_code, count)| EstimateRejection { reason_code, count })
+                .collect(),
+            qualifying_epochs: explanation.qualifying_epochs,
+            required_epochs: explanation.required_epochs,
+            recent_cutoff_at: explanation.recent_cutoff_at,
+            newest_completed_epoch_at: explanation.newest_completed_epoch_at,
+            candidates,
+            ratio_range: explanation
+                .ratio_range
+                .map(|(min, max)| EstimateRatioRange { min, max }),
+            quantization_intersection: explanation.quantization_intersection.map(|q| {
+                EstimateQuantization { lower: q.lower, upper: q.upper }
+            }),
+        },
+    })
+}
+
+/// A diagnostic identity for one epoch of one Series: enough to tell two apart
+/// and to recognise the same one twice, and nothing that can be read back into
+/// an account. The Series carries an opaque account identity, so it is digested
+/// rather than sent.
+fn epoch_key(series: &SeriesKey, epoch: i64) -> String {
+    let mut digest = Sha256::new();
+    for part in [
+        series.source.as_str(),
+        series.account_id.as_str(),
+        series.plan.as_str(),
+        series.metering_regime.as_str(),
+        series.limit_id.as_str(),
+        series.model_scope.as_str(),
+    ] {
+        digest.update(part.as_bytes());
+        digest.update([0]);
+    }
+    digest.update(epoch.to_be_bytes());
+    format!("{:x}", digest.finalize())[..16].to_string()
+}
+
+/// What the Limits query can fail with. A storage fault and a broken invariant
+/// are both technical errors — neither is a readiness state, and neither may be
+/// shown as Blocked.
+#[derive(Debug)]
+pub enum LimitsError {
+    Sqlite(rusqlite::Error),
+    Invariant(String),
+}
+
+impl From<rusqlite::Error> for LimitsError {
+    fn from(error: rusqlite::Error) -> Self {
+        LimitsError::Sqlite(error)
+    }
+}
+
+impl std::fmt::Display for LimitsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LimitsError::Sqlite(error) => write!(f, "{error}"),
+            LimitsError::Invariant(detail) => write!(f, "{detail}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -991,6 +1276,10 @@ mod tests {
     // 2026-07-01T00:00:00Z and 2026-07-02T00:00:00Z (local-midnight bounds under TZ=UTC)
     const DAY1_START: i64 = 1_782_864_000;
     const DAY2_START: i64 = 1_782_950_400;
+
+    /// The instant the Limits tests evaluate at — later than every fixture
+    /// Reading, so a card is drawn from history rather than from the future.
+    const EVALUATED_AT: i64 = 1_900_000_000;
 
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "{a} != {b}");
@@ -1777,6 +2066,147 @@ mod tests {
         }
     }
 
+    /// A Reading proving everything, so a test can spoil exactly one fact.
+    fn proven_reading(used_pct: f64, observed_at: i64, resets_at: i64) -> LimitReading {
+        LimitReading {
+            source: "codex".to_string(),
+            window_key: "w10080".to_string(),
+            window_minutes: Some(10_080),
+            used_pct,
+            resets_at,
+            observed_at,
+            via: "logs".to_string(),
+            plan: Some("plus".to_string()),
+            provenance: crate::types::ReadingProvenance {
+                account_id: Some("acct-a".to_string()),
+                metering_regime: Some("codex:rate_limits".to_string()),
+                limit_id: Some("codex:w10080".to_string()),
+                model_scope: Some(crate::types::ModelScope::All),
+                source_order: Some(observed_at),
+                covered_from: Some(0),
+                external_activity: None,
+            },
+        }
+    }
+
+    #[test]
+    fn every_window_carries_exactly_one_evaluation_sharing_one_instant() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut five_hour = proven_reading(10.0, EVALUATED_AT - 600, EVALUATED_AT + 3_600);
+        five_hour.window_key = "w300".to_string();
+        five_hour.window_minutes = Some(300);
+        five_hour.provenance.limit_id = Some("codex:w300".to_string());
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400), five_hour],
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let windows = &cards[0].windows;
+        assert_eq!(windows.len(), 2);
+        for window in windows {
+            // One evaluation each, and all of them answered as of one second.
+            assert_eq!(window.estimate.evaluated_at, EVALUATED_AT);
+            assert_eq!(window.estimate.policy_version, "limit-token-estimate-v1");
+            // Nothing to be Ready on yet, so no figure — and never a zero.
+            assert_eq!(window.estimate.state, ReadinessState::Gathering);
+            assert_eq!(window.estimate.tokens_per_pct, None);
+        }
+    }
+
+    #[test]
+    fn only_ready_puts_a_number_on_the_wire() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // A Reading whose window has already reset cannot anchor anything.
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT - 60)],
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let estimate = &cards[0].windows[0].estimate;
+        assert_eq!(estimate.state, ReadinessState::Blocked);
+        assert_eq!(estimate.tokens_per_pct, None);
+        // Absent on the wire, not null: the shape a frontend narrows on.
+        let json = serde_json::to_string(estimate).unwrap();
+        assert!(!json.contains("tokensPerPct"), "{json}");
+        assert!(json.contains("\"state\":\"blocked\""), "{json}");
+        assert!(json.contains("\"no-current-reading\""), "{json}");
+    }
+
+    #[test]
+    fn the_payload_stays_bounded_and_carries_no_record_identities() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let estimate = &cards[0].windows[0].estimate;
+        assert!(estimate.explanation.candidates.len() <= 5);
+        assert_eq!(estimate.explanation.required_epochs, 3);
+
+        let json = serde_json::to_string(estimate).unwrap();
+        // Rejections travel as counts, never as the things they counted.
+        assert!(!json.contains("dedup_key") && !json.contains("sourceFile"), "{json}");
+        // And an unbounded quantization upper is null, never an infinity.
+        assert!(!json.contains("inf"), "{json}");
+    }
+
+    #[test]
+    fn a_windows_explanation_carries_what_its_own_evidence_refused() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // A Reading proving nothing, then one proving everything: the first is
+        // refused for the fact it lacks, and that refusal is this window's.
+        let mut unprovable = proven_reading(30.0, EVALUATED_AT - 900, EVALUATED_AT + 86_400);
+        unprovable.provenance.account_id = None;
+        db::insert_limit_readings(
+            &mut conn,
+            &[unprovable, proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let rejections = &cards[0].windows[0].estimate.explanation.rejections;
+        // An evidence-stage reason, not an estimator one: most of the
+        // twenty-two live at that stage, and a page reporting only the
+        // estimator's would explain almost nothing.
+        assert!(
+            rejections
+                .iter()
+                .any(|r| r.reason_code == ReasonCode::MissingAccountIdentity && r.count == 1),
+            "{rejections:?}",
+        );
+    }
+
+    #[test]
+    fn an_epoch_key_tells_epochs_apart_without_telling_on_the_account() {
+        let series = SeriesKey {
+            source: "codex".to_string(),
+            account_id: "acct-secret".to_string(),
+            plan: "plus".to_string(),
+            metering_regime: "codex:rate_limits".to_string(),
+            limit_id: "codex:w10080".to_string(),
+            model_scope: "all".to_string(),
+        };
+        let first = epoch_key(&series, 1_000);
+        assert_eq!(first, epoch_key(&series, 1_000), "the same epoch keys the same");
+        assert_ne!(first, epoch_key(&series, 2_000), "a later epoch keys differently");
+
+        let mut elsewhere = series.clone();
+        elsewhere.account_id = "acct-other".to_string();
+        assert_ne!(first, epoch_key(&elsewhere, 1_000), "another account, another key");
+        assert!(!first.contains("acct"), "and the account is not in it: {first}");
+    }
+
     #[test]
     fn limits_takes_the_highest_percentage_of_the_newest_epoch() {
         let dir = tempdir().unwrap();
@@ -1795,7 +2225,7 @@ mod tests {
             reading("claude", "five_hour", 300, 18.0, 1_786_350_000, 1_786_340_000, "live", Some("Team 5x")),
         ]).unwrap();
 
-        let cards = limits(&conn).unwrap();
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
         assert_eq!(cards.len(), 2, "one card per Source holding Readings");
 
         let claude = &cards[0];
@@ -1820,13 +2250,13 @@ mod tests {
     fn limits_is_empty_and_plan_free_without_readings() {
         let dir = tempdir().unwrap();
         let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
-        assert_eq!(limits(&conn).unwrap(), vec![]);
+        assert_eq!(limits(&conn, EVALUATED_AT).unwrap(), vec![]);
 
         // A Source that only ever reported a null plan still gets its card.
         db::insert_limit_readings(&mut conn, &[
             reading("codex", "w10080", 10080, 5.0, 1_786_879_486, 1_786_331_779, "logs", None),
         ]).unwrap();
-        let cards = limits(&conn).unwrap();
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].plan, None, "an absent plan is unknown, never guessed");
     }

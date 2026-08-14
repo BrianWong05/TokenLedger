@@ -5,7 +5,7 @@ export type SourceLimits = { source: string,
 /**
  * `rateLimitTier` (Claude) / `plan_type` (Codex) as of the newest Reading.
  */
-plan: string | null,
+plan: string | null, 
 /**
  * Current Codex Usage Reset count; filled from the live Artifact by the
  * command layer because it is state, not Reading history.
