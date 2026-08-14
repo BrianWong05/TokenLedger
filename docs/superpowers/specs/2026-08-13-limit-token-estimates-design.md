@@ -162,7 +162,21 @@ start or completion time.
 - The same Usage Record may independently participate in different Limits
   whose proven scopes include it. It is counted once within each interval, not
   globally allocated between vendor pools.
-- A Usage Record with unknown account identity cannot participate.
+- A Usage Record carries no account identity of its own — no current Source's
+  Artifacts state one, so a stored account would be a conclusion dressed as a
+  fact (ADR-0024). Its account is the interval's: membership already requires
+  the stretch to be bracketed by Readings that *prove* the account, walked
+  without an identity change between them, so an unmarked Record inside such a
+  stretch participates as that account's. A Record from before the first
+  observation naming the account precedes every such stretch and participates
+  in nothing, which is how legacy history stays out without a per-row mark. A
+  Record that does carry a stored account participates only under that exact
+  account — a contradicting mark is a veto, never someone else's evidence.
+  (Amended by #171: the original line — "a Usage Record with unknown account
+  identity cannot participate" — assumed the account would be stamped onto
+  Records at scan time; the settled design derives it from the bracketing
+  Readings instead, because the scan cannot know it and a wrong stamp could
+  never be corrected.)
 
 ### Interval eligibility
 
@@ -487,7 +501,10 @@ The schema migration from v14 must:
    post-gap anchors, while still deduplicating re-ingestion of the exact same
    source observation by immutable Reading identity;
 4. make Usage capture account identity nullable so legacy Records remain valid
-   Ledger facts but cannot accidentally match estimator evidence;
+   Ledger facts but cannot accidentally match estimator evidence — under #171's
+   settled binding the column stays unwritten and legacy Records stay out by
+   preceding every account-proven stretch, which is the same guarantee held by
+   construction rather than by a per-row mark;
 5. leave all legacy provenance unknown rather than synthesizing account,
    meter, scope, completeness, observation order, or external-activity facts;
 6. create no estimate/materialization/history table; and

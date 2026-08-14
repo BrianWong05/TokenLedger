@@ -57,6 +57,7 @@ fn limits_export(body: &Value, fetched_at: i64) -> Result<LimitsExport, String> 
         plan: Some(plan.to_string()),
         // Copilot is not in the estimate map; its Readings stay display-only.
         metering_regime: None,
+        account_id: None,
         usage_resets_available: None,
         windows: vec![premium_requests(body)?],
     })
