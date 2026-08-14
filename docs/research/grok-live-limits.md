@@ -518,6 +518,5 @@ APIs") if a schema is ever wanted.
   `crates/tokscale-cli/src/commands/usage/grok.rs` (blob `c43aa79e3b93ff782f55eecc2d6d195e9095e0c4`).
 - `docs/adr/0013-source-acquisition-is-local-and-passive.md`,
   `docs/adr/0015-source-discovery-backfills-and-fails-independently.md`,
-  `docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md`,
-  `docs/superpowers/specs/2026-08-12-limits-page-v1-design.md`.
+  `docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md`.
 </content>

@@ -475,4 +475,4 @@ question is cleaner to settle once #110 has framed it.
 - `robinebers/openusage` (HEAD, 2026-08-12): `Sources/OpenUsage/Providers/Antigravity/AntigravityUsageClient.swift:24-31`; `.../AntigravityAuthStore.swift:5,16,19`; `docs/providers/antigravity.md`; provider directory listing
 - `junhoyeo/tokscale` (HEAD): repository tree — `crates/tokscale-core/src/sessions/gemini.rs`, no limits provider
 - This machine: 48 session artifacts under `~/.gemini/tmp/*/chats/`, plus `~/.gemini/tmp/*/logs.json`, `~/.gemini/oauth_creds.json` (field names only). Corpus counts: 200 `user`, 1,559 `gemini` (1,558 with a `tokens` block), 59 `info`, 9 `error` messages.
-- This repo: `src-tauri/src/adapters/gemini.rs:135,165-194`; `src-tauri/src/queries.rs:189,628`; `docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md`; `docs/superpowers/specs/2026-08-12-limits-page-v1-design.md`; issue #103 (map), #110, #112
+- This repo: `src-tauri/src/adapters/gemini.rs:135,165-194`; `src-tauri/src/queries.rs:189,628`; `docs/adr/0019-live-limits-are-fetched-by-a-companion-never-the-app.md`; issue #103 (map), #110, #112

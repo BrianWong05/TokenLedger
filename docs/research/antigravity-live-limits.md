@@ -356,8 +356,7 @@ key windows off it.
 
 ## 4. Mapping onto the v1 window model
 
-Per the v1 design
-(`docs/superpowers/specs/2026-08-12-limits-page-v1-design.md`, SCHEMA_V14):
+Per the v1 design (`src-tauri/src/db.rs`, SCHEMA_V14):
 
 ```sql
 limit_readings(source, window_key, window_minutes, used_pct,
@@ -656,6 +655,5 @@ presentation primitives:
   `Sources/OpenUsage/Providers/Antigravity/{AntigravityAuthStore,AntigravityUsageClient,AntigravityUsageMapper,AntigravityProvider,AntigravityMetric}.swift`,
   `docs/providers/antigravity.md`.
 - This repo: `docs/adr/0018-*.md`, `docs/adr/0019-*.md`,
-  `docs/superpowers/specs/2026-08-12-limits-page-v1-design.md`,
   `docs/source-evidence/antigravity.md`, `src/source-catalog.json`,
   `src-tauri/src/bin/antigravity-export.rs`.
