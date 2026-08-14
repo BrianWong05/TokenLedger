@@ -330,10 +330,19 @@ fn place(
 /// tokens keep accumulating from the last anchor until the percentage moves.
 /// Anything that interrupts the run ends that accumulation — a decrease, a
 /// saturation, a fact that spoils the stretch, and equally a Reading of another
-/// Partition or of none at all standing between the anchor and the movement.
-/// That last case is why the walk sees the whole timeline rather than one
-/// Partition's Readings: a run cannot step over a Reading that says the account,
-/// the meter, the Limit or the window changed in the middle of it.
+/// Partition standing between the anchor and the movement. That last case is
+/// why the walk sees the whole timeline rather than one Partition's Readings: a
+/// run cannot step over a Reading that says the account, the meter, the Limit
+/// or the window changed in the middle of it.
+///
+/// A Reading that proves too little to be placed anywhere is different (#183):
+/// it can never anchor and never admit evidence, but inside a proven stretch it
+/// passes through UNLESS it evidences a run-ending fact — a rounded percentage
+/// below the highest the stretch has shown, saturation at 100, or an
+/// external-activity fact. Veto-only, judged conservatively: Codex interleaves
+/// account-less rollout Readings between the Companion's proven ones on every
+/// request, and ending the run at each of them meant Codex could never
+/// assemble a qualifying run at all.
 fn walk(
     timeline: &[&LimitReading],
     placed: &[Placement],
@@ -347,18 +356,40 @@ fn walk(
     // movement being accumulated. The anchor's own does not: it describes the
     // stretch that ended there, which is the previous interval's business.
     let mut spoiled: Option<ReasonCode> = None;
+    // The highest rounded percentage the current stretch has shown — the
+    // anchor's own, raised by every unproven Reading passed through since. A
+    // later Reading below it is a decrease, whoever proved the higher figure.
+    let mut highest: i64 = 0;
 
     for (reading, placement) in timeline.iter().zip(placed) {
         let Some(here) = placement else {
-            // A Reading that proves too little to be placed is still a Reading
-            // of this Limit, and a run cannot see past it.
-            anchor = None;
-            spoiled = None;
+            // Unproven, and only a veto: outside a stretch there is nothing for
+            // it to end, and inside one it ends the accumulation only when it
+            // evidences a run-ending fact.
+            if anchor.is_some() {
+                let pct = displayed(reading)?;
+                if pct < highest {
+                    evidence.refuse(limit, ReasonCode::PercentageDecrease);
+                    anchor = None;
+                    spoiled = None;
+                } else if pct >= 100 {
+                    evidence.refuse(limit, ReasonCode::PercentageSaturation);
+                    anchor = None;
+                    spoiled = None;
+                } else if reading.provenance.external_activity.is_some() {
+                    evidence.refuse(limit, ReasonCode::KnownExternalActivity);
+                    anchor = None;
+                    spoiled = None;
+                } else {
+                    highest = highest.max(pct);
+                }
+            }
             continue;
         };
         let Some((from, was, scope)) = &anchor else {
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = displayed(reading)?;
             continue;
         };
 
@@ -371,6 +402,7 @@ fn walk(
             evidence.refuse(limit, broke);
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = displayed(reading)?;
             continue;
         }
 
@@ -378,13 +410,17 @@ fn walk(
         if reading.provenance.external_activity.is_some() {
             spoiled = Some(ReasonCode::KnownExternalActivity);
         }
-        if to_pct == from_pct {
-            continue;
-        }
-        if to_pct < from_pct {
+        // Against the highest the stretch has shown, not merely the anchor: an
+        // anchor below what a passed-through unproven Reading evidenced is a
+        // decrease too, and the interval that would have stepped over it dies.
+        if to_pct < highest {
             evidence.refuse(limit, ReasonCode::PercentageDecrease);
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = to_pct;
+            continue;
+        }
+        if to_pct == from_pct {
             continue;
         }
         if to_pct >= 100 {
@@ -393,6 +429,7 @@ fn walk(
             evidence.refuse(limit, ReasonCode::PercentageSaturation);
             anchor = anchored(reading, here, limit, evidence);
             spoiled = None;
+            highest = to_pct;
             continue;
         }
 
@@ -412,6 +449,7 @@ fn walk(
         }
         anchor = anchored(reading, here, limit, evidence);
         spoiled = None;
+        highest = to_pct;
     }
     Ok(())
 }
@@ -1051,16 +1089,84 @@ mod tests {
         assert_eq!(refused(&evidence, ReasonCode::IdentityChange), 2);
     }
 
+    /// The Companion's own shape: a live Reading proving everything (#171).
+    fn live(used_pct: f64, observed_at: i64) -> LimitReading {
+        let mut r = reading(used_pct, observed_at);
+        r.via = "live".to_string();
+        r
+    }
+
+    /// The rollout's own shape: a logs Reading proving identity but no account
+    /// or coverage — what the Codex scan writes for every request (#183).
+    fn rollout(used_pct: f64, observed_at: i64) -> LimitReading {
+        let mut r = reading(used_pct, observed_at);
+        r.provenance.account_id = None;
+        r.provenance.covered_from = None;
+        r
+    }
+
     #[test]
-    fn a_reading_that_proves_nothing_ends_the_run_it_interrupts() {
-        let mut unprovable = reading(40.0, T0 + 300);
-        unprovable.provenance.account_id = None;
+    fn an_unproven_reading_inside_a_proven_stretch_passes_through() {
+        // Codex's production timeline: the Companion's proven Readings with the
+        // rollouts' account-less ones interleaved (#183). The rollout can never
+        // anchor, but it evidences nothing run-ending here, so the stretch
+        // survives it: ONE interval spanning the two live anchors, carrying the
+        // usage between them.
         let evidence = derived(
-            &[reading(40.0, T0), unprovable, reading(50.0, T0 + 600)],
+            &[live(40.0, T0), rollout(45.0, T0 + 300), live(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000), usage(T0 + 400, 500)],
+        );
+        assert_eq!(
+            only_intervals(&evidence),
+            vec![Interval { from_pct: 40, to_pct: 50, tokens: 1_500, t0: T0, t1: T0 + 600 }],
+        );
+    }
+
+    #[test]
+    fn an_unproven_decrease_still_ends_the_run() {
+        // Veto-only: an unproven Reading can never admit evidence, but a fall it
+        // witnessed is a fall, and the stretch it interrupted proves nothing.
+        let evidence = derived(
+            &[live(40.0, T0), rollout(35.0, T0 + 300), live(50.0, T0 + 600)],
             &[usage(T0 + 100, 1_000)],
         );
         assert!(only_intervals(&evidence).is_empty());
-        assert_eq!(refused(&evidence, ReasonCode::MissingAccountIdentity), 1);
+        assert_eq!(refused(&evidence, ReasonCode::PercentageDecrease), 1);
+    }
+
+    #[test]
+    fn an_unproven_saturation_still_ends_the_run() {
+        let evidence = derived(
+            &[live(40.0, T0), rollout(100.0, T0 + 300), live(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::PercentageSaturation), 1);
+    }
+
+    #[test]
+    fn an_unproven_external_activity_fact_still_ends_the_run() {
+        let mut spoiler = rollout(45.0, T0 + 300);
+        spoiler.provenance.external_activity = Some("codex-web".to_string());
+        let evidence = derived(
+            &[live(40.0, T0), spoiler, live(50.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::KnownExternalActivity), 1);
+    }
+
+    #[test]
+    fn a_later_anchor_below_a_passed_unproven_percentage_is_a_decrease() {
+        // The rollout evidenced 50; the next proven Reading says 45. Whichever
+        // figure is right, the stretch fell somewhere inside itself, and
+        // 40 → 45 must not form across it.
+        let evidence = derived(
+            &[live(40.0, T0), rollout(50.0, T0 + 300), live(45.0, T0 + 600)],
+            &[usage(T0 + 100, 1_000)],
+        );
+        assert!(only_intervals(&evidence).is_empty());
+        assert_eq!(refused(&evidence, ReasonCode::PercentageDecrease), 1);
     }
 
     #[test]

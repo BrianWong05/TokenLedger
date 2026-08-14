@@ -239,10 +239,15 @@ const BULK_RECORDS: usize = 20_000;
 // this same fixture) cannot come back unnoticed.
 const LIMITS_BUDGET: Duration = Duration::from_millis(150);
 
-/// Readings that form eligible evidence: full provenance, ten rising
-/// observations per epoch, epochs back to back. `epochs_back` places them
-/// relative to `now`, so a caller can seed both the recent tail the estimator
-/// reads and the ancient bulk it must skip.
+/// Readings that form eligible evidence, in the two shapes production actually
+/// writes (#183): proven `live` observations — the Companion's, the only shape
+/// that carries an account — ten rising ones per epoch, with an account-less
+/// `logs` Reading interleaved after each, the way Codex's rollouts land between
+/// Companion checks. The mixed timeline is what the walk's pass-through has to
+/// survive at scale; a fixture of provenance-bearing `logs` rows measured a
+/// timeline production never produces. `epochs_back` places epochs relative to
+/// `now`, so a caller can seed both the recent tail the estimator reads and the
+/// ancient bulk it must skip.
 fn seed_readings(
     conn: &mut rusqlite::Connection,
     now: i64,
@@ -258,14 +263,14 @@ fn seed_readings(
             for age in epochs_back.clone() {
                 let resets_at = now - age * span + span;
                 for step in 0..10i64 {
-                    readings.push(LimitReading {
+                    let proven = LimitReading {
                         source: source.clone(),
                         window_key: format!("w{minutes}"),
                         window_minutes: Some(minutes),
                         used_pct: (step + 1) as f64 * 9.0,
                         resets_at,
                         observed_at: resets_at - span + step * (span / 10),
-                        via: "logs".to_string(),
+                        via: "live".to_string(),
                         plan: Some("perf".to_string()),
                         provenance: ReadingProvenance {
                             account_id: Some(format!("acct-{s}")),
@@ -278,7 +283,17 @@ fn seed_readings(
                             covered_from: Some(resets_at - 4 * span),
                             external_activity: None,
                         },
-                    });
+                    };
+                    // The rollout between two Companion checks: same figure,
+                    // no account, no coverage. Benign, so it must pass through
+                    // rather than end the run it sits inside.
+                    let mut rollout = proven.clone();
+                    rollout.via = "logs".to_string();
+                    rollout.observed_at += span / 20;
+                    rollout.provenance.account_id = None;
+                    rollout.provenance.covered_from = None;
+                    readings.push(proven);
+                    readings.push(rollout);
                 }
             }
         }

@@ -1106,12 +1106,22 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
 
     let mut cards: Vec<SourceLimits> = Vec::new();
     for (source, window_key, window_minutes, used_pct, resets_at, observed_at) in displayed {
-        // The Reading the card is showing, with the provenance that decides
-        // whether it can anchor anything.
-        let current = readings
-            .iter()
-            .filter(|r| r.source == source && r.window_key == window_key)
-            .max_by_key(|r| (r.observed_at, r.used_pct.to_bits()));
+        // The Reading the ESTIMATE evaluates from: the newest one that proves
+        // its Series, independent of the display Reading (which stays the
+        // newest overall, chosen by the SQL above). Codex interleaves
+        // account-less rollout Readings between the Companion's proven ones,
+        // so newest-overall flapped the estimate to Blocked
+        // (missing-account-identity) on every request while the Companion was
+        // signed in (#183). With no identity-bearing Reading at all, the
+        // newest overall stands, so Blocked still names the missing fact.
+        let newest = |proving: bool| {
+            readings
+                .iter()
+                .filter(|r| r.source == source && r.window_key == window_key)
+                .filter(|r| !proving || SeriesKey::of(r).is_ok())
+                .max_by_key(|r| (r.observed_at, r.used_pct.to_bits()))
+        };
+        let current = newest(true).or_else(|| newest(false));
         let evaluation = limits_readiness::evaluate(current, &evidence.partitions, evaluated_at);
         // Everything this Limit's evidence refused, beside everything its
         // estimator did: the interval and Reading refusals are most of the
@@ -2090,6 +2100,8 @@ mod tests {
     }
 
     /// A Reading proving everything, so a test can spoil exactly one fact.
+    /// `via: "live"` because that is the only shape that carries an account in
+    /// production — the Companion's; a rollout Reading never does (#183).
     fn proven_reading(used_pct: f64, observed_at: i64, resets_at: i64) -> LimitReading {
         LimitReading {
             source: "codex".to_string(),
@@ -2098,7 +2110,7 @@ mod tests {
             used_pct,
             resets_at,
             observed_at,
-            via: "logs".to_string(),
+            via: "live".to_string(),
             plan: Some("plus".to_string()),
             provenance: crate::types::ReadingProvenance {
                 account_id: Some("acct-a".to_string()),
@@ -2110,6 +2122,16 @@ mod tests {
                 external_activity: None,
             },
         }
+    }
+
+    /// The rollout's own shape: identity but no account or coverage — what the
+    /// Codex scan stores for every request (#183).
+    fn rollout_reading(used_pct: f64, observed_at: i64, resets_at: i64) -> LimitReading {
+        let mut r = proven_reading(used_pct, observed_at, resets_at);
+        r.via = "logs".to_string();
+        r.provenance.account_id = None;
+        r.provenance.covered_from = None;
+        r
     }
 
     #[test]
@@ -2181,6 +2203,40 @@ mod tests {
         assert!(!json.contains("dedup_key") && !json.contains("sourceFile"), "{json}");
         // And an unbounded quantization upper is null, never an infinity.
         assert!(!json.contains("inf"), "{json}");
+    }
+
+    #[test]
+    fn the_estimate_evaluates_from_the_newest_identity_bearing_reading() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // Codex's production timeline: the newest Reading overall is a rollout's
+        // — account-less — while a recent Companion Reading proves the Series.
+        // The evaluation must proceed from the live one rather than flapping to
+        // missing-account-identity Blocked on every request (#183).
+        db::insert_limit_readings(
+            &mut conn,
+            &[
+                proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400),
+                rollout_reading(41.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400),
+            ],
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let window = &cards[0].windows[0];
+        // The display stays the newest overall; only the estimate anchors on
+        // the identity-bearing Reading.
+        assert_eq!(window.used_pct, 41.0);
+        assert_eq!(window.estimate.state, ReadinessState::Gathering, "not Blocked");
+        assert!(
+            !window
+                .estimate
+                .explanation
+                .reason_codes
+                .contains(&ReasonCode::MissingAccountIdentity),
+            "{:?}",
+            window.estimate.explanation.reason_codes,
+        );
     }
 
     #[test]
