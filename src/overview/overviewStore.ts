@@ -75,6 +75,23 @@ export const systemClock: ClockPort = {
 // The one filter the unbounded daily series is fetched with.
 const EMPTY_FILTERS: Filters = { tools: [], models: [], project: null };
 
+// Adapters often already name the Source (`grok: …`). The Overview still
+// prefixes so a bare message is attributable, but must not double it.
+function formatSourceScanError(source: string, error: string): string {
+  const meta = sourceMeta(source);
+  const prefixes = [source, meta.key, meta.label, meta.source]
+    .filter((label, index, all) => label && all.indexOf(label) === index)
+    .map((label) => `${label}:`);
+  let message = error;
+  for (const prefix of prefixes) {
+    if (message.startsWith(prefix)) {
+      message = message.slice(prefix.length).trimStart();
+      break;
+    }
+  }
+  return `${meta.source}: ${message}`;
+}
+
 // ---- snapshot ----
 
 export interface OverviewSnapshot {
@@ -235,7 +252,7 @@ class Store implements OverviewStore {
     this.state.scanSources = status.sources;
     const errs = status.sources
       .filter((s) => s.error)
-      .map((s) => `${s.source}: ${s.error}`);
+      .map((s) => formatSourceScanError(s.source, s.error!));
     this.state.scanError = errs.length ? errs.join(' · ') : null;
     // Backend reports epoch seconds (scan.rs as_secs); scanAt is epoch ms.
     this.state.scanAt = status.scannedAt ? status.scannedAt * 1000 : this.clock.now().getTime();

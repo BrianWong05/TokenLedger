@@ -83,6 +83,17 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().scanError).toBe('Claude Code: boom · Codex: nope');
   });
 
+  it('does not double-prefix an adapter warning that already names the Source', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      scan: scanWith([['grok', 'grok: malformed or unsupported Source Artifact']]),
+    });
+    const store = await boot(ledger, clock);
+    expect(store.getSnapshot().scanError).toBe(
+      'Grok Build: malformed or unsupported Source Artifact',
+    );
+  });
+
   it('fetchError sets on a failing cycle then clears on the next fully-successful one', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger();

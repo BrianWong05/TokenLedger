@@ -47,6 +47,8 @@ const SUPPORTED_UPDATE_KINDS: &[&str] = &[
     "session_recap",
     "subagent_finished",
     "subagent_spawned",
+    "task_backgrounded",
+    "task_completed",
     "tool_call",
     "tool_call_update",
     "turn_completed",
@@ -949,6 +951,45 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("grok") && error.contains("unsupported")));
+    }
+
+    fn task_lifecycle_line(ts: i64, kind: &str) -> String {
+        format!(
+            r#"{{"timestamp":{ts},"method":"_x.ai/session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","task_id":"t1"}},"_meta":{{"eventId":"e"}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn task_lifecycle_updates_do_not_reject_the_session() {
+        // Background bash / monitor emits task_backgrounded then task_completed
+        // on `_x.ai/session/update` with no totalTokens. A session that also
+        // has a real turn must still book that turn — not abort as malformed.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Ftasks",
+            "sess-tasks",
+            &[
+                update_line(100, "user_message_chunk", None),
+                update_line(101, "agent_message_chunk", Some(4000)),
+                task_lifecycle_line(102, "task_backgrounded"),
+                task_lifecycle_line(103, "task_completed"),
+            ],
+            Some(r#"{"info":{"id":"sess-tasks","cwd":"/Users/dev/tasks"},"current_model_id":"grok-4.6","updated_at":"2026-08-15T12:00:00Z"}"#),
+            None,
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1);
+        let tokens: i64 = conn
+            .query_row(
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-tasks:0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokens, 4000);
     }
 
     #[test]
