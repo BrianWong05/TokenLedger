@@ -459,9 +459,11 @@ class Store implements OverviewStore {
   }
 
   // Whether the window the app would fetch now differs from the one it last
-  // fetched. Total is unbounded and Custom is fixed, so neither moves; the rest
-  // are anchored to today and name a new window the moment the local day turns
-  // over — with nothing ingested to announce it. Without this an idle machine
+  // fetched. Total is unbounded and a Custom range with both ends set is fixed,
+  // so neither moves. Every other window is anchored to today — Day, Week,
+  // Month, and a Custom left open-ended, whose missing end falls back to today
+  // in derive() — so each names a new window the moment the local day turns
+  // over, with nothing ingested to announce it. Without this an idle machine
   // sits on yesterday's figures under a TODAY label for as long as it stays idle.
   private windowMoved(): boolean {
     if (this.issuedKey === null) return false; // nothing fetched yet to be stale

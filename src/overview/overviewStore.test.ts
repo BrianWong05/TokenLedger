@@ -1215,33 +1215,36 @@ describe('overviewStore across local midnight', () => {
     return { ledger, clock, store };
   }
 
-  const windowsOf = (ledger: ReturnType<typeof makeFakeLedger>) =>
-    (ledger.calls.summary as [{ startTs?: number }][]).map((c) => c[0].startTs);
+  // Windows queried after `from`, counted the way the rest of this file does:
+  // capture the call count and read past it, rather than truncating the fake's
+  // record of what it was asked.
+  const windowsSince = (ledger: ReturnType<typeof makeFakeLedger>, from: number) =>
+    ledger.calls.summary.slice(from).map((c) => (c[0] as { startTs?: number }).startTs);
 
   it('re-reads the new day on an idle tick after midnight', async () => {
     const { ledger, clock, store } = await dayStoreAt(BEFORE);
-    expect(windowsOf(ledger)).toContain(AUG16);
+    expect(windowsSince(ledger, 0)).toContain(AUG16);
+    const issued = ledger.calls.summary.length;
 
     vi.setSystemTime(AFTER);
-    ledger.calls.summary.length = 0;
     await store.refresh(); // scan reports nothing inserted: a genuinely idle tick
     clock.advance(0);
     await flush();
 
-    expect(windowsOf(ledger)).toContain(AUG17);
+    expect(windowsSince(ledger, issued)).toContain(AUG17);
   });
 
   it('still skips the reload on an idle tick inside the same day', async () => {
     const { ledger, clock, store } = await dayStoreAt(BEFORE);
+    const issued = ledger.calls.summary.length;
 
     vi.setSystemTime(new Date(2026, 7, 16, 23, 55, 0));
-    ledger.calls.summary.length = 0;
     await store.refresh();
     clock.advance(0);
     await flush();
 
     // The skip is what keeps an open app at ~0 CPU every 30s; the midnight fix
     // must not cost that.
-    expect(windowsOf(ledger)).toEqual([]);
+    expect(windowsSince(ledger, issued)).toEqual([]);
   });
 });
