@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   createOverviewStore,
   selectDays,
@@ -1183,5 +1183,153 @@ describe('selectReportInput', () => {
     const { store: clean } = await mountStoreWithUsage();
     const c = clean.getSnapshot();
     expect(selectReportInput(c, selectView(c, NOW), SETTINGS, NOW).tokensBasis).toBe('exact');
+  });
+});
+
+// A range anchored to "today" names a different window once the local day turns
+// over, and nothing is ingested to announce it. The idle skip's premise — what
+// is rendered IS the Ledger — holds for the data and fails for the window, so
+// an idle machine used to sit on yesterday's figures under a TODAY label until
+// something else forced a reload. Its own clock is real (rangeToFilters reads
+// `new Date()`), so this walks the system clock rather than the injected one.
+describe('overviewStore across local midnight', () => {
+  afterEach(() => vi.useRealTimers());
+
+  // Production's ClockPort is `now: () => new Date()` (overviewStore.ts), so the
+  // injected clock and the one rangeToFilters reads internally are the SAME
+  // clock. The shared fakeClock above is frozen at 2026-07-16, which would let
+  // only half the window move here — vi.setSystemTime drives both through this.
+  function liveClock(): ClockPort & { advance(ms: number): void } {
+    let vnow = 0;
+    let seq = 1;
+    const timers = new Map<number, { due: number; fn: () => void }>();
+    return {
+      now: () => new Date(),
+      setTimeout(fn, ms) {
+        const h = seq++;
+        timers.set(h, { due: vnow + ms, fn });
+        return h;
+      },
+      clearTimeout(h) {
+        timers.delete(h);
+      },
+      advance(ms) {
+        vnow += ms;
+        for (const [h, t] of [...timers].sort((a, b) => a[1].due - b[1].due)) {
+          if (t.due <= vnow && timers.has(h)) {
+            timers.delete(h);
+            t.fn();
+          }
+        }
+      },
+    };
+  }
+
+  const BEFORE = new Date(2026, 7, 16, 23, 50, 0);
+  const AFTER = new Date(2026, 7, 17, 0, 5, 0);
+  const AUG17 = Math.floor(new Date(2026, 7, 17, 0, 0, 0).getTime() / 1000);
+  const AUG16 = Math.floor(new Date(2026, 7, 16, 0, 0, 0).getTime() / 1000);
+
+  async function dayStoreAt(when: Date) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(when);
+    const ledger = makeFakeLedger({ dayPoints: [pt({ bucket: '2026-08-16' })] });
+    const clock = liveClock();
+    const store = createOverviewStore({ ledger, clock });
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    return { ledger, clock, store };
+  }
+
+  // Windows queried after `from`, counted the way the rest of this file does:
+  // capture the call count and read past it, rather than truncating the fake's
+  // record of what it was asked.
+  const windowsSince = (ledger: ReturnType<typeof makeFakeLedger>, from: number) =>
+    ledger.calls.summary.slice(from).map((c) => (c[0] as { startTs?: number }).startTs);
+
+  it('re-reads the new day on an idle tick after midnight', async () => {
+    const { ledger, clock, store } = await dayStoreAt(BEFORE);
+    expect(windowsSince(ledger, 0)).toContain(AUG16);
+    const issued = ledger.calls.summary.length;
+
+    vi.setSystemTime(AFTER);
+    await store.refresh(); // scan reports nothing inserted: a genuinely idle tick
+    clock.advance(0);
+    await flush();
+
+    expect(windowsSince(ledger, issued)).toContain(AUG17);
+  });
+
+  // The headline prefers the Summary once figures have settled, and the Summary
+  // describes the window that was last FETCHED. When the day turns over, that
+  // window is yesterday's while the label above it already says today — which is
+  // how a reader saw 132.8M under TODAY on a day holding 1.6M. Every publish
+  // between the rollover and the refetch landing must show the series figure,
+  // which is sliced by the same clock as the label and so cannot disagree.
+  it('never publishes the previous window\'s total under the new day', async () => {
+    const STALE = 133_671_370; // yesterday's total, the figure that was reported
+    const FRESH = 1_622_193; //   what the new day actually held
+    const summaryOf = (totalTokens: number) => ({
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      totalTokens, requests: 1, cost: 0, hasUnpriced: false,
+      unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [],
+      cacheHitRate: 0, convs: 1,
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(BEFORE);
+    const ledger = makeFakeLedger({
+      dayPoints: [
+        pt({ bucket: '2026-08-16', totalTokens: STALE }),
+        pt({ bucket: '2026-08-17', totalTokens: FRESH }),
+      ],
+      summary: summaryOf(STALE),
+    });
+    const clock = liveClock();
+    const store = createOverviewStore({ ledger, clock });
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    expect(selectView(store.getSnapshot(), BEFORE).headline.total).toBe(STALE);
+
+    // The real backend answers per window; the fake holds one canned response,
+    // so move it on with the clock or a landed reload would still serve
+    // yesterday and the assertion would catch the fake, not the store.
+    vi.setSystemTime(AFTER);
+    ledger.data.summary = summaryOf(FRESH);
+    const seen: { to: string; total: number }[] = [];
+    const unsub = store.subscribe(() => {
+      const snap = store.getSnapshot();
+      seen.push({ to: snap.to, total: selectView(snap, AFTER).headline.total });
+    });
+
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    unsub();
+
+    const newDay = seen.filter((v) => v.to === '2026-08-17');
+    expect(newDay.length).toBeGreaterThan(0);
+    expect(newDay.filter((v) => v.total === STALE)).toEqual([]);
+  });
+
+  it('still skips the reload on an idle tick inside the same day', async () => {
+    const { ledger, clock, store } = await dayStoreAt(BEFORE);
+    const issued = ledger.calls.summary.length;
+
+    vi.setSystemTime(new Date(2026, 7, 16, 23, 55, 0));
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+
+    // The skip is what keeps an open app at ~0 CPU every 30s; the midnight fix
+    // must not cost that.
+    expect(windowsSince(ledger, issued)).toEqual([]);
   });
 });

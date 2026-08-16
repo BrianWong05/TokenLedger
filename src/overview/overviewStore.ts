@@ -197,6 +197,11 @@ class Store implements OverviewStore {
   // Safe as a sentinel because scheduleReload pre-increments: a scheduled epoch
   // is never 0, so this can only be 0 before the first landing.
   private loadedEpoch = 0;
+  // The window the last ISSUED reload was for — issued, not landed, unlike
+  // loadedEpoch above. The idle skip compares the current window against it,
+  // because "nothing was ingested" does not mean "nothing on screen moved": a
+  // range that ends at today names a DIFFERENT window once the day rolls over.
+  private issuedKey: string | null = null;
   private reloadTimer: number | null = null; // pending debounce timer
   // The data on screen predates the last settled scan. Set when the first-load
   // paint fires, cleared only once a post-scan series refetch lands. A field,
@@ -297,7 +302,14 @@ class Store implements OverviewStore {
     // fetchError null required: a failed cycle must retry on the next tick
     // even when the scan reports nothing new.
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
-    if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
+    if (
+      idle &&
+      this.state.allPoints !== null &&
+      this.state.fetchError === null &&
+      !this.windowMoved(this.clock.now())
+    ) {
+      return;
+    }
 
     if (await this.fetchSeries()) this.scheduleReload();
   }
@@ -405,7 +417,15 @@ class Store implements OverviewStore {
       from: d.from,
       to: d.to,
       loading: s.allPoints === null,
-      reloading: this.epoch !== this.loadedEpoch,
+      // A reload scheduled and not yet landed — OR a window that has moved out
+      // from under the figures before one could even be scheduled. Both mean
+      // the same thing to a reader: what is on screen does not describe the
+      // window it is labelled with. The headline leans on this to prefer the
+      // series total, which is sliced by this same clock and so always matches
+      // the label, over a Summary still describing the window before it.
+      reloading:
+        this.epoch !== this.loadedEpoch
+        || (this.issuedKey !== null && this.windowFrom(d, now).key !== this.issuedKey),
       provisional: this.provisional,
     };
   }
@@ -433,20 +453,56 @@ class Store implements OverviewStore {
     }
   }
 
+  // What a reload issued right now would fetch, and the identity of that fetch.
+  // Derived in ONE place because two readers depend on it — the reload cache
+  // keys on it, and windowMoved compares against it. Written twice, a changed
+  // key shape would leave windowMoved matching nothing and reloading on every
+  // idle tick, voiding the idle budget in docs/performance.md silently, with
+  // every test still green.
+  private windowNow(now: Date): { filters: Filters; hourDay: string | null; key: string } {
+    return this.windowFrom(this.derive(now), now);
+  }
+
+  // Split from windowNow so buildSnapshot can pass the derivation it already
+  // holds: derive() reduces over every series point, and the snapshot is built
+  // on every publish.
+  private windowFrom(
+    d: ReturnType<Store['derive']>,
+    now: Date,
+  ): { filters: Filters; hourDay: string | null; key: string } {
+    const filters = rangeToFilters(this.state.range, d.from, d.to);
+    const hourDay = hourlyDayOf(this.state.range, d.from, d.to, d.firstIso, d.lastIso, now);
+    return { filters, hourDay, key: JSON.stringify([filters, hourDay]) };
+  }
+
+  // Whether the window the app would fetch now differs from the one it last
+  // fetched. Total is unbounded and a Custom range with both ends set is fixed,
+  // so neither moves. Every other window is anchored to today — Day, Week,
+  // Month, and a Custom left open-ended, whose missing end falls back to today
+  // in derive() — so each names a new window the moment the local day turns
+  // over, with nothing ingested to announce it. Without this an idle machine
+  // sits on yesterday's figures under a TODAY label for as long as it stays idle.
+  private windowMoved(now: Date): boolean {
+    if (this.issuedKey === null) return false; // nothing fetched yet to be stale
+    return this.windowNow(now).key !== this.issuedKey;
+  }
+
   private scheduleReload() {
     if (this.state.allPoints === null) return; // no per-range fetch until first load lands
     if (this.reloadTimer !== null) this.clock.clearTimeout(this.reloadTimer);
     const epoch = ++this.epoch;
     const s = this.state;
-    const d = this.derive(this.clock.now());
     // State can't change between schedule and fire without rescheduling, so
     // capturing filters/hourDay here is equivalent to computing them at fire.
-    const filters = rangeToFilters(s.range, d.from, d.to);
-    const hourDay = hourlyDayOf(s.range, d.from, d.to, d.firstIso, d.lastIso, this.clock.now());
+    // The key is recorded now rather than on landing: a failed reload sets
+    // fetchError, which the idle skip already refuses to skip on, so the retry
+    // is covered either way.
+    const { filters, hourDay, key } = this.windowNow(this.clock.now());
+    this.issuedKey = key;
     const delay = s.range === 'custom' ? 250 : 0;
     this.reloadTimer = this.clock.setTimeout(() => {
       this.reloadTimer = null;
-      this.runReload(epoch, filters, hourDay);
+      this.runReload(epoch, filters, hourDay, key);
     }, delay);
     // The epoch bump above is what makes `reloading` true, and every caller
     // published BEFORE calling here — so without this the new window would be
@@ -457,7 +513,7 @@ class Store implements OverviewStore {
   // All jobs land as ONE patch/publish: nine individual landings would
   // re-render the dashboard nine times per reload (visible as a long-task
   // burst every refresh tick).
-  private runReload(epoch: number, filters: Filters, hourDay: string | null) {
+  private runReload(epoch: number, filters: Filters, hourDay: string | null, key: string) {
     // Both the success and the failure path land, so a reload that throws
     // clears `reloading` too — fetchError is how a failure is reported, and
     // leaving the flag set would disable the export button for good.
@@ -492,7 +548,6 @@ class Store implements OverviewStore {
         ...(hour ? { hourPoints: hour } : {}),
         fetchError: null,
       });
-    const key = JSON.stringify([filters, hourDay]);
     const cached = this.reloadCache.get(key);
     if (cached) {
       land(() => apply(cached));
