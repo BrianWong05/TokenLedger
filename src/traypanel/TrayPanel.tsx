@@ -244,6 +244,39 @@ export default function TrayPanel({
     return () => un?.();
   }, [open]);
 
+  // A shortcut the panel prints beside an action is a working promise
+  // (CONTEXT.md): each key fires the very handler its button does — exact
+  // modifiers only, the modifier spelt per platform like KEY_HINTS. On the
+  // document, because the panel has no focused element to key off.
+  // ⌘Q is the one macOS never delivers here: Tauri installs the default
+  // application menu (which is what makes ⌘C/⌘V work), and a menu key
+  // equivalent is resolved before the webview sees the key — so there the menu
+  // quits and this branch is the Windows one, where no such menu exists.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Escape unqualified, as the app's dialogs take it (useDialogChrome).
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        ipc('close_panel'); // dismissed exactly like focus loss: destroyed, not hidden
+        return;
+      }
+      const mod = platform === 'macos' ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+      if (!mod || e.altKey) return;
+      if (e.shiftKey && e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        void rescan(); // gated inside like the button: a scan in flight swallows it
+      } else if (!e.shiftKey && e.key === ',') {
+        e.preventDefault();
+        ipc('open_settings'); // focus moves to main; the blur path closes the panel
+      } else if (!e.shiftKey && e.key.toLowerCase() === 'q') {
+        e.preventDefault();
+        ipc('quit_app');
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [platform, rescan]);
+
   // Size the window to the rendered content on every height change —
   // skeleton → figures, period switches, row counts. Measuring on a state
   // dep is not enough: the model lands while the skeleton still shows, and

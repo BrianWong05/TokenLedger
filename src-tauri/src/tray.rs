@@ -138,7 +138,7 @@ fn toggle_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) -> tauri::Res
         build_panel(app)?
     };
     if w.is_visible().unwrap_or(false) {
-        w.destroy()?;
+        close_panel(app);
         return Ok(());
     }
     let scale = w.scale_factor().unwrap_or(2.0);
@@ -182,6 +182,22 @@ fn build_panel<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>
         .find(|window| window.label == "traypanel")
         .expect("tray panel window config");
     WebviewWindowBuilder::from_config(app, config)?.build()
+}
+
+/// Dismissing the panel: destroyed, not hidden, so the next open remounts and
+/// refetches. Every dismissal routes here — the icon clicked while it is up,
+/// focus lost to another window (lib.rs), and Escape (the `close_panel`
+/// command) — so the three cannot drift apart.
+///
+/// Ungated where the panel glue around it is compiled out on Linux
+/// (ADR-0010), because `generate_handler!` takes no `#[cfg]` per entry, so the
+/// command calling this must exist on every platform — as `resize_panel`'s
+/// already does. Harmless there: Linux never creates the window, so this finds
+/// nothing to destroy.
+pub fn close_panel<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(w) = app.get_webview_window("traypanel") {
+        let _ = w.destroy();
+    }
 }
 
 /// The tray's icon rect in physical pixels — the one unit panel_position
@@ -540,6 +556,21 @@ mod tests {
             .get_webview_window("traypanel")
             .expect("tray click should create the lazy panel");
         assert!(panel.is_visible().unwrap());
+    }
+
+    // Dismissal is one function, so the icon, focus loss and Escape cannot
+    // drift apart. (That it *destroys* is not assertable here — the mock
+    // runtime posts destroy to an event loop no unit test runs, so the window
+    // map never updates. TrayPanel.test.tsx pins the key, and lib.rs's
+    // every_command_the_panel_invokes_is_registered pins that the command
+    // exists to receive it.)
+    #[test]
+    fn close_panel_is_a_no_op_without_a_panel() {
+        let app = tauri::test::mock_builder()
+            .build(crate::app_context())
+            .unwrap();
+        close_panel(app.handle());
+        assert!(app.get_webview_window("traypanel").is_none());
     }
 
     fn sum(total_tokens: i64, cost: Option<f64>, has_unpriced: bool) -> Summary {
