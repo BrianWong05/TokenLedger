@@ -3,6 +3,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   createOverviewStore,
   selectDays,
+  selectProfile,
   selectReportInput,
   selectView,
   selectVisibleTools,
@@ -281,11 +282,10 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().reloading).toBe(true);
 
     // The reconcile lands over it and clears the flag.
-    ledger.resolveHeld('summary', 1); // reconcile Profile count
     await refreshing;
     clock.advance(0);
     await flush();
-    ledger.resolveHeld('summary', 2); // reconcile window Summary
+    ledger.resolveHeld('summary', 1); // reconcile window Summary
     await flush();
     expect(store.getSnapshot().reloading).toBe(false);
   });
@@ -745,47 +745,65 @@ describe('overviewStore getSnapshot stability', () => {
 });
 
 describe('overviewStore profile', () => {
-  // 30 local days back including today; clock now = 2026-07-16.
-  const fixedStart = Math.floor(new Date(2026, 5, 17).getTime() / 1000);
-  const profileCalls = (ledger: ReturnType<typeof makeFakeLedger>) =>
-    ledger.calls.summary.filter((c) => (c[0] as { startTs?: number }).startTs === fixedStart);
+  // Clock now = 2026-07-16, so Day is that bucket and Week opens 07-10.
+  const spread = [
+    pt({ bucket: '2026-07-16', totalTokens: 400, byModel: { 'claude-fable-5': 400 } }),
+    pt({ bucket: '2026-07-12', totalTokens: 300, byModel: { 'gpt-5.6-sol': 300 } }),
+    pt({ bucket: '2026-05-02', totalTokens: 900, byModel: { 'claude-opus-4-8': 900 } }),
+  ];
+  const modelsOf = (store: { getSnapshot(): Parameters<typeof selectProfile>[0] }, clock: { now(): Date }) =>
+    selectProfile(store.getSnapshot(), clock.now()).models.map((m) => m.name);
 
-  it('counts Sessions over a fixed 30-day window that no range change can move', async () => {
+  it('follows the Range: each window ranks its own Models', async () => {
     const clock = fakeClock();
-    const ledger = makeFakeLedger({
-      summary: { ...makeFakeLedger().data.summary, convs: 37 },
-    });
-    const store = await boot(ledger, clock);
+    const store = await boot(makeFakeLedger({ dayPoints: spread }), clock);
 
-    // Two on boot: the provisional first paint and the post-scan reconcile.
-    expect(profileCalls(ledger)).toHaveLength(2);
-    expect(store.getSnapshot().profileSessions).toBe(37);
+    expect(store.getSnapshot().range).toBe('total');
+    expect(modelsOf(store, clock)).toEqual(['claude-opus-4-8', 'claude-fable-5', 'gpt-5.6-sol']);
 
-    store.setRange('day'); // reload runs with day filters — the Profile stays put
-    clock.advance(0);
-    await flush();
-    expect(profileCalls(ledger)).toHaveLength(2);
-    expect(store.getSnapshot().profileSessions).toBe(37);
+    store.setRange('week');
+    expect(modelsOf(store, clock)).toEqual(['claude-fable-5', 'gpt-5.6-sol']);
+
+    store.setRange('day');
+    expect(modelsOf(store, clock)).toEqual(['claude-fable-5']);
   });
 
-  it('leaves the count unknown when its fetch fails, without failing the series', async () => {
+  it('repaints on the range click itself, before any reload lands', async () => {
+    // The window's own queries are debounced and can take seconds on a real
+    // Ledger; nothing here advances the clock, so this is the paint the reader
+    // gets immediately — the old window's Models under the new window's name
+    // is exactly the lag this must not have.
+    const clock = fakeClock();
+    const store = await boot(makeFakeLedger({ dayPoints: spread }), clock);
+    const before = store.getSnapshot().modelRows;
+
+    store.setRange('day');
+
+    expect(store.getSnapshot().modelRows).toBe(before); // no reload has landed
+    expect(modelsOf(store, clock)).toEqual(['claude-fable-5']);
+  });
+
+  it('keeps the footer on the Ledger itself while the Models follow the window', async () => {
+    const clock = fakeClock();
+    const store = await boot(makeFakeLedger({ dayPoints: spread }), clock);
+
+    store.setRange('day');
+    const p = selectProfile(store.getSnapshot(), clock.now());
+    expect(p.models.map((m) => m.name)).toEqual(['claude-fable-5']); // the window's
+    expect(p.startedIso).toBe('2026-05-02'); // the Ledger's first record, not the window's
+    expect(p.activeDays).toBe(3);
+  });
+
+  it('asks for no fixed-window Session count now that the tiles are gone', async () => {
+    // The old Profile fetched its own trailing-30-day Summary alongside the
+    // series; nothing reads a Session count any more, so nothing fetches one.
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
-    const store = await boot(ledger, clock);
+    await boot(ledger, clock);
 
-    // A non-idle rescan refetches series + Profile; only the Profile fails.
-    ledger.data.scan = {
-      scannedAt: 0,
-      sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
-    };
-    ledger.failNext('summary', 'no sessions for you');
-    await store.refresh();
-    clock.advance(0);
-    await flush();
-
-    const snap = store.getSnapshot();
-    expect(snap.profileSessions).toBeNull();
-    expect(snap.allPoints).toHaveLength(1); // the series it travelled with still landed
+    const fixedStart = Math.floor(new Date(2026, 5, 17).getTime() / 1000); // 30 days back
+    expect(ledger.calls.summary.filter((c) => (c[0] as { startTs?: number }).startTs === fixedStart))
+      .toHaveLength(0);
   });
 });
 

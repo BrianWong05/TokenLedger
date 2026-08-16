@@ -22,7 +22,6 @@ import {
   bucketView,
   toolTree,
   profileView,
-  profileSessionFilters,
   type Bucket,
   type Day,
   type Granularity,
@@ -98,9 +97,6 @@ export interface OverviewSnapshot {
   allPoints: SeriesPoint[] | null;
   hourPoints: SeriesPoint[];
   summary: Summary | null;
-  // Distinct Sessions over the fixed trailing 30 days, for the Profile. Its own
-  // fetch because the Profile ignores the range, and null until it lands.
-  profileSessions: number | null;
   modelRows: BreakdownRow[];
   // One row per Source over the window. Nothing on screen reads these — the
   // cards derive their totals from the series — but the report needs a Source
@@ -158,7 +154,7 @@ type State = Omit<
 >;
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
-  'allPoints', 'hourPoints', 'summary', 'profileSessions', 'modelRows', 'sourceRows', 'projectRows',
+  'allPoints', 'hourPoints', 'summary', 'modelRows', 'sourceRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
   'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading', 'provisional',
@@ -170,7 +166,7 @@ function sameSnapshot(a: OverviewSnapshot, b: OverviewSnapshot): boolean {
 
 class Store implements OverviewStore {
   private state: State = {
-    allPoints: null, hourPoints: [], summary: null, profileSessions: null,
+    allPoints: null, hourPoints: [], summary: null,
     modelRows: [], sourceRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxSkillRows: [], ctxExecRows: [],
     scanSources: [], scanError: null, scanAt: null, fetchError: null,
@@ -314,25 +310,13 @@ class Store implements OverviewStore {
     if (await this.fetchSeries()) this.scheduleReload();
   }
 
-  // Fetch the unbounded daily series + the Profile's Session count, publish,
-  // and report whether the series landed. Scheduling the window reload is the
-  // caller's decision — the policy differs per call site.
+  // Fetch the unbounded daily series, publish, and report whether it landed.
+  // Scheduling the window reload is the caller's decision — the policy differs
+  // per call site.
   private async fetchSeries(): Promise<boolean> {
     try {
-      // The Profile's Session count rides with the unbounded series, not with
-      // the per-range reload: both describe the Ledger itself, so both refresh
-      // exactly when a scan brings something new — and a range click reissues
-      // neither. A failure leaves the count unknown ('—') without failing the
-      // series it travelled with.
-      const [pts, sessions] = await Promise.all([
-        this.ledger.series(EMPTY_FILTERS, 'day'),
-        this.ledger.summary(profileSessionFilters(this.clock.now())).then(
-          (s) => s.convs,
-          () => null,
-        ),
-      ]);
+      const pts = await this.ledger.series(EMPTY_FILTERS, 'day');
       this.state.allPoints = pts;
-      this.state.profileSessions = sessions;
       this.correctSelection();
       this.publish();
       return true;
@@ -657,11 +641,13 @@ export function selectDays(s: OverviewSnapshot, now: Date = new Date()): Day[] {
   return seriesToDays(s.allPoints ?? [], now);
 }
 
-// The Profile ignores the range and the Source selection, so like the heatmap
-// it depends only on the full series (plus its own Session count). Callers MUST
-// memoize on those two identities, not on the snapshot.
+// The Profile's Models follow the window, its footer facts the Ledger — both
+// read off the series, so a range click repaints the card without waiting on
+// the window reload. Callers MUST memoize on the series identity and the window
+// (range/from/to), not on the snapshot.
 export function selectProfile(s: OverviewSnapshot, now: Date = new Date()): ProfileView {
-  return profileView(s.allPoints ?? [], s.profileSessions, now);
+  const pts = s.allPoints ?? [];
+  return profileView(pointsIn(pts, windowOf(s.range, s.from, s.to, now)), pts);
 }
 
 export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()): SourceMeta[] {

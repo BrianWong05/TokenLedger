@@ -211,10 +211,14 @@ once provisionally before the scan settles, once as the post-scan reconcile,
 because a pre-scan read must never be mistaken for post-scan truth
 (zero-insert ≠ unchanged). The second pass is background work behind painted
 figures, roughly 0.3–0.7 s of query time on the real Ledger, paid once per
-launch. `Overview.test.tsx` pins the fan-out at exactly two window Summaries
-per boot so a third pass cannot creep in unmeasured; the committed `npm run
-perf` budgets are unaffected because the benchmark measures the queries, not
-the orchestration.
+launch. `Overview.test.tsx` pins the boot fan-out so another pass cannot creep
+in unmeasured; the committed `npm run perf` budgets are unaffected because the
+benchmark measures the queries, not the orchestration.
+
+Since TOKL-6 the "Profile" term above is one query lighter: the card reads the
+series it already has instead of a fixed-window Summary of its own, so each
+series load issues one query rather than two, and an idle launch settles at a
+single window Summary (what that test now pins).
 
 ## Validated result — Limits estimate read (2026-08-14)
 

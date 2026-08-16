@@ -2069,37 +2069,12 @@
   cursor: default;
 }
 
-/* ---- profile (fixed windows + lifetime; ignores range and selection) ---- */
+/* ---- profile (the window's Models, every Source; ignores the selection) ---- */
 .tt-profile {
   padding: 0;
-  overflow: hidden; /* the tile grid and row fills run to the card edge */
-}
-.tt-profile-tiles {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-}
-.tt-profile-tile {
-  padding: 15px 8px 13px;
-  text-align: center;
-  min-width: 0;
-}
-.tt-profile-tile + .tt-profile-tile {
-  border-left: 1px solid var(--border-subtle);
-}
-.tt-profile-tile .num {
-  font-size: 19px;
-  font-weight: 650;
-  color: var(--text-primary);
-  font-family: var(--tt-mono);
-  font-variant-numeric: tabular-nums;
-}
-.tt-profile-tile .lbl {
-  margin-top: 4px;
-  font-size: 10.5px;
-  color: var(--text-tertiary);
+  overflow: hidden; /* the row fills run to the card edge */
 }
 .tt-profile-models {
-  border-top: 1px solid var(--border-subtle);
   padding: 8px 10px 6px;
 }
 .tt-profile-empty {
@@ -2114,7 +2089,7 @@
   border-radius: 6px;
   overflow: hidden;
 }
-/* width = the Model's absolute lifetime share, so the bar agrees with the
+/* width = the Model's absolute share of the window, so the bar agrees with the
    figure printed on it (and with how ModelsList and the hero bar read) */
 .tt-profile-model .fill {
   position: absolute;
@@ -2158,6 +2133,21 @@
   color: var(--text-primary);
   font-family: var(--tt-mono);
   font-variant-numeric: tabular-nums;
+}
+.tt-profile-more {
+  display: block;
+  width: 100%;
+  padding: 8px 0 9px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.tt-profile-more:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .tt-profile-foot {
   display: flex;

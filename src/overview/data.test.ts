@@ -37,7 +37,6 @@ import {
   bucketView,
   execFacets,
   profileView,
-  profileSessionFilters,
 } from './data';
 
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
@@ -725,51 +724,14 @@ describe('execFacets', () => {
 });
 
 describe('profileView', () => {
-  // TODAY is 2026-07-10, so the 7d window opens at 07-04 and the 30d at 06-11.
-  const spread = [
-    pt({ bucket: '2026-07-10', source: 'claude', totalTokens: 100, byModel: { 'claude-opus-4-6': 100 } }),
-    pt({ bucket: '2026-07-04', source: 'codex', totalTokens: 50, byModel: { 'gpt-5.4': 50 } }),
-    pt({ bucket: '2026-07-03', source: 'codex', totalTokens: 20, byModel: { 'gpt-5.4': 20 } }),
-    pt({ bucket: '2026-06-11', source: 'pi', totalTokens: 30, byModel: { 'kimi-for-coding': 30 } }),
-    pt({ bucket: '2026-06-10', source: 'pi', totalTokens: 800, byModel: { 'kimi-for-coding': 800 } }),
-  ];
-
-  it('bounds 7d and 30d at the same trailing edges the range picker uses', () => {
-    const p = profileView(spread, null, TODAY);
-    expect(p.d7).toBe(150); // 07-10 + 07-04; 07-03 is the day past the edge
-    expect(p.d30).toBe(200); // + 07-03 + 06-11; 06-10 is out
-  });
-
-  it('averages over active days, not calendar days', () => {
-    const p = profileView(spread, null, TODAY);
-    expect(p.activeDays).toBe(5);
-    expect(p.perActiveDay).toBe(1000 / 5); // lifetime ÷ days with usage
-    expect(p.startedIso).toBe('2026-06-10');
-  });
-
-  it('reports an unknown average as null rather than zero', () => {
-    const p = profileView([], null, TODAY);
-    expect(p.perActiveDay).toBeNull();
-    expect(p.startedIso).toBeNull();
-    expect(p.activeDays).toBe(0);
-    expect(p.models).toEqual([]);
-  });
-
-  it('counts no active day for a zero-token bucket', () => {
-    const p = profileView([pt({ bucket: '2026-07-09', totalTokens: 0 })], null, TODAY);
-    expect(p.activeDays).toBe(0);
-    expect(p.startedIso).toBeNull();
-  });
-
   it('merges a Model across the Sources that report it', () => {
-    // pi and codex both report gpt-5.6-sol — one Model, not two rows.
+    // codex and pi both report gpt-5.6-sol — one Model, not two rows.
     const p = profileView(
       [
-        pt({ bucket: '2026-07-09', source: 'codex', totalTokens: 60, byModel: { 'gpt-5.6-sol': 60 } }),
-        pt({ bucket: '2026-07-09', source: 'pi', totalTokens: 40, byModel: { 'gpt-5.6-sol': 40 } }),
+        pt({ source: 'codex', totalTokens: 60, byModel: { 'gpt-5.6-sol': 60 } }),
+        pt({ source: 'pi', totalTokens: 40, byModel: { 'gpt-5.6-sol': 40 } }),
       ],
-      null,
-      TODAY,
+      [],
     );
     expect(p.models).toHaveLength(1);
     expect(p.models[0]).toMatchObject({ name: 'gpt-5.6-sol', tokens: 100, share: 1 });
@@ -777,41 +739,74 @@ describe('profileView', () => {
 
   it('holds Unattributed Usage in the denominator without giving it a row', () => {
     const p = profileView(
-      [
-        pt({
-          bucket: '2026-07-09', source: 'pi', totalTokens: 100,
-          byModel: { 'kimi-for-coding': 75 }, unattributedTokens: 25,
-        }),
-      ],
-      null,
-      TODAY,
+      [pt({ source: 'pi', totalTokens: 100, byModel: { 'kimi-for-coding': 75 }, unattributedTokens: 25 })],
+      [],
     );
     expect(p.models.map((m) => m.name)).toEqual(['kimi-for-coding']);
     expect(p.models[0].share).toBe(0.75); // not 1.0 — the 25 unattributed still count
   });
 
-  it('keeps the top five by tokens, breaking ties by name', () => {
-    const pts = ['a', 'b', 'c', 'd', 'e', 'f'].map((m, i) =>
-      pt({ bucket: '2026-07-09', totalTokens: 10, byModel: { [m]: i === 5 ? 10 : 100 - i } }),
+  it('ranks every Model in the window, leaving the top-N cut to the card', () => {
+    const win = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((m, i) =>
+      pt({ totalTokens: 100 - i, byModel: { [m]: 100 - i } }),
     );
-    const p = profileView(pts, null, TODAY);
-    expect(p.models.map((m) => m.name)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(profileView(win, []).models.map((m) => m.name)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
   });
 
-  it('passes the Session count straight through, null included', () => {
-    expect(profileView(spread, 42, TODAY).sessions30d).toBe(42);
-    expect(profileView(spread, null, TODAY).sessions30d).toBeNull();
+  it('breaks a token tie by name', () => {
+    const p = profileView(
+      [pt({ totalTokens: 10, byModel: { zeta: 10 } }), pt({ totalTokens: 10, byModel: { alpha: 10 } })],
+      [],
+    );
+    expect(p.models.map((m) => m.name)).toEqual(['alpha', 'zeta']);
+  });
+
+  it('counts only the window it was given, not the whole Ledger', () => {
+    // The same series, sliced two ways: what the caller passes as the window is
+    // the only thing the Models and their shares may describe.
+    const all = [
+      pt({ bucket: '2026-07-10', totalTokens: 100, byModel: { today: 100 } }),
+      pt({ bucket: '2026-06-10', totalTokens: 900, byModel: { older: 900 } }),
+    ];
+    const p = profileView(all.slice(0, 1), all);
+    expect(p.models).toEqual([{ name: 'today', tokens: 100, share: 1 }]);
+    expect(p.windowTokens).toBe(100);
+  });
+
+  it('separates an empty window from one that is all Unattributed', () => {
+    // Both leave the card with no rows; only the first is "no usage".
+    expect(profileView([], []).windowTokens).toBe(0);
+    const allUnattributed = profileView(
+      [pt({ source: 'pi', totalTokens: 40, byModel: {}, unattributedTokens: 40 })],
+      [],
+    );
+    expect(allUnattributed.models).toEqual([]);
+    expect(allUnattributed.windowTokens).toBe(40);
+  });
+
+  it('has no Models for a window with no usage, whatever the Ledger holds', () => {
+    const p = profileView([], [pt({ bucket: '2026-06-10', totalTokens: 800 })]);
+    expect(p.models).toEqual([]);
+    expect(p.startedIso).toBe('2026-06-10'); // the footer still describes the Ledger
   });
 });
 
-describe('profileSessionFilters', () => {
-  it('opens 30 local days back including today, with no upper bound', () => {
-    // Same shape as the 'month' preset (rangeWindow: back(29)), but fixed —
-    // the Profile never follows the range picker.
-    const f = profileSessionFilters(TODAY);
-    expect(f.startTs).toBe(Math.floor(new Date(2026, 5, 11).getTime() / 1000));
-    expect(f.endTs).toBeUndefined();
-    expect(f.tools).toEqual([]);
+describe('profileView footer facts', () => {
+  it('reads the Ledger span from the whole series, never from the window', () => {
+    const pts = [
+      pt({ bucket: '2026-07-10', totalTokens: 100 }),
+      pt({ bucket: '2026-06-10', totalTokens: 800 }),
+      pt({ bucket: '2026-06-10', source: 'codex', totalTokens: 5 }), // same day, 2nd Source
+    ];
+    const p = profileView(pts.slice(0, 1), pts); // window = the newest day only
+    expect(p.startedIso).toBe('2026-06-10');
+    expect(p.activeDays).toBe(2); // days, not points
+  });
+
+  it('counts no active day for a zero-token bucket', () => {
+    const p = profileView([], [pt({ bucket: '2026-07-09', totalTokens: 0 })]);
+    expect(p.activeDays).toBe(0);
+    expect(p.startedIso).toBeNull();
   });
 });
 

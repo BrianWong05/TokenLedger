@@ -186,15 +186,14 @@ export const overview = {
     // models list
     'overview.modelsHead': 'Models',
 
-    // profile (fixed windows + lifetime; never follows the range or selection)
-    'overview.profile.d7': '7d',
-    'overview.profile.d30': '30d',
-    'overview.profile.perActiveDay': 'per active day',
-    'overview.profile.sessions': 'sessions · 30d',
+    // profile (the window's Models across every Source; footer is the Ledger's)
     'overview.profile.started': 'First record',
     'overview.profile.activeDays': 'Active days',
-    'overview.profile.empty': 'No usage yet',
-    'overview.profile.shareTitle': 'Share of all tokens ever, including Unattributed usage',
+    'overview.profile.empty': 'No usage in this window',
+    'overview.profile.unattributedOnly': 'Only Unattributed usage in this window',
+    'overview.profile.showAll': 'Show all {n}',
+    'overview.profile.showTop': 'Show top {n}',
+    'overview.profile.shareTitle': "Share of this window's tokens, including Unattributed usage",
 
     // cost breakdown modal + cost markers
     'overview.estTotalCost': 'Estimated total Cost',
@@ -376,14 +375,13 @@ export const overview = {
 
     'overview.modelsHead': '模型',
 
-    'overview.profile.d7': '7 天',
-    'overview.profile.d30': '30 天',
-    'overview.profile.perActiveDay': '每活躍日',
-    'overview.profile.sessions': '工作階段 · 30 天',
     'overview.profile.started': '首筆紀錄',
     'overview.profile.activeDays': '活躍天數',
-    'overview.profile.empty': '尚無用量',
-    'overview.profile.shareTitle': '佔歷來所有 token 的比例（含無歸屬用量）',
+    'overview.profile.empty': '此區間尚無用量',
+    'overview.profile.unattributedOnly': '此區間只有無歸屬用量',
+    'overview.profile.showAll': '顯示全部 {n} 個',
+    'overview.profile.showTop': '只顯示前 {n} 個',
+    'overview.profile.shareTitle': '佔此區間所有 token 的比例（含無歸屬用量）',
 
     'overview.estTotalCost': '預估總成本',
     'overview.notBilled': '以 API 列表價計算 — 並非實際帳單',
