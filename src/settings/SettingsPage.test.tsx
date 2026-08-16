@@ -109,8 +109,17 @@ afterEach(() => {
 
 const seg = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('.set-seg[aria-label="Theme"] button')) as HTMLButtonElement[];
+// Two mono segments now carry interval choices — the Overview's auto-refresh
+// and the Menu Bar Extra's — so each is addressed by its own label rather than
+// by the shared class.
 const refreshSeg = (c: HTMLElement) =>
-  Array.from(c.querySelectorAll('.set-seg-mono button')) as HTMLButtonElement[];
+  Array.from(
+    c.querySelectorAll('.set-seg-mono[aria-label="Auto-refresh interval"] button'),
+  ) as HTMLButtonElement[];
+const menuBarSeg = (c: HTMLElement) =>
+  Array.from(
+    c.querySelectorAll('.set-seg-mono[aria-label="Menu Bar Extra refresh interval"] button'),
+  ) as HTMLButtonElement[];
 const q = <T extends Element>(c: ParentNode, s: string) => c.querySelector(s) as T | null;
 
 // The exchange rate shares .set-rate-input with the Custom-range day count, so
@@ -514,6 +523,61 @@ describe('SettingsPage', () => {
 
     expect(seg('Off').classList.contains('active')).toBe(true);
     expect(seg('Custom').classList.contains('active')).toBe(false);
+  });
+
+  // The Menu Bar Extra's cadence is persisted through the port, not in
+  // localStorage: the Rust loop that honours it runs with no webview alive.
+  it('persists the menu bar refresh interval through the port', async () => {
+    const port = makeFakeSettings({ firstRunDone: true });
+    const c = await mount(port);
+    const seg = (label: string) => menuBarSeg(c).find((b) => b.textContent === label)!;
+
+    expect(menuBarSeg(c).map((b) => b.textContent)).toEqual(['Off', '1m', '5m', '15m']);
+    expect(seg('1m').classList.contains('active')).toBe(true);
+
+    await click(seg('15m'));
+    expect(port.value.menuBarRefreshSec).toBe(900);
+    expect(seg('15m').classList.contains('active')).toBe(true);
+    expect(seg('1m').classList.contains('active')).toBe(false);
+  });
+
+  it('turns the menu bar refresh off, and says what off does not stop', async () => {
+    const port = makeFakeSettings({ firstRunDone: true });
+    const c = await mount(port);
+    const seg = (label: string) => menuBarSeg(c).find((b) => b.textContent === label)!;
+
+    await click(seg('Off'));
+
+    expect(port.value.menuBarRefreshSec).toBe(0);
+    expect(seg('Off').classList.contains('active')).toBe(true);
+    // Off paces the bar back to the resident floor. On an app whose job is
+    // recording, the one thing it must not be read as is "stop recording".
+    expect(c.textContent).toContain('Recording never stops');
+
+    await click(seg('5m'));
+    expect(port.value.menuBarRefreshSec).toBe(300);
+    expect(c.textContent).not.toContain('Recording never stops');
+  });
+
+  // The two intervals are separate settings on separate surfaces; one must not
+  // move the other.
+  it('keeps the two refresh intervals independent', async () => {
+    const port = makeFakeSettings({ firstRunDone: true });
+    const c = await mount(port);
+
+    // Deliberately never equal, and neither ever 0 while the other is being
+    // moved: shared values would let a cross-write pass unnoticed.
+    await click(refreshSeg(c).find((b) => b.textContent === '10s')!);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('10');
+    expect(port.value.menuBarRefreshSec).toBe(60);
+
+    await click(menuBarSeg(c).find((b) => b.textContent === '15m')!);
+    expect(port.value.menuBarRefreshSec).toBe(900);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('10');
+
+    await click(refreshSeg(c).find((b) => b.textContent === 'Off')!);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe('0');
+    expect(port.value.menuBarRefreshSec).toBe(900);
   });
 
   it('keeps an invalid rate editable without persisting it', async () => {

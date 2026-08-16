@@ -503,8 +503,12 @@ fn fmt_amount(amount: f64, dec: usize) -> String {
 /// [local midnight, next local midnight) as epoch seconds for the day
 /// containing `now_epoch`. SQLite does the timezone math with the same
 /// 'localtime' modifier the day buckets in queries.rs use, so the bar's
-/// "Today" and the Overview's day buckets can never disagree.
-fn day_window(conn: &rusqlite::Connection, now_epoch: i64) -> rusqlite::Result<(i64, i64)> {
+/// "Today" and the Overview's day buckets can never disagree. The resident loop
+/// reads it too, to know when Today's figures stop being today's.
+pub(crate) fn day_window(
+    conn: &rusqlite::Connection,
+    now_epoch: i64,
+) -> rusqlite::Result<(i64, i64)> {
     conn.query_row(
         "SELECT unixepoch(?1, 'unixepoch', 'localtime', 'start of day', 'utc'), \
                 unixepoch(?1, 'unixepoch', 'localtime', 'start of day', '+1 day', 'utc')",

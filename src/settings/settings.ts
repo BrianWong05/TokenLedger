@@ -40,7 +40,8 @@ export const tauriSettings: SettingsPort = {
 };
 
 // The shipped defaults, matching the spec: theme System, launch-at-login and
-// auto-update-check both ON, first-run disclosure not yet shown, USD (rate 1).
+// auto-update-check both ON, first-run disclosure not yet shown, USD (rate 1),
+// and a menu bar that refreshes every minute.
 export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   language: 'en',
@@ -49,4 +50,16 @@ export const DEFAULT_SETTINGS: Settings = {
   launchAtLogin: true,
   autoCheckUpdates: true,
   firstRunDone: false,
+  menuBarRefreshSec: 60,
 };
+
+// The Menu Bar Extra's refresh cadences, in seconds. Off is the reader pacing
+// the bar, never stopping the recording: the resident capture floor still scans
+// every few hours (ADR-0005), so Off hands the bar back to that pace. The
+// backend resolves it — this is only what the section offers.
+export const MENU_BAR_REFRESH_OFF = 0;
+export const MENU_BAR_REFRESH_PRESETS: ReadonlyArray<{ label: string; sec: number }> = [
+  { label: '1m', sec: 60 },
+  { label: '5m', sec: 300 },
+  { label: '15m', sec: 900 },
+];

@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V18 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V19 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 18;
+const CURRENT_USER_VERSION: i64 = 19;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -474,6 +474,19 @@ CREATE INDEX IF NOT EXISTS idx_events_evidence
   ON events(source, account_id, timestamp, model);
 PRAGMA user_version = 18;";
 
+// v19: the Menu Bar Extra's refresh cadence, in seconds, 0 meaning Off (TOKL-4,
+// ADR-0005's amendment). The DDL default is what makes this backfill-free: an
+// existing row becomes a one-minute reader without a pass over it. Off is not
+// "stop recording" — lib.rs resolves it to the capture floor — so no scan-state
+// clear here either: this is user config, derived from no log.
+const SCHEMA_V19_COLUMNS: [(&str, &str, &str); 1] = [(
+    "settings",
+    "menu_bar_refresh_sec",
+    "INTEGER NOT NULL DEFAULT 60",
+)];
+
+const SCHEMA_V19: &str = "PRAGMA user_version = 19;";
+
 /// `ALTER TABLE ... ADD COLUMN` with the `IF NOT EXISTS` SQLite has no syntax
 /// for, so a migration that carries new columns stays re-runnable.
 fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
@@ -731,6 +744,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 add_column(conn, table, column, decl)?;
             }
             conn.execute_batch(SCHEMA_V18)?;
+        }
+        if version < 19 {
+            for (table, column, decl) in SCHEMA_V19_COLUMNS {
+                add_column(conn, table, column, decl)?;
+            }
+            conn.execute_batch(SCHEMA_V19)?;
         }
         Ok(())
     };
@@ -2068,6 +2087,74 @@ mod tests {
                 covered_from: Some(600),
                 ..ReadingProvenance::default()
             },
+        );
+    }
+
+    #[test]
+    fn v18_db_migrates_to_v19_defaulting_the_menu_bar_cadence_without_a_rescan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            for (table, column, decl) in SCHEMA_V18_COLUMNS {
+                add_column(&conn, table, column, decl).unwrap();
+            }
+            conn.execute_batch(SCHEMA_V18).unwrap();
+            // A reader who already configured the app, and a file already scanned.
+            conn.execute(
+                "INSERT INTO settings \
+                 (id, theme, language, currency, usd_rate, launch_at_login, \
+                  auto_check_updates, first_run_done) \
+                 VALUES (1,'dark','zh-Hant','HKD',7.8,1,0,1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) \
+                 VALUES ('rollout.jsonl',1,1,1)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, CURRENT_USER_VERSION);
+
+        // The existing row keeps every choice and gains the shipped cadence, so
+        // an upgrading reader lands on a one-minute bar having asked for nothing.
+        let settled = crate::settings::get_settings(&conn).unwrap();
+        assert_eq!(settled.theme, "dark");
+        assert_eq!(settled.language, "zh-Hant");
+        assert_eq!(settled.currency, "HKD");
+        assert!(settled.first_run_done);
+        assert_eq!(settled.menu_bar_refresh_sec, 60);
+
+        // Cadence is user config: it re-reads nothing, so nothing is re-parsed.
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 1, "a cadence column must not force a re-scan");
+
+        // Running the migration again is safe — an intermediate dev build may —
+        // and a second pass must leave the reader's chosen cadence alone rather
+        // than resetting it to the shipped default.
+        conn.execute("UPDATE settings SET menu_bar_refresh_sec = 0", [])
+            .unwrap();
+        conn.execute_batch("PRAGMA user_version = 18").unwrap();
+        drop(conn);
+        let conn = open_db(&path).unwrap();
+        assert_eq!(
+            crate::settings::get_settings(&conn).unwrap().menu_bar_refresh_sec,
+            0,
+            "re-running the migration must not overwrite a stored cadence",
         );
     }
 
