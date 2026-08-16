@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   createOverviewStore,
   selectDays,
@@ -1183,5 +1183,65 @@ describe('selectReportInput', () => {
     const { store: clean } = await mountStoreWithUsage();
     const c = clean.getSnapshot();
     expect(selectReportInput(c, selectView(c, NOW), SETTINGS, NOW).tokensBasis).toBe('exact');
+  });
+});
+
+// A range anchored to "today" names a different window once the local day turns
+// over, and nothing is ingested to announce it. The idle skip's premise — what
+// is rendered IS the Ledger — holds for the data and fails for the window, so
+// an idle machine used to sit on yesterday's figures under a TODAY label until
+// something else forced a reload. Its own clock is real (rangeToFilters reads
+// `new Date()`), so this walks the system clock rather than the injected one.
+describe('overviewStore across local midnight', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const BEFORE = new Date(2026, 7, 16, 23, 50, 0);
+  const AFTER = new Date(2026, 7, 17, 0, 5, 0);
+  const AUG17 = Math.floor(new Date(2026, 7, 17, 0, 0, 0).getTime() / 1000);
+  const AUG16 = Math.floor(new Date(2026, 7, 16, 0, 0, 0).getTime() / 1000);
+
+  async function dayStoreAt(when: Date) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(when);
+    const ledger = makeFakeLedger({ dayPoints: [pt({ bucket: '2026-08-16' })] });
+    const clock = fakeClock();
+    const store = createOverviewStore({ ledger, clock });
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    return { ledger, clock, store };
+  }
+
+  const windowsOf = (ledger: ReturnType<typeof makeFakeLedger>) =>
+    (ledger.calls.summary as [{ startTs?: number }][]).map((c) => c[0].startTs);
+
+  it('re-reads the new day on an idle tick after midnight', async () => {
+    const { ledger, clock, store } = await dayStoreAt(BEFORE);
+    expect(windowsOf(ledger)).toContain(AUG16);
+
+    vi.setSystemTime(AFTER);
+    (ledger.calls.summary as unknown[][]).length = 0;
+    await store.refresh(); // scan reports nothing inserted: a genuinely idle tick
+    clock.advance(0);
+    await flush();
+
+    expect(windowsOf(ledger)).toContain(AUG17);
+  });
+
+  it('still skips the reload on an idle tick inside the same day', async () => {
+    const { ledger, clock, store } = await dayStoreAt(BEFORE);
+
+    vi.setSystemTime(new Date(2026, 7, 16, 23, 55, 0));
+    (ledger.calls.summary as unknown[][]).length = 0;
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+
+    // The skip is what keeps an open app at ~0 CPU every 30s; the midnight fix
+    // must not cost that.
+    expect(windowsOf(ledger)).toEqual([]);
   });
 });

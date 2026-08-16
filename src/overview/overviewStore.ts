@@ -197,6 +197,11 @@ class Store implements OverviewStore {
   // Safe as a sentinel because scheduleReload pre-increments: a scheduled epoch
   // is never 0, so this can only be 0 before the first landing.
   private loadedEpoch = 0;
+  // The window the last issued reload was for. The idle skip below compares the
+  // current window against it, because "nothing was ingested" does not mean
+  // "nothing on screen moved": a range that ends at today names a DIFFERENT
+  // window once the local day rolls over.
+  private loadedKey: string | null = null;
   private reloadTimer: number | null = null; // pending debounce timer
   // The data on screen predates the last settled scan. Set when the first-load
   // paint fires, cleared only once a post-scan series refetch lands. A field,
@@ -297,7 +302,14 @@ class Store implements OverviewStore {
     // fetchError null required: a failed cycle must retry on the next tick
     // even when the scan reports nothing new.
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
-    if (idle && this.state.allPoints !== null && this.state.fetchError === null) return;
+    if (
+      idle &&
+      this.state.allPoints !== null &&
+      this.state.fetchError === null &&
+      !this.windowMoved()
+    ) {
+      return;
+    }
 
     if (await this.fetchSeries()) this.scheduleReload();
   }
@@ -433,6 +445,22 @@ class Store implements OverviewStore {
     }
   }
 
+  // Whether the window the app would fetch now differs from the one it last
+  // fetched. Every range but Custom and Total is anchored to today, so all of
+  // them name a new window the moment the local day turns over — with nothing
+  // ingested to announce it. Without this an idle machine sits on yesterday's
+  // figures under a TODAY label for as long as it stays idle.
+  private windowMoved(): boolean {
+    if (this.loadedKey === null) return false; // nothing has landed to be stale
+    const now = this.clock.now();
+    const d = this.derive(now);
+    const key = JSON.stringify([
+      rangeToFilters(this.state.range, d.from, d.to),
+      hourlyDayOf(this.state.range, d.from, d.to, d.firstIso, d.lastIso, now),
+    ]);
+    return key !== this.loadedKey;
+  }
+
   private scheduleReload() {
     if (this.state.allPoints === null) return; // no per-range fetch until first load lands
     if (this.reloadTimer !== null) this.clock.clearTimeout(this.reloadTimer);
@@ -493,6 +521,9 @@ class Store implements OverviewStore {
         fetchError: null,
       });
     const key = JSON.stringify([filters, hourDay]);
+    // Recorded at issue, not at landing: a failure sets fetchError, which the
+    // idle skip already refuses to skip on, so the retry is covered either way.
+    this.loadedKey = key;
     const cached = this.reloadCache.get(key);
     if (cached) {
       land(() => apply(cached));
