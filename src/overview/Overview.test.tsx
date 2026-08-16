@@ -757,6 +757,46 @@ describe('Overview presentation', () => {
     expect(ledger.calls.scan.length).toBe(2);
     expect(c.querySelector('.tt-lastscan')?.textContent).toMatch(/^last scan/);
   });
+
+  // The same chord the Menu Bar Extra's panel carries (src/lib/hotkeys.ts):
+  // pressing it does what the Rescan button does, and it inherits that
+  // button's gate, so a scan already running swallows it.
+  it('re-runs the scan on the Rescan shortcut, and coalesces while one runs', async () => {
+    const { container: c, ledger } = await mountSettled({
+      dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
+      summary,
+    });
+    expect(ledger.calls.scan.length).toBe(1); // the mount load
+
+    const press = async (init: KeyboardEventInit) => {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+      });
+    };
+
+    await press({ key: 'R', metaKey: true, shiftKey: true });
+    // Held on the key: the second press lands inside the first scan's spin.
+    await press({ key: 'R', metaKey: true, shiftKey: true });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_200);
+    });
+    expect(ledger.calls.scan.length).toBe(2);
+
+    // Near misses stay the app's: bare ⌘R, an extra modifier, the other
+    // platform's spelling.
+    for (const chord of [
+      { key: 'R', metaKey: true },
+      { key: 'R', metaKey: true, shiftKey: true, altKey: true },
+      { key: 'R', ctrlKey: true, shiftKey: true },
+    ]) {
+      await press(chord);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_200);
+      });
+    }
+    expect(ledger.calls.scan.length).toBe(2);
+    expect(c.querySelector('.tt-rescan')).not.toBeNull();
+  });
 });
 
 // The window report (docs/specs 2026-08-10): one CSV over whatever the Overview

@@ -10,6 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { detectPlatform, type Platform } from '../lib/platform';
+import { hotkeyHint, isHotkey } from '../lib/hotkeys';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
@@ -88,18 +89,18 @@ function useCountUp(target: number, duration = 600): number {
   return value;
 }
 
-// The panel opens wherever the tray delivers a click — macOS and Windows
-// (ADR-0010) — and the two spell a modifier differently.
-const KEY_HINTS = {
-  macos: { rescan: '⇧⌘R', settings: '⌘,', quit: '⌘Q' },
-  other: { rescan: 'Ctrl+Shift+R', settings: 'Ctrl+,', quit: 'Ctrl+Q' },
-};
-
 export default function TrayPanel({
   ports,
   platform = detectPlatform(),
 }: { ports?: TrayPanelPorts; platform?: Platform } = {}) {
-  const keys = platform === 'macos' ? KEY_HINTS.macos : KEY_HINTS.other;
+  // The panel opens wherever the tray delivers a click — macOS and Windows
+  // (ADR-0010) — and the two spell a modifier differently. Hint and chord come
+  // from one table, so what is printed is what fires.
+  const keys = {
+    rescan: hotkeyHint('rescan', platform),
+    settings: hotkeyHint('settings', platform),
+    quit: hotkeyHint('quit', platform),
+  };
   const ledger = ports?.ledger ?? tauriLedger;
   const settings = ports?.settings ?? tauriSettings;
   const [model, setModel] = useState<PanelModel | null>(null);
@@ -243,6 +244,37 @@ export default function TrayPanel({
       .catch(() => {});
     return () => un?.();
   }, [open]);
+
+  // A shortcut the panel prints beside an action is a working promise
+  // (CONTEXT.md): each key fires the very handler its button does — exact
+  // modifiers only, the modifier spelt per platform like KEY_HINTS. On the
+  // document, because the panel has no focused element to key off.
+  // ⌘Q is the one macOS never delivers here: Tauri installs the default
+  // application menu (which is what makes ⌘C/⌘V work), and a menu key
+  // equivalent is resolved before the webview sees the key — so there the menu
+  // quits and this branch is the Windows one, where no such menu exists.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Escape unqualified, as the app's dialogs take it (useDialogChrome).
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        ipc('close_panel'); // dismissed exactly like focus loss: destroyed, not hidden
+        return;
+      }
+      if (isHotkey(e, 'rescan', platform)) {
+        e.preventDefault();
+        void rescan(); // gated inside like the button: a scan in flight swallows it
+      } else if (isHotkey(e, 'settings', platform)) {
+        e.preventDefault();
+        ipc('open_settings'); // focus moves to main; the blur path closes the panel
+      } else if (isHotkey(e, 'quit', platform)) {
+        e.preventDefault();
+        ipc('quit_app');
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [platform, rescan]);
 
   // Size the window to the rendered content on every height change —
   // skeleton → figures, period switches, row counts. Measuring on a state

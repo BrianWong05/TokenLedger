@@ -232,4 +232,62 @@ describe('App shell', () => {
     const active = container.querySelector('.tl-nav button[aria-current="page"]');
     expect(active?.textContent).toBe('Settings');
   });
+
+  // The same chord the Menu Bar Extra's panel carries, in the window: one
+  // shortcut means one action wherever it is pressed (src/lib/hotkeys.ts).
+  it.each([
+    ['macos' as Platform, { key: ',', metaKey: true }],
+    ['windows' as Platform, { key: ',', ctrlKey: true }],
+  ])('opens the Settings tab on the %s Settings shortcut', async (platform, chord) => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(
+        <App
+          ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings: makeFakeSettings() }}
+          platform={platform}
+        />,
+      );
+    });
+    await settle();
+    expect(container.querySelector('.tl-page-settings')).toBeNull();
+
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...chord }));
+    });
+    await settle();
+
+    expect(container.querySelector('.tl-page-settings')).not.toBeNull();
+  });
+
+  it('leaves a near-miss of the Settings shortcut alone', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(
+        <App
+          ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings: makeFakeSettings() }}
+          platform="macos"
+        />,
+      );
+    });
+    await settle();
+
+    for (const chord of [
+      { key: ',' }, // no modifier
+      { key: ',', ctrlKey: true }, // the other platform's spelling
+      { key: ',', metaKey: true, altKey: true },
+      { key: ',', metaKey: true, shiftKey: true },
+    ]) {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...chord }));
+      });
+      await settle();
+      expect(container.querySelector('.tl-page-settings')).toBeNull();
+    }
+  });
 });

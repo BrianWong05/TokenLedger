@@ -18,6 +18,8 @@ import { sourceIcon } from './icons';
 import { fmtPct, formatCompactTokenTotal } from '../lib/format';
 import { countLabel, formatSummaryCost, unreadableReasons, useOverviewT } from './localize';
 import { unreadableSourcesIn } from '../lib/tokenCompleteness';
+import { hotkeyHint, isHotkey } from '../lib/hotkeys';
+import { detectPlatform, type Platform } from '../lib/platform';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
@@ -45,7 +47,7 @@ import type { ModelPricing, Summary } from '../types';
 // data survives, so it is told rather than able to observe it. Only the headline
 // reads it (a tab return rolls the total, #94); default true keeps every other
 // mount — tests, prototypes — behaving as if nothing hides it.
-export default function Overview({ ports, visible = true }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort; export?: ExportPort }; visible?: boolean } = {}) {
+export default function Overview({ ports, visible = true, platform = detectPlatform() }: { ports?: { ledger?: LedgerPort; clock?: ClockPort; pricing?: PricingPort; settings?: SettingsPort; export?: ExportPort }; visible?: boolean; platform?: Platform } = {}) {
   const { settings } = useSettings();
   const { t, lang } = useOverviewT();
   // header.* strings (Rescan, last-scan status) live in the shared shell dictionary.
@@ -177,6 +179,21 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
   // Stable identity so the memoized ModelsList skips per-tick re-renders.
   const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
 
+  // The Rescan shortcut, the same chord the Menu Bar Extra's panel carries. It
+  // lives here because this tab owns the scan, and it answers from every tab:
+  // the shell keeps the Overview mounted (hidden) across tab switches, so a
+  // rescan is never more than a keystroke away. `refresh` gates itself, so a
+  // scan already running swallows the key exactly as it disables the button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isHotkey(e, 'rescan', platform)) return;
+      e.preventDefault();
+      void refresh();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [platform, refresh]);
+
   const scanLabel = refreshing
     ? tShell('header.scanning')
     : scanAt
@@ -224,6 +241,7 @@ export default function Overview({ ports, visible = true }: { ports?: { ledger?:
           onClick={() => void refresh()}
           disabled={refreshing}
           aria-busy={refreshing}
+          title={hotkeyHint('rescan', platform)}
         >
           <svg className="tt-rescan-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />

@@ -157,6 +157,10 @@ waiting for the next Scan.
 Every figure follows the same rules as everywhere else: Partial Cost's
 "≥" marker, the Unreadable Artifact "≥" on token figures, Unpriced never
 shown as $0, a window with no usage at $0.00, Display Currency honored.
+A keyboard shortcut the panel prints beside an action is a working promise,
+not decoration: pressing it while the panel is open does exactly what the
+action does, and the panel dismisses on Escape just as it does when focus
+leaves it.
 The platform's own facility that hosts it — a Linux system tray and the
 AppIndicator library behind it, the Windows notification area — keeps its
 native name, because that is a place, not this application's presence in it.

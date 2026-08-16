@@ -602,6 +602,12 @@ fn resize_panel(app: AppHandle, height: f64) {
     }
 }
 
+// Escape in the panel, through the one helper every dismissal routes to.
+#[tauri::command]
+fn close_panel(app: AppHandle) {
+    tray::close_panel(&app);
+}
+
 #[tauri::command(async)]
 fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     read(&state, settings::get_settings)
@@ -692,10 +698,11 @@ pub fn run() {
         // below keeps the Rust capture process resident; Quit lives in the tray.
         .on_window_event(|window, event| {
             // The traypanel behaves like a menu: clicking anywhere else
-            // (focus loss) dismisses it.
+            // (focus loss) dismisses it — through the one helper every
+            // dismissal routes to (tray::close_panel).
             if let tauri::WindowEvent::Focused(false) = event {
                 if window.label() == "traypanel" && window.is_visible().unwrap_or(false) {
-                    let _ = window.destroy();
+                    tray::close_panel(window.app_handle());
                 }
             }
         })
@@ -846,6 +853,7 @@ pub fn run() {
             open_settings,
             quit_app,
             resize_panel,
+            close_panel,
             get_settings,
             set_settings,
             check_updates,
@@ -1126,6 +1134,43 @@ mod tests {
                     .join(format!("{key}-limits.rs"))
                     .is_file(),
                 "{key}-limits has no source to build from",
+            );
+        }
+    }
+
+    /// A command the panel invokes but nobody registers fails at the IPC
+    /// boundary, where its fire-and-forget `ipc()` swallows the error — the key
+    /// looks bound and does nothing, which is the bug Escape's binding would
+    /// have shipped. So every name the panel invokes must be registered here.
+    ///
+    /// Both halves are read as text: `invoke('name'` / `ipc('name'` out of the
+    /// panel (no computed command names there), and the registered list by
+    /// splitting this file on `generate_handler![`, which assumes that list
+    /// stays a plain comma-separated run of names.
+    #[test]
+    fn every_command_the_panel_invokes_is_registered() {
+        let panel = include_str!("../../src/traypanel/TrayPanel.tsx");
+        let invoked: std::collections::BTreeSet<&str> = panel
+            .split("invoke('")
+            .skip(1)
+            .chain(panel.split("ipc('").skip(1))
+            .filter_map(|tail| tail.split_once('\'').map(|(name, _)| name))
+            .collect();
+        // Sanity: the sweep finds callers at all, including the one Escape adds.
+        assert!(invoked.contains("close_panel"), "found: {invoked:?}");
+
+        let list = include_str!("lib.rs")
+            .split_once("generate_handler![")
+            .expect("the invoke handler")
+            .1
+            .split_once(']')
+            .expect("the invoke handler's end")
+            .0;
+        let registered: Vec<&str> = list.split(',').map(|n| n.trim()).collect();
+        for name in invoked {
+            assert!(
+                registered.contains(&name),
+                "the panel invokes `{name}`, which no command registers",
             );
         }
     }

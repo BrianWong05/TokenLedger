@@ -13,6 +13,7 @@ import { SettingsProvider, useSettings } from './settings/SettingsContext';
 import { I18nProvider, useT } from './lib/i18n';
 import { Mark } from './lib/Mark';
 import { detectPlatform, type Platform } from './lib/platform';
+import { hotkeyHint, isHotkey } from './lib/hotkeys';
 import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
 import { tauriSettings, type SettingsPort } from './settings/settings';
@@ -120,6 +121,18 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
   // asks the shell to land on the Settings tab.
   useEffect(() => settingsPort.onOpenSettings(() => setTab('settings')), [settingsPort]);
 
+  // The same chord the panel carries, in the window — one shortcut, one action,
+  // wherever it is pressed. Rescan's lives in the Overview, which owns the scan.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!isHotkey(e, 'settings', platform)) return;
+      e.preventDefault();
+      setTab('settings');
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [platform]);
+
   return (
     <div className="tl-shell">
       {/* the sidebar's own background and its empty stretches double as window
@@ -144,6 +157,7 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
               className={tb.key === tab ? 'active' : ''}
               aria-current={tb.key === tab ? 'page' : undefined}
               onClick={() => setTab(tb.key)}
+              title={tb.key === 'settings' ? hotkeyHint('settings', platform) : undefined}
             >
               {tb.icon}
               {t(tb.strKey)}
@@ -157,7 +171,7 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
         <div className="tl-tab" hidden={tab !== 'overview'}>
           {/* Hidden, not unmounted — so the Overview cannot see for itself that
               it is back on screen, and the same condition is handed to it. */}
-          <Overview ports={ports} visible={tab === 'overview'} />
+          <Overview ports={ports} visible={tab === 'overview'} platform={platform} />
         </div>
         <Suspense fallback={null}>
           {tab === 'pricing' && (

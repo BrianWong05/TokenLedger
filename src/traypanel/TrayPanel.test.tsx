@@ -23,6 +23,17 @@ vi.mock('@tauri-apps/api/event', () => ({
   },
 }));
 
+// The action rows' fire-and-forget ipc() goes through invoke; recording the
+// command names is how a test sees Settings…, Quit and Escape leave the panel.
+// The data ports don't pass through here — tests hand in fakes.
+const { invoked } = vi.hoisted(() => ({ invoked: [] as string[] }));
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (cmd: string) => {
+    invoked.push(cmd);
+    return Promise.resolve();
+  },
+}));
+
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
   totalTokens: 3_400_000, requests: 1912, cost: 12.84, hasUnpriced: false,
@@ -69,6 +80,7 @@ async function settle(times = 4) {
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  invoked.length = 0;
 });
 
 describe('TrayPanel', () => {
@@ -600,5 +612,159 @@ describe('TrayPanel', () => {
     expect(await mount('windows')).not.toContain('tp-macos');
     // and the class comes back off with the panel
     expect(Array.from(document.body.classList)).not.toContain('tp-macos');
+  });
+
+  // A shortcut the panel prints beside an action is a working promise
+  // (CONTEXT.md): each key fires the very handler its button does. The panel
+  // has no focused element, so the keys land on the document.
+  describe('keyboard', () => {
+    const mount = async (
+      platform: Platform,
+      ledger = makeFakeLedger({ summary, modelRows: toolRows }),
+    ) => {
+      const container = document.createElement('div');
+      document.body.append(container);
+      const root = createRoot(container);
+      mountedRoots.push(root);
+      await act(async () => {
+        root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} platform={platform} />);
+      });
+      await settle();
+      return ledger;
+    };
+    const key = async (init: KeyboardEventInit) => {
+      await act(async () => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+      });
+      await settle();
+    };
+
+    it('⇧⌘R rescans, exactly like the button', async () => {
+      const ledger = await mount('macos');
+      const before = ledger.calls.scan.length;
+      await key({ key: 'R', metaKey: true, shiftKey: true });
+      expect(ledger.calls.scan.length).toBe(before + 1);
+    });
+
+    // The key is the button, so it meets the same gate: held on the key it
+    // coalesces instead of stacking scans, and the panel stays open saying so.
+    it('⇧⌘R held down coalesces, like the button does', async () => {
+      const ledger = await mount('macos');
+      ledger.hold('scan');
+      const before = ledger.calls.scan.length;
+      await key({ key: 'R', metaKey: true, shiftKey: true });
+      await key({ key: 'R', metaKey: true, shiftKey: true });
+
+      expect(ledger.calls.scan.length).toBe(before + 1);
+      expect(document.querySelector('.tp-figures.tp-pulse')).not.toBeNull();
+      expect(invoked).not.toContain('close_panel'); // rescanning never dismisses
+    });
+
+    it('⌘, opens Settings through the button\'s own IPC', async () => {
+      await mount('macos');
+      await key({ key: ',', metaKey: true });
+      expect(invoked).toContain('open_settings');
+    });
+
+    it('⌘Q quits through the button\'s own IPC', async () => {
+      await mount('macos');
+      await key({ key: 'q', metaKey: true });
+      expect(invoked).toContain('quit_app');
+    });
+
+    it('Escape dismisses the panel the way focus loss does', async () => {
+      await mount('macos');
+      await key({ key: 'Escape' });
+      expect(invoked).toContain('close_panel');
+    });
+
+    // Windows has no ⌘, so the keys are the Ctrl ones the hints there spell —
+    // and each platform ignores the other's modifier, or a Windows ⌘Q (the
+    // Super key) would quit the app from under a window-switching keystroke.
+    it('binds the Ctrl keys on Windows, and neither platform takes the other\'s', async () => {
+      const ledger = await mount('windows');
+      const scans = ledger.calls.scan.length;
+      await key({ key: 'R', ctrlKey: true, shiftKey: true });
+      await key({ key: ',', ctrlKey: true });
+      await key({ key: 'q', ctrlKey: true });
+      expect(ledger.calls.scan.length).toBe(scans + 1);
+      expect(invoked).toContain('open_settings');
+      expect(invoked).toContain('quit_app');
+
+      // The macOS spelling does nothing here.
+      invoked.length = 0;
+      const after = ledger.calls.scan.length;
+      await key({ key: 'R', metaKey: true, shiftKey: true });
+      await key({ key: ',', metaKey: true });
+      await key({ key: 'q', metaKey: true });
+      expect(ledger.calls.scan.length).toBe(after);
+      expect(invoked).toEqual([]);
+    });
+
+    // The promise itself (CONTEXT.md): whatever the panel *prints* beside an
+    // action is what fires it. Read back from the rendered hints rather than
+    // from a list in this file, so a hint changed or added without a binding
+    // fails here — the shape of the original bug, where three hints were
+    // printed and none was bound.
+    const parseHint = (hint: string): KeyboardEventInit => ({
+      metaKey: hint.includes('⌘'),
+      ctrlKey: hint.includes('Ctrl'),
+      shiftKey: hint.includes('⇧') || hint.includes('Shift'),
+      key: hint.replace(/⇧|⌘|Ctrl\+|Shift\+/g, ''),
+    });
+
+    it.each([
+      ['macos' as Platform],
+      ['windows' as Platform],
+    ])('every shortcut it prints on %s is one that works', async (platform) => {
+      const ledger = await mount(platform);
+      const printed = Array.from(document.querySelectorAll('.tp-action')).map((b) => ({
+        action: b.cloneNode(true) as HTMLElement,
+        hint: b.querySelector('.tp-key')?.textContent ?? '',
+      }));
+      const hints = printed.filter((p) => p.hint);
+      expect(hints.length).toBe(3); // Rescan, Settings…, Quit — Open has none
+
+      for (const { action, hint } of hints) {
+        action.querySelector('.tp-key')?.remove();
+        const label = action.textContent?.trim() ?? '';
+        const scans = ledger.calls.scan.length;
+        invoked.length = 0;
+        await key(parseHint(hint));
+
+        // Each printed hint must move the very thing its row is labelled for.
+        if (label.startsWith('Rescan')) {
+          expect(ledger.calls.scan.length, `${hint} must rescan`).toBe(scans + 1);
+        } else if (label.startsWith('Settings')) {
+          expect(invoked, `${hint} must open Settings`).toContain('open_settings');
+        } else if (label.startsWith('Quit')) {
+          expect(invoked, `${hint} must quit`).toContain('quit_app');
+        } else {
+          throw new Error(`a hint on an unrecognised action: ${label}`);
+        }
+      }
+    });
+
+    // Exact modifiers only: a key the labels don't claim must stay the app's
+    // (⌘R alone is a reload elsewhere) and never be hijacked into an action.
+    it('ignores near-misses — wrong modifier, extra modifier, bare key', async () => {
+      const ledger = await mount('macos');
+      const scans = ledger.calls.scan.length;
+      await key({ key: 'R', metaKey: true }); // ⌘R — no Shift, not the Rescan key
+      await key({ key: 'R', shiftKey: true }); // ⇧R — no modifier at all
+      await key({ key: 'R', ctrlKey: true, shiftKey: true }); // Ctrl on macOS
+      await key({ key: 'R', metaKey: true, shiftKey: true, altKey: true }); // ⌥⇧⌘R
+      await key({ key: ',', metaKey: true, shiftKey: true }); // ⇧⌘,
+      await key({ key: ',', metaKey: true, altKey: true }); // ⌥⌘,
+      await key({ key: 'q', metaKey: true, shiftKey: true }); // ⇧⌘Q
+      await key({ key: 'q' }); // bare q
+      // Both modifiers at once is neither platform's spelling.
+      await key({ key: 'R', metaKey: true, ctrlKey: true, shiftKey: true });
+      await key({ key: ',', metaKey: true, ctrlKey: true });
+      await key({ key: 'q', metaKey: true, ctrlKey: true });
+
+      expect(ledger.calls.scan.length).toBe(scans);
+      expect(invoked).toEqual([]);
+    });
   });
 });
