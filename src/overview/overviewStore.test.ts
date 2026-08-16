@@ -1195,6 +1195,36 @@ describe('selectReportInput', () => {
 describe('overviewStore across local midnight', () => {
   afterEach(() => vi.useRealTimers());
 
+  // Production's ClockPort is `now: () => new Date()` (overviewStore.ts), so the
+  // injected clock and the one rangeToFilters reads internally are the SAME
+  // clock. The shared fakeClock above is frozen at 2026-07-16, which would let
+  // only half the window move here — vi.setSystemTime drives both through this.
+  function liveClock(): ClockPort & { advance(ms: number): void } {
+    let vnow = 0;
+    let seq = 1;
+    const timers = new Map<number, { due: number; fn: () => void }>();
+    return {
+      now: () => new Date(),
+      setTimeout(fn, ms) {
+        const h = seq++;
+        timers.set(h, { due: vnow + ms, fn });
+        return h;
+      },
+      clearTimeout(h) {
+        timers.delete(h);
+      },
+      advance(ms) {
+        vnow += ms;
+        for (const [h, t] of [...timers].sort((a, b) => a[1].due - b[1].due)) {
+          if (t.due <= vnow && timers.has(h)) {
+            timers.delete(h);
+            t.fn();
+          }
+        }
+      },
+    };
+  }
+
   const BEFORE = new Date(2026, 7, 16, 23, 50, 0);
   const AFTER = new Date(2026, 7, 17, 0, 5, 0);
   const AUG17 = Math.floor(new Date(2026, 7, 17, 0, 0, 0).getTime() / 1000);
@@ -1204,7 +1234,7 @@ describe('overviewStore across local midnight', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(when);
     const ledger = makeFakeLedger({ dayPoints: [pt({ bucket: '2026-08-16' })] });
-    const clock = fakeClock();
+    const clock = liveClock();
     const store = createOverviewStore({ ledger, clock });
     await store.refresh();
     clock.advance(0);
@@ -1232,6 +1262,61 @@ describe('overviewStore across local midnight', () => {
     await flush();
 
     expect(windowsSince(ledger, issued)).toContain(AUG17);
+  });
+
+  // The headline prefers the Summary once figures have settled, and the Summary
+  // describes the window that was last FETCHED. When the day turns over, that
+  // window is yesterday's while the label above it already says today — which is
+  // how a reader saw 132.8M under TODAY on a day holding 1.6M. Every publish
+  // between the rollover and the refetch landing must show the series figure,
+  // which is sliced by the same clock as the label and so cannot disagree.
+  it('never publishes the previous window\'s total under the new day', async () => {
+    const STALE = 133_671_370; // yesterday's total, the figure that was reported
+    const FRESH = 1_622_193; //   what the new day actually held
+    const summaryOf = (totalTokens: number) => ({
+      inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+      totalTokens, requests: 1, cost: 0, hasUnpriced: false,
+      unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [],
+      cacheHitRate: 0, convs: 1,
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(BEFORE);
+    const ledger = makeFakeLedger({
+      dayPoints: [
+        pt({ bucket: '2026-08-16', totalTokens: STALE }),
+        pt({ bucket: '2026-08-17', totalTokens: FRESH }),
+      ],
+      summary: summaryOf(STALE),
+    });
+    const clock = liveClock();
+    const store = createOverviewStore({ ledger, clock });
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    expect(selectView(store.getSnapshot(), BEFORE).headline.total).toBe(STALE);
+
+    // The real backend answers per window; the fake holds one canned response,
+    // so move it on with the clock or a landed reload would still serve
+    // yesterday and the assertion would catch the fake, not the store.
+    vi.setSystemTime(AFTER);
+    ledger.data.summary = summaryOf(FRESH);
+    const seen: { to: string; total: number }[] = [];
+    const unsub = store.subscribe(() => {
+      const snap = store.getSnapshot();
+      seen.push({ to: snap.to, total: selectView(snap, AFTER).headline.total });
+    });
+
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+    unsub();
+
+    const newDay = seen.filter((v) => v.to === '2026-08-17');
+    expect(newDay.length).toBeGreaterThan(0);
+    expect(newDay.filter((v) => v.total === STALE)).toEqual([]);
   });
 
   it('still skips the reload on an idle tick inside the same day', async () => {

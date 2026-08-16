@@ -306,7 +306,7 @@ class Store implements OverviewStore {
       idle &&
       this.state.allPoints !== null &&
       this.state.fetchError === null &&
-      !this.windowMoved()
+      !this.windowMoved(this.clock.now())
     ) {
       return;
     }
@@ -417,7 +417,15 @@ class Store implements OverviewStore {
       from: d.from,
       to: d.to,
       loading: s.allPoints === null,
-      reloading: this.epoch !== this.loadedEpoch,
+      // A reload scheduled and not yet landed — OR a window that has moved out
+      // from under the figures before one could even be scheduled. Both mean
+      // the same thing to a reader: what is on screen does not describe the
+      // window it is labelled with. The headline leans on this to prefer the
+      // series total, which is sliced by this same clock and so always matches
+      // the label, over a Summary still describing the window before it.
+      reloading:
+        this.epoch !== this.loadedEpoch
+        || (this.issuedKey !== null && this.windowFrom(d, now).key !== this.issuedKey),
       provisional: this.provisional,
     };
   }
@@ -452,7 +460,16 @@ class Store implements OverviewStore {
   // idle tick, voiding the idle budget in docs/performance.md silently, with
   // every test still green.
   private windowNow(now: Date): { filters: Filters; hourDay: string | null; key: string } {
-    const d = this.derive(now);
+    return this.windowFrom(this.derive(now), now);
+  }
+
+  // Split from windowNow so buildSnapshot can pass the derivation it already
+  // holds: derive() reduces over every series point, and the snapshot is built
+  // on every publish.
+  private windowFrom(
+    d: ReturnType<Store['derive']>,
+    now: Date,
+  ): { filters: Filters; hourDay: string | null; key: string } {
     const filters = rangeToFilters(this.state.range, d.from, d.to);
     const hourDay = hourlyDayOf(this.state.range, d.from, d.to, d.firstIso, d.lastIso, now);
     return { filters, hourDay, key: JSON.stringify([filters, hourDay]) };
@@ -465,9 +482,9 @@ class Store implements OverviewStore {
   // in derive() — so each names a new window the moment the local day turns
   // over, with nothing ingested to announce it. Without this an idle machine
   // sits on yesterday's figures under a TODAY label for as long as it stays idle.
-  private windowMoved(): boolean {
+  private windowMoved(now: Date): boolean {
     if (this.issuedKey === null) return false; // nothing fetched yet to be stale
-    return this.windowNow(this.clock.now()).key !== this.issuedKey;
+    return this.windowNow(now).key !== this.issuedKey;
   }
 
   private scheduleReload() {
