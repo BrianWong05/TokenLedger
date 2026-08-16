@@ -799,6 +799,7 @@ const NOW = new Date(2026, 6, 16);
 const SETTINGS: Settings = {
   theme: 'system', language: 'en', currency: 'USD', usdRate: 1,
   launchAtLogin: false, autoCheckUpdates: true, firstRunDone: true,
+  menuBarRefreshSec: 60,
 };
 
 // One row of breakdown('tool') — the Source block's shape. Priced and

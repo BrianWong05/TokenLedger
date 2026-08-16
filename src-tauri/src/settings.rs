@@ -16,6 +16,12 @@ pub struct Settings {
     pub launch_at_login: bool,
     pub auto_check_updates: bool,
     pub first_run_done: bool,
+    /// Seconds between the Scans that keep the Menu Bar Extra's figures current
+    /// while every window is closed; 0 is Off. Off paces the bar back to the
+    /// resident capture floor, it never stops the recording — `lib.rs`
+    /// (`resident_cadence`) is where that resolution lives.
+    #[ts(type = "number")]
+    pub menu_bar_refresh_sec: i64,
 }
 
 impl Default for Settings {
@@ -28,6 +34,7 @@ impl Default for Settings {
             launch_at_login: true,
             auto_check_updates: true,
             first_run_done: false,
+            menu_bar_refresh_sec: 60,
         }
     }
 }
@@ -37,7 +44,7 @@ impl Default for Settings {
 pub fn get_settings(conn: &Connection) -> rusqlite::Result<Settings> {
     conn.query_row(
         "SELECT theme, language, currency, usd_rate, launch_at_login, \
-         auto_check_updates, first_run_done FROM settings WHERE id = 1",
+         auto_check_updates, first_run_done, menu_bar_refresh_sec FROM settings WHERE id = 1",
         [],
         |r| {
             Ok(Settings {
@@ -48,6 +55,7 @@ pub fn get_settings(conn: &Connection) -> rusqlite::Result<Settings> {
                 launch_at_login: r.get::<_, i64>(4)? != 0,
                 auto_check_updates: r.get::<_, i64>(5)? != 0,
                 first_run_done: r.get::<_, i64>(6)? != 0,
+                menu_bar_refresh_sec: r.get(7)?,
             })
         },
     )
@@ -59,8 +67,9 @@ pub fn get_settings(conn: &Connection) -> rusqlite::Result<Settings> {
 pub fn set_settings(conn: &Connection, s: &Settings) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO settings \
-         (id, theme, language, currency, usd_rate, launch_at_login, auto_check_updates, first_run_done) \
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (id, theme, language, currency, usd_rate, launch_at_login, auto_check_updates, \
+          first_run_done, menu_bar_refresh_sec) \
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             s.theme,
             s.language,
@@ -69,6 +78,7 @@ pub fn set_settings(conn: &Connection, s: &Settings) -> rusqlite::Result<()> {
             s.launch_at_login as i64,
             s.auto_check_updates as i64,
             s.first_run_done as i64,
+            s.menu_bar_refresh_sec,
         ],
     )?;
     Ok(())
@@ -124,6 +134,7 @@ mod tests {
         assert!(s.launch_at_login);
         assert!(s.auto_check_updates);
         assert!(!s.first_run_done);
+        assert_eq!(s.menu_bar_refresh_sec, 60);
     }
 
     #[test]
@@ -137,6 +148,7 @@ mod tests {
             launch_at_login: false,
             auto_check_updates: false,
             first_run_done: true,
+            menu_bar_refresh_sec: 900,
         };
         set_settings(&conn, &s).unwrap();
         let got = get_settings(&conn).unwrap();
@@ -147,6 +159,7 @@ mod tests {
         assert!(!got.launch_at_login);
         assert!(!got.auto_check_updates);
         assert!(got.first_run_done);
+        assert_eq!(got.menu_bar_refresh_sec, 900);
     }
 
     #[test]

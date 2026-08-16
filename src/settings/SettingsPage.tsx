@@ -25,7 +25,12 @@ import { CALENDAR_PRESETS, isoOf, presetWindow } from '../overview/data';
 import { useFirstRecord } from '../overview/ledgerExtent';
 import { fmtIsoRangeL, PRESET_LABEL_KEY, presetLabelL, spanLabelL, useOverviewT } from '../overview/localize';
 import type { CalendarPresetKey, PresetSlot } from '../overview/data';
-import type { SettingsPort, UpdateStatus } from './settings';
+import {
+  MENU_BAR_REFRESH_OFF,
+  MENU_BAR_REFRESH_PRESETS,
+  type SettingsPort,
+  type UpdateStatus,
+} from './settings';
 import type { Settings } from '../types';
 import './settings.css';
 
@@ -689,6 +694,7 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
   const [customOpen, setCustomOpen] = useState(false);
   const off = refreshSec === REFRESH_OFF && !customOpen;
   const customActive = customOpen || (!isPreset && refreshSec !== REFRESH_OFF);
+  const menuBarOff = settings.menuBarRefreshSec === MENU_BAR_REFRESH_OFF;
 
   return (
     <div className="tl-page tl-page-settings">
@@ -827,6 +833,55 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
             </div>
           )}
           {customActive && <CustomIntervalRow sec={refreshSec} onCommit={setRefreshSec} />}
+        </section>
+
+        {/* The second of the two timers a reader owns, and the one that runs
+            with no window open: it paces the scans that keep the figures beside
+            the icon current. Unlike the auto-refresh above it is persisted in
+            the Ledger's settings, because the Rust loop honouring it outlives
+            every webview. */}
+        <section className="set-group">
+          <div className="set-group-label">{t('settings.menuBar')}</div>
+          <div className="set-row">
+            <div className="set-row-text">
+              <div className="set-row-title">{t('settings.menuBarRefresh')}</div>
+              <div className="set-row-caption">{t('settings.menuBarRefresh.caption')}</div>
+            </div>
+            <div
+              className="set-seg set-seg-mono"
+              role="group"
+              aria-label={t('settings.menuBarRefresh.aria')}
+            >
+              <button
+                type="button"
+                className={menuBarOff ? 'active' : ''}
+                aria-pressed={menuBarOff}
+                onClick={() => update({ menuBarRefreshSec: MENU_BAR_REFRESH_OFF })}
+              >
+                {t('settings.menuBarRefresh.off')}
+              </button>
+              {MENU_BAR_REFRESH_PRESETS.map((p) => {
+                const active = settings.menuBarRefreshSec === p.sec;
+                return (
+                  <button
+                    key={p.sec}
+                    type="button"
+                    className={active ? 'active' : ''}
+                    aria-pressed={active}
+                    onClick={() => update({ menuBarRefreshSec: p.sec })}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {/* Off paces the bar back to the resident floor; it stops no recording */}
+          {menuBarOff && (
+            <div className="set-row">
+              <div className="set-row-caption">{t('settings.menuBarRefresh.offNote')}</div>
+            </div>
+          )}
         </section>
 
         <UpdatesGroup port={port} />

@@ -44,6 +44,10 @@ export interface Settings {
   launchAtLogin: boolean;
   autoCheckUpdates: boolean;
   firstRunDone: boolean;
+  // Seconds between the scans that keep the Menu Bar Extra's figures current
+  // while every window is closed; 0 is Off, which paces the bar back to the
+  // resident capture floor rather than stopping the recording.
+  menuBarRefreshSec: number;
 }
 
 export interface UpdateStatus {

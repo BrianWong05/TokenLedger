@@ -5,4 +5,11 @@
  * (db.rs SCHEMA_V6). Every rate stays in USD (CONTEXT.md Display Currency);
  * `currency`/`usd_rate` only govern how Cost is rendered, never what is stored.
  */
-export type Settings = { theme: string, language: string, currency: string, usdRate: number, launchAtLogin: boolean, autoCheckUpdates: boolean, firstRunDone: boolean, };
+export type Settings = { theme: string, language: string, currency: string, usdRate: number, launchAtLogin: boolean, autoCheckUpdates: boolean, firstRunDone: boolean, 
+/**
+ * Seconds between the Scans that keep the Menu Bar Extra's figures current
+ * while every window is closed; 0 is Off. Off paces the bar back to the
+ * resident capture floor, it never stops the recording — `lib.rs`
+ * (`resident_cadence`) is where that resolution lives.
+ */
+menuBarRefreshSec: number, };

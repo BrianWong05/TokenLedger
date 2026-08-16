@@ -77,6 +77,108 @@ fn should_prevent_exit(code: Option<i32>) -> bool {
     code.is_none()
 }
 
+// --- Resident cadence (ADR-0005, amended by TOKL-4) ---
+
+/// The capture floor: the slowest the Ledger may ever fall behind, and the one
+/// cadence a reader cannot slow. Sources prune their logs, so a Ledger that
+/// recorded only while someone watched would lose them (CONTEXT.md Scan).
+const CAPTURE_FLOOR_SECS: i64 = 4 * 3600;
+
+/// The fastest cadence honoured whatever the settings row says. The Settings
+/// section offers nothing under a minute; this only keeps a hand-edited or
+/// corrupt row from turning the resident loop into a busy scan.
+const MIN_CADENCE_SECS: i64 = 10;
+
+/// Longest the loop parks in one go, so a changed cadence takes effect within a
+/// minute instead of at the end of a four-hour sleep.
+const MAX_PARK_SECS: i64 = 60;
+
+/// One day between catalog refreshes, on its own deadline rather than a count of
+/// ticks — the cadence beside it is the reader's to change, and "every sixth
+/// tick" would silently become every six minutes when they do.
+const CATALOG_EVERY_SECS: i64 = 24 * 3600;
+
+/// Seconds between resident Scans, given the reader's Menu Bar Extra cadence.
+/// Off (0) is not "never": it hands the bar back to the capture floor, which is
+/// also the ceiling — pacing the bar can make the app scan more often than
+/// ADR-0005's floor, never less.
+fn resident_cadence(menu_bar_refresh_sec: i64) -> i64 {
+    if menu_bar_refresh_sec <= 0 {
+        CAPTURE_FLOOR_SECS
+    } else {
+        menu_bar_refresh_sec.clamp(MIN_CADENCE_SECS, CAPTURE_FLOOR_SECS)
+    }
+}
+
+/// How long to park before the next wake: until the soonest deadline, capped at
+/// MAX_PARK, and never zero — a deadline already past must wake the loop once
+/// rather than spin it.
+fn wake_in(now: i64, next_deadline: i64) -> u64 {
+    (next_deadline - now).clamp(1, MAX_PARK_SECS) as u64
+}
+
+/// The clock facts one wake reads from the Ledger: the reader's resolved
+/// cadence, the local day the bar is painting, and when that day ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Inputs {
+    cadence: i64,
+    day: i64,
+    next_midnight: i64,
+}
+
+/// What the resident loop remembers between wakes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Marks {
+    /// When this loop last *tried* to scan, which is not when one last
+    /// succeeded: a scan that returns Err stamps no `last_scan`, and pacing off
+    /// the stamp alone would leave the deadline permanently past and retry
+    /// every second forever.
+    attempted: i64,
+    next_catalogs: i64,
+    /// The local day whose figures the bar is showing; None until the first
+    /// read says, so the loop never repaints against a day it never painted.
+    painted: Option<i64>,
+}
+
+/// What one wake should do. Pure, so the loop's policy can be checked without a
+/// thread, a clock, or an app handle — every branch below is a branch a test
+/// can delete and see fail.
+#[derive(Debug, PartialEq, Eq)]
+struct Tick {
+    scan: bool,
+    catalogs: bool,
+    repaint: bool,
+    /// The soonest moment worth waking for; `wake_in` bounds the actual park.
+    next_deadline: i64,
+}
+
+/// `stamped` is `AppState::last_scan` — when *any* scan last finished, so a
+/// Rescan, an Overview tick, or an opened panel defers the resident scan rather
+/// than racing it.
+fn plan_tick(now: i64, stamped: i64, inputs: Inputs, marks: Marks) -> Tick {
+    let due = stamped.max(marks.attempted) + inputs.cadence;
+    let scan = now >= due;
+    let catalogs = now >= marks.next_catalogs;
+    Tick {
+        scan,
+        catalogs,
+        // Today's figures stop being today's at midnight, whether or not a scan
+        // has anything to add (CONTEXT.md Menu Bar Extra).
+        repaint: marks.painted.is_some_and(|painted| painted != inputs.day),
+        // Scanning or refreshing now moves that deadline a full interval on.
+        next_deadline: (if scan { now + inputs.cadence } else { due })
+            .min(if catalogs { now + CATALOG_EVERY_SECS } else { marks.next_catalogs })
+            .min(inputs.next_midnight),
+    }
+}
+
+fn epoch_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 // Keep the generated macOS bundle metadata in one macro expansion. Besides
 // avoiding duplicate embedded Info.plist symbols in tests, the generic runtime
 // lets production use Wry while lifecycle tests use Tauri's mock runtime.
@@ -183,6 +285,25 @@ fn lookup_new_unpriced(app: &AppHandle) {
 /// emits nothing, so an idle resident tick never wakes the page.
 fn limits_changed(status: &ScanStatus) -> bool {
     status.sources.iter().any(|source| source.limit_readings > 0)
+}
+
+/// The three clock facts one wake of the resident loop needs, taken together
+/// under a single read lock: the reader's resolved cadence, which local day the
+/// bar is painting, and when that day ends. SQLite does the timezone math here
+/// for the same reason the bar title does (`tray::day_window`), so the day this
+/// loop repaints on and the day the title computes can never disagree.
+fn resident_inputs(app: &AppHandle, now: i64) -> Option<Inputs> {
+    let state = app.state::<AppState>();
+    let db = state.read_db.lock().ok()?;
+    resident_inputs_from(&db, now).ok()
+}
+
+/// The read itself, off the handle so it can be exercised against a bare
+/// connection.
+fn resident_inputs_from(db: &Connection, now: i64) -> rusqlite::Result<Inputs> {
+    let cadence = resident_cadence(settings::get_settings(db)?.menu_bar_refresh_sec);
+    let (day, next_midnight) = tray::day_window(db, now)?;
+    Ok(Inputs { cadence, day, next_midnight })
 }
 
 // The one scan path, shared by the `scan` command and the tray's "Scan now" so
@@ -634,29 +755,61 @@ pub fn run() {
                     }
                 }
             });
-            // Resident capture cadence (ADR-0005): scan every few hours so a
-            // hidden app keeps recording even when the machine stays up across
-            // days without a re-login. The on-mount frontend scan covers a
-            // manual start; the hidden-start branch above covers login start;
-            // this thread covers the long tail. Emits prices-rebuilt so a
-            // visible Overview refreshes too.
-            // Every sixth tick also refreshes prices: daily catalog checks keep
-            // today's Codex Auto Review snapshot current without adding another
-            // timer thread. Past snapshots are immutable once their day closes.
-            // ponytail: parked thread + 4h sleep, no timer framework needed.
+            // Resident capture and the Menu Bar Extra's refresh, on one parked
+            // thread (ADR-0005, amended by TOKL-4). It scans so a hidden app
+            // keeps recording, and it scans often enough that the bar's figures
+            // stay current while every window is closed — the two are the same
+            // scan, so the reader's cadence paces one loop rather than adding a
+            // second. The on-mount frontend scan covers a manual start; the
+            // hidden-start branch above covers login start; this covers the rest.
+            // It deliberately pushes nothing at the Overview: every scan already
+            // repaints the bar (scan_now → tray::refresh), while that window has
+            // its own timer, and at a minute's cadence a push would re-read it
+            // even after its reader turned that timer off (CONTEXT.md Scan).
+            // ponytail: parked thread on a deadline, no timer framework needed.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                let mut ticks = 0;
+                let started = epoch_now();
+                let mut marks = Marks {
+                    // Seeded at launch, so a start with nothing scanned yet waits
+                    // a cadence instead of scanning on top of the start-up pass.
+                    attempted: started,
+                    next_catalogs: started + CATALOG_EVERY_SECS,
+                    painted: None,
+                };
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(4 * 3600));
-                    if scan_now(&handle).is_ok() {
-                        let _ = handle.emit("prices-rebuilt", ());
+                    let now = epoch_now();
+                    // A database that will not answer must not stop the loop, and
+                    // must not be guessed at either: park a beat and ask again.
+                    let Some(inputs) = resident_inputs(&handle, now) else {
+                        std::thread::sleep(std::time::Duration::from_secs(MAX_PARK_SECS as u64));
+                        continue;
+                    };
+                    let stamped = handle.state::<AppState>().last_scan.load(Ordering::Relaxed);
+                    let tick = plan_tick(now, stamped, inputs, marks);
+
+                    if tick.scan {
+                        marks.attempted = now;
+                        let _ = scan_now(&handle);
                     }
-                    ticks += 1;
-                    if ticks == 6 {
+                    // Daily catalog checks keep today's Codex Auto Review snapshot
+                    // current (ADR-0021). Past snapshots are immutable once their
+                    // day closes.
+                    if tick.catalogs {
+                        marks.next_catalogs = now + CATALOG_EVERY_SECS;
                         refresh_catalogs(&handle);
-                        ticks = 0;
                     }
+                    if tick.repaint {
+                        tray::refresh(&handle);
+                    }
+                    // Whether it just repainted or the last paint already had this
+                    // day, the bar is now showing it.
+                    marks.painted = Some(inputs.day);
+
+                    std::thread::sleep(std::time::Duration::from_secs(wake_in(
+                        epoch_now(),
+                        tick.next_deadline,
+                    )));
                 }
             });
 
@@ -721,6 +874,145 @@ mod tests {
     use std::sync::atomic::AtomicI64;
     use std::sync::Mutex;
     use tauri::Manager;
+
+    /// Off is the reader pacing the bar, never stopping the recording: it falls
+    /// back to ADR-0005's capture floor, which Sources' log pruning makes
+    /// non-negotiable. The floor is a ceiling too — a cadence slower than it
+    /// would let a hidden app miss logs before they are pruned.
+    #[test]
+    fn off_falls_back_to_the_capture_floor_and_never_past_it() {
+        assert_eq!(super::resident_cadence(0), super::CAPTURE_FLOOR_SECS);
+        assert_eq!(super::resident_cadence(-1), super::CAPTURE_FLOOR_SECS);
+        assert_eq!(
+            super::resident_cadence(super::CAPTURE_FLOOR_SECS + 3600),
+            super::CAPTURE_FLOOR_SECS,
+        );
+    }
+
+    /// The three the Settings section offers survive intact — a cadence the
+    /// reader picked is the cadence the loop runs.
+    #[test]
+    fn offered_cadences_are_honoured_verbatim() {
+        for sec in [60, 300, 900] {
+            assert_eq!(super::resident_cadence(sec), sec);
+        }
+    }
+
+    /// Nothing the settings row can hold turns the loop into a busy scan, which
+    /// would hold the writer lock against every read on the machine.
+    #[test]
+    fn a_corrupt_row_cannot_produce_a_busy_scan() {
+        assert_eq!(super::resident_cadence(1), super::MIN_CADENCE_SECS);
+    }
+
+    // --- The resident loop's policy, one wake at a time ---
+
+    const T0: i64 = 1_780_308_000;
+
+    fn inputs(cadence: i64) -> super::Inputs {
+        super::Inputs { cadence, day: T0 - 3_600, next_midnight: T0 + 80_000 }
+    }
+
+    fn marks() -> super::Marks {
+        super::Marks {
+            attempted: T0 - 10_000,
+            next_catalogs: T0 + 50_000,
+            painted: Some(T0 - 3_600),
+        }
+    }
+
+    #[test]
+    fn a_scan_comes_due_one_cadence_after_the_last_one() {
+        let (i, m) = (inputs(60), super::Marks { attempted: T0 - 60, ..marks() });
+        // One second short of the cadence, then exactly on it.
+        assert!(!super::plan_tick(T0 - 1, 0, i, m).scan);
+        assert!(super::plan_tick(T0, 0, i, m).scan);
+    }
+
+    /// The cadence means "these figures are never staler than this", so a scan
+    /// anyone else ran — Rescan, an Overview tick, an opened panel — defers the
+    /// resident one instead of the loop scanning on top of it.
+    #[test]
+    fn any_scan_defers_the_resident_one() {
+        let (i, m) = (inputs(60), super::Marks { attempted: T0 - 600, ..marks() });
+        assert!(super::plan_tick(T0, 0, i, m).scan, "nothing has scanned in 10 min");
+
+        let tick = super::plan_tick(T0, T0 - 30, i, m);
+        assert!(!tick.scan, "a scan 30s ago already made the figures current");
+        assert_eq!(tick.next_deadline, T0 + 30, "and the next one is due 30s on");
+    }
+
+    /// A scan that fails stamps no `last_scan`. Paced off the stamp alone the
+    /// deadline would stay in the past and the loop would retry every second
+    /// forever, holding the writer lock against the whole machine.
+    #[test]
+    fn a_failed_scan_waits_a_full_cadence_rather_than_retrying_every_second() {
+        let i = inputs(60);
+        // Nothing has ever succeeded (stamp still 0) and this wake just tried.
+        let m = super::Marks { attempted: T0, ..marks() };
+        let tick = super::plan_tick(T0 + 1, 0, i, m);
+        assert!(!tick.scan);
+        assert_eq!(tick.next_deadline, T0 + 60);
+        assert_eq!(super::wake_in(T0 + 1, tick.next_deadline), 59);
+    }
+
+    /// The bar's figures are Today's, so the day turning over changes them even
+    /// when no scan does — an idle machine must not sit on yesterday's total.
+    #[test]
+    fn the_day_turning_over_repaints_the_bar() {
+        let i = inputs(60);
+        assert!(
+            !super::plan_tick(T0, T0, i, marks()).repaint,
+            "the painted day is still today's",
+        );
+
+        let rolled = super::Marks { painted: Some(i.day - 86_400), ..marks() };
+        assert!(super::plan_tick(T0, T0, i, rolled).repaint);
+
+        // Nothing painted yet is not a day that changed.
+        let fresh = super::Marks { painted: None, ..marks() };
+        assert!(!super::plan_tick(T0, T0, i, fresh).repaint);
+    }
+
+    /// Midnight is a deadline in its own right: the repaint cannot wait on a
+    /// scan that a slow cadence — or Off — would not run for hours.
+    #[test]
+    fn the_loop_wakes_for_midnight_even_when_no_scan_is_near() {
+        let i = super::Inputs { next_midnight: T0 + 120, ..inputs(super::CAPTURE_FLOOR_SECS) };
+        let m = super::Marks { attempted: T0, next_catalogs: T0 + 50_000, ..marks() };
+        assert_eq!(super::plan_tick(T0, T0, i, m).next_deadline, T0 + 120);
+    }
+
+    /// Catalogs run on their own deadline, not on a count of ticks: at a
+    /// minute's cadence "every sixth tick" would be every six minutes.
+    #[test]
+    fn catalogs_refresh_daily_however_fast_the_cadence_is() {
+        let i = inputs(60);
+        let m = super::Marks { attempted: T0 - 60, next_catalogs: T0 + 3_600, ..marks() };
+        // Sixty wakes' worth of scanning later, the catalogs are still not due.
+        assert!(super::plan_tick(T0, 0, i, m).scan);
+        assert!(!super::plan_tick(T0, 0, i, m).catalogs);
+
+        let due = super::Marks { next_catalogs: T0, ..m };
+        let tick = super::plan_tick(T0, 0, i, due);
+        assert!(tick.catalogs);
+        assert_eq!(
+            super::plan_tick(T0, 0, i, due).next_deadline.min(T0 + super::CATALOG_EVERY_SECS),
+            tick.next_deadline,
+            "a refresh now pushes the next one a full day out",
+        );
+    }
+
+    /// The park is bounded on both ends: long enough never to spin on a deadline
+    /// already past, short enough that a cadence changed in Settings takes hold
+    /// within a minute rather than at the end of a four-hour sleep.
+    #[test]
+    fn the_park_is_capped_and_never_zero() {
+        assert_eq!(super::wake_in(1_000, 1_030), 30);
+        assert_eq!(super::wake_in(1_000, 1_000 + super::CAPTURE_FLOOR_SECS), super::MAX_PARK_SECS as u64);
+        assert_eq!(super::wake_in(1_000, 900), 1);
+        assert_eq!(super::wake_in(1_000, 1_000), 1);
+    }
 
     #[test]
     fn hidden_startup_does_not_create_the_main_webview() {
@@ -868,6 +1160,51 @@ mod tests {
     // Proves AppState constructs and the exact call-shapes used by the IPC
     // commands (run_scan + queries::summary) type-check against the real
     // functions. Empty fixture roots => one status per catalog Source, zero events.
+    /// The loop's read: the stored cadence resolved, and the local day the bar
+    /// is painting. Both come off one connection, so a renamed column or a
+    /// broken day window fails here rather than in a thread nothing watches.
+    #[test]
+    fn resident_inputs_read_the_stored_cadence_and_the_day_being_painted() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
+        let now = 1_780_308_000;
+
+        // A settings row nobody has written yet still yields the shipped minute.
+        let read = super::resident_inputs_from(&conn, now).unwrap();
+        assert_eq!(read.cadence, 60);
+        assert!(read.day <= now && now < read.next_midnight, "the window must contain now");
+
+        // Crossing that boundary is what makes the bar repaint: asked at the
+        // midnight it just reported, the loop sees a different day, and
+        // plan_tick turns that into a repaint.
+        let rolled = super::resident_inputs_from(&conn, read.next_midnight).unwrap();
+        assert_eq!(rolled.day, read.next_midnight, "midnight starts the day it ends");
+        assert!(
+            super::plan_tick(
+                read.next_midnight,
+                now,
+                rolled,
+                super::Marks {
+                    attempted: now,
+                    next_catalogs: now + super::CATALOG_EVERY_SECS,
+                    painted: Some(read.day),
+                },
+            )
+            .repaint,
+        );
+
+        // Off is read back as the floor, not as a stopped loop.
+        crate::settings::set_settings(
+            &conn,
+            &crate::settings::Settings { menu_bar_refresh_sec: 0, ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(
+            super::resident_inputs_from(&conn, now).unwrap().cadence,
+            super::CAPTURE_FLOOR_SECS,
+        );
+    }
+
     #[test]
     fn appstate_wires_scan_and_query() {
         let dir = tempfile::tempdir().unwrap();

@@ -35,15 +35,17 @@ One pass over the Source Artifacts on this machine, parsing what they hold into
 Usage Records and adding them to the Ledger. A Scan only ever reads: it never
 writes to a Source's files and never talks to a Source's servers. It happens on
 launch, every few hours on a resident cadence so a hidden app keeps recording,
-on the Overview's auto-refresh timer while that window is focused, whenever the
-Menu Bar Extra's panel is opened, and on demand when a person presses Rescan.
-An opened panel paints what the Ledger already holds before that Scan lands, so
-the Scan brings its figures current rather than gating them. Only the
-auto-refresh timer is the reader's to set, and it is the only one they can turn
-off — the resident cadence is not theirs to stop, because a Ledger that
-recorded only while someone watched would lose the logs its Sources prune.
-Turning the timer off therefore stops this window re-reading, never the
-recording.
+on the Menu Bar Extra's refresh timer so the bar's figures stay current while
+every window is closed, on the Overview's auto-refresh timer while that window
+is focused, whenever the Menu Bar Extra's panel is opened, and on demand when a
+person presses Rescan. An opened panel paints what the Ledger already holds
+before that Scan lands, so the Scan brings its figures current rather than
+gating them. The two refresh timers — the Overview's and the Menu Bar Extra's —
+are the reader's to set and the only ones they can turn off; the resident
+cadence is not theirs to stop, because a Ledger that recorded only while
+someone watched would lose the logs its Sources prune. Turning the Overview's
+timer off stops that window re-reading; turning the Menu Bar Extra's off leaves
+the bar to the resident cadence — neither ever stops the recording.
 _Avoid_: Sync, import, fetch — each suggests usage arriving from somewhere
 else; a Scan only reads what is already on this machine
 
@@ -148,7 +150,10 @@ The bar (or hover) figures and the panel carry different windows on purpose:
 the icon's figures are always Today, the local calendar day, while the panel
 selects its own (Today, Yesterday, or the trailing 30 days) and everything it
 shows describes that selection. A day with no usage reads "0 · $0.00" rather
-than leaving the icon to stand alone.
+than leaving the icon to stand alone. The icon's figures keep themselves
+current without anything being opened — they follow the Menu Bar Extra's
+refresh timer, and they cross into the new day at local midnight rather than
+waiting for the next Scan.
 Every figure follows the same rules as everywhere else: Partial Cost's
 "≥" marker, the Unreadable Artifact "≥" on token figures, Unpriced never
 shown as $0, a window with no usage at $0.00, Display Currency honored.

@@ -57,6 +57,25 @@ export const settings = {
     'settings.refreshCustom.caption': 'Any whole number of seconds, 5 s – 24 h',
     'settings.refreshCustom.unit': 'seconds',
 
+    // The glossary's name for this presence on every platform, which is why it
+    // is not "menu bar": that names the macOS place, and the same section ships
+    // where the place is a Windows notification area or a Linux system tray.
+    'settings.menuBar': 'Menu Bar Extra',
+    'settings.menuBarRefresh': 'Refresh interval',
+    // Beside "Auto-refresh interval" the short title is ambiguous once the
+    // section heading is out of reach, so the control carries the long name.
+    'settings.menuBarRefresh.aria': 'Menu Bar Extra refresh interval',
+    // The distinction from the row above: that one keeps a window you are
+    // looking at current, this one keeps the figures beside the icon current
+    // when there is no window at all.
+    'settings.menuBarRefresh.caption':
+      "How often the Menu Bar Extra's figures are re-read while every window is closed",
+    'settings.menuBarRefresh.off': 'Off',
+    // Same rule as the auto-refresh note: "Off" has to say what it does not
+    // stop. Here it paces the figures back to the resident cadence, nothing more.
+    'settings.menuBarRefresh.offNote':
+      'The Menu Bar Extra falls back to a scan every few hours. Recording never stops.',
+
     'settings.updates': 'Updates',
     'settings.autoCheck': 'Check for updates automatically',
     'settings.autoCheck.caption': 'Once a day, in the background',
@@ -127,6 +146,13 @@ export const settings = {
     'settings.refreshCustom': '自訂間隔',
     'settings.refreshCustom.caption': '任意整數秒數，5 秒至 24 小時',
     'settings.refreshCustom.unit': '秒',
+
+    'settings.menuBar': '選單列輔助程式',
+    'settings.menuBarRefresh': '重新整理間隔',
+    'settings.menuBarRefresh.aria': '選單列輔助程式重新整理間隔',
+    'settings.menuBarRefresh.caption': '所有視窗關閉時，選單列輔助程式的數字多久重讀一次',
+    'settings.menuBarRefresh.off': '關閉',
+    'settings.menuBarRefresh.offNote': '選單列輔助程式改回每幾小時掃描一次。記錄不會停止。',
 
     'settings.updates': '更新',
     'settings.autoCheck': '自動檢查更新',
