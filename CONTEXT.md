@@ -52,8 +52,9 @@ else; a Scan only reads what is already on this machine
 **Overview**:
 The application's home tab: the presentation of the Ledger over a
 user-selected date window and Source selection — headline token total, Cost,
-usage trends, and per-Source breakdowns. Activity and Profile are the two parts
-of the tab that ignore that selection. What it shows is always a view of the
+usage trends, and per-Source breakdowns. Activity ignores that selection
+entirely; the Profile follows the date window but never the Source
+selection. What it shows is always a view of the
 Ledger; it never holds usage data of its own. Its Source selection contains
 only Sources represented in the Ledger, including Sources whose Artifacts have
 since disappeared. Usage data appears on no other tab.
@@ -69,15 +70,18 @@ window, never the selected range.
 _Avoid_: Heatmap, contribution graph, calendar
 
 **Profile**:
-The Overview's portrait of the whole Ledger, deliberately unmoved by the
-Overview's date window and Source selection: token volume over fixed trailing
-windows, the Models holding the largest lifetime share, the Sessions of the last
-30 days, and how long the Ledger has been accumulating. Its Model shares are
-measured against every lifetime token, Unattributed Usage included, so they sum
-to less than the whole and Unattributed itself is never one of the Models named.
-It reports no Cost at all. Where it says usage began, it means the earliest
-Usage Record in the Ledger — not the machine's first ever use of a Source, which
-may predate anything TokenLedger ingested.
+The Overview's ranked portrait of the Models in the selected date window,
+always across every Source: the Models holding the largest share of the
+window's tokens — the top five first, the full list on request — and how long
+the Ledger has been accumulating. It follows the Overview's date window,
+Custom included, and deliberately ignores the Source selection. Its Model
+shares are measured against the window's whole total, Unattributed Usage
+included, so they sum to less than the whole and Unattributed itself is never
+one of the Models named; a window holding no usage says so rather than
+borrowing another window's Models. It reports no Cost at all. Where it says
+usage began, it means the earliest Usage Record in the Ledger — not the
+machine's first ever use of a Source, which may predate anything TokenLedger
+ingested.
 _Avoid_: Stats, summary, model breakdown
 
 **Trend**:

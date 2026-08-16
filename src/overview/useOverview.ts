@@ -74,11 +74,11 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
   // allPoints's reference stable across range/selection, so this never
   // recomputes on those.
   const days = useMemo(() => selectDays(snap), [snap.allPoints]);
-  // Same shape as the heatmap: range/selection can't move it, so it recomputes
-  // only when the series or its own Session count changes.
+  // The Models follow the window, so unlike the heatmap this recomputes on a
+  // range change too — off the same series, which is why it needs no reload.
   const profile = useMemo(
     () => selectProfile(snap),
-    [snap.allPoints, snap.profileSessions],
+    [snap.allPoints, snap.range, snap.from, snap.to],
   );
   // Deps name the data fields rather than the snapshot: an idle 30s tick
   // publishes a new snapshot for scanAt alone, and rebuilding the whole view

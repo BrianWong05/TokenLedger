@@ -799,6 +799,73 @@ describe('Overview presentation', () => {
   });
 });
 
+// TOKL-6: the Profile is the one cross-Source per-Model list, and it used to
+// print lifetime figures under whatever Range was selected.
+describe('Overview Profile follows the Range', () => {
+  const today = new Date();
+  const iso = (daysBack: number) => {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - daysBack);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const names = (c: HTMLElement) =>
+    [...c.querySelectorAll('.tt-profile-model .name')].map((n) => n.textContent);
+  const press = async (c: HTMLElement, label: string) =>
+    click([...c.querySelectorAll('button')].find((b) => b.textContent === label)!);
+
+  it('ranks the Models of the window the reader picked', async () => {
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({ bucket: iso(0), totalTokens: 100, byModel: { 'claude-fable-5': 100 } }),
+        pt({ bucket: iso(3), totalTokens: 300, byModel: { 'gpt-5.6-sol': 300 } }),
+        pt({ bucket: iso(200), totalTokens: 900, byModel: { 'claude-opus-4-8': 900 } }),
+      ],
+      summary,
+    });
+    expect(names(c)).toEqual(['claude-opus-4-8', 'gpt-5.6-sol', 'claude-fable-5']);
+
+    await press(c, 'Week');
+    expect(names(c)).toEqual(['gpt-5.6-sol', 'claude-fable-5']);
+
+    await press(c, 'Day');
+    expect(names(c)).toEqual(['claude-fable-5']);
+
+    await press(c, 'Total');
+    expect(names(c)).toEqual(['claude-opus-4-8', 'gpt-5.6-sol', 'claude-fable-5']);
+  });
+
+  it('reveals the Models past the fifth on request', async () => {
+    const { container: c } = await mount({
+      dayPoints: [
+        pt({
+          bucket: iso(0), totalTokens: 700,
+          byModel: Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`model-${i}`, 100 - i])),
+        }),
+      ],
+      summary,
+    });
+    expect(names(c)).toHaveLength(5);
+
+    await click(c.querySelector('.tt-profile-more')!);
+    expect(names(c)).toEqual([
+      'model-0', 'model-1', 'model-2', 'model-3', 'model-4', 'model-5', 'model-6',
+    ]);
+  });
+
+  it('says a window with no usage has none, rather than showing the Ledger', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({ bucket: iso(200), totalTokens: 900, byModel: { 'claude-opus-4-8': 900 } })],
+      summary,
+    });
+    expect(names(c)).toEqual(['claude-opus-4-8']);
+
+    await press(c, 'Day'); // today holds nothing
+    expect(names(c)).toEqual([]);
+    expect(c.querySelector('.tt-profile-empty')?.textContent).toBe('No usage in this window');
+    // The footer is the Ledger's own span, so it stays put through an empty window.
+    expect(c.querySelector('.tt-profile-foot')?.textContent).toContain('First record');
+  });
+});
+
 // The window report (docs/specs 2026-08-10): one CSV over whatever the Overview
 // is showing, written through the same save port the Trend enlarge uses.
 describe('Export', () => {
@@ -843,34 +910,25 @@ describe('Export', () => {
   // selector's token fields are non-nullable, so an absent Summary becomes 0 —
   // a figure meaning "unknown". Only the caller can refuse, and it does.
   //
-  // Reaching that state takes steps, because the fake's hold() is scoped to
-  // the METHOD, not the call: holding 'summary' also holds the Profile-sessions
-  // count that rides with each series load — and the first load runs twice,
-  // once as the provisional pre-scan paint and once as the post-scan
-  // reconcile. Resolving those two Profile calls lets both series land (which
-  // is what ends `loading`); every summary still held after that is a window
-  // Summary — the provisional reload's, which paints but is still owed a
-  // reconcile, and the reconcile's, which is the one whose landing enables
-  // Export.
+  // Every summary held here is a window Summary: the series load no longer
+  // fetches one of its own (the Profile's Session count went with its tiles,
+  // TOKL-6). The series therefore lands unblocked and ends `loading`, and this
+  // scan reports no inserted events, so the post-scan reconcile is skipped as
+  // idle — leaving exactly one window Summary owed, the one Export waits on.
   it('withholds Export until the window\'s Summary has landed', async () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
     ledger.hold('summary');
     const { container } = await mountOverview({ ledger });
     const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
 
-    ledger.resolveHeld('summary', 0); // provisional Profile — the first paint lands
-    await settle();
-    ledger.resolveHeld('summary', 1); // reconcile Profile — the post-scan series lands
-    await settle();
     expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
     expect(exportBtn().disabled).toBe(true); // the window's Summary is still pending
 
-    // Pin the launch fan-out: exactly four summaries — two Profile counts
-    // (resolved above) and two window Summaries. A fifth appearing here means
-    // boot grew another fetch pass; this line is where that regression fails.
-    expect(ledger.held('summary').length).toBe(4);
-    ledger.resolveHeld('summary', 2); // provisional reload's Summary — paints, still behind
-    ledger.resolveHeld('summary', 3); // reconcile's Summary — the one that lands
+    // Pin the launch fan-out: one Summary for an idle launch. A second
+    // appearing here means boot grew another fetch pass; this line is where
+    // that regression fails.
+    expect(ledger.held('summary').length).toBe(1);
+    ledger.resolveHeld('summary', 0);
     await settle();
     expect(exportBtn().disabled).toBe(false);
   });
