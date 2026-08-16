@@ -754,7 +754,13 @@ export interface ModelBar {
   name: string | null;
   tokens: number;
   cost: number | null; // null = unpriced
-  share: number;       // of the tool's range total
+  // Of the tool's range total; null when that total cannot measure this row.
+  // The two are fetched independently — rows from the store's last window, the
+  // total from a render-clock slice of the series — so between a day rolling
+  // over (or a range switch) and the refetch landing they describe DIFFERENT
+  // windows. A row bigger than its own total is the proof of that, and a
+  // fabricated denominator turned it into shares of billions of percent.
+  share: number | null;
   segs: { key: string; color: string; frac: number }[];
   cacheEstimated: boolean;
 }
@@ -769,7 +775,9 @@ export function modelBars(rows: BreakdownRow[], tool: SourceKey, toolTokens: num
         name: r.key,
         tokens: r.totalTokens,
         cost: r.cost,
-        share: r.totalTokens / Math.max(1, toolTokens),
+        share: toolTokens > 0 && r.totalTokens <= toolTokens
+          ? r.totalTokens / toolTokens
+          : null,
         segs: CATEGORIES.map((c, i) => ({ key: c.key, color: c.color, frac: cats[i] / total })),
         cacheEstimated: r.cacheEstimated,
       };

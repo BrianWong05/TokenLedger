@@ -197,11 +197,11 @@ class Store implements OverviewStore {
   // Safe as a sentinel because scheduleReload pre-increments: a scheduled epoch
   // is never 0, so this can only be 0 before the first landing.
   private loadedEpoch = 0;
-  // The window the last issued reload was for. The idle skip below compares the
-  // current window against it, because "nothing was ingested" does not mean
-  // "nothing on screen moved": a range that ends at today names a DIFFERENT
-  // window once the local day rolls over.
-  private loadedKey: string | null = null;
+  // The window the last ISSUED reload was for — issued, not landed, unlike
+  // loadedEpoch above. The idle skip compares the current window against it,
+  // because "nothing was ingested" does not mean "nothing on screen moved": a
+  // range that ends at today names a DIFFERENT window once the day rolls over.
+  private issuedKey: string | null = null;
   private reloadTimer: number | null = null; // pending debounce timer
   // The data on screen predates the last settled scan. Set when the first-load
   // paint fires, cleared only once a post-scan series refetch lands. A field,
@@ -445,20 +445,27 @@ class Store implements OverviewStore {
     }
   }
 
-  // Whether the window the app would fetch now differs from the one it last
-  // fetched. Every range but Custom and Total is anchored to today, so all of
-  // them name a new window the moment the local day turns over — with nothing
-  // ingested to announce it. Without this an idle machine sits on yesterday's
-  // figures under a TODAY label for as long as it stays idle.
-  private windowMoved(): boolean {
-    if (this.loadedKey === null) return false; // nothing has landed to be stale
-    const now = this.clock.now();
+  // What a reload issued right now would fetch, and the identity of that fetch.
+  // Derived in ONE place because two readers depend on it — the reload cache
+  // keys on it, and windowMoved compares against it. Written twice, a changed
+  // key shape would leave windowMoved matching nothing and reloading on every
+  // idle tick, voiding the idle budget in docs/performance.md silently, with
+  // every test still green.
+  private windowNow(now: Date): { filters: Filters; hourDay: string | null; key: string } {
     const d = this.derive(now);
-    const key = JSON.stringify([
-      rangeToFilters(this.state.range, d.from, d.to),
-      hourlyDayOf(this.state.range, d.from, d.to, d.firstIso, d.lastIso, now),
-    ]);
-    return key !== this.loadedKey;
+    const filters = rangeToFilters(this.state.range, d.from, d.to);
+    const hourDay = hourlyDayOf(this.state.range, d.from, d.to, d.firstIso, d.lastIso, now);
+    return { filters, hourDay, key: JSON.stringify([filters, hourDay]) };
+  }
+
+  // Whether the window the app would fetch now differs from the one it last
+  // fetched. Total is unbounded and Custom is fixed, so neither moves; the rest
+  // are anchored to today and name a new window the moment the local day turns
+  // over — with nothing ingested to announce it. Without this an idle machine
+  // sits on yesterday's figures under a TODAY label for as long as it stays idle.
+  private windowMoved(): boolean {
+    if (this.issuedKey === null) return false; // nothing fetched yet to be stale
+    return this.windowNow(this.clock.now()).key !== this.issuedKey;
   }
 
   private scheduleReload() {
@@ -466,15 +473,17 @@ class Store implements OverviewStore {
     if (this.reloadTimer !== null) this.clock.clearTimeout(this.reloadTimer);
     const epoch = ++this.epoch;
     const s = this.state;
-    const d = this.derive(this.clock.now());
     // State can't change between schedule and fire without rescheduling, so
     // capturing filters/hourDay here is equivalent to computing them at fire.
-    const filters = rangeToFilters(s.range, d.from, d.to);
-    const hourDay = hourlyDayOf(s.range, d.from, d.to, d.firstIso, d.lastIso, this.clock.now());
+    // The key is recorded now rather than on landing: a failed reload sets
+    // fetchError, which the idle skip already refuses to skip on, so the retry
+    // is covered either way.
+    const { filters, hourDay, key } = this.windowNow(this.clock.now());
+    this.issuedKey = key;
     const delay = s.range === 'custom' ? 250 : 0;
     this.reloadTimer = this.clock.setTimeout(() => {
       this.reloadTimer = null;
-      this.runReload(epoch, filters, hourDay);
+      this.runReload(epoch, filters, hourDay, key);
     }, delay);
     // The epoch bump above is what makes `reloading` true, and every caller
     // published BEFORE calling here — so without this the new window would be
@@ -485,7 +494,7 @@ class Store implements OverviewStore {
   // All jobs land as ONE patch/publish: nine individual landings would
   // re-render the dashboard nine times per reload (visible as a long-task
   // burst every refresh tick).
-  private runReload(epoch: number, filters: Filters, hourDay: string | null) {
+  private runReload(epoch: number, filters: Filters, hourDay: string | null, key: string) {
     // Both the success and the failure path land, so a reload that throws
     // clears `reloading` too — fetchError is how a failure is reported, and
     // leaving the flag set would disable the export button for good.
@@ -520,10 +529,6 @@ class Store implements OverviewStore {
         ...(hour ? { hourPoints: hour } : {}),
         fetchError: null,
       });
-    const key = JSON.stringify([filters, hourDay]);
-    // Recorded at issue, not at landing: a failure sets fetchError, which the
-    // idle skip already refuses to skip on, so the retry is covered either way.
-    this.loadedKey = key;
     const cached = this.reloadCache.get(key);
     if (cached) {
       land(() => apply(cached));

@@ -453,6 +453,29 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     expect(bars[0].segs.map((s) => s.frac)).toEqual([0.1, 0.1, 0.6, 0.2]);
   });
 
+  // The Model rows and the tool total reach modelBars from independently timed
+  // sources: rows from the store's last fetched window, the total from a
+  // render-clock slice of the series. Between a day rolling over (or a range
+  // switch) and the refetch landing they describe DIFFERENT windows, and a
+  // clamped denominator turned that into shares of billions of percent on a
+  // real screen. A share nothing can measure is unknown, not a number.
+  it('modelBars reports no share when the total cannot measure the row', () => {
+    const row = (totalTokens: number): BreakdownRow => ({
+      key: 'claude-opus-5', inputTokens: totalTokens, outputTokens: 0, cacheReadTokens: 0,
+      cacheWriteTokens: 0, totalTokens, requests: 1, cost: 1,
+      source: 'claude', reasoningTokens: null, convs: 1, cacheEstimated: false,
+      hasUnpriced: false, unattributedTokens: 0,
+    });
+
+    // The reported shape: a new day's total of 0 against the old day's rows.
+    expect(modelBars([row(75_060_962)], 'claude', 0)[0].share).toBeNull();
+    // The milder mismatch, which a clamp would have rendered as 4,600%.
+    expect(modelBars([row(75_000_000)], 'claude', 1_600_000)[0].share).toBeNull();
+    // Coherent windows still report a share, including the whole of one.
+    expect(modelBars([row(50)], 'claude', 200)[0].share).toBeCloseTo(0.25);
+    expect(modelBars([row(200)], 'claude', 200)[0].share).toBeCloseTo(1);
+  });
+
   it('modelBars carries a null Model as a distinct non-Model row', () => {
     const rows: BreakdownRow[] = [
       { key: 'claude-opus-4-8', inputTokens: 50, outputTokens: 50, cacheReadTokens: 0,

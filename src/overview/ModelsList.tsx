@@ -82,11 +82,14 @@ function ModelsList({
                     </span>{' '}
                   </>
                 )}
-                <span className="pct">{fmtPct(m.share)}</span>
+                {/* An em dash, not a number: a share whose total cannot measure
+                    it is unknown, the same way an unattributed Context category
+                    is — never a figure invented from a clamped denominator. */}
+                <span className="pct">{m.share === null ? '—' : fmtPct(m.share)}</span>
               </span>
             </div>
             <div className="track">
-              <div className="segs" style={{ width: m.share * 100 + '%' }}>
+              <div className="segs" style={{ width: (m.share ?? 0) * 100 + '%' }}>
                 {m.segs.map((c) => (
                   <div key={c.key} style={{ width: c.frac * 100 + '%', background: c.color }} />
                 ))}

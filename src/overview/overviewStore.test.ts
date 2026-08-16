@@ -1223,7 +1223,7 @@ describe('overviewStore across local midnight', () => {
     expect(windowsOf(ledger)).toContain(AUG16);
 
     vi.setSystemTime(AFTER);
-    (ledger.calls.summary as unknown[][]).length = 0;
+    ledger.calls.summary.length = 0;
     await store.refresh(); // scan reports nothing inserted: a genuinely idle tick
     clock.advance(0);
     await flush();
@@ -1235,7 +1235,7 @@ describe('overviewStore across local midnight', () => {
     const { ledger, clock, store } = await dayStoreAt(BEFORE);
 
     vi.setSystemTime(new Date(2026, 7, 16, 23, 55, 0));
-    (ledger.calls.summary as unknown[][]).length = 0;
+    ledger.calls.summary.length = 0;
     await store.refresh();
     clock.advance(0);
     await flush();
