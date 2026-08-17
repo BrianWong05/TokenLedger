@@ -584,6 +584,7 @@ describe('TrayPanel', () => {
 
     expect(await keys('macos')).toEqual(['⇧⌘R', '⌘,', '⌘Q']);
     expect(await keys('windows')).toEqual(['Ctrl+Shift+R', 'Ctrl+,', 'Ctrl+Q']);
+    expect(await keys('linux')).toEqual(['Ctrl+Shift+R', 'Ctrl+,', 'Ctrl+Q']);
   });
 
   // The translucent card is scoped to body.tp-macos, because only macOS gets a
@@ -678,28 +679,31 @@ describe('TrayPanel', () => {
       expect(invoked).toContain('close_panel');
     });
 
-    // Windows has no ⌘, so the keys are the Ctrl ones the hints there spell —
-    // and each platform ignores the other's modifier, or a Windows ⌘Q (the
-    // Super key) would quit the app from under a window-switching keystroke.
-    it('binds the Ctrl keys on Windows, and neither platform takes the other\'s', async () => {
-      const ledger = await mount('windows');
-      const scans = ledger.calls.scan.length;
-      await key({ key: 'R', ctrlKey: true, shiftKey: true });
-      await key({ key: ',', ctrlKey: true });
-      await key({ key: 'q', ctrlKey: true });
-      expect(ledger.calls.scan.length).toBe(scans + 1);
-      expect(invoked).toContain('open_settings');
-      expect(invoked).toContain('quit_app');
+    // Windows and Linux have no ⌘, so the keys are the Ctrl ones the hints
+    // there spell — and each platform ignores the other's modifier, or a
+    // Super/Win ⌘Q would quit the app from under a window-switching keystroke.
+    it.each([['windows' as Platform], ['linux' as Platform]])(
+      'binds the Ctrl keys on %s, and ignores ⌘',
+      async (platform) => {
+        const ledger = await mount(platform);
+        const scans = ledger.calls.scan.length;
+        await key({ key: 'R', ctrlKey: true, shiftKey: true });
+        await key({ key: ',', ctrlKey: true });
+        await key({ key: 'q', ctrlKey: true });
+        expect(ledger.calls.scan.length).toBe(scans + 1);
+        expect(invoked).toContain('open_settings');
+        expect(invoked).toContain('quit_app');
 
-      // The macOS spelling does nothing here.
-      invoked.length = 0;
-      const after = ledger.calls.scan.length;
-      await key({ key: 'R', metaKey: true, shiftKey: true });
-      await key({ key: ',', metaKey: true });
-      await key({ key: 'q', metaKey: true });
-      expect(ledger.calls.scan.length).toBe(after);
-      expect(invoked).toEqual([]);
-    });
+        // The macOS spelling does nothing here.
+        invoked.length = 0;
+        const after = ledger.calls.scan.length;
+        await key({ key: 'R', metaKey: true, shiftKey: true });
+        await key({ key: ',', metaKey: true });
+        await key({ key: 'q', metaKey: true });
+        expect(ledger.calls.scan.length).toBe(after);
+        expect(invoked).toEqual([]);
+      },
+    );
 
     // The promise itself (CONTEXT.md): whatever the panel *prints* beside an
     // action is what fires it. Read back from the rendered hints rather than
@@ -716,6 +720,7 @@ describe('TrayPanel', () => {
     it.each([
       ['macos' as Platform],
       ['windows' as Platform],
+      ['linux' as Platform],
     ])('every shortcut it prints on %s is one that works', async (platform) => {
       const ledger = await mount(platform);
       const printed = Array.from(document.querySelectorAll('.tp-action')).map((b) => ({
