@@ -783,15 +783,15 @@ describe('overviewStore profile', () => {
     expect(modelsOf(store, clock)).toEqual(['claude-fable-5']);
   });
 
-  it('keeps the footer on the Ledger itself while the Models follow the window', async () => {
+  it('scopes the footer to the window along with the Models (TOKL-7)', async () => {
     const clock = fakeClock();
     const store = await boot(makeFakeLedger({ dayPoints: spread }), clock);
 
-    store.setRange('day');
+    store.setRange('day'); // window = 2026-07-16 only
     const p = selectProfile(store.getSnapshot(), clock.now());
-    expect(p.models.map((m) => m.name)).toEqual(['claude-fable-5']); // the window's
-    expect(p.startedIso).toBe('2026-05-02'); // the Ledger's first record, not the window's
-    expect(p.activeDays).toBe(3);
+    expect(p.models.map((m) => m.name)).toEqual(['claude-fable-5']);
+    expect(p.startedIso).toBe('2026-07-16'); // first active day IN the window, not the Ledger's
+    expect(p.activeDays).toBe(1); // only the one day the range selects
   });
 
   it('asks for no fixed-window Session count now that the tiles are gone', async () => {

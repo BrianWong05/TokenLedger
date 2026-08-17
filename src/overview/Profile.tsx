@@ -7,10 +7,11 @@ import { useOverviewT } from './localize';
 const TOP_N = 5;
 
 // The Profile: the Models of the selected window, ranked, across every Source —
-// the top five, the rest one click away — with the Ledger's own span in the
-// footer. It reports no Cost, so none of the Partial Cost / Display Currency
-// rules reach it. No heading above the rows on purpose: the range picker
-// already names the window (TOKL-6).
+// the top five, the rest one click away — with the window's own span in the
+// footer (first active day + active-day count, both scoped to the range, TOKL-7).
+// It reports no Cost, so none of the Partial Cost / Display Currency rules reach
+// it. No heading above the rows on purpose: the range picker already names the
+// window (TOKL-6).
 //
 // Shares are of the window's whole total including Unattributed Usage, so they
 // sum to less than 100% — the row bar's width is that same absolute share,

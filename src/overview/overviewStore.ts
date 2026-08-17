@@ -641,13 +641,12 @@ export function selectDays(s: OverviewSnapshot, now: Date = new Date()): Day[] {
   return seriesToDays(s.allPoints ?? [], now);
 }
 
-// The Profile's Models follow the window, its footer facts the Ledger — both
-// read off the series, so a range click repaints the card without waiting on
-// the window reload. Callers MUST memoize on the series identity and the window
+// The whole Profile card — Models and footer facts alike — follows the window,
+// read off the series, so a range click repaints it without waiting on the
+// window reload. Callers MUST memoize on the series identity and the window
 // (range/from/to), not on the snapshot.
 export function selectProfile(s: OverviewSnapshot, now: Date = new Date()): ProfileView {
-  const pts = s.allPoints ?? [];
-  return profileView(pointsIn(pts, windowOf(s.range, s.from, s.to, now)), pts);
+  return profileView(pointsIn(s.allPoints ?? [], windowOf(s.range, s.from, s.to, now)));
 }
 
 export function selectVisibleTools(s: OverviewSnapshot, now: Date = new Date()): SourceMeta[] {

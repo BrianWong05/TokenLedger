@@ -389,8 +389,10 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
       <div className="tt-b8-grid">
         <div className="tt-b8-col">
           <Profile profile={panels.profile} />
-          <Heatmap days={panels.heatmap.days} compact onEnlarge={openHeatModal} enlargeRef={setHeatEnlargeTarget} />
           <AggTrend data={panels.trend.data} per={panels.trend.per} rangeLabel={rangeLabel} modelTool={panels.trend.modelTool} onEnlarge={openTrendModal} enlargeRef={setTrendEnlargeTarget} />
+          {/* The Heatmap always spans a trailing 365 days — it does not follow the
+              range segment, so it sits after the range-responsive panels above. */}
+          <Heatmap days={panels.heatmap.days} compact onEnlarge={openHeatModal} enlargeRef={setHeatEnlargeTarget} />
         </div>
 
         <div className="tt-b8-col">

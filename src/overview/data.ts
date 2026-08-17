@@ -786,24 +786,27 @@ export interface ProfileView {
   // can tell a window with nothing in it from one whose usage is all
   // Unattributed — both leave `models` empty, and they are not the same thing.
   windowTokens: number;
-  startedIso: string | null;   // null = nothing in the Ledger
-  activeDays: number;
+  startedIso: string | null;   // window's first active day; null = no usage in it
+  activeDays: number;          // days with usage inside the window
 }
 
-// The Profile: the Models of the SELECTED window, ranked, across every Source
-// (TOKL-6). Both arguments are the same unbounded daily series — sliced to the
-// window for the Models, whole for the footer's Ledger facts. Deriving from the
-// series rather than the window's Model breakdown is what the rest of this tab
-// does (selectVisibleTools, the heatmap, the headline's `total`), and it is
-// what lets the card answer a range click at once: waiting on the reload would
-// leave the previous window's Models sitting under the new window's name.
+// The Profile: the Models AND footer facts of the SELECTED window (TOKL-6/7),
+// ranked across every Source. Every figure on the card — Models, shares, first
+// active day, active-day count — is scoped to the window the range picks, so a
+// range click moves the whole card. It takes the window's daily points already
+// sliced; deriving from the series rather than the window's Model breakdown is
+// what the rest of this tab does (selectVisibleTools, the headline's `total`),
+// and it is what lets the card answer a range click at once: waiting on the
+// reload would leave the previous window's Models sitting under the new name.
 //
 // Model shares are measured against the window's whole total including
 // Unattributed Usage, which is why they sum to less than 1: Unattributed has no
 // Model to be (ADR-0008), so it holds a share without ever being a row.
-export function profileView(windowPts: SeriesPoint[], allPts: SeriesPoint[]): ProfileView {
+export function profileView(windowPts: SeriesPoint[]): ProfileView {
   let windowTokens = 0;
   const byModel = new Map<string, number>();
+  let startedIso: string | null = null;
+  const activeDays = new Set<string>();
   for (const p of windowPts) {
     windowTokens += p.totalTokens;
     // byModel already merges a Model's tokens across Sources within a bucket;
@@ -813,18 +816,13 @@ export function profileView(windowPts: SeriesPoint[], allPts: SeriesPoint[]): Pr
     for (const [m, tokens] of Object.entries(p.byModel)) {
       byModel.set(m, (byModel.get(m) ?? 0) + tokens);
     }
-  }
-  const models = [...byModel.entries()]
-    .map(([name, tokens]) => ({ name, tokens, share: tokens / Math.max(1, windowTokens) }))
-    .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
-
-  let startedIso: string | null = null;
-  const activeDays = new Set<string>();
-  for (const p of allPts) {
     if (p.totalTokens <= 0) continue; // a zero-token day is not an active day
     activeDays.add(p.bucket);
     if (startedIso === null || p.bucket < startedIso) startedIso = p.bucket;
   }
+  const models = [...byModel.entries()]
+    .map(([name, tokens]) => ({ name, tokens, share: tokens / Math.max(1, windowTokens) }))
+    .sort((a, b) => b.tokens - a.tokens || a.name.localeCompare(b.name));
 
   return { models, windowTokens, startedIso, activeDays: activeDays.size };
 }

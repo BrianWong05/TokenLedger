@@ -100,8 +100,10 @@ afterEach(() => {
   document.body.style.overflow = '';
 });
 
+// Scoped to the heatmap card: the trend card carries the same enlarge class, so
+// a bare '.tt-heat-enlarge' would match whichever panel renders first.
 const enlargeButton = (c: HTMLElement) =>
-  c.querySelector<HTMLButtonElement>('.tt-heat-enlarge')!;
+  c.querySelector<HTMLButtonElement>('.tt-card.heat .tt-heat-enlarge')!;
 const dialog = () => document.querySelector<HTMLElement>('.tt-heat-modal');
 
 async function open(c: HTMLElement): Promise<HTMLElement> {

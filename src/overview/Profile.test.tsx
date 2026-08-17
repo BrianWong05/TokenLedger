@@ -120,7 +120,7 @@ describe('Profile', () => {
     );
   });
 
-  it('reports the Ledger span in the footer, dashes included', () => {
+  it('reports the window span in the footer, dashes included', () => {
     expect(mount(view()).querySelector('.tt-profile-foot')!.textContent).toContain('2025-05-12');
     expect(mount(view()).querySelector('.tt-profile-foot')!.textContent).toContain('192');
     const empty = mount(view({ models: [], windowTokens: 0, startedIso: null, activeDays: 0 }));

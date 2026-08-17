@@ -726,13 +726,10 @@ describe('execFacets', () => {
 describe('profileView', () => {
   it('merges a Model across the Sources that report it', () => {
     // codex and pi both report gpt-5.6-sol — one Model, not two rows.
-    const p = profileView(
-      [
-        pt({ source: 'codex', totalTokens: 60, byModel: { 'gpt-5.6-sol': 60 } }),
-        pt({ source: 'pi', totalTokens: 40, byModel: { 'gpt-5.6-sol': 40 } }),
-      ],
-      [],
-    );
+    const p = profileView([
+      pt({ source: 'codex', totalTokens: 60, byModel: { 'gpt-5.6-sol': 60 } }),
+      pt({ source: 'pi', totalTokens: 40, byModel: { 'gpt-5.6-sol': 40 } }),
+    ]);
     expect(p.models).toHaveLength(1);
     expect(p.models[0]).toMatchObject({ name: 'gpt-5.6-sol', tokens: 100, share: 1 });
   });
@@ -740,7 +737,6 @@ describe('profileView', () => {
   it('holds Unattributed Usage in the denominator without giving it a row', () => {
     const p = profileView(
       [pt({ source: 'pi', totalTokens: 100, byModel: { 'kimi-for-coding': 75 }, unattributedTokens: 25 })],
-      [],
     );
     expect(p.models.map((m) => m.name)).toEqual(['kimi-for-coding']);
     expect(p.models[0].share).toBe(0.75); // not 1.0 — the 25 unattributed still count
@@ -750,13 +746,12 @@ describe('profileView', () => {
     const win = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((m, i) =>
       pt({ totalTokens: 100 - i, byModel: { [m]: 100 - i } }),
     );
-    expect(profileView(win, []).models.map((m) => m.name)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+    expect(profileView(win).models.map((m) => m.name)).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
   });
 
   it('breaks a token tie by name', () => {
     const p = profileView(
       [pt({ totalTokens: 10, byModel: { zeta: 10 } }), pt({ totalTokens: 10, byModel: { alpha: 10 } })],
-      [],
     );
     expect(p.models.map((m) => m.name)).toEqual(['alpha', 'zeta']);
   });
@@ -768,43 +763,46 @@ describe('profileView', () => {
       pt({ bucket: '2026-07-10', totalTokens: 100, byModel: { today: 100 } }),
       pt({ bucket: '2026-06-10', totalTokens: 900, byModel: { older: 900 } }),
     ];
-    const p = profileView(all.slice(0, 1), all);
+    const p = profileView(all.slice(0, 1));
     expect(p.models).toEqual([{ name: 'today', tokens: 100, share: 1 }]);
     expect(p.windowTokens).toBe(100);
+    // Footer facts are the window's too: the older day is outside it.
+    expect(p.startedIso).toBe('2026-07-10');
+    expect(p.activeDays).toBe(1);
   });
 
   it('separates an empty window from one that is all Unattributed', () => {
     // Both leave the card with no rows; only the first is "no usage".
-    expect(profileView([], []).windowTokens).toBe(0);
+    expect(profileView([]).windowTokens).toBe(0);
     const allUnattributed = profileView(
       [pt({ source: 'pi', totalTokens: 40, byModel: {}, unattributedTokens: 40 })],
-      [],
     );
     expect(allUnattributed.models).toEqual([]);
     expect(allUnattributed.windowTokens).toBe(40);
   });
 
-  it('has no Models for a window with no usage, whatever the Ledger holds', () => {
-    const p = profileView([], [pt({ bucket: '2026-06-10', totalTokens: 800 })]);
+  it('empties the whole card for a window with no usage', () => {
+    const p = profileView([]);
     expect(p.models).toEqual([]);
-    expect(p.startedIso).toBe('2026-06-10'); // the footer still describes the Ledger
+    expect(p.startedIso).toBeNull(); // the footer follows the window too
+    expect(p.activeDays).toBe(0);
   });
 });
 
 describe('profileView footer facts', () => {
-  it('reads the Ledger span from the whole series, never from the window', () => {
+  it('reads the span from the window, never the whole series', () => {
     const pts = [
-      pt({ bucket: '2026-07-10', totalTokens: 100 }),
-      pt({ bucket: '2026-06-10', totalTokens: 800 }),
-      pt({ bucket: '2026-06-10', source: 'codex', totalTokens: 5 }), // same day, 2nd Source
+      pt({ bucket: '2026-07-12', totalTokens: 100 }),
+      pt({ bucket: '2026-07-10', totalTokens: 800 }),
+      pt({ bucket: '2026-07-10', source: 'codex', totalTokens: 5 }), // same day, 2nd Source
     ];
-    const p = profileView(pts.slice(0, 1), pts); // window = the newest day only
-    expect(p.startedIso).toBe('2026-06-10');
-    expect(p.activeDays).toBe(2); // days, not points
+    const p = profileView(pts.slice(1)); // window = the two older days
+    expect(p.startedIso).toBe('2026-07-10'); // first active day IN the window
+    expect(p.activeDays).toBe(1); // one day, two points
   });
 
   it('counts no active day for a zero-token bucket', () => {
-    const p = profileView([], [pt({ bucket: '2026-07-09', totalTokens: 0 })]);
+    const p = profileView([pt({ bucket: '2026-07-09', totalTokens: 0 })]);
     expect(p.activeDays).toBe(0);
     expect(p.startedIso).toBeNull();
   });
