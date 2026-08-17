@@ -14,6 +14,7 @@ import { makeFakeLedger, type FakeLedger } from './ledger.fake';
 import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
+import type { Platform } from '../lib/platform';
 import type { BreakdownRow, SeriesPoint, Summary, ScanStatus } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -128,6 +129,7 @@ function headlineTotal(container: HTMLElement): number {
 // the initial refresh has fully settled (refreshing false) before assertions.
 async function mountSettled(
   seed: Parameters<typeof makeFakeLedger>[0],
+  platform?: Platform,
 ): Promise<{ container: HTMLElement; ledger: FakeLedger }> {
   vi.useFakeTimers();
   const ledger = makeFakeLedger(seed);
@@ -138,7 +140,10 @@ async function mountSettled(
   await act(async () => {
     root.render(
       <SettingsProvider port={makeFakeSettings()}>
-        <Overview ports={{ ledger, clock: systemClock, pricing: makeFakePricing(), export: makeFakeExporter() }} />
+        <Overview
+          ports={{ ledger, clock: systemClock, pricing: makeFakePricing(), export: makeFakeExporter() }}
+          platform={platform}
+        />
       </SettingsProvider>,
     );
   });
@@ -760,13 +765,21 @@ describe('Overview presentation', () => {
 
   // The same chord the Menu Bar Extra's panel carries (src/lib/hotkeys.ts):
   // pressing it does what the Rescan button does, and it inherits that
-  // button's gate, so a scan already running swallows it.
-  it('re-runs the scan on the Rescan shortcut, and coalesces while one runs', async () => {
+  // button's gate, so a scan already running swallows it. ⌘ on macOS; Ctrl
+  // on Windows and Linux.
+  it.each([
+    ['macos' as Platform, { key: 'R', metaKey: true, shiftKey: true }, { key: 'R', ctrlKey: true, shiftKey: true }],
+    ['windows' as Platform, { key: 'R', ctrlKey: true, shiftKey: true }, { key: 'R', metaKey: true, shiftKey: true }],
+    ['linux' as Platform, { key: 'R', ctrlKey: true, shiftKey: true }, { key: 'R', metaKey: true, shiftKey: true }],
+  ])('re-runs the scan on the Rescan shortcut on %s, and coalesces while one runs', async (platform, chord, other) => {
     const { container: c, ledger } = await mountSettled({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,
-    });
+    }, platform);
     expect(ledger.calls.scan.length).toBe(1); // the mount load
+    expect(c.querySelector('.tt-rescan')?.getAttribute('title')).toBe(
+      platform === 'macos' ? '⇧⌘R' : 'Ctrl+Shift+R',
+    );
 
     const press = async (init: KeyboardEventInit) => {
       await act(async () => {
@@ -774,22 +787,22 @@ describe('Overview presentation', () => {
       });
     };
 
-    await press({ key: 'R', metaKey: true, shiftKey: true });
+    await press(chord);
     // Held on the key: the second press lands inside the first scan's spin.
-    await press({ key: 'R', metaKey: true, shiftKey: true });
+    await press(chord);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_200);
     });
     expect(ledger.calls.scan.length).toBe(2);
 
-    // Near misses stay the app's: bare ⌘R, an extra modifier, the other
-    // platform's spelling.
-    for (const chord of [
-      { key: 'R', metaKey: true },
-      { key: 'R', metaKey: true, shiftKey: true, altKey: true },
-      { key: 'R', ctrlKey: true, shiftKey: true },
+    // Near misses stay the app's: the modifier without Shift, an extra
+    // modifier, the other platform's spelling.
+    for (const miss of [
+      { key: 'R', metaKey: platform === 'macos', ctrlKey: platform !== 'macos' },
+      { ...chord, altKey: true },
+      other,
     ]) {
-      await press(chord);
+      await press(miss);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_200);
       });

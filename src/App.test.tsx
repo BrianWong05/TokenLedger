@@ -238,6 +238,7 @@ describe('App shell', () => {
   it.each([
     ['macos' as Platform, { key: ',', metaKey: true }],
     ['windows' as Platform, { key: ',', ctrlKey: true }],
+    ['linux' as Platform, { key: ',', ctrlKey: true }],
   ])('opens the Settings tab on the %s Settings shortcut', async (platform, chord) => {
     const container = document.createElement('div');
     document.body.append(container);
