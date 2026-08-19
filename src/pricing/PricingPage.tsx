@@ -13,8 +13,9 @@ import type { SettingsPort } from '../settings/settings';
 import { sourceIcon } from '../overview/icons';
 import OverrideEditor from './OverrideEditor';
 import {
-  modelState, resolvedRates, filterModels, chipCounts, fmtRate,
-  pricingSourceMeta, sourceLabel, originLabel, isRoutedRate, fill, type PriceFilter,
+  modelState, resolvedRates, overallRate, filterModels, chipCounts, fmtRate,
+  pricingSourceMeta, sourceLabel, originLabel, isRoutedRate, fill,
+  sortPricing, defaultDir, type PriceFilter, type SortCol, type SortDir,
 } from './pricing.derive';
 
 const CHIPS: { key: PriceFilter; labelKey: 'pricing.chip.all' | 'pricing.chip.unpriced' | 'pricing.chip.override' | 'pricing.chip.est'; count: (c: ReturnType<typeof chipCounts>) => number }[] = [
@@ -38,6 +39,9 @@ export default function PricingPage({
   const [models, setModels] = useState<ModelPricing[] | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<PriceFilter>('all');
+  // Sort is ephemeral (TOKL-10): opens on Model A–Z, resets each mount. Clicking
+  // a column header re-sorts; clicking the active header flips direction.
+  const [sort, setSort] = useState<{ col: SortCol; dir: SortDir }>({ col: 'model', dir: 'asc' });
   const [editor, setEditor] = useState<ModelPricing | null>(null);
   const [scanning, setScanning] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -60,7 +64,17 @@ export default function PricingPage({
   }, [pricing, reload]);
 
   const counts = useMemo(() => (models ? chipCounts(models) : { all: 0, unpriced: 0, override: 0, est: 0 }), [models]);
-  const rows = useMemo(() => (models ? filterModels(models, query, filter) : []), [models, query, filter]);
+  const rows = useMemo(
+    () => (models ? sortPricing(filterModels(models, query, filter), sort.col, sort.dir) : []),
+    [models, query, filter, sort],
+  );
+  // Toggle direction on the active column; otherwise switch column at its
+  // natural opening direction.
+  const onSort = useCallback(
+    (col: SortCol) =>
+      setSort((s) => (s.col === col ? { col, dir: s.dir === 'asc' ? 'desc' : 'asc' } : { col, dir: defaultDir(col) })),
+    [],
+  );
 
   const scanNow = () => {
     if (scanning) return;
@@ -158,12 +172,13 @@ export default function PricingPage({
             {/* header + rows scroll as one unit so the columns stay aligned */}
             <div className="tl-pr-scroll">
               <div className="tl-pr-grid">
-                <span className="tl-pr-colhead">{t('pricing.col.model')}</span>
-                <span className="tl-pr-colhead">{t('pricing.col.rateSource')}</span>
-                <span className="tl-pr-colhead num">{t('pricing.col.input')}</span>
-                <span className="tl-pr-colhead num">{t('pricing.col.output')}</span>
-                <span className="tl-pr-colhead num">{t('pricing.col.cacheRead')}</span>
-                <span className="tl-pr-colhead num">{t('pricing.col.cacheWrite')}</span>
+                <SortHead col="model" label={t('pricing.col.model')} sort={sort} onSort={onSort} t={t} />
+                <SortHead col="source" label={t('pricing.col.rateSource')} sort={sort} onSort={onSort} t={t} />
+                <SortHead col="overall" label={t('pricing.col.overall')} num sort={sort} onSort={onSort} t={t} />
+                <SortHead col="input" label={t('pricing.col.input')} num sort={sort} onSort={onSort} t={t} />
+                <SortHead col="output" label={t('pricing.col.output')} num sort={sort} onSort={onSort} t={t} />
+                <SortHead col="cacheRead" label={t('pricing.col.cacheRead')} num sort={sort} onSort={onSort} t={t} />
+                <SortHead col="cacheWrite" label={t('pricing.col.cacheWrite')} num sort={sort} onSort={onSort} t={t} />
                 <span />
               </div>
 
@@ -202,9 +217,42 @@ export default function PricingPage({
   );
 }
 
+// A sortable column header (TOKL-10): a sort button showing a direction arrow
+// only on the active column. The grid is plain divs (no table/grid roles), where
+// aria-sort would be inert — so the current sort state rides in the accessible
+// NAME instead, which assistive tech always announces. `num` right-aligns the
+// rate columns to match their cells.
+function SortHead({
+  col, label, num = false, sort, onSort, t,
+}: {
+  col: SortCol;
+  label: string;
+  num?: boolean;
+  sort: { col: SortCol; dir: SortDir };
+  onSort: (col: SortCol) => void;
+  t: ReturnType<typeof useT>['t'];
+}) {
+  const active = sort.col === col;
+  const ariaLabel = active
+    ? fill(t(sort.dir === 'asc' ? 'pricing.sortedAsc' : 'pricing.sortedDesc'), { col: label })
+    : fill(t('pricing.sortBy'), { col: label });
+  return (
+    <button
+      type="button"
+      className={'tl-pr-colhead' + (num ? ' num' : '') + (active ? ' sorted' : '')}
+      aria-label={ariaLabel}
+      onClick={() => onSort(col)}
+    >
+      {label}
+      <span className="tl-pr-sortarrow" aria-hidden="true">{active ? (sort.dir === 'asc' ? '↑' : '↓') : ''}</span>
+    </button>
+  );
+}
+
 function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: ReturnType<typeof useT>['t'] }) {
   const state = modelState(m);
   const resolved = resolvedRates(m);
+  const overall = overallRate(m);
   const meta = pricingSourceMeta(m.tool);
   const icon = sourceIcon(meta.icon);
 
@@ -248,6 +296,12 @@ function ModelRow({ m, onEdit, t }: { m: ModelPricing; onEdit: () => void; t: Re
         )}
         {state === 'est' && <span className="tl-pr-badge cache-est">{t('pricing.badge.cacheEst')}</span>}
       </div>
+
+      {/* Overall = sum of the four resolved rates; ≈ when cache-estimated (a
+          partial sum), — when the Model has no resolved rate at all. */}
+      <span className={'tl-pr-overall' + (state === 'est' ? ' est' : '') + (overall == null ? ' faint' : '')}>
+        {overall == null ? '—' : (state === 'est' ? '≈ ' : '') + fmtRate(overall)}
+      </span>
 
       {RATE_KEYS.map((key, i) => {
         if (state === 'unpriced') return <span key={key} className="tl-pr-rate faint">—</span>;
