@@ -63,4 +63,16 @@ describe('TrayPanel translucency', () => {
     expect(dark).toHaveLength(light.length);
     dark.forEach((a, i) => expect(a, `stop ${i}`).toBeLessThan(light[i]));
   });
+
+  // The window and the card must agree on size and corner: the conf sizes the
+  // window and rounds the material, the CSS sizes and rounds the card. Apart
+  // they show as a clipped card or material poking past the corners.
+  it('keeps the card the same width and corner radius as the window and its material', () => {
+    const panel = conf.app.windows.find((w) => w.label === 'traypanel');
+    const card = css.match(/(?:^|\n)\.tp\s*\{([^}]*)\}/)[1];
+    expect(card.match(/(?:^|;)\s*width\s*:\s*([^;]+)/)[1].trim()).toBe(`${panel.width}px`);
+    expect(card.match(/border-radius\s*:\s*([^;]+)/)[1].trim()).toBe(
+      `${panel.windowEffects.radius}px`,
+    );
+  });
 });

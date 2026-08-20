@@ -25,3 +25,17 @@ string-building.
 
 The bar title (tokens · Cost) stays native and stays computed in Rust — text
 beside the icon is the one thing a webview cannot do.
+
+## Amendment (2026-08-21)
+
+The 2b look this ADR cites was replaced by the "Option A + Models · bars"
+redesign (the menu-bar-panel-redesign canvas): the period tabs double as the
+header, Rescan is a top-right refresh icon, the per-Source rows became a
+stacked share bar with a legend, Cost per bucket draws as columns, Model rows
+carry their Source's mark, the stats sit in tiles, and the actions are icon
+buttons. The costliest-Project read-out was dropped with the redesign, so the
+panel no longer fetches the Project breakdown, and the window widened 300 →
+320 (material radius 8 → 14) with it. Everything this ADR decided still
+stands: the surface remains an ordinary-frontend webview on the same ports,
+formatters, and lazy create/destroy lifecycle — only the design it renders
+pixel-faithfully changed.

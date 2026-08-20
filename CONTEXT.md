@@ -145,8 +145,7 @@ Its fullest form is an icon with Today's token total and Cost beside it, and
 the panel that icon toggles, presenting a selected window of the Ledger —
 headline Cost, tokens, Requests, pace against the window before it, Cost per
 bucket across the window, per-Source and per-Model figures, Cache Hit Rate,
-the costliest Project, and how long ago the last scan ran — plus the app
-actions. Where the platform cannot show text beside the icon, Today's figures
+and how long ago the last scan ran — plus the app actions. Where the platform cannot show text beside the icon, Today's figures
 move to the icon's hover text; where the platform delivers no icon clicks,
 there is no panel and the icon instead carries a menu — a read-only Today
 row plus the app actions — with the panel's read-out left to the Overview.
@@ -161,10 +160,10 @@ waiting for the next Scan.
 Every figure follows the same rules as everywhere else: Partial Cost's
 "≥" marker, the Unreadable Artifact "≥" on token figures, Unpriced never
 shown as $0, a window with no usage at $0.00, Display Currency honored.
-A keyboard shortcut the panel prints beside an action is a working promise,
-not decoration: pressing it while the panel is open does exactly what the
-action does, and the panel dismisses on Escape just as it does when focus
-leaves it.
+A keyboard shortcut the panel carries on an action — printed beside it or
+riding its tooltip — is a working promise, not decoration: pressing it while
+the panel is open does exactly what the action does, and the panel dismisses
+on Escape just as it does when focus leaves it.
 The platform's own facility that hosts it — a Linux system tray and the
 AppIndicator library behind it, the Windows notification area — keeps its
 native name, because that is a place, not this application's presence in it.

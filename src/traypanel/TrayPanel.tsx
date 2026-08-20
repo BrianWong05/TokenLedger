@@ -1,8 +1,10 @@
-// The Menu Bar Extra panel (design 2b grown, in 2b's idiom — ADR-0007): a small
-// frameless webview the tray toggles. Beneath the mock's header sit the Cost
-// sparkline, the Source and Model rows, and the stats strip; every figure is a
-// display string the view model already decided. Data goes through the same
-// ports the app shell uses; the four actions are Tauri glue.
+// The Menu Bar Extra panel (ADR-0007), in the "Glance + Models · bars" design:
+// period tabs top-left double as the window's label, Rescan is the top-right
+// refresh icon, and beneath the hero Cost sit the stacked source bar with its
+// legend, the Cost bar chart, the Model rows (led by their Source's mark), the
+// stat tiles, and the three icon actions. Every figure is a display string the
+// view model already decided. Data goes through the same ports the app shell
+// uses; the four actions are Tauri glue.
 // UI strings are English-only like the native menu it replaced; number and
 // currency formatting still follow the app's locale. Dark-only like the mock.
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
@@ -25,32 +27,32 @@ export interface TrayPanelPorts {
   settings?: SettingsPort;
 }
 
-const PANEL_WIDTH = 300;
+const PANEL_WIDTH = 320;
 
-// Sparkline geometry: the model hands over one normalised value per bucket,
-// the view decides what that looks like in its 260×44 box. The horizontal
-// inset keeps the stroke and the now-dot off the box edges, where half of
-// either would be clipped.
-const SPARK_W = 260;
-const SPARK_H = 44;
-const SPARK_PAD = 3;
-function sparkXY(points: number[], i: number): [number, number] {
-  const last = Math.max(1, points.length - 1);
-  return [
-    SPARK_PAD + (i / last) * (SPARK_W - SPARK_PAD * 2),
-    SPARK_H - 4 - points[i] * (SPARK_H - 10),
-  ];
+// Bar-chart geometry: the model hands over one normalised value per bucket,
+// the view splits its 288×56 box into one column per bucket. A bucket with
+// usage never rounds below a visible sliver, an idle bucket draws nothing,
+// and a young period's lone bucket stays a column rather than flooding the
+// box (the cap only ever binds when buckets are few). Exported for its test.
+const SPARK_W = 288;
+const SPARK_H = 56;
+export function barRect(points: number[], i: number): string {
+  const slot = SPARK_W / points.length;
+  const w = Math.max(2, Math.min(slot - 2, 28));
+  const x = i * slot + (slot - w) / 2;
+  const h = points[i] > 0 ? Math.max(1.2, points[i] * (SPARK_H - 6)) : 0;
+  return h > 0
+    ? `M${x.toFixed(1)} ${SPARK_H - 2} v-${h.toFixed(1)} h${w.toFixed(1)} v${h.toFixed(1)} Z`
+    : '';
 }
-function sparkPath(points: number[]): string {
+function barsPath(points: number[], skipIdx: number): string {
   return points
-    .map((_, i) => {
-      const [x, y] = sparkXY(points, i);
-      return `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`;
-    })
+    .map((_, i) => (i === skipIdx ? '' : barRect(points, i)))
+    .filter(Boolean)
     .join(' ');
 }
 
-// Fire-and-forget IPC for the action rows; harmless outside Tauri (tests).
+// Fire-and-forget IPC for the actions; harmless outside Tauri (tests).
 function ipc(cmd: string) {
   Promise.resolve()
     .then(() => invoke(cmd))
@@ -118,7 +120,7 @@ export default function TrayPanel({
   const scanningRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('today');
-  // The sparkline's hover inspector: which bucket the pointer is nearest, null
+  // The bar chart's hover inspector: which bucket the pointer is over, null
   // when the mouse is away.
   const [sparkHover, setSparkHover] = useState<number | null>(null);
   // refresh() reads the ref so its identity doesn't churn on period change
@@ -152,7 +154,6 @@ export default function TrayPanel({
           ledger.breakdown('tool', current),
           settings.get(),
           ledger.breakdown('model', current),
-          ledger.breakdown('project', current),
           ledger.series(current, seriesBucket(periodRef.current)),
           ledger.lastScan(),
           ledger.unreadableArtifacts(),
@@ -161,7 +162,7 @@ export default function TrayPanel({
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
-      const [t, y, rows, s, models, projects, series, scannedAt, sources] = fetched[0].value;
+      const [t, y, rows, s, models, series, scannedAt, sources] = fetched[0].value;
       const lang = s.language === 'zh-Hant' ? 'zh-Hant' : 'en';
       const unread = unreadableSourcesIn(sources, w.start);
       setTokensFloor({
@@ -175,7 +176,6 @@ export default function TrayPanel({
           period: periodRef.current,
           now: new Date(),
           models,
-          projects,
           series,
           scannedAt,
         }),
@@ -197,7 +197,7 @@ export default function TrayPanel({
     return () => document.body.classList.remove('tp-window', `tp-${platform}`);
   }, [platform]);
 
-  // Scan, then re-read what it added. The Rescan button's action, and the
+  // Scan, then re-read what it added. The refresh button's action, and the
   // second half of every open. Only the scan is gated — coalescing the read
   // as well would leave an open that lands mid-scan showing the figures from
   // the open before it. The release is in `finally` because a throw out of
@@ -226,7 +226,7 @@ export default function TrayPanel({
   // current, so nobody has to press Rescan for today's figures. The read does
   // not wait on the scan — reads have their own connection (lib.rs's read_db)
   // precisely so a scan cannot queue a paint — and the scan's own re-read
-  // repaints when it lands, including the "Scanned" read-out.
+  // repaints when it lands, including the "scanned" read-out.
   const open = useCallback(async () => {
     await refresh(true);
     await rescan();
@@ -300,20 +300,16 @@ export default function TrayPanel({
     return () => ro.disconnect();
   }, []);
 
-  // Hit-testing: inverting the svg's x is enough — the svg stretches
-  // (preserveAspectRatio none), so viewBox x is proportional to box x.
+  // Hit-testing: the svg stretches (preserveAspectRatio none), so box x is
+  // proportional to viewBox x, and each bucket owns an equal slot of it.
   const onSparkMove = (e: ReactMouseEvent<SVGSVGElement>) => {
     const spark = model?.spark;
     const rect = e.currentTarget.getBoundingClientRect();
     if (!spark || !rect.width) return;
     const vx = ((e.clientX - rect.left) / rect.width) * SPARK_W;
-    const last = Math.max(1, spark.points.length - 1);
-    const i = Math.round(((vx - SPARK_PAD) / (SPARK_W - SPARK_PAD * 2)) * last);
+    const i = Math.floor(vx / (SPARK_W / spark.points.length));
     setSparkHover(Math.max(0, Math.min(spark.points.length - 1, i)));
   };
-  // The inspected bucket's chart position; null while the mouse is away.
-  const hoverXY =
-    model?.spark && sparkHover != null ? sparkXY(model.spark.points, sparkHover) : null;
 
   const pickPeriod = (p: Period) => {
     if (p === periodRef.current) return;
@@ -322,9 +318,11 @@ export default function TrayPanel({
     void refresh(); // no skeleton beat on a switch — it should feel snappy
   };
 
+  const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
+
   return (
     <div className="tp" ref={bodyRef}>
-      <div className="tp-header">
+      <div className="tp-top">
         <div className="tp-seg" role="tablist">
           {(
             [
@@ -344,68 +342,106 @@ export default function TrayPanel({
             </button>
           ))}
         </div>
-        {loading ? (
-          <div className="tp-figures">
-            <div className="tp-cost-row">
-              <span className="tp-skel tp-skel-cost" />
-            </div>
-            <span className="tp-skel tp-skel-sub" />
-          </div>
-        ) : (
-          <div className={scanning ? 'tp-figures tp-pulse' : 'tp-figures'}>
-            <div className="tp-cost-row">
-              <span className="tp-cost">
-                {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
-              </span>
-              {model?.delta && (
-                <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
-              )}
-            </div>
-            <span className="tp-sub" title={tokensFloor.marked ? tokensFloor.reason : undefined}>
-              {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tok · ${model.requestsText} req` : ''}
-            </span>
-          </div>
-        )}
+        {/* aria-disabled, not disabled: a disabled control shows no tooltip,
+            and the hotkey hint must not vanish exactly while the icon spins.
+            rescan() gates itself, so the click is already inert mid-scan. */}
+        <button
+          className="tp-refresh"
+          title={`Rescan now (${keys.rescan})`}
+          aria-label="Rescan now"
+          aria-disabled={scanning || undefined}
+          aria-busy={scanning || undefined}
+          onClick={() => void rescan()}
+        >
+          {/* 1b's refresh glyph, spinning while the scan runs. */}
+          <svg
+            className={scanning ? 'tp-spin' : undefined}
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+            <path d="M21 3v5h-5" />
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+            <path d="M8 16H3v5" />
+          </svg>
+        </button>
       </div>
+
+      {loading ? (
+        <div className="tp-figures">
+          <span className="tp-skel tp-skel-cost" />
+          <span className="tp-skel tp-skel-sub" />
+        </div>
+      ) : (
+        <div className={scanning ? 'tp-figures tp-pulse' : 'tp-figures'}>
+          <div className="tp-cost-row">
+            <span className="tp-cost">
+              {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
+            </span>
+            {model?.delta && (
+              <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
+            )}
+          </div>
+          <span className="tp-sub" title={tokensFloor.marked ? tokensFloor.reason : undefined}>
+            {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tokens · ${model.requestsText} requests` : ''}
+          </span>
+        </div>
+      )}
 
       {loading && (
         <>
-          <div className="tp-spark">
-            <span className="tp-skel tp-skel-spark" />
+          <span className="tp-skel tp-skel-bar" />
+          <span className="tp-skel tp-skel-spark" />
+          <div className="tp-tiles">
+            {[0, 1, 2].map((i) => (
+              <span className="tp-skel tp-skel-tile" key={i} />
+            ))}
           </div>
-          {[
-            ['src', 2],
-            ['model', 3],
-          ].map(([kind, n]) => (
-            <div key={kind}>
-              <div className="tp-sep" />
-              {Array.from({ length: n as number }, (_, i) => (
-                <div className="tp-row" key={i}>
-                  <span className="tp-skel tp-skel-dot" />
-                  <span className="tp-skel tp-skel-name" />
-                  <span className="tp-spacer" />
-                  <span className="tp-skel tp-skel-num" />
-                </div>
+        </>
+      )}
+
+      {!loading && model && model.rows.length > 0 && (
+        <div className="tp-sources">
+          {/* The bar splits the period's priced Cost; a period with none
+              (all-Unpriced, all-Unattributed) keeps the legend alone. */}
+          {barSlices.length > 0 && (
+            <div className="tp-srcbar">
+              {barSlices.map((r) => (
+                <span key={r.key} style={{ width: `${(r.share ?? 0) * 100}%`, background: r.color }} />
               ))}
             </div>
-          ))}
-          <div className="tp-sep" />
-          {[0, 1, 2].map((i) => (
-            <div className="tp-stat" key={i}>
-              <span className="tp-skel tp-skel-name" />
-              <span className="tp-skel tp-skel-num" />
-            </div>
-          ))}
-        </>
+          )}
+          <div className="tp-legend">
+            {model.rows.map((r) => (
+              <div className="tp-leg" key={r.key}>
+                <span className="tp-leg-name">
+                  {r.icon && <img src={r.icon} alt="" width={12} height={12} />}
+                  {r.label}
+                </span>
+                <span className="tp-leg-cost">{r.cost}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {!loading && !model?.empty && model?.spark && (
         <div className="tp-spark">
-          {/* The hover inspector's read-out. The line is always reserved so
-              inspecting never shifts the layout (the window is sized to the
-              content); idle it hints, hovered it reads the bucket. */}
-          <div className={sparkHover != null ? 'tp-spark-read' : 'tp-spark-read idle'}>
-            {sparkHover != null ? model.spark.details[sparkHover] : 'hover the chart'}
+          {/* The hover inspector's read-out row. Reserved so inspecting never
+              shifts the layout (the window is sized to the content); the peak
+              caption holds the left, the inspected bucket reads on the right. */}
+          <div className="tp-spark-cap-row">
+            <span className="tp-spark-peak">{model.spark.peak}</span>
+            <span className="tp-spark-read">
+              {sparkHover != null ? model.spark.details[sparkHover] : ''}
+            </span>
           </div>
           <svg
             viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
@@ -416,35 +452,12 @@ export default function TrayPanel({
             onMouseMove={onSparkMove}
             onMouseLeave={() => setSparkHover(null)}
           >
-            {/* One bucket is a point, not a line: the area would close into a
-                triangle spanning the whole box, drawing a fall that never
-                happened. The now-dot marks the latest bucket either way. */}
-            {model.spark.points.length > 1 && (
-              <>
-                <path
-                  className="tp-spark-area"
-                  d={`${sparkPath(model.spark.points)} L${SPARK_W - SPARK_PAD} ${SPARK_H} L${SPARK_PAD} ${SPARK_H} Z`}
-                />
-                <path className="tp-spark-line" d={sparkPath(model.spark.points)} />
-              </>
-            )}
-            <circle
-              className="tp-spark-now"
-              cx={sparkXY(model.spark.points, model.spark.points.length - 1)[0]}
-              cy={sparkXY(model.spark.points, model.spark.points.length - 1)[1]}
-              r="2.5"
-            />
-            {hoverXY && (
-              <>
-                <line
-                  className="tp-spark-hover-line"
-                  x1={hoverXY[0]}
-                  x2={hoverXY[0]}
-                  y1={2}
-                  y2={SPARK_H - 2}
-                />
-                <circle className="tp-spark-hover-dot" cx={hoverXY[0]} cy={hoverXY[1]} r="2.5" />
-              </>
+            {/* The peak bucket wears the brighter fill — the same bucket the
+                model's peak caption names. */}
+            <path className="tp-bars" d={barsPath(model.spark.points, model.spark.peakIndex)} />
+            <path className="tp-bar-peak" d={barRect(model.spark.points, model.spark.peakIndex)} />
+            {sparkHover != null && (
+              <path className="tp-bar-hover" d={barRect(model.spark.points, sparkHover)} />
             )}
           </svg>
           {/* The axis: first tick sits at the left edge, last at the right,
@@ -454,33 +467,17 @@ export default function TrayPanel({
               <span key={t}>{t}</span>
             ))}
           </div>
-          <div className="tp-spark-cap tp-spark-peak">{model.spark.peak}</div>
-        </div>
-      )}
-
-      {!loading && model && model.rows.length > 0 && (
-        <div className="tp-sources">
-          <div className="tp-sep" />
-          {model.rows.map((r) => (
-            <div className="tp-row" key={r.key}>
-              {r.icon ? <img src={r.icon} alt="" width={13} height={13} /> : <span className="tp-icon-gap" />}
-              <span className="tp-row-label">{r.label}</span>
-              <span className="tp-spacer" />
-              <span className="tp-row-tokens">{r.tokens}</span>
-              <span className="tp-row-cost">{r.cost}</span>
-            </div>
-          ))}
         </div>
       )}
 
       {!loading && model && !model.empty && model.models.length > 0 && (
         <div className="tp-models">
-          <div className="tp-sep" />
           <div className="tp-sec">Models</div>
           {model.models.map((r) => (
             <div className="tp-row" key={r.key}>
-              {/* No icon per Model — the dot carries its owning Source instead. */}
-              <span className="tp-dot" style={{ background: r.color ?? '#6e6e76' }} />
+              {/* The owning Source's mark leads the row (the redesign traded
+                  the colour dot for it). */}
+              {r.icon && <img src={r.icon} alt="" width={12} height={12} />}
               <span className="tp-row-label tp-model" title={r.label}>
                 {r.label}
               </span>
@@ -496,61 +493,47 @@ export default function TrayPanel({
       )}
 
       {!loading && !model?.empty && model?.stats && (
-        <div className="tp-stats">
-          <div className="tp-sep" />
-          <div className="tp-stat">
-            <span className="tp-stat-k">Cache hit rate</span>
-            <span className="tp-stat-v">{model.stats.cacheHit}</span>
+        <div className="tp-tiles">
+          <div className="tp-tile">
+            <div className="tp-tile-v">{model.stats.cacheHit}</div>
+            <div className="tp-tile-k">cache hit</div>
           </div>
-          {model.stats.topProject && (
-            <div className="tp-stat">
-              <span className="tp-stat-k">Top project</span>
-              <span className="tp-stat-v">{model.stats.topProject}</span>
-            </div>
-          )}
-          <div className="tp-stat">
-            <span className="tp-stat-k">Scanned</span>
-            <span className="tp-stat-v">{model.stats.scanned}</span>
+          <div className="tp-tile">
+            <div className="tp-tile-v">{model.requestsText}</div>
+            <div className="tp-tile-k">requests</div>
+          </div>
+          <div className="tp-tile">
+            <div className="tp-tile-v">{model.stats.scanned}</div>
+            <div className="tp-tile-k">scanned</div>
           </div>
         </div>
       )}
 
-      <div className="tp-sep" />
-      <button className="tp-action" onClick={() => ipc('show_main')}>
-        Open TokenLedger
-      </button>
-      <button className="tp-action" onClick={() => void rescan()} disabled={scanning}>
-        Rescan now
-        {scanning ? (
-          // 1b's refresh glyph, spinning while the scan runs.
-          <svg
-            className="tp-spin"
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-label="scanning"
-          >
-            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-            <path d="M21 3v5h-5" />
-            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-            <path d="M8 16H3v5" />
+      <div className="tp-actions">
+        <button className="tp-action" title="Open TokenLedger" onClick={() => ipc('show_main')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M7 17L17 7" />
+            <path d="M9 7h8v8" />
           </svg>
-        ) : (
-          <span className="tp-key">{keys.rescan}</span>
-        )}
-      </button>
-      <div className="tp-sep" />
-      <button className="tp-action" onClick={() => ipc('open_settings')}>
-        Settings…<span className="tp-key">{keys.settings}</span>
-      </button>
-      <button className="tp-action" onClick={() => ipc('quit_app')}>
-        Quit TokenLedger<span className="tp-key">{keys.quit}</span>
-      </button>
+          <span className="tp-act-k">Open</span>
+        </button>
+        <button className="tp-action" title={`Settings (${keys.settings})`} onClick={() => ipc('open_settings')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <line x1="4" y1="8" x2="20" y2="8" />
+            <circle cx="10" cy="8" r="2.5" />
+            <line x1="4" y1="16" x2="20" y2="16" />
+            <circle cx="15" cy="16" r="2.5" />
+          </svg>
+          <span className="tp-act-k">Settings</span>
+        </button>
+        <button className="tp-action" title={`Quit TokenLedger (${keys.quit})`} onClick={() => ipc('quit_app')}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 2v10" />
+            <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
+          </svg>
+          <span className="tp-act-k">Quit</span>
+        </button>
+      </div>
     </div>
   );
 }

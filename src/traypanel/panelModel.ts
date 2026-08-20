@@ -2,11 +2,11 @@
 // surface is a webview at all). Pure: the period's reads in, display strings
 // out. These rules moved here from the retired native-menu tray model in
 // src-tauri/tray.rs; the Rust side now only computes the bar title.
-import { basename, formatCompactTokenTotal } from '../lib/format';
+import { formatCompactTokenTotal } from '../lib/format';
 import { formatCost } from '../lib/currency';
 import type { Lang } from '../lib/i18n';
 import { isoOf } from '../overview/data';
-import { SOURCES, sourceMeta } from '../overview/meta';
+import { sourceMeta } from '../overview/meta';
 import { sourceIcon } from '../overview/icons';
 import type { BreakdownRow, SeriesPoint, Settings, Summary } from '../types';
 import { isAllUnattributedCost, isPartialCost, type CostCompleteness } from '../lib/costCompleteness';
@@ -14,8 +14,9 @@ import { isAllUnattributedCost, isPartialCost, type CostCompleteness } from '../
 export interface PanelRow {
   key: string;
   label: string;
-  icon?: string; // asset URL; unknown sources have none but are never dropped
-  color?: string; // Model rows only: the owning Source's brand colour
+  icon?: string; // asset URL; Source rows and Model rows both carry one
+  color?: string; // the owning Source's brand colour
+  share?: number; // Source rows only: this row's slice of the period's priced Cost, 0..1
   tokens: string;
   cost: string;
 }
@@ -26,12 +27,12 @@ export interface PanelSpark {
   points: number[]; // 0..1 of the period's peak, one per bucket, gaps zero-filled
   ticks: string[]; // sparse x labels — first, middle, last — spread across the points
   peak: string; // "peak 14:00 · $101.15"
+  peakIndex: number; // which bucket the peak caption names — the view brightens it
   details: string[]; // hover read-out per bucket — "14:00 · $3.12 · 1.2M tok"
 }
 
 export interface PanelStats {
   cacheHit: string;
-  topProject: string | null; // "usage · $431.90"; null when no Project is known
   scanned: string; // "just now" | "8 min ago" | "2h ago" | "—"
 }
 
@@ -42,7 +43,6 @@ export interface PanelExtras {
   period: Period;
   now: Date;
   models: BreakdownRow[];
-  projects: BreakdownRow[];
   series: SeriesPoint[]; // per (bucket, Source) over the period
   scannedAt: number; // epoch seconds; 0 = no scan yet this launch
 }
@@ -51,7 +51,6 @@ export interface PanelModel {
   cost: string; // "$12.84" | "≥ $12.84" | "unpriced" | "unavailable"
   delta: string | null; // "+12.4%", null when yesterday-so-far has no Cost
   deltaUp: boolean;
-  sub: string; // "3.4M tok · 1,912 req"
   rows: PanelRow[];
   empty: boolean; // no usage in the window → the figures read $0.00 · 0 tok, but
   // the sections below them stay away rather than fabricating a 0.0% cache hit
@@ -177,10 +176,12 @@ function sparkline(
   // no separate hourly/daily caption is needed. A short window collapses to
   // the labels it actually has.
   const at = [...new Set([0, Math.floor((keys.length - 1) / 2), keys.length - 1])];
+  const peakIndex = row.indexOf(peak);
   return {
     points: row.map((c) => c.cost / peak.cost),
     ticks: at.map((i) => tickLabel(keys[i])),
-    peak: `peak ${tickLabel(keys[row.indexOf(peak)])} · ${cost(peak, settings, lang)}`,
+    peak: `peak ${tickLabel(keys[peakIndex])} · ${cost(peak, settings, lang)}`,
+    peakIndex,
     // One read-out per bucket for the hover inspector, preformatted like the
     // peak line so the view stays display-only. An idle bucket honestly reads
     // $0.00 · 0 tok — the period as a whole is priced or spark would be null.
@@ -204,10 +205,6 @@ function since(ts: number, now: Date): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   return `${Math.floor(s / 3600)}h ago`;
 }
-
-// A Usage Record with no Project comes back under the backend's "unknown"
-// group key (queries.rs). It is not a Project, so it never names the strip.
-const NO_PROJECT = 'unknown';
 
 export function panelModel(
   today: Summary,
@@ -237,21 +234,20 @@ export function panelModel(
   const models = usedModels.slice(0, MODEL_CAP).map((r) => ({
     key: `${r.source ?? 'unknown'}/${r.key ?? 'unknown'}`,
     label: r.key ?? 'unknown',
-    color: SOURCES.find((source) => source.key === r.source)?.color,
+    icon: sourceIcon(sourceMeta(r.source ?? 'unknown').icon),
     tokens: formatCompactTokenTotal(r.totalTokens),
     cost: cost(r, settings, lang),
   }));
 
-  const topProject = extras?.projects
-    .filter((r) => r.totalTokens > 0 && r.key && r.key !== NO_PROJECT)
-    .sort(byCost)[0];
+  // The stacked source bar splits the period's priced Cost; a row whose Cost
+  // is null (all-Unpriced or all-Unattributed) has no slice to claim.
+  const pricedTotal = used.reduce((a, r) => a + (r.cost ?? 0), 0);
 
   const requestsText = today.requests.toLocaleString('en-US');
   return {
     cost: cost(today, settings, lang),
     delta,
     deltaUp,
-    sub: `${formatCompactTokenTotal(today.totalTokens)} tok · ${requestsText} req`,
     costValue: today.cost,
     tokensValue: today.totalTokens,
     requestsText,
@@ -264,6 +260,8 @@ export function panelModel(
         key,
         label: meta.label,
         icon: sourceIcon(meta.icon),
+        color: meta.color,
+        share: pricedTotal > 0 ? (r.cost ?? 0) / pricedTotal : 0,
         tokens: formatCompactTokenTotal(r.totalTokens),
         cost: cost(r, settings, lang),
       };
@@ -275,9 +273,6 @@ export function panelModel(
     stats: extras
       ? {
           cacheHit: `${(today.cacheHitRate * 100).toFixed(1)}%`,
-          topProject: topProject
-            ? `${basename(topProject.key ?? '')} · ${cost(topProject, settings, lang)}`
-            : null,
           scanned: since(extras.scannedAt, extras.now),
         }
       : null,
