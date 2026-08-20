@@ -16,22 +16,13 @@ import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
-  cards, durationParts, freshness, limitsSources, nextDueAt, planLabel, windowLabel,
+  cards, durationParts, freshness, nextDueAt, planLabel, windowLabel,
   type CardView, type EstimateView, type Mode, type WindowView,
 } from './limits.derive';
-import {
-  tauriLimits, lastCheckKey, lastFailureKey, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort,
-} from './limits';
+import { tauriLimits, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import { runDueLiveChecks, storedFailures, type LiveFailure } from './limits.live';
 
 type T = ReturnType<typeof useT>['t'];
-type LiveFailure = 'signed-out' | { detail: string };
-
-// Decision 5's floor: at most one live check per Source per minute, however often
-// the page is opened. The last-check stamp is *stored* rather than held in a ref
-// because the shell unmounts this page on every tab switch — a ref would reset
-// with it, and flipping away and back would fetch again immediately.
-const LIVE_FLOOR_MS = 60_000;
-const ERROR_FAILURE_PREFIX = 'error:';
 
 // Spelled out rather than built from a template so both keys stay checked
 // against the dictionary — a template literal needs an `as`, and an `as` would
@@ -70,22 +61,12 @@ export default function LimitsPage({
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
   const [liveEnabled, setLiveEnabled] = useState(() => port.read(LIVE_ENABLED_KEY) === 'true');
-  const [failures, setFailures] = useState<Record<string, LiveFailure>>(() => {
-    const remembered: Record<string, LiveFailure> = {};
-    for (const { meta } of limitsSources()) {
-      // Only a verdict the floor is still holding may be replayed. Past the
-      // floor this mount will check again anyway, and a stale verdict would
-      // meanwhile suppress held Readings — `cards()` gives a failure priority
-      // over windows — showing yesterday's blip as a current fact.
-      if (now() - Number(port.read(lastCheckKey(meta.key)) ?? 0) >= LIVE_FLOOR_MS) continue;
-      const value = port.read(lastFailureKey(meta.key));
-      if (value === 'signed-out') remembered[meta.key] = 'signed-out';
-      else if (value?.startsWith(ERROR_FAILURE_PREFIX)) {
-        remembered[meta.key] = { detail: value.slice(ERROR_FAILURE_PREFIX.length) };
-      }
-    }
-    return remembered;
-  });
+  // Replays the verdicts the floor is still holding — `cards()` gives a
+  // failure priority over windows. The replay rules live with the codec in
+  // limits.live.ts, shared with the Menu Bar Extra panel.
+  const [failures, setFailures] = useState<Record<string, LiveFailure>>(() =>
+    storedFailures(port, now()),
+  );
   // In-flight checks, counted rather than boolean: a Refresh runs a scan and a
   // live check concurrently, and whichever finishes first must not re-enable the
   // button under the other.
@@ -105,67 +86,40 @@ export default function LimitsPage({
 
   // One live check per `live` Source, subject to the floor. Failures are recorded
   // per Source and kept distinct: exit 44 or a refused credential is "not signed
-  // in", anything else is "couldn't check" with the Companion's own line.
+  // in", anything else is "couldn't check" with the Companion's own line. The
+  // floor, the opt-in gate, the classification and the stored-key protocol all
+  // live in `runDueLiveChecks` (limits.live.ts), shared with the Menu Bar Extra
+  // panel; this wrapper only mirrors the verdicts into React state and brackets
+  // the Refresh button. Refresh still always runs a scan, which is how a `logs`
+  // Source updates, so the button is never inert.
   const checkLive = useCallback(
     () => {
-      // The floor has no override, not even a button: it is a promise to the
-      // vendor's endpoint (whose budget is shared with the Source's own CLI), so
-      // "a person asked" is what permits a call at all, never what exempts it.
-      // Refresh still always runs a scan, which is how a `logs` Source updates,
-      // so the button is never inert.
-      const due = limitsSources()
-        .filter(({ via }) => via === 'live')
-        .map(({ meta }) => meta.key)
-        .filter((key) => now() - Number(port.read(lastCheckKey(key)) ?? 0) >= LIVE_FLOOR_MS);
-      if (!due.length) return;
-
-      setChecking((n) => n + 1);
-      Promise.all(
-        due.map((key) => {
-          port.write(lastCheckKey(key), String(now()));
-          // Forget the old verdict as the check starts, not when it settles: the
-          // settle handlers only reach the mounted tree, and a tab switch made
-          // mid-check unmounts it. Without this, the stamp says "checking" while
-          // the verdict beside it still says whatever last failed, and every
-          // remount inside the floor rehydrates that older answer.
-          port.write(lastFailureKey(key), '');
-          return Promise.resolve(port.checkLive(key)).then(
-            () => {
-              port.write(lastFailureKey(key), '');
-              setFailures((f) => {
-                const { [key]: _gone, ...rest } = f;
-                return rest;
-              });
-            },
-            (err: unknown) => {
-              const detail = String((err as { message?: string })?.message ?? err ?? '');
-              const failure: LiveFailure = signedOut(detail) ? 'signed-out' : { detail };
-              port.write(
-                lastFailureKey(key),
-                failure === 'signed-out' ? failure : ERROR_FAILURE_PREFIX + failure.detail,
-              );
-              setFailures((f) => ({
-                ...f,
-                [key]: failure,
-              }));
-            },
-          );
-        }),
-      )
-        .catch(() => {})
-        .finally(() => {
-          setChecking((n) => n - 1);
-          reload();
+      const run = runDueLiveChecks(port, now(), (key, failure) => {
+        setFailures((f) => {
+          if (!failure) {
+            const { [key]: _gone, ...rest } = f;
+            return rest;
+          }
+          return { ...f, [key]: failure };
         });
+      });
+      if (!run) return;
+      setChecking((n) => n + 1);
+      void run.finally(() => {
+        setChecking((n) => n - 1);
+        reload();
+      });
     },
     [port, now, reload],
   );
 
-  // Page open: read the stored series always, and check live only once the
-  // disclosure has been accepted. No credential is read before that.
+  // Page open: read the stored series always. The live check gates itself on
+  // the stored opt-in (runDueLiveChecks), so no credential is read before the
+  // disclosure has been accepted — the stored key is the one source of truth,
+  // and `liveEnabled` state only picks which surface renders.
   useEffect(() => {
     reload();
-    if (liveEnabled) checkLive();
+    checkLive();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page-open only, by design
   }, []);
 
@@ -188,7 +142,7 @@ export default function LimitsPage({
         setChecking((n) => n - 1);
         reload();
       });
-    if (liveEnabled) checkLive();
+    checkLive();
   };
 
   const enableLive = () => {
@@ -256,17 +210,6 @@ export default function LimitsPage({
       )}
     </div>
   );
-}
-
-// A missing or refused credential is the one failure that reads as "sign in
-// again"; every other failure is a failure and must not wear that face. The
-// Companion is what can tell them apart — it knows a 401 on the token from a 403
-// the same token earns on one method while another succeeds — so it marks the
-// signed-out case with this prefix and the page trusts that, rather than
-// re-deriving it by grepping for a status code that also appears in the text of
-// a genuine error (e.g. "the vendor answered 403 … PERMISSION_DENIED").
-function signedOut(detail: string): boolean {
-  return /\bnot signed in\b/i.test(detail);
 }
 
 function Card({

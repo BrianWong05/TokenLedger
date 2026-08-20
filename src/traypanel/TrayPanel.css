@@ -238,6 +238,87 @@ body.tp-macos .tp {
 .tp-action svg { width: 15px; height: 15px; }
 .tp-act-k { font-size: 9px; opacity: 0.8; }
 
+/* The last-scan time, quiet mono beside the Rescan button it belongs to. */
+.tp-top-right { display: flex; align-items: center; gap: 6px; }
+.tp-scanned { font-family: ui-monospace, monospace; font-size: 10px; color: #6e6e76; }
+
+/* Limits (TOKL-19): one strip per live Source in the tile idiom. Collapsed
+   shows the Session + Weekly meters; the header button expands to every
+   window. Tones follow % left (>50 ok, ≤50 low, ≤20 dry) like the Limits
+   page; the numerals wear the page's *-text shades, the fills its bases. */
+.tp-limsrcs { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.tp-limcard {
+  padding: 9px 10px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.tp-limcard-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+.tp-limcard-head img { display: block; }
+.tp-limcard-name { font-size: 11.5px; font-weight: 500; color: #d6d6dc; }
+.tp-limcard-plan {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: #a99dff;
+  background: rgba(124, 107, 242, 0.16);
+  border: 1px solid rgba(124, 107, 242, 0.35);
+}
+.tp-limcard-chev { display: block; color: #6e6e76; transition: transform 0.15s; }
+.tp-limcard-chev.open { transform: rotate(90deg); }
+
+.tp-t-ok { color: #7bd3aa; }
+.tp-t-low { color: #e8c476; }
+.tp-t-dry { color: #f09090; }
+
+.tp-limmeters { display: flex; gap: 12px; margin-top: 7px; }
+.tp-limmeter { flex: 1; min-width: 0; }
+.tp-limmeter-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+.tp-limmeter-k { font-size: 9.5px; color: #8a8a93; }
+.tp-limmeter-v { font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600; }
+.tp-limmeter-t { margin-left: 4px; font-family: ui-monospace, monospace; font-size: 9.5px; color: #6e6e76; }
+
+.tp-limwin { margin-top: 8px; }
+.tp-limwin-labels { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+.tp-limwin-k { font-size: 10.5px; font-weight: 500; color: #d6d6dc; }
+.tp-limwin-k .sub { margin-left: 5px; font-size: 9.5px; font-weight: 400; color: #6e6e76; }
+.tp-limwin-pct { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600; }
+.tp-limwin-resets { font-family: ui-monospace, monospace; font-size: 10px; color: #6e6e76; }
+
+/* The shared bar: framed fill plus the time tick. The tick is TIME (where
+   "now" sits in the window), so it stays neutral — never scarcity-tinted. */
+.tp-limbar {
+  position: relative;
+  height: 3px;
+  border-radius: 1.5px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: visible;
+}
+.tp-limbar .fill { display: block; height: 100%; border-radius: inherit; }
+.tp-limbar .fill.ok { background: #4cbe8a; }
+.tp-limbar .fill.low { background: #e2b34e; }
+.tp-limbar .fill.dry { background: #e06c6c; }
+.tp-limbar .tick {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  border-radius: 1px;
+  background: #a3a3ab;
+}
+
 /* Loading shimmer (panel open): blocks where the figures will land. */
 .tp-skel {
   display: block;

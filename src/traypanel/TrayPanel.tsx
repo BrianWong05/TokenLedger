@@ -1,13 +1,15 @@
-// The Menu Bar Extra panel (ADR-0007), in the "Glance + Models · bars" design:
-// period tabs top-left double as the window's label, Rescan is the top-right
-// refresh icon, and beneath the hero Cost sit the stacked source bar with its
-// legend, the Cost bar chart, the Model rows (led by their Source's mark), the
-// stat tiles, and the three icon actions. Every figure is a display string the
-// view model already decided. Data goes through the same ports the app shell
-// uses; the four actions are Tauri glue.
+// The Menu Bar Extra panel (ADR-0007), in the "Glance + Models · bars" design
+// (TOKL-19 added the Limits strips): period tabs top-left double as the
+// window's label, the last-scan time and Rescan sit top-right, and beneath the
+// hero Cost sit the stacked source bar with its legend, the Cost bar chart,
+// the Model rows (led by their Source's mark), one Limit strip per live
+// Source (collapsed to its Session + Weekly meters, expandable to every
+// window), the stat tiles, and the three icon actions. Every figure is a
+// display string the view model already decided. Data goes through the same
+// ports the app shell uses; the four actions are Tauri glue.
 // UI strings are English-only like the native menu it replaced; number and
 // currency formatting still follow the app's locale. Dark-only like the mock.
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
@@ -16,15 +18,25 @@ import { hotkeyHint, isHotkey } from '../lib/hotkeys';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
+import { tauriLimits, MODE_KEY, type LimitsPort } from '../limits/limits';
+import { runDueLiveChecks, storedFailures, type LiveFailure } from '../limits/limits.live';
+import {
+  cards, durationParts, planLabel, windowLabel,
+  type Mode as LimitsMode, type WindowView,
+} from '../limits/limits.derive';
+import { limits as limitStrings } from '../lib/strings/limits';
+import { fill } from '../lib/format';
 import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import { sourceMeta } from '../overview/meta';
+import { sourceIcon } from '../overview/icons';
 import { countLabel } from '../overview/localize';
-import type { Filters } from '../types';
+import type { Filters, SourceLimits } from '../types';
 import './TrayPanel.css';
 
 export interface TrayPanelPorts {
   ledger?: LedgerPort;
   settings?: SettingsPort;
+  limits?: LimitsPort;
 }
 
 const PANEL_WIDTH = 320;
@@ -64,6 +76,75 @@ function ipc(cmd: string) {
   Promise.resolve()
     .then(() => invoke(cmd))
     .catch(() => {});
+}
+
+// The panel is English-only, but its Limits vocabulary is not its own: labels,
+// pool names and duration units read straight off the dictionary's `en` table
+// — the same keys the Limits page renders through `t()` — so the words have
+// one home and cannot drift.
+const LIMITS_EN = limitStrings.en;
+
+// A window's label parts, parsed once and carried beside the window so the
+// pick (which two meters collapse to) and the render read the same parse.
+type ParsedWindow = { w: WindowView; label: ReturnType<typeof windowLabel> };
+
+// Label parts to render. Pools ride the label the way the Limits page
+// prefixes them; a per-model window carries "· Weekly" as a sub so long model
+// names stay scannable.
+function limitText(label: ParsedWindow['label']): { text: string; sub?: string } {
+  const pools: Record<string, string> = {
+    gemini: LIMITS_EN['limits.pool.gemini'],
+    '3p': LIMITS_EN['limits.pool.other'],
+  };
+  const pool = label.pool ? `${pools[label.pool] ?? label.pool} · ` : '';
+  if (label.kind === 'model') {
+    return { text: `${pool}${label.model}`, sub: `· ${LIMITS_EN['limits.win.weeklySub']}` };
+  }
+  if (label.kind === 'other') {
+    return { text: pool + fill(LIMITS_EN['limits.win.other'], { n: label.minutes }) };
+  }
+  const names = {
+    session: LIMITS_EN['limits.win.session'],
+    weekly: LIMITS_EN['limits.win.weekly'],
+    weeklyCredits: LIMITS_EN['limits.win.weeklyCredits'],
+    monthlyCredits: LIMITS_EN['limits.win.monthlyCredits'],
+  } as const;
+  return { text: pool + names[label.kind] };
+}
+
+// "1d 6h" — durationParts' largest two units, through the dictionary's own
+// unit templates (the same `as` the page's fmtDuration uses, for the same
+// reason: both keys stay checked against the dictionary).
+function limitDuration(minutes: number): string {
+  return durationParts(minutes)
+    .map((p) => fill(LIMITS_EN[`limits.t.${p.unit}` as 'limits.t.d'], { n: p.n }))
+    .join(' ');
+}
+
+// Collapsed shows the two windows a glance wants — the session and the weekly
+// (or credit) pool; everything else appears on expand.
+function primaryWindows(parsed: ParsedWindow[]): ParsedWindow[] {
+  const session = parsed.find((p) => p.label.kind === 'session');
+  const weekly = parsed.find(
+    (p) => p.label.kind === 'weekly' || p.label.kind === 'weeklyCredits',
+  );
+  return [session, weekly].filter((p): p is ParsedWindow => p !== undefined);
+}
+
+// One limit bar, shared by the collapsed meters and the expanded rows: the
+// framed fill plus the time tick. The tick is TIME (where "now" sits in the
+// window), so it stays neutral — never tinted by the scarcity tones around it.
+function LimitBar({ w, mode }: { w: WindowView; mode: LimitsMode }) {
+  return (
+    <div
+      className="tp-limbar"
+      role="img"
+      aria-label={`${w.pctShown}% ${mode === 'left' ? 'left' : 'used'}`}
+    >
+      <span className={'fill ' + w.tone} style={{ width: `${w.pct}%` }} />
+      {w.tickPct !== null && <span className="tick" style={{ left: `${w.tickPct}%` }} />}
+    </div>
+  );
 }
 
 // Tween toward `target` with an ease-out, so the header figures count up
@@ -112,7 +193,16 @@ export default function TrayPanel({
   };
   const ledger = ports?.ledger ?? tauriLedger;
   const settings = ports?.settings ?? tauriSettings;
+  const limits = ports?.limits ?? tauriLimits;
   const [model, setModel] = useState<PanelModel | null>(null);
+  // The Limit strips are *now*, not the selected period (same rule as the
+  // Limits page): stored Readings plus the clock they were read at, and which
+  // Sources the user has flipped open. The panel is destroyed on dismissal
+  // (ADR-0007), so the open set naturally resets per open.
+  const [limitsStored, setLimitsStored] = useState<SourceLimits[]>([]);
+  const [limitsFailures, setLimitsFailures] = useState<Record<string, LiveFailure>>({});
+  const [limitsNow, setLimitsNow] = useState(() => Math.floor(Date.now() / 1000));
+  const [limitsOpen, setLimitsOpen] = useState<Record<string, boolean>>({});
   // The selected window's token figure is a floor (≥) when an Unreadable
   // Artifact could hold usage in it (ADR-0017) — same rules as everywhere.
   // The reason rides along as the marker's hover text.
@@ -148,8 +238,28 @@ export default function TrayPanel({
       ? 0
       : 1000;
 
+  // The stored-Readings read, re-issued by every refresh and by a scan
+  // elsewhere landing relevant changes. Promise.resolve guards a port whose
+  // IPC throws synchronously when no Tauri runtime is present.
+  const loadLimits = useCallback(() => {
+    setLimitsNow(Math.floor(Date.now() / 1000));
+    // The verdicts the floor still holds ride along with every read, so a
+    // signed-out or erroring Source keeps its strip off the panel (its
+    // trouble state renders on the app's Limits page instead).
+    setLimitsFailures(storedFailures(limits, Date.now()));
+    try {
+      // The Array guard covers an IPC that answers but answers nothing (the
+      // tests' recording invoke mock does exactly that) — an absent runtime
+      // must read as "no Readings", never crash the derivation.
+      Promise.resolve(limits.list())
+        .then((s) => setLimitsStored(Array.isArray(s) ? s : []))
+        .catch(() => {});
+    } catch { /* no runtime */ }
+  }, [limits]);
+
   const refresh = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
+    loadLimits();
     const w = periodWindows(periodRef.current, new Date());
     const current: Filters = { tools: [], models: [], project: null, startTs: w.start, endTs: w.end };
     const prev: Filters = { tools: [], models: [], project: null, startTs: w.prevStart, endTs: w.prevEnd };
@@ -193,7 +303,7 @@ export default function TrayPanel({
     }
     // Ledger unavailable (e.g. mid-restart): keep the last model.
     if (showLoading) setLoading(false);
-  }, [ledger, settings]);
+  }, [ledger, settings, loadLimits]);
 
   // Mark the document so TrayPanel.css can force the window transparent
   // over index.css's app background, and so the translucent card is scoped
@@ -214,6 +324,14 @@ export default function TrayPanel({
     if (scanningRef.current) return;
     scanningRef.current = true;
     setScanning(true);
+    // Live limits ride the same "a person asked" moments as the Limits page:
+    // panel open (open() rescans) and the Rescan press. runDueLiveChecks
+    // gates on the page's opt-in and the per-Source floor; fresh Readings
+    // land in the store, so the settle re-reads it. Never rejects, and
+    // deliberately not awaited — a slow vendor must not hold the scan
+    // spinner. If this window is destroyed mid-check the verdict goes
+    // unwritten; the floor bounds that window (see runDueLiveChecks).
+    runDueLiveChecks(limits, Date.now())?.then(loadLimits);
     // A fast no-change scan must still visibly happen: hold the spinner and
     // the pulsing figures for ≥1s.
     const minDone = new Promise((r) => setTimeout(r, minLoadingMs()));
@@ -227,7 +345,7 @@ export default function TrayPanel({
       scanningRef.current = false;
       setScanning(false);
     }
-  }, [ledger, refresh]);
+  }, [ledger, refresh, limits, loadLimits]);
 
   // What an open is: paint what the Ledger already holds, then bring it
   // current, so nobody has to press Rescan for today's figures. The read does
@@ -251,6 +369,11 @@ export default function TrayPanel({
       .catch(() => {});
     return () => un?.();
   }, [open]);
+
+  // A scan elsewhere — the resident cadence, another window's Scan now — that
+  // landed relevant Reading changes re-issues the stored read. No vendor is
+  // called: a scan is not a person asking.
+  useEffect(() => limits.onLimitsChanged(loadLimits), [limits, loadLimits]);
 
   // A shortcut the panel prints beside an action is a working promise
   // (CONTEXT.md): each key fires the very handler its button does — exact
@@ -327,6 +450,20 @@ export default function TrayPanel({
 
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
 
+  // Only Sources whose card is live render a strip; trouble states (signed
+  // out, error, nothing recorded) stay on the app's Limits page, so the
+  // stored verdicts ride along and take their Sources' strips down. Framing
+  // follows the page's stored Left/Used choice — the panel adds no second
+  // toggle.
+  const limitsMode: LimitsMode = limits.read(MODE_KEY) === 'used' ? 'used' : 'left';
+  const liveLimits = useMemo(
+    () =>
+      cards(limitsStored, limitsNow, limitsMode, limitsFailures).filter(
+        (c) => c.state === 'live',
+      ),
+    [limitsStored, limitsNow, limitsMode, limitsFailures],
+  );
+
   return (
     <div className="tp" ref={bodyRef}>
       <div className="tp-top">
@@ -349,36 +486,40 @@ export default function TrayPanel({
             </button>
           ))}
         </div>
-        {/* aria-disabled, not disabled: a disabled control shows no tooltip,
-            and the hotkey hint must not vanish exactly while the icon spins.
-            rescan() gates itself, so the click is already inert mid-scan. */}
-        <button
-          className="tp-refresh"
-          title={`Rescan now (${keys.rescan})`}
-          aria-label="Rescan now"
-          aria-disabled={scanning || undefined}
-          aria-busy={scanning || undefined}
-          onClick={() => void rescan()}
-        >
-          {/* 1b's refresh glyph, spinning while the scan runs. */}
-          <svg
-            className={scanning ? 'tp-spin' : undefined}
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+        <div className="tp-top-right">
+          {/* The last-scan time, beside the button that changes it. */}
+          {model?.stats && <span className="tp-scanned">{model.stats.scanned}</span>}
+          {/* aria-disabled, not disabled: a disabled control shows no tooltip,
+              and the hotkey hint must not vanish exactly while the icon spins.
+              rescan() gates itself, so the click is already inert mid-scan. */}
+          <button
+            className="tp-refresh"
+            title={`Rescan now (${keys.rescan})`}
+            aria-label="Rescan now"
+            aria-disabled={scanning || undefined}
+            aria-busy={scanning || undefined}
+            onClick={() => void rescan()}
           >
-            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-            <path d="M21 3v5h-5" />
-            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-            <path d="M8 16H3v5" />
-          </svg>
-        </button>
+            {/* 1b's refresh glyph, spinning while the scan runs. */}
+            <svg
+              className={scanning ? 'tp-spin' : undefined}
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+              <path d="M8 16H3v5" />
+            </svg>
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -409,7 +550,7 @@ export default function TrayPanel({
           <span className="tp-skel tp-skel-bar" />
           <span className="tp-skel tp-skel-chart" />
           <div className="tp-tiles">
-            {[0, 1, 2].map((i) => (
+            {[0, 1].map((i) => (
               <span className="tp-skel tp-skel-tile" key={i} />
             ))}
           </div>
@@ -501,6 +642,91 @@ export default function TrayPanel({
         </div>
       )}
 
+      {/* One strip per live Source (TOKL-19): collapsed to its Session +
+          Weekly meters with reset countdowns, the whole header a disclosure
+          to every window — per-model rows included. Not gated on model.empty:
+          Limits are about now, and an idle day does not blank them. */}
+      {!loading && liveLimits.length > 0 && (
+        <div className="tp-limsrcs">
+          {liveLimits.map((card) => {
+            const open = !!limitsOpen[card.source];
+            const plan = planLabel(card.plan);
+            const parsed: ParsedWindow[] = card.windows.map((w) => ({
+              w,
+              label: windowLabel(w.key, card.source),
+            }));
+            return (
+              <div className="tp-limcard" key={card.source}>
+                <button
+                  className="tp-limcard-head"
+                  aria-expanded={open}
+                  onClick={() =>
+                    setLimitsOpen((o) => ({ ...o, [card.source]: !o[card.source] }))
+                  }
+                >
+                  <img src={sourceIcon(card.meta.icon)} alt="" width={12} height={12} />
+                  <span className="tp-limcard-name">{card.meta.label}</span>
+                  {plan && <span className="tp-limcard-plan">{plan}</span>}
+                  <span className="tp-spacer" />
+                  <svg
+                    className={open ? 'tp-limcard-chev open' : 'tp-limcard-chev'}
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 6l6 6-6 6" />
+                  </svg>
+                </button>
+                {open ? (
+                  parsed.map(({ w, label }) => {
+                    const l = limitText(label);
+                    return (
+                      <div className="tp-limwin" key={w.key}>
+                        <div className="tp-limwin-labels">
+                          <span className="tp-limwin-k">
+                            {l.text}
+                            {l.sub && <span className="sub">{l.sub}</span>}
+                          </span>
+                          <span className={'tp-limwin-pct tp-t-' + w.tone}>{w.pctShown}%</span>
+                          <span className="tp-limwin-resets">
+                            {w.resetsInMin !== null &&
+                              `resets in ${limitDuration(w.resetsInMin)}`}
+                          </span>
+                        </div>
+                        <LimitBar w={w} mode={limitsMode} />
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="tp-limmeters">
+                    {primaryWindows(parsed).map(({ w, label }) => (
+                      <div className="tp-limmeter" key={w.key}>
+                        <div className="tp-limmeter-row">
+                          <span className="tp-limmeter-k">{limitText(label).text}</span>
+                          <span>
+                            <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
+                            {w.resetsInMin !== null && (
+                              <span className="tp-limmeter-t">· {limitDuration(w.resetsInMin)}</span>
+                            )}
+                          </span>
+                        </div>
+                        <LimitBar w={w} mode={limitsMode} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {!loading && !model?.empty && model?.stats && (
         <div className="tp-tiles">
           <div className="tp-tile">
@@ -510,10 +736,6 @@ export default function TrayPanel({
           <div className="tp-tile">
             <div className="tp-tile-v">{model.requestsText}</div>
             <div className="tp-tile-k">requests</div>
-          </div>
-          <div className="tp-tile">
-            <div className="tp-tile-v">{model.stats.scanned}</div>
-            <div className="tp-tile-k">scanned</div>
           </div>
         </div>
       )}
