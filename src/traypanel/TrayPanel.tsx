@@ -34,15 +34,15 @@ const PANEL_WIDTH = 320;
 // usage never rounds below a visible sliver, an idle bucket draws nothing,
 // and a young period's lone bucket stays a column rather than flooding the
 // box (the cap only ever binds when buckets are few). Exported for its test.
-const SPARK_W = 288;
-const SPARK_H = 56;
+const CHART_W = 288;
+const CHART_H = 56;
 export function barRect(points: number[], i: number): string {
-  const slot = SPARK_W / points.length;
+  const slot = CHART_W / points.length;
   const w = Math.max(2, Math.min(slot - 2, 28));
   const x = i * slot + (slot - w) / 2;
-  const h = points[i] > 0 ? Math.max(1.2, points[i] * (SPARK_H - 6)) : 0;
+  const h = points[i] > 0 ? Math.max(1.2, points[i] * (CHART_H - 6)) : 0;
   return h > 0
-    ? `M${x.toFixed(1)} ${SPARK_H - 2} v-${h.toFixed(1)} h${w.toFixed(1)} v${h.toFixed(1)} Z`
+    ? `M${x.toFixed(1)} ${CHART_H - 2} v-${h.toFixed(1)} h${w.toFixed(1)} v${h.toFixed(1)} Z`
     : '';
 }
 function barsPath(points: number[], skipIdx: number): string {
@@ -50,6 +50,13 @@ function barsPath(points: number[], skipIdx: number): string {
     .map((_, i) => (i === skipIdx ? '' : barRect(points, i)))
     .filter(Boolean)
     .join(' ');
+}
+// The hover indicator is the bucket's whole slot, drawn behind the columns:
+// an idle bucket has no column to brighten, but its slot still lights up
+// while the read-out says its zero.
+function slotRect(points: number[], i: number): string {
+  const slot = CHART_W / points.length;
+  return `M${(i * slot).toFixed(1)} 0 h${slot.toFixed(1)} v${CHART_H} h-${slot.toFixed(1)} Z`;
 }
 
 // Fire-and-forget IPC for the actions; harmless outside Tauri (tests).
@@ -122,7 +129,7 @@ export default function TrayPanel({
   const [period, setPeriod] = useState<Period>('today');
   // The bar chart's hover inspector: which bucket the pointer is over, null
   // when the mouse is away.
-  const [sparkHover, setSparkHover] = useState<number | null>(null);
+  const [chartHover, setChartHover] = useState<number | null>(null);
   // refresh() reads the ref so its identity doesn't churn on period change
   // (the mount effect re-registering listeners on every switch would be
   // wasteful); pickPeriod keeps ref and state in step.
@@ -182,7 +189,7 @@ export default function TrayPanel({
       );
       // A fresh model can hold fewer buckets than the inspected index (period
       // switch, midnight rollover mid-hover); never let the index outlive them.
-      setSparkHover(null);
+      setChartHover(null);
     }
     // Ledger unavailable (e.g. mid-restart): keep the last model.
     if (showLoading) setLoading(false);
@@ -302,13 +309,13 @@ export default function TrayPanel({
 
   // Hit-testing: the svg stretches (preserveAspectRatio none), so box x is
   // proportional to viewBox x, and each bucket owns an equal slot of it.
-  const onSparkMove = (e: ReactMouseEvent<SVGSVGElement>) => {
-    const spark = model?.spark;
+  const onChartMove = (e: ReactMouseEvent<SVGSVGElement>) => {
+    const chart = model?.chart;
     const rect = e.currentTarget.getBoundingClientRect();
-    if (!spark || !rect.width) return;
-    const vx = ((e.clientX - rect.left) / rect.width) * SPARK_W;
-    const i = Math.floor(vx / (SPARK_W / spark.points.length));
-    setSparkHover(Math.max(0, Math.min(spark.points.length - 1, i)));
+    if (!chart || !rect.width) return;
+    const vx = ((e.clientX - rect.left) / rect.width) * CHART_W;
+    const i = Math.floor(vx / (CHART_W / chart.points.length));
+    setChartHover(Math.max(0, Math.min(chart.points.length - 1, i)));
   };
 
   const pickPeriod = (p: Period) => {
@@ -390,7 +397,9 @@ export default function TrayPanel({
             )}
           </div>
           <span className="tp-sub" title={tokensFloor.marked ? tokensFloor.reason : undefined}>
-            {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tokens · ${model.requestsText} requests` : ''}
+            {/* Tokens only — the requests figure lives in its stat tile, and
+                saying it twice two lines apart bought nothing. */}
+            {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tokens` : ''}
           </span>
         </div>
       )}
@@ -398,7 +407,7 @@ export default function TrayPanel({
       {loading && (
         <>
           <span className="tp-skel tp-skel-bar" />
-          <span className="tp-skel tp-skel-spark" />
+          <span className="tp-skel tp-skel-chart" />
           <div className="tp-tiles">
             {[0, 1, 2].map((i) => (
               <span className="tp-skel tp-skel-tile" key={i} />
@@ -432,38 +441,38 @@ export default function TrayPanel({
         </div>
       )}
 
-      {!loading && !model?.empty && model?.spark && (
-        <div className="tp-spark">
+      {!loading && !model?.empty && model?.chart && (
+        <div className="tp-chart">
           {/* The hover inspector's read-out row. Reserved so inspecting never
               shifts the layout (the window is sized to the content); the peak
               caption holds the left, the inspected bucket reads on the right. */}
-          <div className="tp-spark-cap-row">
-            <span className="tp-spark-peak">{model.spark.peak}</span>
-            <span className="tp-spark-read">
-              {sparkHover != null ? model.spark.details[sparkHover] : ''}
+          <div className="tp-chart-cap-row">
+            <span className="tp-chart-peak">{model.chart.peak}</span>
+            <span className="tp-chart-read">
+              {chartHover != null ? model.chart.details[chartHover] : ''}
             </span>
           </div>
           <svg
-            viewBox={`0 0 ${SPARK_W} ${SPARK_H}`}
-            width={SPARK_W}
-            height={SPARK_H}
+            viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+            width={CHART_W}
+            height={CHART_H}
             preserveAspectRatio="none"
             aria-hidden="true"
-            onMouseMove={onSparkMove}
-            onMouseLeave={() => setSparkHover(null)}
+            onMouseMove={onChartMove}
+            onMouseLeave={() => setChartHover(null)}
           >
+            {chartHover != null && (
+              <path className="tp-chart-hover" d={slotRect(model.chart.points, chartHover)} />
+            )}
             {/* The peak bucket wears the brighter fill — the same bucket the
                 model's peak caption names. */}
-            <path className="tp-bars" d={barsPath(model.spark.points, model.spark.peakIndex)} />
-            <path className="tp-bar-peak" d={barRect(model.spark.points, model.spark.peakIndex)} />
-            {sparkHover != null && (
-              <path className="tp-bar-hover" d={barRect(model.spark.points, sparkHover)} />
-            )}
+            <path className="tp-bars" d={barsPath(model.chart.points, model.chart.peakIndex)} />
+            <path className="tp-bar-peak" d={barRect(model.chart.points, model.chart.peakIndex)} />
           </svg>
           {/* The axis: first tick sits at the left edge, last at the right,
               middle between them — space-between puts each where its bucket is. */}
-          <div className="tp-spark-cap">
-            {model.spark.ticks.map((t) => (
+          <div className="tp-chart-cap">
+            {model.chart.ticks.map((t) => (
               <span key={t}>{t}</span>
             ))}
           </div>

@@ -23,7 +23,7 @@ export interface PanelRow {
 
 // The period's Cost per bucket, normalised for the view: geometry (viewBox,
 // stroke) stays in the panel, the shape and the read-out are decided here.
-export interface PanelSpark {
+export interface PanelChart {
   points: number[]; // 0..1 of the period's peak, one per bucket, gaps zero-filled
   ticks: string[]; // sparse x labels — first, middle, last — spread across the points
   peak: string; // "peak 14:00 · $101.15"
@@ -37,7 +37,7 @@ export interface PanelStats {
 }
 
 // The reads beyond the 2b panel's own: the Models section, the stats strip and
-// the sparkline. Optional as a whole — without them the panel is exactly the
+// the chart. Optional as a whole — without them the panel is exactly the
 // surface it was.
 export interface PanelExtras {
   period: Period;
@@ -62,7 +62,7 @@ export interface PanelModel {
   requestsText: string; // "1,912" — not animated, appended to the sub line
   fmtCost(v: number): string;
   fmtTokens(v: number): string;
-  spark: PanelSpark | null; // null hides the sparkline
+  chart: PanelChart | null; // null hides the chart
   models: PanelRow[];
   modelsOverflow: number; // Models the cap hid, 0 when none
   stats: PanelStats | null;
@@ -94,7 +94,7 @@ const MODEL_CAP = 5;
 const pad = (n: number) => String(n).padStart(2, '0');
 
 // Which bucket size the period's series is read at — the panel fetches with
-// this and the sparkline is built from it, so the two cannot drift.
+// this and the chart is built from it, so the two cannot drift.
 export function seriesBucket(period: Period): 'hour' | 'day' {
   return period === 'days30' ? 'day' : 'hour';
 }
@@ -141,12 +141,12 @@ const tickLabel = (key: string) => (key.includes(' ') ? key.slice(11) : key.slic
 
 // The period's Cost per bucket. Series points arrive per (bucket, Source), so
 // a bucket's figure is the sum across the Sources that ran in it.
-function sparkline(
+function costChart(
   current: Summary,
   extras: PanelExtras,
   settings: CostSettings,
   lang: Lang,
-): PanelSpark | null {
+): PanelChart | null {
   // No Cost for the period at all (all-Unattributed, or every Model Unpriced):
   // a flat line along zero would assert usage was free.
   if (current.cost === null) return null;
@@ -165,7 +165,7 @@ function sparkline(
   const row = keys.map((k) => cells.get(k) ?? emptyCell());
   // Usage somewhere is enough to draw: a day 40 minutes old has one hour slot,
   // and hiding its chart reads as breakage rather than as a young day. The
-  // view draws a lone bucket as a point. A period whose whole Cost is zero
+  // view draws a lone bucket as one column. A period whose whole Cost is zero
   // still has no shape to normalise against.
   if (!row.some((c) => c.totalTokens > 0)) return null;
   const peak = row.reduce((a, b) => (b.cost > a.cost ? b : a), row[0]);
@@ -184,7 +184,7 @@ function sparkline(
     peakIndex,
     // One read-out per bucket for the hover inspector, preformatted like the
     // peak line so the view stays display-only. An idle bucket honestly reads
-    // $0.00 · 0 tok — the period as a whole is priced or spark would be null.
+    // $0.00 · 0 tok — the period as a whole is priced or chart would be null.
     details: row.map((c, i) => {
       // Series Cost is a sum of priced usage, so a bucket holding only
       // Unpriced or Unattributed usage sums to 0 — which cost() must read as
@@ -267,7 +267,7 @@ export function panelModel(
       };
     }),
     empty: today.totalTokens === 0,
-    spark: extras ? sparkline(today, extras, settings, lang) : null,
+    chart: extras ? costChart(today, extras, settings, lang) : null,
     models,
     modelsOverflow: Math.max(0, usedModels.length - models.length),
     stats: extras

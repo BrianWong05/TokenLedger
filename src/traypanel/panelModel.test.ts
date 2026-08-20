@@ -173,14 +173,14 @@ describe('panelModel', () => {
 
   it('renders the 2b sections alone when the extra reads are absent', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en');
-    expect(m.spark).toBeNull();
+    expect(m.chart).toBeNull();
     expect(m.models).toEqual([]);
     expect(m.modelsOverflow).toBe(0);
     expect(m.stats).toBeNull();
   });
 });
 
-describe('panelModel Cost sparkline', () => {
+describe('panelModel Cost chart', () => {
   it('sums Cost per hour across the elapsed day, zero-filling idle hours', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
       series: [
@@ -190,12 +190,12 @@ describe('panelModel Cost sparkline', () => {
         spt('2026-06-15 10:00', 2),
       ],
     }));
-    expect(m.spark?.points.length).toBe(11); // 00:00 through the current 10:00 bucket
-    expect(m.spark?.points[5]).toBe(1); // peak normalised to 1: 4 + 0.5 summed
-    expect(m.spark?.points[1]).toBe(0); // an idle hour keeps its slot on the axis
-    expect(m.spark?.ticks).toEqual(['00:00', '05:00', '10:00']); // ends and middle
-    expect(m.spark?.peak).toBe('peak 05:00 · $4.50');
-    expect(m.spark?.peakIndex).toBe(5); // the bucket the caption names
+    expect(m.chart?.points.length).toBe(11); // 00:00 through the current 10:00 bucket
+    expect(m.chart?.points[5]).toBe(1); // peak normalised to 1: 4 + 0.5 summed
+    expect(m.chart?.points[1]).toBe(0); // an idle hour keeps its slot on the axis
+    expect(m.chart?.ticks).toEqual(['00:00', '05:00', '10:00']); // ends and middle
+    expect(m.chart?.peak).toBe('peak 05:00 · $4.50');
+    expect(m.chart?.peakIndex).toBe(5); // the bucket the caption names
   });
 
   it('spans yesterday whole, not just the hours elapsed today', () => {
@@ -203,9 +203,9 @@ describe('panelModel Cost sparkline', () => {
       period: 'yesterday',
       series: [spt('2026-06-14 03:00', 1), spt('2026-06-14 23:00', 3)],
     }));
-    expect(m.spark?.points.length).toBe(24);
-    expect(m.spark?.ticks).toEqual(['00:00', '11:00', '23:00']);
-    expect(m.spark?.peak).toBe('peak 23:00 · $3.00');
+    expect(m.chart?.points.length).toBe(24);
+    expect(m.chart?.ticks).toEqual(['00:00', '11:00', '23:00']);
+    expect(m.chart?.peak).toBe('peak 23:00 · $3.00');
   });
 
   it('buckets 30 days by day and labels the peak by date', () => {
@@ -213,17 +213,17 @@ describe('panelModel Cost sparkline', () => {
       period: 'days30',
       series: [spt('2026-05-17', 2), spt('2026-06-15', 9)],
     }));
-    expect(m.spark?.points.length).toBe(30); // May 17 through June 15
-    expect(m.spark?.points[29]).toBe(1);
-    expect(m.spark?.ticks).toEqual(['05-17', '05-31', '06-15']); // dates say "daily"
-    expect(m.spark?.peak).toBe('peak 06-15 · $9.00');
+    expect(m.chart?.points.length).toBe(30); // May 17 through June 15
+    expect(m.chart?.points[29]).toBe(1);
+    expect(m.chart?.ticks).toEqual(['05-17', '05-31', '06-15']); // dates say "daily"
+    expect(m.chart?.peak).toBe('peak 06-15 · $9.00');
   });
 
   it('marks the peak Partial when that bucket holds Unpriced Models', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
       series: [spt('2026-06-15 01:00', 1), spt('2026-06-15 09:00', 3, 1_000, true)],
     }));
-    expect(m.spark?.peak).toBe('peak 09:00 · ≥ $3.00');
+    expect(m.chart?.peak).toBe('peak 09:00 · ≥ $3.00');
   });
 
   it('spells out every bucket for the hover read-out, idle hours included', () => {
@@ -234,10 +234,10 @@ describe('panelModel Cost sparkline', () => {
         spt('2026-06-15 10:00', 2, 300_000),
       ],
     }));
-    expect(m.spark?.details.length).toBe(11); // one per bucket, same axis as points
-    expect(m.spark?.details[0]).toBe('00:00 · $1.00 · 500K tok');
-    expect(m.spark?.details[1]).toBe('01:00 · $0.00 · 0 tok'); // an idle hour reads zero
-    expect(m.spark?.details[5]).toBe('05:00 · ≥ $4.00 · 1.2M tok'); // Partial keeps its marker
+    expect(m.chart?.details.length).toBe(11); // one per bucket, same axis as points
+    expect(m.chart?.details[0]).toBe('00:00 · $1.00 · 500K tok');
+    expect(m.chart?.details[1]).toBe('01:00 · $0.00 · 0 tok'); // an idle hour reads zero
+    expect(m.chart?.details[5]).toBe('05:00 · ≥ $4.00 · 1.2M tok'); // Partial keeps its marker
   });
 
   it('a bucket of only Unpriced or Unattributed usage never reads $0', () => {
@@ -248,24 +248,24 @@ describe('panelModel Cost sparkline', () => {
         { ...spt('2026-06-15 05:00', 0, 500), unattributedTokens: 500 }, // all-Unattributed hour
       ],
     }));
-    expect(m.spark?.details[4]).toBe('04:00 · unpriced · 700 tok');
-    expect(m.spark?.details[5]).toBe('05:00 · unavailable · 500 tok');
+    expect(m.chart?.details[4]).toBe('04:00 · unpriced · 700 tok');
+    expect(m.chart?.details[5]).toBe('05:00 · unavailable · 500 tok');
   });
 
-  it('hides the sparkline when the period has no Cost to draw', () => {
+  it('hides the chart when the period has no Cost to draw', () => {
     const m = panelModel(sum(50, null, false, 0, 50), sum(0, null), [], S, 'en', extras({
       series: [spt('2026-06-15 01:00', 0), spt('2026-06-15 02:00', 0)],
     }));
-    expect(m.spark).toBeNull(); // all-Unattributed: a flat zero line would lie
+    expect(m.chart).toBeNull(); // all-Unattributed: a flat zero line would lie
   });
 
   it('draws a spike when a single hour of a long day carries the Cost', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
       series: [spt('2026-06-15 09:00', 8)],
     }));
-    expect(m.spark?.points.length).toBe(11); // the elapsed day, one spike in it
-    expect(m.spark?.points[9]).toBe(1);
-    expect(m.spark?.peak).toBe('peak 09:00 · $8.00');
+    expect(m.chart?.points.length).toBe(11); // the elapsed day, one spike in it
+    expect(m.chart?.points[9]).toBe(1);
+    expect(m.chart?.peak).toBe('peak 09:00 · $8.00');
   });
 
   it('draws the one hour a young day has, rather than hiding the chart', () => {
@@ -275,15 +275,15 @@ describe('panelModel Cost sparkline', () => {
       now: new Date(2026, 5, 15, 0, 40, 0),
       series: [spt('2026-06-15 00:00', 8)],
     }));
-    expect(m.spark?.points).toEqual([1]); // one bucket, one column
-    expect(m.spark?.ticks).toEqual(['00:00']); // one bucket, one label — not three of it
-    expect(m.spark?.peak).toBe('peak 00:00 · $8.00');
-    expect(m.spark?.peakIndex).toBe(0);
+    expect(m.chart?.points).toEqual([1]); // one bucket, one column
+    expect(m.chart?.ticks).toEqual(['00:00']); // one bucket, one label — not three of it
+    expect(m.chart?.peak).toBe('peak 00:00 · $8.00');
+    expect(m.chart?.peakIndex).toBe(0);
   });
 
-  it('still hides the sparkline when no bucket carries usage', () => {
+  it('still hides the chart when no bucket carries usage', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({ series: [] }));
-    expect(m.spark).toBeNull();
+    expect(m.chart).toBeNull();
   });
 
   it('picks hour buckets for a single day and day buckets for the month', () => {
