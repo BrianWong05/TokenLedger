@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { seedPricing } from './pricing.fake';
 import {
   modelState, filterModels, chipCounts, fmtRate, fill, resolvedRates, originLabel, isRoutedRate,
-  sortPricing, defaultDir, sourceLabel, overallRate,
+  sortPricing, defaultDir, overallRate,
 } from './pricing.derive';
 import type { ModelPricing } from '../types';
 
@@ -150,9 +150,35 @@ describe('sortPricing', () => {
     expect(all.map((m) => m.model)).toEqual(before); // pure
   });
 
-  it('source groups Models by their owning Source (Source label), A–Z', () => {
-    const labels = sortPricing(all, 'source', 'asc').map((m) => sourceLabel(m.tool));
-    expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
+  it('source groups Models by the Rate source the column shows, A–Z, states last', () => {
+    // The displayed Rate source: a catalog origin, else the Override/Unpriced
+    // badge. NOT sourceLabel(m.tool) — that is the Source under Model, and
+    // keying on it left this column interleaved (LiteLLM, Anthropic, LiteLLM…).
+    const shown = (m: ModelPricing) =>
+      modelState(m) === 'unpriced' ? 'Unpriced'
+      : modelState(m) === 'override' ? 'Override'
+      : originLabel(m.catalog!.origin);
+    const out = sortPricing(all, 'source', 'asc').map(shown);
+
+    // every run of one label is contiguous — the grouping the column promises
+    expect(out).toEqual([...new Set(out)].flatMap((l) => out.filter((x) => x === l)));
+    // catalog origins A–Z first, then Override, then Unpriced
+    expect([...new Set(out)]).toEqual(['Anthropic', 'LiteLLM', 'OpenRouter', 'Override', 'Unpriced']);
+  });
+
+  it('breaks a tie newest-Model-first, version-aware', () => {
+    // The real catalog case: one opus family, one identical price. Newest belongs
+    // on top of its own back catalogue, and -4-10 outranks -4-9 (numeric, not
+    // lexical). Ordered oldest-first here so passing cannot come from input order.
+    const rates = { input: 5e-6, output: 25e-6, cacheRead: 5e-7, cacheWrite: 6.25e-6 };
+    const family: ModelPricing[] = ['claude-opus-4-9', 'claude-opus-4-10', 'claude-opus-4-8', 'claude-opus-5']
+      .map((model) => ({ model, tool: 'claude', overrideRates: null, catalog: { origin: 'Anthropic', rates } }));
+
+    for (const dir of ['desc', 'asc'] as const) {
+      expect(sortPricing(family, 'overall', dir).map((m) => m.model)).toEqual([
+        'claude-opus-5', 'claude-opus-4-10', 'claude-opus-4-9', 'claude-opus-4-8',
+      ]);
+    }
   });
 
   it('a Model with no rate for the sorted column sinks last, like an unpriced Model', () => {
@@ -167,7 +193,7 @@ describe('sortPricing', () => {
 
   it('model sorts by name A–Z', () => {
     const names = sortPricing(all, 'model', 'asc').map((m) => m.model);
-    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)));
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
   });
 
   it('opens price columns (rates + Overall) highest-first and text columns A–Z', () => {

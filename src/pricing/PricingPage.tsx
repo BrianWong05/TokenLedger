@@ -349,7 +349,9 @@ function LoadingSkeleton({ note, title }: { note: string; title: string }) {
                 <span className="tl-pr-skel" style={{ width: 130, height: 11 }} />
               </div>
               <span className="tl-pr-skel" style={{ width: 70, height: 18, borderRadius: 6 }} />
-              {[0, 1, 2, 3].map((j) => (
+              {/* Overall + the four rate columns: one skeleton per track, or the
+                  action lands under Cache write and the last column sits empty. */}
+              {[0, 1, 2, 3, 4].map((j) => (
                 <span key={j} className="tl-pr-skel" style={{ justifySelf: 'end', width: 44, height: 11 }} />
               ))}
               <span className="tl-pr-skel" style={{ justifySelf: 'end', width: 58, height: 24, borderRadius: 7 }} />

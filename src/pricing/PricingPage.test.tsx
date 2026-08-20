@@ -68,6 +68,18 @@ describe('PricingPage', () => {
     expect(rows(c)[0].querySelector('.tl-pr-model .name')!.textContent).toBe('claude-opus-4-8'); // priciest total
   });
 
+  it('groups the rendered Rate source column when its header is clicked', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    const head = c.querySelector('button[aria-label="Sort by Rate source"]') as HTMLButtonElement;
+    await act(async () => head.click());
+
+    // The first badge in each row IS the Rate source cell. Keying the sort on the
+    // Source under Model instead left this interleaved: LiteLLM, Anthropic, LiteLLM…
+    const shown = rows(c).map((r) => r.querySelector('.tl-pr-badges .tl-pr-badge')!.textContent);
+    expect(shown).toEqual([...new Set(shown)].flatMap((l) => shown.filter((x) => x === l)));
+    expect([...new Set(shown)]).toEqual(['Anthropic', 'LiteLLM', 'OpenRouter', 'Override', 'Unpriced']);
+  });
+
   it('sorts by a rate column on header click — highest first, flipping on a second click', async () => {
     const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
     const modelName = (r: HTMLElement) => r.querySelector('.tl-pr-model .name')!.textContent;
@@ -226,6 +238,11 @@ describe('PricingPage', () => {
     const c = await mount(<PricingPage ports={{ pricing: pending }} />);
     expect(c.querySelector('.tl-pr-skel')).not.toBeNull();
     expect(rows(c).length).toBe(5); // skeleton rows, no data
+
+    // A skeleton row must fill the same grid tracks as a real one, or the last
+    // column sits empty and the action skeleton slides under a rate heading.
+    const real = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    expect(rows(c)[0].children.length).toBe(rows(real)[0].children.length);
   });
 
   it('shows the empty state and scans on demand', async () => {

@@ -110,14 +110,30 @@ export function defaultDir(col: SortCol): SortDir {
   return NUMERIC_COLS.has(col) ? 'desc' : 'asc';
 }
 
+// The Rate source column's own value, for sorting: a catalog origin sorts by the
+// label that column shows (A–Z), then every Override, then every Unpriced Model.
+// Keyed off what the column displays — not the Source that produced the usage,
+// which lives under Model — so the visible column really does come out grouped.
+// The two states sort as tiers rather than by their badge words, which keeps this
+// i18n-free like the rest of the module.
+function rateSourceKey(m: ModelPricing): [number, string] {
+  const s = modelState(m);
+  if (s === 'unpriced') return [2, ''];
+  if (s === 'override') return [1, ''];
+  return [0, originLabel(m.catalog!.origin)];
+}
+
 // A stable, total order for the Pricing table. Price columns read the resolved
 // List Price (Override → catalog); a Model with no price for that column — an
 // unpriced Model everywhere, or one missing that one rate — always sinks to the
 // bottom, both directions, rather than ordering as a real 0. Ties break by Model
-// name A–Z, so the order never depends on input order.
+// name NEWEST-first, so the order never depends on input order.
 export function sortPricing(models: ModelPricing[], col: SortCol, dir: SortDir): ModelPricing[] {
   const sign = dir === 'asc' ? 1 : -1;
-  const byName = (a: ModelPricing, b: ModelPricing) => a.model.localeCompare(b.model);
+  // Model names carry version numbers, so collate them numerically: a plain
+  // string compare reads "claude-opus-4-10" as older than "claude-opus-4-9".
+  const byName = (a: ModelPricing, b: ModelPricing) =>
+    a.model.localeCompare(b.model, undefined, { numeric: true });
   const priceOf = (m: ModelPricing) =>
     col === 'overall' ? overallRate(m) : resolvedRates(m)?.[col as keyof RatesPerTok] ?? null;
   return [...models].sort((a, b) => {
@@ -125,7 +141,9 @@ export function sortPricing(models: ModelPricing[], col: SortCol, dir: SortDir):
     if (col === 'model') {
       primary = sign * byName(a, b);
     } else if (col === 'source') {
-      primary = sign * sourceLabel(a.tool).localeCompare(sourceLabel(b.tool));
+      const [ta, la] = rateSourceKey(a);
+      const [tb, lb] = rateSourceKey(b);
+      primary = sign * (ta - tb || la.localeCompare(lb));
     } else {
       const ra = priceOf(a);
       const rb = priceOf(b);
@@ -134,7 +152,11 @@ export function sortPricing(models: ModelPricing[], col: SortCol, dir: SortDir):
       else if (rb == null) return -1;
       else primary = sign * (ra - rb);
     }
-    return primary || byName(a, b);
+    // Ties break newest-Model-first: where a whole family shares one price, the
+    // opus-5 row belongs above opus-4-8, not buried under its own back
+    // catalogue. Direction-independent, like the unpriced tail above — flipping
+    // the sorted column must not sink the newest Model of a tied family.
+    return primary || -byName(a, b);
   });
 }
 
