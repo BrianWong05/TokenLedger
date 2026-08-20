@@ -5,10 +5,14 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::adapters::{absolute_project, normalize_epoch, upsert_events_count};
+use crate::adapters::{
+    absolute_project, normalize_epoch, remember_file_states, sqlite_file_states, unchanged,
+    upsert_events_count,
+};
 use crate::types::{SourceScanResult, UsageEvent};
 
 const SOURCE: &str = "kilo";
+const PARSER_VERSION: i64 = 1;
 const SUPPORTED_SCHEMA: &[(&str, &[&str])] = &[
     (
         "session",
@@ -58,6 +62,10 @@ pub fn scan_kilo(conn: &mut Connection, database: &Path) -> SourceScanResult {
             ..Default::default()
         };
     }
+    let states = sqlite_file_states(database, PARSER_VERSION);
+    if states.iter().all(|(path, state)| unchanged(conn, path, state)) {
+        return SourceScanResult::default();
+    }
 
     let scan = match scan_database(database) {
         Ok(scan) => scan,
@@ -69,8 +77,16 @@ pub fn scan_kilo(conn: &mut Connection, database: &Path) -> SourceScanResult {
         }
     };
 
+    let mut file_state_error = None;
     let events_inserted = match upsert_events_count(conn, &scan.events) {
-        Ok(inserted) => inserted,
+        Ok(inserted) => {
+            if let Err(error) = remember_file_states(conn, &states) {
+                file_state_error = Some(format!(
+                    "{SOURCE}: Ledger file-state update failed: {error}"
+                ));
+            }
+            inserted
+        }
         Err(error) => {
             return SourceScanResult {
                 lines_skipped: scan.lines_skipped,
@@ -83,6 +99,7 @@ pub fn scan_kilo(conn: &mut Connection, database: &Path) -> SourceScanResult {
     SourceScanResult {
         events_inserted,
         lines_skipped: scan.lines_skipped,
+        error: file_state_error,
         ..Default::default()
     }
 }
@@ -433,6 +450,54 @@ mod tests {
         assert!(!durable
             .windows("KILO_PRIVATE_PROMPT_MARKER".len())
             .any(|window| window == b"KILO_PRIVATE_PROMPT_MARKER"));
+    }
+
+    #[test]
+    fn unchanged_database_is_not_reopened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("kilo.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_session(&database, "session", Some("/project"), None, [1, 1, 0, 0, 0]);
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        assert_eq!(scan_kilo(&mut ledger, &database_path).events_inserted, 1);
+        let saved = crate::db::get_file_state(&ledger, &database_path.to_string_lossy())
+            .unwrap()
+            .expect("a successful scan records the database fingerprint");
+
+        Connection::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TABLE session;")
+            .unwrap();
+        let mut current = crate::adapters::file_state_of(&database_path);
+        current.byte_offset = saved.byte_offset;
+        crate::db::set_file_state(&ledger, &database_path.to_string_lossy(), current).unwrap();
+
+        let second = scan_kilo(&mut ledger, &database_path);
+        assert!(second.error.is_none(), "unchanged database was reopened");
+        assert_eq!(second.events_inserted, 0);
+    }
+
+    #[test]
+    fn file_state_failure_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let database_path = tmp.path().join("kilo.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_session(&database, "session", Some("/project"), None, [1, 1, 0, 0, 0]);
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        ledger.execute("DROP TABLE scanned_files", []).unwrap();
+        let result = scan_kilo(&mut ledger, &database_path);
+
+        assert_eq!(result.events_inserted, 1);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("file-state update failed")));
     }
 
     #[test]

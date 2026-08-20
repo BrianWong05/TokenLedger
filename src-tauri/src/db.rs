@@ -1329,6 +1329,26 @@ pub fn upsert_source_session(
     Ok(())
 }
 
+pub fn upsert_source_sessions(
+    conn: &Connection,
+    source: &str,
+    sessions: &[crate::types::SourceSessionMeta],
+) -> rusqlite::Result<()> {
+    for session in sessions {
+        upsert_source_session(conn, source, session)?;
+    }
+    Ok(())
+}
+
+pub fn source_session_ids(conn: &Connection, source: &str) -> rusqlite::Result<Vec<String>> {
+    let mut statement =
+        conn.prepare("SELECT session_id FROM source_sessions WHERE source = ?1")?;
+    let session_ids = statement
+        .query_map([source], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(session_ids)
+}
+
 /// Persist every scanned Source's Unreadable-Artifact state (ADR-0017),
 /// zero counts included so a Source whose Artifacts become readable stops
 /// marking. Written by every scan; read back for the ≥ floor marker.
