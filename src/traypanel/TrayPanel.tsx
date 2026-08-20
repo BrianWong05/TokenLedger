@@ -31,23 +31,32 @@ const PANEL_WIDTH = 320;
 
 // Bar-chart geometry: the model hands over one normalised value per bucket,
 // the view splits its 288×56 box into one column per bucket. A bucket with
-// usage never rounds below a visible sliver, and an idle bucket draws nothing.
+// usage never rounds below a visible sliver, an idle bucket draws nothing,
+// and a young period's lone bucket stays a column rather than flooding the
+// box (the cap only ever binds when buckets are few). Exported for its test.
 const CHART_W = 288;
 const CHART_H = 56;
-function barRect(points: number[], i: number): string {
+export function barRect(points: number[], i: number): string {
   const slot = CHART_W / points.length;
-  const w = Math.max(2, slot - 2);
+  const w = Math.max(2, Math.min(slot - 2, 28));
   const x = i * slot + (slot - w) / 2;
   const h = points[i] > 0 ? Math.max(1.2, points[i] * (CHART_H - 6)) : 0;
   return h > 0
     ? `M${x.toFixed(1)} ${CHART_H - 2} v-${h.toFixed(1)} h${w.toFixed(1)} v${h.toFixed(1)} Z`
     : '';
 }
-function barsPath(points: number[], keep: (i: number) => boolean): string {
+function barsPath(points: number[], skipIdx: number): string {
   return points
-    .map((_, i) => (keep(i) ? barRect(points, i) : ''))
+    .map((_, i) => (i === skipIdx ? '' : barRect(points, i)))
     .filter(Boolean)
     .join(' ');
+}
+// The hover indicator is the bucket's whole slot, drawn behind the columns:
+// an idle bucket has no column to brighten, but its slot still lights up
+// while the read-out says its zero.
+function slotRect(points: number[], i: number): string {
+  const slot = CHART_W / points.length;
+  return `M${(i * slot).toFixed(1)} 0 h${slot.toFixed(1)} v${CHART_H} h-${slot.toFixed(1)} Z`;
 }
 
 // Fire-and-forget IPC for the actions; harmless outside Tauri (tests).
@@ -152,7 +161,6 @@ export default function TrayPanel({
           ledger.breakdown('tool', current),
           settings.get(),
           ledger.breakdown('model', current),
-          ledger.breakdown('project', current),
           ledger.series(current, seriesBucket(periodRef.current)),
           ledger.lastScan(),
           ledger.unreadableArtifacts(),
@@ -161,7 +169,7 @@ export default function TrayPanel({
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
-      const [t, y, rows, s, models, projects, series, scannedAt, sources] = fetched[0].value;
+      const [t, y, rows, s, models, series, scannedAt, sources] = fetched[0].value;
       const lang = s.language === 'zh-Hant' ? 'zh-Hant' : 'en';
       const unread = unreadableSourcesIn(sources, w.start);
       setTokensFloor({
@@ -175,7 +183,6 @@ export default function TrayPanel({
           period: periodRef.current,
           now: new Date(),
           models,
-          projects,
           series,
           scannedAt,
         }),
@@ -318,9 +325,6 @@ export default function TrayPanel({
     void refresh(); // no skeleton beat on a switch — it should feel snappy
   };
 
-  // The peak bucket wears the brighter fill; the model's peak caption names
-  // the same bucket, because both come down from the normalised maximum.
-  const peakIdx = model?.chart ? model.chart.points.indexOf(Math.max(...model.chart.points)) : -1;
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
 
   return (
@@ -345,11 +349,16 @@ export default function TrayPanel({
             </button>
           ))}
         </div>
+        {/* aria-disabled, not disabled: a disabled control shows no tooltip,
+            and the hotkey hint must not vanish exactly while the icon spins.
+            rescan() gates itself, so the click is already inert mid-scan. */}
         <button
           className="tp-refresh"
+          title={`Rescan now (${keys.rescan})`}
           aria-label="Rescan now"
+          aria-disabled={scanning || undefined}
+          aria-busy={scanning || undefined}
           onClick={() => void rescan()}
-          disabled={scanning}
         >
           {/* 1b's refresh glyph, spinning while the scan runs. */}
           <svg
@@ -369,7 +378,6 @@ export default function TrayPanel({
             <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
             <path d="M8 16H3v5" />
           </svg>
-          <span className="tp-key">{keys.rescan}</span>
         </button>
       </div>
 
@@ -389,7 +397,9 @@ export default function TrayPanel({
             )}
           </div>
           <span className="tp-sub" title={tokensFloor.marked ? tokensFloor.reason : undefined}>
-            {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tokens · ${model.requestsText} requests` : ''}
+            {/* Tokens only — the requests figure lives in its stat tile, and
+                saying it twice two lines apart bought nothing. */}
+            {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tokens` : ''}
           </span>
         </div>
       )}
@@ -411,7 +421,7 @@ export default function TrayPanel({
           {/* The bar splits the period's priced Cost; a period with none
               (all-Unpriced, all-Unattributed) keeps the legend alone. */}
           {barSlices.length > 0 && (
-            <div className="tp-bar">
+            <div className="tp-srcbar">
               {barSlices.map((r) => (
                 <span key={r.key} style={{ width: `${(r.share ?? 0) * 100}%`, background: r.color }} />
               ))}
@@ -421,7 +431,7 @@ export default function TrayPanel({
             {model.rows.map((r) => (
               <div className="tp-leg" key={r.key}>
                 <span className="tp-leg-name">
-                  {r.icon ? <img src={r.icon} alt="" width={12} height={12} /> : <span className="tp-icon-gap" />}
+                  {r.icon && <img src={r.icon} alt="" width={12} height={12} />}
                   {r.label}
                 </span>
                 <span className="tp-leg-cost">{r.cost}</span>
@@ -451,11 +461,13 @@ export default function TrayPanel({
             onMouseMove={onChartMove}
             onMouseLeave={() => setChartHover(null)}
           >
-            <path className="tp-bars" d={barsPath(model.chart.points, (i) => i !== peakIdx)} />
-            <path className="tp-bar-peak" d={barRect(model.chart.points, peakIdx)} />
             {chartHover != null && (
-              <path className="tp-bar-hover" d={barRect(model.chart.points, chartHover)} />
+              <path className="tp-chart-hover" d={slotRect(model.chart.points, chartHover)} />
             )}
+            {/* The peak bucket wears the brighter fill — the same bucket the
+                model's peak caption names. */}
+            <path className="tp-bars" d={barsPath(model.chart.points, model.chart.peakIndex)} />
+            <path className="tp-bar-peak" d={barRect(model.chart.points, model.chart.peakIndex)} />
           </svg>
           {/* The axis: first tick sits at the left edge, last at the right,
               middle between them — space-between puts each where its bucket is. */}
@@ -474,7 +486,7 @@ export default function TrayPanel({
             <div className="tp-row" key={r.key}>
               {/* The owning Source's mark leads the row (the redesign traded
                   the colour dot for it). */}
-              {r.icon ? <img src={r.icon} alt="" width={12} height={12} /> : <span className="tp-icon-gap" />}
+              {r.icon && <img src={r.icon} alt="" width={12} height={12} />}
               <span className="tp-row-label tp-model" title={r.label}>
                 {r.label}
               </span>
@@ -496,10 +508,8 @@ export default function TrayPanel({
             <div className="tp-tile-k">cache hit</div>
           </div>
           <div className="tp-tile">
-            <div className="tp-tile-v" title={model.stats.topProject ?? undefined}>
-              {model.stats.topProject ?? '—'}
-            </div>
-            <div className="tp-tile-k">project</div>
+            <div className="tp-tile-v">{model.requestsText}</div>
+            <div className="tp-tile-k">requests</div>
           </div>
           <div className="tp-tile">
             <div className="tp-tile-v">{model.stats.scanned}</div>
@@ -509,34 +519,28 @@ export default function TrayPanel({
       )}
 
       <div className="tp-actions">
-        <button className="tp-action" onClick={() => ipc('show_main')}>
+        <button className="tp-action" title="Open TokenLedger" onClick={() => ipc('show_main')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M7 17L17 7" />
             <path d="M9 7h8v8" />
           </svg>
           <span className="tp-act-k">Open</span>
         </button>
-        <button className="tp-action" aria-label="Settings" onClick={() => ipc('open_settings')}>
+        <button className="tp-action" title={`Settings (${keys.settings})`} onClick={() => ipc('open_settings')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <line x1="4" y1="8" x2="20" y2="8" />
             <circle cx="10" cy="8" r="2.5" />
             <line x1="4" y1="16" x2="20" y2="16" />
             <circle cx="15" cy="16" r="2.5" />
           </svg>
-          <span className="tp-act-meta">
-            <span className="tp-act-k">Settings</span>
-            <span className="tp-key">{keys.settings}</span>
-          </span>
+          <span className="tp-act-k">Settings</span>
         </button>
-        <button className="tp-action" aria-label="Quit TokenLedger" onClick={() => ipc('quit_app')}>
+        <button className="tp-action" title={`Quit TokenLedger (${keys.quit})`} onClick={() => ipc('quit_app')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M12 2v10" />
             <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
           </svg>
-          <span className="tp-act-meta">
-            <span className="tp-act-k">Quit</span>
-            <span className="tp-key">{keys.quit}</span>
-          </span>
+          <span className="tp-act-k">Quit</span>
         </button>
       </div>
     </div>

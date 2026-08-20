@@ -57,20 +57,18 @@ const NOW = new Date(2026, 5, 15, 10, 30, 0); // June 15, 10:30 local
 
 function extras(over: Partial<PanelExtras> = {}): PanelExtras {
   return {
-    period: 'today', now: NOW, models: [], projects: [], series: [], scannedAt: 0, ...over,
+    period: 'today', now: NOW, models: [], series: [], scannedAt: 0, ...over,
   };
 }
 
 const S = DEFAULT_SETTINGS;
 
 describe('panelModel', () => {
-  it('renders the header: cost, delta vs same-time-yesterday, tokens and requests', () => {
+  it('renders the header: cost and the pace delta vs same-time-yesterday', () => {
     const m = panelModel(sum(3_400_000, 12.84, false, 1912), sum(1_000_000, 10.0), [], S, 'en');
     expect(m.cost).toBe('$12.84');
     expect(m.delta).toBe('+28.4%'); // 12.84 / 10 → +28.4, one decimal
     expect(m.deltaUp).toBe(true);
-    expect(m.tokensValue).toBe(3_400_000);
-    expect(m.requestsText).toBe('1,912');
   });
 
   it('falling pace reads negative and not-up', () => {
@@ -173,7 +171,7 @@ describe('panelModel', () => {
     expect(m.rows[0].icon).toBe(SOURCE_ICONS.generic);
   });
 
-  it('renders the header and Source bar alone when the extra reads are absent', () => {
+  it('renders the 2b sections alone when the extra reads are absent', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en');
     expect(m.chart).toBeNull();
     expect(m.models).toEqual([]);
@@ -182,7 +180,7 @@ describe('panelModel', () => {
   });
 });
 
-describe('panelModel Cost bar chart', () => {
+describe('panelModel Cost chart', () => {
   it('sums Cost per hour across the elapsed day, zero-filling idle hours', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
       series: [
@@ -197,6 +195,7 @@ describe('panelModel Cost bar chart', () => {
     expect(m.chart?.points[1]).toBe(0); // an idle hour keeps its slot on the axis
     expect(m.chart?.ticks).toEqual(['00:00', '05:00', '10:00']); // ends and middle
     expect(m.chart?.peak).toBe('peak 05:00 · $4.50');
+    expect(m.chart?.peakIndex).toBe(5); // the bucket the caption names
   });
 
   it('spans yesterday whole, not just the hours elapsed today', () => {
@@ -276,9 +275,10 @@ describe('panelModel Cost bar chart', () => {
       now: new Date(2026, 5, 15, 0, 40, 0),
       series: [spt('2026-06-15 00:00', 8)],
     }));
-    expect(m.chart?.points).toEqual([1]); // the view draws a lone bucket as a point
+    expect(m.chart?.points).toEqual([1]); // one bucket, one column
     expect(m.chart?.ticks).toEqual(['00:00']); // one bucket, one label — not three of it
     expect(m.chart?.peak).toBe('peak 00:00 · $8.00');
+    expect(m.chart?.peakIndex).toBe(0);
   });
 
   it('still hides the chart when no bucket carries usage', () => {
@@ -294,7 +294,7 @@ describe('panelModel Cost bar chart', () => {
 });
 
 describe('panelModel Models section', () => {
-  it('orders by Cost, keeps all-Unpriced last, and colours rows by owning Source', () => {
+  it('orders by Cost and keeps all-Unpriced last', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
       models: [
         mrow('gpt-5-codex', 'codex', 48_200_000, 47.3),
@@ -303,10 +303,10 @@ describe('panelModel Models section', () => {
         mrow('gemini-2.5-pro', 'gemini', 0, null), // no usage → absent
       ],
     }));
-    expect(m.models.map((r) => [r.label, r.tokens, r.cost, r.color])).toEqual([
-      ['claude-sonnet-4-5', '470.1M', '$512.40', '#d97757'],
-      ['gpt-5-codex', '48.2M', '$47.30', '#6e50f2'],
-      ['local-llama', '900K', 'unpriced', undefined], // unknown Source: no colour
+    expect(m.models.map((r) => [r.label, r.tokens, r.cost])).toEqual([
+      ['claude-sonnet-4-5', '470.1M', '$512.40'],
+      ['gpt-5-codex', '48.2M', '$47.30'],
+      ['local-llama', '900K', 'unpriced'],
     ]);
     expect(m.modelsOverflow).toBe(0);
   });
@@ -354,17 +354,12 @@ describe('panelModel Models section', () => {
 });
 
 describe('panelModel stats strip', () => {
-  it('reads Cache Hit Rate, the top Project by Cost, and Scan freshness', () => {
+  it('reads Cache Hit Rate and Scan freshness', () => {
     const today = { ...sum(1_000, 8), cacheHitRate: 0.9124 };
     const m = panelModel(today, sum(0, null), [], S, 'en', extras({
-      projects: [
-        brow('/Users/b/Project/champions-vgc', 179_200_000, 198.42),
-        brow('/Users/b/Project/usage', 388_400_000, 431.9),
-      ],
       scannedAt: Math.floor(NOW.getTime() / 1000) - 132,
     }));
     expect(m.stats?.cacheHit).toBe('91.2%');
-    expect(m.stats?.topProject).toBe('usage · $431.90'); // basename, like the Overview
     expect(m.stats?.scanned).toBe('2 min ago');
   });
 
@@ -381,19 +376,6 @@ describe('panelModel stats strip', () => {
   it('admits when no Scan has run yet this launch', () => {
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({ scannedAt: 0 }));
     expect(m.stats?.scanned).toBe('—'); // never a wrong "just now"
-  });
-
-  it('shows no Project when no Usage Record carries one', () => {
-    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({ projects: [] }));
-    expect(m.stats?.topProject).toBeNull();
-  });
-
-  it('never names the backend\'s "unknown" group as the top Project', () => {
-    // Usage with no Project comes back grouped under "unknown" (queries.rs).
-    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
-      projects: [brow('unknown', 900_000_000, 900), brow('/Users/b/Project/usage', 1_000, 4.4)],
-    }));
-    expect(m.stats?.topProject).toBe('usage · $4.40');
   });
 });
 

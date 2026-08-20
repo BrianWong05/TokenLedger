@@ -1,12 +1,12 @@
-// The Menu Bar Extra panel's view model (Glance + Models · bars — ADR-0007 for
-// why the surface is a webview at all). Pure: the period's reads in, display
-// strings out. These rules moved here from the retired native-menu tray model
-// in src-tauri/tray.rs; the Rust side now only computes the bar title.
-import { basename, formatCompactTokenTotal } from '../lib/format';
+// The Menu Bar Extra panel's view model (design 2b grown — ADR-0007 for why the
+// surface is a webview at all). Pure: the period's reads in, display strings
+// out. These rules moved here from the retired native-menu tray model in
+// src-tauri/tray.rs; the Rust side now only computes the bar title.
+import { formatCompactTokenTotal } from '../lib/format';
 import { formatCost } from '../lib/currency';
 import type { Lang } from '../lib/i18n';
 import { isoOf } from '../overview/data';
-import { SOURCES, sourceMeta } from '../overview/meta';
+import { sourceMeta } from '../overview/meta';
 import { sourceIcon } from '../overview/icons';
 import type { BreakdownRow, SeriesPoint, Settings, Summary } from '../types';
 import { isAllUnattributedCost, isPartialCost, type CostCompleteness } from '../lib/costCompleteness';
@@ -22,27 +22,27 @@ export interface PanelRow {
 }
 
 // The period's Cost per bucket, normalised for the view: geometry (viewBox,
-// columns) stays in the panel, the shape and the read-out are decided here.
+// stroke) stays in the panel, the shape and the read-out are decided here.
 export interface PanelChart {
   points: number[]; // 0..1 of the period's peak, one per bucket, gaps zero-filled
   ticks: string[]; // sparse x labels — first, middle, last — spread across the points
   peak: string; // "peak 14:00 · $101.15"
+  peakIndex: number; // which bucket the peak caption names — the view brightens it
   details: string[]; // hover read-out per bucket — "14:00 · $3.12 · 1.2M tok"
 }
 
 export interface PanelStats {
   cacheHit: string;
-  topProject: string | null; // "usage · $431.90"; null when no Project is known
   scanned: string; // "just now" | "8 min ago" | "2h ago" | "—"
 }
 
-// The reads beyond the header: Models, the Cost bar chart, and the stat tiles.
-// Optional as a whole — without them the panel is the header and Source bar.
+// The reads beyond the 2b panel's own: the Models section, the stats strip and
+// the chart. Optional as a whole — without them the panel is exactly the
+// surface it was.
 export interface PanelExtras {
   period: Period;
   now: Date;
   models: BreakdownRow[];
-  projects: BreakdownRow[];
   series: SeriesPoint[]; // per (bucket, Source) over the period
   scannedAt: number; // epoch seconds; 0 = no scan yet this launch
 }
@@ -62,7 +62,7 @@ export interface PanelModel {
   requestsText: string; // "1,912" — not animated, appended to the sub line
   fmtCost(v: number): string;
   fmtTokens(v: number): string;
-  chart: PanelChart | null; // null hides the Cost bar chart
+  chart: PanelChart | null; // null hides the chart
   models: PanelRow[];
   modelsOverflow: number; // Models the cap hid, 0 when none
   stats: PanelStats | null;
@@ -94,7 +94,7 @@ const MODEL_CAP = 5;
 const pad = (n: number) => String(n).padStart(2, '0');
 
 // Which bucket size the period's series is read at — the panel fetches with
-// this and the Cost bar chart is built from it, so the two cannot drift.
+// this and the chart is built from it, so the two cannot drift.
 export function seriesBucket(period: Period): 'hour' | 'day' {
   return period === 'days30' ? 'day' : 'hour';
 }
@@ -165,7 +165,7 @@ function costChart(
   const row = keys.map((k) => cells.get(k) ?? emptyCell());
   // Usage somewhere is enough to draw: a day 40 minutes old has one hour slot,
   // and hiding its chart reads as breakage rather than as a young day. The
-  // view draws a lone bucket as a point. A period whose whole Cost is zero
+  // view draws a lone bucket as one column. A period whose whole Cost is zero
   // still has no shape to normalise against.
   if (!row.some((c) => c.totalTokens > 0)) return null;
   const peak = row.reduce((a, b) => (b.cost > a.cost ? b : a), row[0]);
@@ -176,10 +176,12 @@ function costChart(
   // no separate hourly/daily caption is needed. A short window collapses to
   // the labels it actually has.
   const at = [...new Set([0, Math.floor((keys.length - 1) / 2), keys.length - 1])];
+  const peakIndex = row.indexOf(peak);
   return {
     points: row.map((c) => c.cost / peak.cost),
     ticks: at.map((i) => tickLabel(keys[i])),
-    peak: `peak ${tickLabel(keys[row.indexOf(peak)])} · ${cost(peak, settings, lang)}`,
+    peak: `peak ${tickLabel(keys[peakIndex])} · ${cost(peak, settings, lang)}`,
+    peakIndex,
     // One read-out per bucket for the hover inspector, preformatted like the
     // peak line so the view stays display-only. An idle bucket honestly reads
     // $0.00 · 0 tok — the period as a whole is priced or chart would be null.
@@ -203,10 +205,6 @@ function since(ts: number, now: Date): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   return `${Math.floor(s / 3600)}h ago`;
 }
-
-// A Usage Record with no Project comes back under the backend's "unknown"
-// group key (queries.rs). It is not a Project, so it never names the tiles.
-const NO_PROJECT = 'unknown';
 
 export function panelModel(
   today: Summary,
@@ -236,15 +234,10 @@ export function panelModel(
   const models = usedModels.slice(0, MODEL_CAP).map((r) => ({
     key: `${r.source ?? 'unknown'}/${r.key ?? 'unknown'}`,
     label: r.key ?? 'unknown',
-    color: SOURCES.find((source) => source.key === r.source)?.color,
     icon: sourceIcon(sourceMeta(r.source ?? 'unknown').icon),
     tokens: formatCompactTokenTotal(r.totalTokens),
     cost: cost(r, settings, lang),
   }));
-
-  const topProject = extras?.projects
-    .filter((r) => r.totalTokens > 0 && r.key && r.key !== NO_PROJECT)
-    .sort(byCost)[0];
 
   // The stacked source bar splits the period's priced Cost; a row whose Cost
   // is null (all-Unpriced or all-Unattributed) has no slice to claim.
@@ -280,16 +273,13 @@ export function panelModel(
     stats: extras
       ? {
           cacheHit: `${(today.cacheHitRate * 100).toFixed(1)}%`,
-          topProject: topProject
-            ? `${basename(topProject.key ?? '')} · ${cost(topProject, settings, lang)}`
-            : null,
           scanned: since(extras.scannedAt, extras.now),
         }
       : null,
   };
 }
 
-// The panel's period selector (Today / Yesterday / 30 days).
+// The panel's period selector (design 2b's Today / Yesterday / 30 days).
 export type Period = 'today' | 'yesterday' | 'days30';
 
 // [start, end) plus the comparison window [prevStart, prevEnd) for the pace

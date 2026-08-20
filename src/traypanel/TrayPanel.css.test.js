@@ -63,4 +63,21 @@ describe('TrayPanel translucency', () => {
     expect(dark).toHaveLength(light.length);
     dark.forEach((a, i) => expect(a, `stop ${i}`).toBeLessThan(light[i]));
   });
+
+  // The window and the card must agree on size and corner: the conf sizes the
+  // window and rounds the material, the CSS sizes and rounds the card, and
+  // TrayPanel.tsx re-asserts the width on every ResizeObserver resize. Apart
+  // they show as a clipped card, material poking past the corners, or a panel
+  // that snaps widths on first paint. (tray.rs's PANEL_WIDTH is pinned to the
+  // same conf by a Rust test.)
+  it('keeps the card and the resize width in step with the window and its material', () => {
+    const panel = conf.app.windows.find((w) => w.label === 'traypanel');
+    const card = css.match(/(?:^|\n)\.tp\s*\{([^}]*)\}/)[1];
+    expect(card.match(/(?:^|;)\s*width\s*:\s*([^;]+)/)[1].trim()).toBe(`${panel.width}px`);
+    expect(card.match(/border-radius\s*:\s*([^;]+)/)[1].trim()).toBe(
+      `${panel.windowEffects.radius}px`,
+    );
+    const tsx = readFileSync(resolve(process.cwd(), 'src/traypanel/TrayPanel.tsx'), 'utf8');
+    expect(tsx.match(/const PANEL_WIDTH = (\d+)/)[1]).toBe(String(panel.width));
+  });
 });

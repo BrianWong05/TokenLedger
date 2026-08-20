@@ -3,11 +3,11 @@
 // tokens + Cost are computed here once and reach the user by whatever route
 // the platform offers (ADR-0010): beside the icon on macOS, in the icon's
 // hover text on Windows, as the first row of a menu on Linux. The icon toggles
-// the traypanel webview window, which renders design 2b pixel-faithfully per
-// ADR-0007 (superseding ADR-0006's native menu) — except on Linux, whose tray
-// delivers no click to toggle it with, and which gets the menu instead. Panel
-// content and actions live in src/traypanel/; this file is the title math plus
-// window glue.
+// the traypanel webview window, which renders the panel design pixel-faithfully
+// per ADR-0007 as amended (superseding ADR-0006's native menu) — except on
+// Linux, whose tray delivers no click to toggle it with, and which gets the
+// menu instead. Panel content and actions live in src/traypanel/; this file is
+// the title math plus window glue.
 use tauri::image::Image;
 #[cfg(target_os = "linux")]
 use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -131,6 +131,13 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
 /// panel fetches on mount; destroy-on-blur lives in lib.rs's window-event
 /// handler. Absent on Linux, which never delivers the click that would call it.
 #[cfg(not(target_os = "linux"))]
+/// The panel window's logical width — the one number lib.rs's resize_panel and
+/// the fallback below hardcode. tauri.conf.json's traypanel entry and
+/// TrayPanel.tsx's PANEL_WIDTH carry the same figure; tests pin each of them
+/// to their conf (panel_width_matches_the_window_config here,
+/// TrayPanel.css.test.js on the frontend).
+pub(crate) const PANEL_WIDTH: f64 = 320.0;
+
 fn toggle_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) -> tauri::Result<()> {
     let w = if let Some(w) = app.get_webview_window("traypanel") {
         w
@@ -146,7 +153,7 @@ fn toggle_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) -> tauri::Res
     let panel = w
         .outer_size()
         .map(|s| (f64::from(s.width), f64::from(s.height)))
-        .unwrap_or((320.0 * scale, 480.0 * scale));
+        .unwrap_or((PANEL_WIDTH * scale, 480.0 * scale));
     // An unresolvable monitor collapses the work area to the icon, which
     // disables clamping (see clamp) and leaves the anchored position standing.
     let (cx, cy) = icon.center();
@@ -756,7 +763,9 @@ mod tests {
     // --- Panel placement ---
     // Physical pixels throughout. macOS numbers are a 3024×1964 retina screen
     // (scale 2, 48px menu bar, 600×960 panel); the Windows ones a 1920×1080
-    // screen (scale 1, 48px taskbar, 300×480 panel).
+    // screen (scale 1, 48px taskbar, 300×480 panel). The panel sizes are
+    // fixture geometry passed explicitly — panel_position is parametric, so
+    // these stay valid whatever width the real panel ships at.
 
     const MAC_ICON: PxRect = PxRect { x: 2600.0, y: 0.0, w: 60.0, h: 48.0 };
     const MAC_WORK: PxRect = PxRect { x: 0.0, y: 48.0, w: 3024.0, h: 1916.0 };

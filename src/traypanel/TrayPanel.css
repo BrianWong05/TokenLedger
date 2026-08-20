@@ -106,9 +106,9 @@ body.tp-macos .tp {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  width: 22px;
   height: 22px;
-  padding: 0 6px;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   background: none;
@@ -116,7 +116,7 @@ body.tp-macos .tp {
   cursor: default;
 }
 .tp-refresh:hover { background: rgba(255, 255, 255, 0.08); color: #f2f2f5; }
-.tp-refresh:disabled { color: #a99dff; } /* scanning: the accent, and the icon spins */
+.tp-refresh[aria-disabled='true'] { color: #a99dff; } /* scanning: the accent, and the icon spins */
 .tp-refresh svg { display: block; }
 
 .tp-figures { margin-top: 8px; }
@@ -141,14 +141,13 @@ body.tp-macos .tp {
 /* Sources: the stacked bar splits the period's priced Cost by brand colour;
    the legend beneath names each slice and its Cost. */
 .tp-sources { margin-top: 16px; }
-.tp-bar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
-.tp-bar span { height: 8px; }
+.tp-srcbar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
+.tp-srcbar span { height: 8px; }
 .tp-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; }
 .tp-leg { display: flex; flex-direction: column; gap: 2px; }
 .tp-leg-name { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #d6d6dc; }
 .tp-leg-name img { display: block; }
 .tp-leg-cost { font-family: ui-monospace, monospace; font-size: 12px; color: #a3a3ab; padding-left: 17px; }
-.tp-icon-gap { width: 12px; }
 
 /* Cost bar chart: one column per bucket, the peak bucket in the brighter
    fill. The svg stretches to the panel's content width; its geometry comes
@@ -157,27 +156,27 @@ body.tp-macos .tp {
 .tp-chart svg { display: block; width: 100%; height: 56px; }
 .tp-bars { fill: #7c6bf2; fill-opacity: 0.62; }
 .tp-bar-peak { fill: #a99dff; }
-.tp-bar-hover { fill: rgba(255, 255, 255, 0.3); }
-/* The read-out row above the chart: peak caption left, the inspected
-   bucket right (reserved so inspecting never resizes the window). */
+.tp-chart-hover { fill: rgba(255, 255, 255, 0.09); } /* the hovered bucket's whole slot, behind the columns */
+/* The read-out row above the chart (peak caption left, the inspected bucket
+   right — reserved so inspecting never resizes the window) and the axis row
+   below it share one text style. The read-out truncates rather than wrap
+   over the chart: a 30-day hover detail can outrun the row. */
+.tp-chart-cap,
 .tp-chart-cap-row {
   display: flex;
   justify-content: space-between;
-  height: 13px;
-  margin-bottom: 4px;
   font-family: ui-monospace, monospace;
   font-size: 10.5px;
 }
-.tp-chart-peak { color: #6e6e76; }
-.tp-chart-read { color: #d9d4ff; }
-.tp-chart-cap {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 3px;
-  font-family: ui-monospace, monospace;
-  font-size: 10.5px;
-  color: #6e6e76;
+.tp-chart-cap-row { height: 13px; margin-bottom: 4px; white-space: nowrap; }
+.tp-chart-peak { color: #6e6e76; flex-shrink: 0; }
+.tp-chart-read {
+  color: #d9d4ff;
+  margin-left: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.tp-chart-cap { margin-top: 3px; color: #6e6e76; }
 
 /* Models: the Source rows' idiom, led by the owning Source's mark. Long
    Model names ellipsize so the columns stay aligned. */
@@ -215,14 +214,7 @@ body.tp-macos .tp {
   padding: 9px 10px 8px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
-.tp-tile-v {
-  font-family: ui-monospace, monospace;
-  font-size: 14.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.tp-tile-v { font-family: ui-monospace, monospace; font-size: 14.5px; font-weight: 600; }
 .tp-tile-k { font-size: 10px; color: #8a8a93; margin-top: 2px; }
 
 /* Actions: icon over label, three across, accent on hover. */
@@ -245,16 +237,6 @@ body.tp-macos .tp {
 .tp-action:hover { background: #7c6bf2; color: #fff; }
 .tp-action svg { width: 15px; height: 15px; }
 .tp-act-k { font-size: 9px; opacity: 0.8; }
-.tp-act-meta { display: flex; align-items: baseline; gap: 4px; }
-/* Printed beside the action it fires (CONTEXT.md) — not a tooltip. */
-.tp-key {
-  font-family: ui-monospace, monospace;
-  font-size: 9px;
-  letter-spacing: 0.02em;
-  opacity: 0.7;
-}
-.tp-action:hover .tp-key,
-.tp-refresh:hover .tp-key { opacity: 1; }
 
 /* Loading shimmer (panel open): blocks where the figures will land. */
 .tp-skel {

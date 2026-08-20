@@ -3,7 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import TrayPanel from './TrayPanel';
+import TrayPanel, { barRect } from './TrayPanel';
 import { SOURCE_ICONS } from '../overview/icons';
 import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
@@ -52,7 +52,7 @@ const toolRows: BreakdownRow[] = [
     unattributedTokens: 0 },
 ];
 
-// Series helpers for the Cost bar chart tests: a local calendar day `back` days
+// Series helpers for the chart tests: a local calendar day `back` days
 // ago, and one (bucket, Source) series point.
 const day = (back: number) => {
   const d = new Date();
@@ -104,12 +104,13 @@ describe('TrayPanel', () => {
     // over, because an open paints from the Ledger and then re-reads behind
     // its own scan.
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
-    expect(container.querySelector('.tp-sub')?.textContent).toBe('3.4M tokens · 1,912 requests');
+    // Tokens only: requests live in their stat tile, not twice on the header.
+    expect(container.querySelector('.tp-sub')?.textContent).toBe('3.4M tokens');
     expect(ledger.calls.summary.length).toBe(4);
 
     // Sources from breakdown('tool'), cost desc: the stacked bar splits the
     // priced Cost by brand colour, and the legend names each slice.
-    const slices = Array.from(container.querySelectorAll('.tp-bar span')).map(
+    const slices = Array.from(container.querySelectorAll('.tp-srcbar span')).map(
       (s) => (s as HTMLElement).style.width,
     );
     expect(slices.length).toBe(2);
@@ -125,17 +126,16 @@ describe('TrayPanel', () => {
     expect(ledger.calls.breakdown[0]?.[0]).toBe('tool');
 
     // The three icon actions (Rescan lives in the top-right refresh button).
-    // Shortcuts print beside the action they fire — not as a tooltip.
     const actions = Array.from(container.querySelectorAll('.tp-action')).map((b) => [
       b.querySelector('.tp-act-k')?.textContent,
-      b.querySelector('.tp-key')?.textContent ?? null,
+      b.getAttribute('title'),
     ]);
     expect(actions).toEqual([
-      ['Open', null],
-      ['Settings', '⌘,'],
-      ['Quit', '⌘Q'],
+      ['Open', 'Open TokenLedger'],
+      ['Settings', 'Settings (⌘,)'],
+      ['Quit', 'Quit TokenLedger (⌘Q)'],
     ]);
-    expect(container.querySelector('.tp-refresh .tp-key')?.textContent).toBe('⇧⌘R');
+    expect(container.querySelector('.tp-refresh')?.getAttribute('title')).toBe('Rescan now (⇧⌘R)');
   });
 
   // Unreadable Artifacts (ADR-0017): the panel's token figure is a floor when
@@ -169,7 +169,7 @@ describe('TrayPanel', () => {
     await settle();
 
     const sub = container.querySelector('.tp-sub')!;
-    expect(sub.textContent).toBe('≥ 3.4M tokens · 1,912 requests');
+    expect(sub.textContent).toBe('≥ 3.4M tokens');
     expect(sub.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
   });
 
@@ -180,10 +180,6 @@ describe('TrayPanel', () => {
       modelRows: [
         { ...toolRows[0], key: 'claude-sonnet-4-5', source: 'claude', cost: 6.12 },
         { ...toolRows[1], key: 'gpt-5-codex', source: 'codex', cost: 1.11 },
-      ],
-      projectRows: [
-        { ...toolRows[0], key: '/Users/b/Project/champions-vgc', cost: 198.42 },
-        { ...toolRows[0], key: '/Users/b/Project/usage', cost: 431.9 },
       ],
       lastScan: Math.floor(Date.now() / 1000) - 132,
     });
@@ -215,16 +211,14 @@ describe('TrayPanel', () => {
     ]);
     expect(tiles).toEqual([
       ['91.2%', 'cache hit'],
-      ['usage · $431.90', 'project'],
+      ['1,912', 'requests'],
       ['2 min ago', 'scanned'],
     ]);
 
-    // The extra reads: Models, Projects, the period's series, the Scan time —
-    // each twice over, because an open paints from the Ledger and then re-reads
+    // The extra reads: Models, the period's series, the Scan time — each
+    // twice over, because an open paints from the Ledger and then re-reads
     // behind its own scan.
-    expect(ledger.calls.breakdown.map((c) => c[0])).toEqual([
-      'tool', 'model', 'project', 'tool', 'model', 'project',
-    ]);
+    expect(ledger.calls.breakdown.map((c) => c[0])).toEqual(['tool', 'model', 'tool', 'model']);
     expect(ledger.calls.series[0]?.[1]).toBe('hour'); // Today buckets hourly
     expect(ledger.calls.lastScan.length).toBe(2);
   });
@@ -260,6 +254,12 @@ describe('TrayPanel', () => {
     expect((container.querySelector('.tp-bar-peak')?.getAttribute('d')?.match(/M/g) ?? []).length).toBe(1);
   });
 
+  // A day 40 minutes old has one bucket; its column must stay a column
+  // rather than flooding the whole 288px box (uncapped it would be 286 wide).
+  it('clamps a lone bucket to a modest column', () => {
+    expect(barRect([1], 0)).toContain('h28.0');
+  });
+
   it('hovering the chart reads out that bucket; leaving clears the read-out', async () => {
     const ledger = makeFakeLedger({
       summary,
@@ -280,7 +280,7 @@ describe('TrayPanel', () => {
 
     // Idle: the reserved line stays empty; the peak caption holds the row.
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
-    expect(container.querySelector('.tp-bar-hover')).toBeNull();
+    expect(container.querySelector('.tp-chart-hover')).toBeNull();
 
     // jsdom boxes have no size; give the svg the viewBox's width so the
     // pointer maths has geometry to invert.
@@ -295,7 +295,7 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
       `${day(0).slice(5)} · $9.00 · 1K tok`,
     );
-    expect(container.querySelector('.tp-bar-hover')).not.toBeNull();
+    expect(container.querySelector('.tp-chart-hover')).not.toBeNull();
     await act(async () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 3 }));
     });
@@ -311,7 +311,7 @@ describe('TrayPanel', () => {
       );
     });
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
-    expect(container.querySelector('.tp-bar-hover')).toBeNull();
+    expect(container.querySelector('.tp-chart-hover')).toBeNull();
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
@@ -353,7 +353,7 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-cost')?.textContent).toBe('unavailable');
     expect(container.querySelector('.tp-leg-cost')?.textContent).toBe('unavailable');
     // No priced Cost anywhere: the stacked bar has nothing to split.
-    expect(container.querySelector('.tp-bar')).toBeNull();
+    expect(container.querySelector('.tp-srcbar')).toBeNull();
   });
 
   it('reads out its zero — no sections, no fabricated 0.0% cache hit', async () => {
@@ -369,7 +369,7 @@ describe('TrayPanel', () => {
     await settle();
 
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$0.00');
-    expect(container.querySelector('.tp-sub')?.textContent).toBe('0 tokens · 0 requests');
+    expect(container.querySelector('.tp-sub')?.textContent).toBe('0 tokens');
     expect(container.querySelector('.tp-delta')).toBeNull();
     expect(container.querySelector('.tp-tiles')).toBeNull();
     expect(container.querySelector('.tp-models')).toBeNull();
@@ -426,7 +426,7 @@ describe('TrayPanel', () => {
 
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
     const rescanBtn = container.querySelector('.tp-refresh') as HTMLButtonElement;
-    expect(rescanBtn.disabled).toBe(false);
+    expect(rescanBtn.getAttribute('aria-disabled')).toBeNull();
 
     await act(async () => rescanBtn.click());
     await settle();
@@ -497,12 +497,13 @@ describe('TrayPanel', () => {
     const rescan = container.querySelector('.tp-refresh') as HTMLButtonElement;
     await act(async () => rescan.click());
 
-    // In flight: the icon spins, the button disables, a second click
-    // coalesces, and the Today figures pulse so an unchanged total still
-    // reads as a refresh happening.
+    // In flight: the icon spins, the button reads disabled (aria, so its
+    // hotkey-hint tooltip survives — a truly disabled control shows none),
+    // a second click coalesces, and the Today figures pulse so an unchanged
+    // total still reads as a refresh happening.
     expect(container.querySelector('.tp-spin')).not.toBeNull();
     expect(container.querySelector('.tp-figures.tp-pulse')).not.toBeNull();
-    expect(rescan.disabled).toBe(true);
+    expect(rescan.getAttribute('aria-disabled')).toBe('true');
     await act(async () => rescan.click());
     expect(ledger.calls.scan.length).toBe(scansBefore + 1);
 
@@ -510,7 +511,7 @@ describe('TrayPanel', () => {
     await settle();
     expect(container.querySelector('.tp-spin')).toBeNull();
     expect(container.querySelector('.tp-pulse')).toBeNull();
-    expect(rescan.disabled).toBe(false);
+    expect(rescan.getAttribute('aria-disabled')).toBeNull();
   });
 
   it('period segments switch the fetched window and refetch without the skeleton', async () => {
@@ -576,7 +577,8 @@ describe('TrayPanel', () => {
   });
 
   // The panel opens on macOS and Windows (ADR-0010), and ⌘ is not a key a
-  // Windows keyboard has. The hints print beside the action they fire.
+  // Windows keyboard has. The hints ride the buttons' tooltips now that the
+  // actions are icons.
   it('spells the action shortcuts the way the platform does', async () => {
     const keys = async (platform: Platform) => {
       const container = document.createElement('div');
@@ -592,7 +594,9 @@ describe('TrayPanel', () => {
         );
       });
       await settle();
-      return Array.from(container.querySelectorAll('.tp-key')).map((el) => el.textContent);
+      return Array.from(container.querySelectorAll('.tp-refresh, .tp-action'))
+        .map((b) => b.getAttribute('title')?.match(/\(([^)]+)\)$/)?.[1])
+        .filter(Boolean);
     };
 
     expect(await keys('macos')).toEqual(['⇧⌘R', '⌘,', '⌘Q']);
@@ -736,16 +740,17 @@ describe('TrayPanel', () => {
       ['linux' as Platform],
     ])('every shortcut it prints on %s is one that works', async (platform) => {
       const ledger = await mount(platform);
-      const printed = Array.from(document.querySelectorAll('.tp-key')).map((el) => {
-        const btn = el.closest('button')!;
-        return {
-          label: btn.getAttribute('aria-label') ?? btn.querySelector('.tp-act-k')?.textContent ?? '',
-          hint: el.textContent ?? '',
-        };
-      });
-      expect(printed).toHaveLength(3); // Rescan, Settings, Quit — Open has none
+      // The label comes from the button's own text (or aria-label for the
+      // icon-only refresh), NEVER from the title the hint rides — reading
+      // both from one attribute would let a hint on the wrong button pass.
+      const printed = Array.from(document.querySelectorAll('.tp-refresh, .tp-action')).map((b) => ({
+        label: b.getAttribute('aria-label') ?? b.querySelector('.tp-act-k')?.textContent ?? '',
+        hint: b.getAttribute('title')?.match(/\(([^)]+)\)$/)?.[1] ?? '',
+      }));
+      const hints = printed.filter((p) => p.hint);
+      expect(hints.length).toBe(3); // Rescan, Settings, Quit — Open has none
 
-      for (const { label, hint } of printed) {
+      for (const { label, hint } of hints) {
         const scans = ledger.calls.scan.length;
         invoked.length = 0;
         await key(parseHint(hint));
