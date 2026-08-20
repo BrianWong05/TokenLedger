@@ -1,0 +1,34 @@
+{
+    "oauthAccount": {
+        "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
+        "organizationRateLimitTier": "default_raven",
+        "userRateLimitTier": "default_claude_max_5x"
+    },
+    "hasVisitedExtraUsage": true,
+    "cachedUsageUtilization": {
+        "fetchedAtMs": 1787256759360,
+        "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
+        "utilization": {
+            "five_hour": {"utilization": 36, "resets_at": "2026-08-20T23:50:00.011981+00:00",
+                "limit_dollars": null, "used_dollars": null, "remaining_dollars": null},
+            "seven_day": {"utilization": 31, "resets_at": "2026-08-23T13:00:00.012002+00:00",
+                "limit_dollars": null, "used_dollars": null, "remaining_dollars": null},
+            "seven_day_oauth_apps": null, "seven_day_opus": null, "seven_day_sonnet": null,
+            "nimbus_quill": {"utilization": 0, "resets_at": null},
+            "extra_usage": {"is_enabled": false, "monthly_limit": null, "utilization": null},
+            "limits": [
+                {"kind": "session", "group": "session", "percent": 36, "severity": "normal",
+                 "resets_at": "2026-08-20T23:50:00.011981+00:00", "scope": null, "is_active": false},
+                {"kind": "weekly_all", "group": "weekly", "percent": 31, "severity": "normal",
+                 "resets_at": "2026-08-23T13:00:00.012002+00:00", "scope": null, "is_active": false},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 41, "severity": "normal",
+                 "resets_at": "2026-08-23T13:00:00.012230+00:00",
+                 "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null},
+                 "is_active": true}
+            ],
+            "spend": {"used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
+                "limit": null, "percent": 0, "severity": "normal", "enabled": false},
+            "member_dashboard_available": false
+        }
+    }
+}
