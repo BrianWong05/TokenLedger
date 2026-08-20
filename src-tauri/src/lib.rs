@@ -614,11 +614,11 @@ fn quit_app(app: AppHandle) {
 
 // The panel reports its rendered content height (logical px) and the window
 // hugs it — the panel must never scroll or clip. Width matches the card
-// (TrayPanel.tsx's PANEL_WIDTH and tauri.conf.json's traypanel entry).
+// (tray::PANEL_WIDTH, pinned to tauri.conf.json by test).
 #[tauri::command]
 fn resize_panel(app: AppHandle, height: f64) {
     if let Some(w) = app.get_webview_window("traypanel") {
-        let _ = w.set_size(tauri::LogicalSize::new(320.0, height.max(1.0)));
+        let _ = w.set_size(tauri::LogicalSize::new(tray::PANEL_WIDTH, height.max(1.0)));
     }
 }
 
@@ -1094,6 +1094,28 @@ mod tests {
 
         crate::tray::show_main(app.handle()).unwrap();
         assert!(app.get_webview_window("main").is_some());
+    }
+
+    /// The panel's width lives in two places on the Rust side of the fence:
+    /// tauri.conf.json creates the window at it, and tray::PANEL_WIDTH is what
+    /// resize_panel and the placement fallback re-assert on every resize.
+    /// Apart, the panel opens at one width and snaps to another on first
+    /// paint. (TrayPanel.css.test.js pins the frontend's two copies to the
+    /// same conf.)
+    #[test]
+    fn panel_width_matches_the_window_config() {
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        let width = conf
+            .pointer("/app/windows")
+            .and_then(|w| w.as_array())
+            .and_then(|w| w.iter().find(|w| w["label"] == "traypanel"))
+            .and_then(|w| w["width"].as_f64())
+            .expect("the traypanel window config must carry a width");
+        assert_eq!(width, crate::tray::PANEL_WIDTH);
     }
 
     /// Every `live` Source needs three separate files to agree before its card

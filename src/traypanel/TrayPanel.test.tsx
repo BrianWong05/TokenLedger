@@ -52,7 +52,7 @@ const toolRows: BreakdownRow[] = [
     unattributedTokens: 0 },
 ];
 
-// Series helpers for the sparkline tests: a local calendar day `back` days
+// Series helpers for the chart tests: a local calendar day `back` days
 // ago, and one (bucket, Source) series point.
 const day = (back: number) => {
   const d = new Date();
@@ -104,7 +104,8 @@ describe('TrayPanel', () => {
     // over, because an open paints from the Ledger and then re-reads behind
     // its own scan.
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$12.84');
-    expect(container.querySelector('.tp-sub')?.textContent).toBe('3.4M tokens · 1,912 requests');
+    // Tokens only: requests live in their stat tile, not twice on the header.
+    expect(container.querySelector('.tp-sub')?.textContent).toBe('3.4M tokens');
     expect(ledger.calls.summary.length).toBe(4);
 
     // Sources from breakdown('tool'), cost desc: the stacked bar splits the
@@ -168,7 +169,7 @@ describe('TrayPanel', () => {
     await settle();
 
     const sub = container.querySelector('.tp-sub')!;
-    expect(sub.textContent).toBe('≥ 3.4M tokens · 1,912 requests');
+    expect(sub.textContent).toBe('≥ 3.4M tokens');
     expect(sub.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
   });
 
@@ -243,9 +244,9 @@ describe('TrayPanel', () => {
 
     const lastSeries = ledger.calls.series[ledger.calls.series.length - 1];
     expect(lastSeries?.[1]).toBe('day'); // 30 days buckets daily
-    const ticks = Array.from(container.querySelectorAll('.tp-spark-cap span')).map((s) => s.textContent);
+    const ticks = Array.from(container.querySelectorAll('.tp-chart-cap span')).map((s) => s.textContent);
     expect(ticks).toEqual([day(29).slice(5), day(15).slice(5), day(0).slice(5)]); // the axis
-    expect(container.querySelector('.tp-spark-peak')?.textContent).toBe(`peak ${day(0).slice(5)} · $9.00`);
+    expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(`peak ${day(0).slice(5)} · $9.00`);
     // Two buckets carry Cost: the peak bucket wears the brighter fill, the
     // other draws in the base one — one column each.
     expect(container.querySelector('.tp-bars')?.getAttribute('d')).toMatch(/^M\d/);
@@ -278,12 +279,12 @@ describe('TrayPanel', () => {
     await settle();
 
     // Idle: the reserved line stays empty; the peak caption holds the row.
-    expect(container.querySelector('.tp-spark-read')?.textContent).toBe('');
-    expect(container.querySelector('.tp-bar-hover')).toBeNull();
+    expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
+    expect(container.querySelector('.tp-chart-hover')).toBeNull();
 
     // jsdom boxes have no size; give the svg the viewBox's width so the
     // pointer maths has geometry to invert.
-    const svg = container.querySelector('.tp-spark svg') as SVGSVGElement;
+    const svg = container.querySelector('.tp-chart svg') as SVGSVGElement;
     svg.getBoundingClientRect = () =>
       ({ left: 0, top: 0, width: 288, height: 56, right: 288, bottom: 56, x: 0, y: 0 }) as DOMRect;
 
@@ -291,14 +292,14 @@ describe('TrayPanel', () => {
     await act(async () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 287 }));
     });
-    expect(container.querySelector('.tp-spark-read')?.textContent).toBe(
+    expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
       `${day(0).slice(5)} · $9.00 · 1K tok`,
     );
-    expect(container.querySelector('.tp-bar-hover')).not.toBeNull();
+    expect(container.querySelector('.tp-chart-hover')).not.toBeNull();
     await act(async () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 3 }));
     });
-    expect(container.querySelector('.tp-spark-read')?.textContent).toBe(
+    expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
       `${day(29).slice(5)} · $0.00 · 0 tok`, // an idle day reads its zero
     );
 
@@ -309,8 +310,8 @@ describe('TrayPanel', () => {
         new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }),
       );
     });
-    expect(container.querySelector('.tp-spark-read')?.textContent).toBe('');
-    expect(container.querySelector('.tp-bar-hover')).toBeNull();
+    expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
+    expect(container.querySelector('.tp-chart-hover')).toBeNull();
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
@@ -368,11 +369,11 @@ describe('TrayPanel', () => {
     await settle();
 
     expect(container.querySelector('.tp-cost')?.textContent).toBe('$0.00');
-    expect(container.querySelector('.tp-sub')?.textContent).toBe('0 tokens · 0 requests');
+    expect(container.querySelector('.tp-sub')?.textContent).toBe('0 tokens');
     expect(container.querySelector('.tp-delta')).toBeNull();
     expect(container.querySelector('.tp-tiles')).toBeNull();
     expect(container.querySelector('.tp-models')).toBeNull();
-    expect(container.querySelector('.tp-spark')).toBeNull();
+    expect(container.querySelector('.tp-chart')).toBeNull();
   });
 
   // The panel is created on demand and destroyed on dismissal (ADR-0007), so
