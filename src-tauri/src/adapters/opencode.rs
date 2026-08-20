@@ -5,12 +5,14 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::adapters::{absolute_project, normalize_epoch};
-use crate::db::insert_events_superseding;
-use crate::types::SourceScanResult;
-use crate::types::UsageEvent;
+use crate::adapters::{
+    absolute_project, normalize_epoch, remember_file_states, sqlite_file_states, unchanged,
+};
+use crate::db::{insert_events_superseding, source_session_ids, upsert_source_sessions};
+use crate::types::{SourceScanResult, SourceSessionMeta, UsageEvent};
 
 const SOURCE: &str = "opencode";
+const PARSER_VERSION: i64 = 1;
 
 /// OpenCode's Antigravity plugin exposes Google Antigravity's models under
 /// `antigravity-…` prefixed names — internal routing aliases that match no
@@ -88,6 +90,7 @@ fn split_antigravity_variant(stripped: &str) -> &str {
 struct OpencodeScan {
     events: Vec<UsageEvent>,
     session_ids: HashSet<String>,
+    source_sessions: Vec<SourceSessionMeta>,
     superseded: HashSet<String>,
     seen_keys: HashSet<String>,
     lines_skipped: u64,
@@ -139,26 +142,51 @@ pub fn scan_opencode(
     database_override: Option<&Path>,
 ) -> SourceScanResult {
     let (database_paths, mut errors) = discover_databases(data_root, database_override);
+    let message_root = legacy_message_root(legacy_root);
+    let legacy_sessions = discover_legacy_sessions(legacy_root);
     let mut harvest = OpencodeScan::default();
     let mut lines_skipped = 0;
+    let mut parsed_states = Vec::new();
+    let mut skipped_database = false;
+    let mut scan_legacy = true;
 
     for path in database_paths {
+        let states = sqlite_file_states(&path, PARSER_VERSION);
+        if states.iter().all(|(path, state)| unchanged(conn, path, state)) {
+            skipped_database = true;
+            continue;
+        }
         match scan_database(&path) {
-            Ok(scan) => absorb(&mut harvest, scan),
+            Ok(scan) => {
+                parsed_states.push(states);
+                absorb(&mut harvest, scan);
+            }
             Err(error) => errors.push(error),
         }
     }
 
-    for session_path in discover_legacy_sessions(legacy_root) {
-        match scan_legacy_session(
-            &session_path,
-            legacy_message_root(legacy_root),
-            &harvest.session_ids,
-        ) {
-            Ok(scan) => absorb(&mut harvest, scan),
+    if skipped_database && !legacy_sessions.is_empty() {
+        match source_session_ids(conn, SOURCE) {
+            Ok(session_ids) => harvest.session_ids.extend(session_ids),
             Err(error) => {
-                lines_skipped += 1;
-                errors.push(error);
+                scan_legacy = false;
+                errors.push(format!("{SOURCE}: Session metadata read failed: {error}"));
+            }
+        }
+    }
+
+    if scan_legacy {
+        for session_path in legacy_sessions {
+            match scan_legacy_session(
+                &session_path,
+                message_root.clone(),
+                &harvest.session_ids,
+            ) {
+                Ok(scan) => absorb(&mut harvest, scan),
+                Err(error) => {
+                    lines_skipped += 1;
+                    errors.push(error);
+                }
             }
         }
     }
@@ -166,7 +194,23 @@ pub fn scan_opencode(
 
     let superseded: Vec<String> = harvest.superseded.into_iter().collect();
     let events_inserted = match insert_events_superseding(conn, &superseded, &harvest.events) {
-        Ok(inserted) => inserted,
+        Ok(inserted) => {
+            match upsert_source_sessions(conn, SOURCE, &harvest.source_sessions) {
+                Ok(()) => {
+                    for states in parsed_states {
+                        if let Err(error) = remember_file_states(conn, &states) {
+                            errors.push(format!(
+                                "{SOURCE}: Ledger file-state update failed: {error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) => errors.push(format!(
+                    "{SOURCE}: Session metadata update failed: {error}"
+                )),
+            }
+            inserted
+        }
         Err(error) => {
             errors.push(format!("{SOURCE}: Ledger insert failed: {error}"));
             0
@@ -186,6 +230,7 @@ pub fn scan_opencode(
 fn absorb(harvest: &mut OpencodeScan, scan: OpencodeScan) {
     harvest.lines_skipped += scan.lines_skipped;
     harvest.session_ids.extend(scan.session_ids);
+    harvest.source_sessions.extend(scan.source_sessions);
     harvest.superseded.extend(scan.superseded);
     for event in scan.events {
         if harvest.seen_keys.insert(event.dedup_key.clone()) {
@@ -283,6 +328,17 @@ fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
         scan.session_ids.insert(session_id.clone());
 
         let timestamp = session_timestamp(updated, created);
+        let project = absolute_project(directory.as_deref());
+        let created_at = created.map(normalize_epoch).or(timestamp).unwrap_or(0);
+        let updated_at = timestamp.unwrap_or(created_at);
+        scan.source_sessions.push(SourceSessionMeta {
+            session_id: session_id.clone(),
+            cwd: project.clone(),
+            model: None,
+            title: None,
+            created_at,
+            updated_at,
+        });
         let Some(timestamp) = timestamp else {
             scan.lines_skipped += 1;
             continue;
@@ -318,7 +374,7 @@ fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
         let (events, superseded) = totals.events(
             &session_id,
             timestamp,
-            absolute_project(directory.as_deref()),
+            project,
             path,
         );
         scan.events.extend(events);
@@ -1028,6 +1084,7 @@ mod tests {
 
         let current = data_root.join("opencode.db");
         create_database(&current);
+        let current = fs::canonicalize(current).unwrap();
         let db = Connection::open(&current).unwrap();
         insert_session(&db, "modern-overlap", "/private/modern", 1_780_000_100_000);
         insert_session(&db, "modern-unknown", "/private/unknown", 1_780_000_200_000);
@@ -1157,7 +1214,20 @@ mod tests {
         assert_eq!(legacy_only.2.as_deref(), Some("legacy-model"));
         assert_eq!((legacy_only.3, legacy_only.4, legacy_only.5), (5, 2, 4));
 
+        write_json(
+            &legacy.join("message/modern-overlap/legacy.json"),
+            r#"{"role":"assistant","modelID":"changed-legacy-model","tokens":{"input":1000,"output":1000,"cache":{"read":1000,"write":1000}}}"#,
+        );
+        fs::write(&current, "not sqlite").unwrap();
+        let mut current_state = crate::adapters::file_state_of(&current);
+        current_state.byte_offset = PARSER_VERSION;
+        crate::db::set_file_state(&ledger, &current.to_string_lossy(), current_state).unwrap();
         let second = scan_opencode(&mut ledger, &data_root, &legacy, None);
+        assert!(
+            second.error.is_none(),
+            "an unchanged modern database was reopened: {:?}",
+            second.error
+        );
         assert_eq!(second.events_inserted, 0);
         assert_eq!(
             ledger
@@ -1168,6 +1238,42 @@ mod tests {
                 )
                 .unwrap(),
             4
+        );
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT model FROM events WHERE session_id = 'modern-overlap'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("opencode-model"),
+            "an unchanged modern database still suppresses overlapping legacy storage"
+        );
+
+        ledger.execute_batch("DROP TABLE source_sessions;").unwrap();
+        write_json(
+            &legacy.join("message/modern-overlap/legacy.json"),
+            r#"{"role":"assistant","modelID":"newer-legacy-model","tokens":{"input":2000,"output":2000,"cache":{"read":2000,"write":2000}}}"#,
+        );
+        let third = scan_opencode(&mut ledger, &data_root, &legacy, None);
+        assert!(third
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Session metadata read failed")));
+        assert_eq!(third.events_inserted, 0);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT model FROM events WHERE session_id = 'modern-overlap'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+                .as_deref(),
+            Some("opencode-model"),
+            "legacy storage must fail closed when modern Session metadata is unavailable"
         );
 
         drop(ledger);
@@ -1186,6 +1292,109 @@ mod tests {
                 .windows(marker.len())
                 .any(|window| window == marker.as_bytes()));
         }
+    }
+
+    #[test]
+    fn unchanged_database_is_not_reopened() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let database_path = data_root.join("opencode.db");
+        create_database(&database_path);
+        let database_path = fs::canonicalize(database_path).unwrap();
+        let database = Connection::open(&database_path).unwrap();
+        insert_session(&database, "session", "/project", 1_780_000_100_000);
+        insert_message(
+            &database,
+            "message",
+            "session",
+            r#"{"role":"assistant","modelID":"model","tokens":{"input":1,"output":1,"cache":{"read":0,"write":0}}}"#,
+        );
+        drop(database);
+
+        let legacy = data_root.join("storage");
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        assert_eq!(
+            scan_opencode(&mut ledger, &data_root, &legacy, None).events_inserted,
+            1
+        );
+        let saved = crate::db::get_file_state(&ledger, &database_path.to_string_lossy())
+            .unwrap()
+            .expect("a successful scan records the database fingerprint");
+
+        Connection::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TABLE session;")
+            .unwrap();
+        let mut current = crate::adapters::file_state_of(&database_path);
+        current.byte_offset = saved.byte_offset;
+        crate::db::set_file_state(&ledger, &database_path.to_string_lossy(), current).unwrap();
+
+        let second = scan_opencode(&mut ledger, &data_root, &legacy, None);
+        assert!(second.error.is_none(), "unchanged database was reopened");
+        assert_eq!(second.events_inserted, 0);
+    }
+
+    #[test]
+    fn legacy_sessions_are_not_skipped_by_aggregate_file_state() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        let legacy = data_root.join("storage");
+        let session_path = legacy.join("session/project/legacy.json");
+        write_json(
+            &session_path,
+            r#"{"id":"legacy","directory":"/project","time":{"updated":1780000400000}}"#,
+        );
+        let message_path = legacy.join("message/legacy/message.json");
+        write_json(
+            &message_path,
+            r#"{"role":"assistant","modelID":"model","tokens":{"input":5,"output":2,"cache":{"read":0,"write":0}}}"#,
+        );
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let mut state = crate::adapters::file_state_of(&session_path);
+        let message_state = crate::adapters::file_state_of(&message_path);
+        state.size += message_state.size + 1;
+        state.mtime = state.mtime.max(message_state.mtime);
+        state.byte_offset = PARSER_VERSION;
+        crate::db::set_file_state(&ledger, &session_path.to_string_lossy(), state).unwrap();
+
+        let result = scan_opencode(&mut ledger, &data_root, &legacy, None);
+        assert_eq!(result.events_inserted, 1);
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn file_state_failure_is_reported() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let database_path = data_root.join("opencode.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_session(&database, "session", "/project", 1_780_000_100_000);
+        insert_message(
+            &database,
+            "message",
+            "session",
+            r#"{"role":"assistant","modelID":"model","tokens":{"input":1,"output":1,"cache":{"read":0,"write":0}}}"#,
+        );
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        ledger.execute("DROP TABLE scanned_files", []).unwrap();
+        let result = scan_opencode(
+            &mut ledger,
+            &data_root,
+            &data_root.join("storage"),
+            None,
+        );
+
+        assert_eq!(result.events_inserted, 1);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("file-state update failed")));
     }
 
     #[test]

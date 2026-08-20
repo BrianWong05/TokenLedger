@@ -7,19 +7,24 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, Row};
 use serde_json::Value;
 
-use crate::adapters::{absolute_project, normalize_epoch};
-use crate::db::insert_events;
+use crate::adapters::{
+    absolute_project, file_state_of, normalize_epoch, remember_file_states, sqlite_file_states,
+    unchanged,
+};
+use crate::db::{insert_events, source_session_ids, upsert_source_sessions};
 use crate::time::iso_to_epoch;
-use crate::types::{SourceScanResult, UsageEvent};
+use crate::types::{SourceScanResult, SourceSessionMeta, UsageEvent};
 
 const SOURCE: &str = "goose";
 const SESSIONS_DB: &str = "sessions.db";
 const SUPPORTED_SCHEMA_VERSION: i64 = 15;
+const PARSER_VERSION: i64 = 1;
 
 #[derive(Default)]
 struct DatabaseScan {
     events: Vec<UsageEvent>,
     session_ids: HashSet<String>,
+    source_sessions: Vec<SourceSessionMeta>,
     lines_skipped: u64,
 }
 
@@ -44,15 +49,35 @@ struct TokenSnapshot {
 /// logged Cost is deliberately ignored and repriced by the Ledger.
 pub fn scan_goose(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceScanResult {
     let (database_paths, legacy_paths, mut errors) = discover_artifacts(session_roots);
+    let changed_legacy = legacy_paths
+        .into_iter()
+        .filter_map(|path| {
+            let mut state = file_state_of(&path);
+            state.byte_offset = PARSER_VERSION;
+            (!unchanged(conn, &path, &state)).then_some((path, state))
+        })
+        .collect::<Vec<_>>();
     let mut modern_session_ids = HashSet::new();
     let mut events = Vec::new();
     let mut lines_skipped = 0;
     let mut event_keys = HashSet::new();
+    let mut parsed_states = Vec::new();
+    let mut parsed_legacy_states = Vec::new();
+    let mut parsed_source_sessions = Vec::new();
+    let mut skipped_database = false;
+    let mut scan_legacy = true;
 
     for path in database_paths {
+        let states = sqlite_file_states(&path, PARSER_VERSION);
+        if states.iter().all(|(path, state)| unchanged(conn, path, state)) {
+            skipped_database = true;
+            continue;
+        }
         match scan_database(&path) {
             Ok(scan) => {
+                parsed_states.push(states);
                 modern_session_ids.extend(scan.session_ids);
+                parsed_source_sessions.extend(scan.source_sessions);
                 lines_skipped += scan.lines_skipped;
                 for event in scan.events {
                     if event_keys.insert(event.dedup_key.clone()) {
@@ -64,25 +89,59 @@ pub fn scan_goose(conn: &mut Connection, session_roots: &[PathBuf]) -> SourceSca
         }
     }
 
-    for path in legacy_paths {
-        match scan_legacy_file(&path, &modern_session_ids) {
-            Ok(scan) => {
-                lines_skipped += u64::from(scan.skipped);
-                if let Some(event) = scan.event {
-                    if event_keys.insert(event.dedup_key.clone()) {
-                        events.push(event);
+    if skipped_database && !changed_legacy.is_empty() {
+        match source_session_ids(conn, SOURCE) {
+            Ok(session_ids) => modern_session_ids.extend(session_ids),
+            Err(error) => {
+                scan_legacy = false;
+                errors.push(format!("{SOURCE}: Session metadata read failed: {error}"));
+            }
+        }
+    }
+
+    if scan_legacy {
+        for (path, state) in changed_legacy {
+            match scan_legacy_file(&path, &modern_session_ids) {
+                Ok(scan) => {
+                    parsed_legacy_states.push((path, state));
+                    lines_skipped += u64::from(scan.skipped);
+                    if let Some(event) = scan.event {
+                        if event_keys.insert(event.dedup_key.clone()) {
+                            events.push(event);
+                        }
                     }
                 }
-            }
-            Err(error) => {
-                lines_skipped += 1;
-                errors.push(error);
+                Err(error) => {
+                    lines_skipped += 1;
+                    errors.push(error);
+                }
             }
         }
     }
 
     let events_inserted = match insert_events(conn, &events) {
-        Ok(inserted) => inserted,
+        Ok(inserted) => {
+            match upsert_source_sessions(conn, SOURCE, &parsed_source_sessions) {
+                Ok(()) => {
+                    for states in parsed_states {
+                        if let Err(error) = remember_file_states(conn, &states) {
+                            errors.push(format!(
+                                "{SOURCE}: Ledger file-state update failed: {error}"
+                            ));
+                        }
+                    }
+                }
+                Err(error) => errors.push(format!(
+                    "{SOURCE}: Session metadata update failed: {error}"
+                )),
+            }
+            if let Err(error) = remember_file_states(conn, &parsed_legacy_states) {
+                errors.push(format!(
+                    "{SOURCE}: Ledger file-state update failed: {error}"
+                ));
+            }
+            inserted
+        }
         Err(error) => {
             errors.push(format!("goose: Ledger insert failed: {error}"));
             0
@@ -175,6 +234,36 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
     let has_usage_ledger = table_exists(&conn, "usage_ledger")
         .map_err(|error| format!("goose: schema inspection failed: {error}"))?;
     let mut scan = DatabaseScan::default();
+
+    let mut session_statement = conn
+        .prepare(
+            "SELECT id, working_dir, created_at, updated_at
+             FROM sessions ORDER BY id",
+        )
+        .map_err(|error| format!("goose: Session metadata query failed: {error}"))?;
+    let session_rows = session_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                optional_text(row, 1),
+                optional_timestamp(row, 2),
+                optional_timestamp(row, 3),
+            ))
+        })
+        .map_err(|error| format!("goose: Session metadata read failed: {error}"))?;
+    for row in session_rows {
+        let (session_id, project, created_at, updated_at) =
+            row.map_err(|error| format!("goose: Session metadata row failed: {error}"))?;
+        let observed_at = updated_at.or(created_at).unwrap_or(0);
+        scan.source_sessions.push(SourceSessionMeta {
+            session_id,
+            cwd: absolute_project(project.as_deref()),
+            model: None,
+            title: None,
+            created_at: created_at.unwrap_or(observed_at),
+            updated_at: updated_at.unwrap_or(observed_at),
+        });
+    }
 
     if has_usage_ledger {
         let mut statement = conn
@@ -666,7 +755,8 @@ impl TokenSnapshot {
 #[cfg(test)]
 mod tests {
     use super::scan_goose;
-    use crate::db::open_db;
+    use crate::adapters::file_state_of;
+    use crate::db::{get_file_state, open_db, set_file_state};
     use crate::pricing::{self, OverrideRates};
     use crate::queries::{self, Filters};
     use rusqlite::Connection;
@@ -839,8 +929,56 @@ mod tests {
             4
         );
 
-        let second = scan_goose(&mut ledger, &[root.clone(), root]);
+        fs::write(
+            root.join("legacy-wins.jsonl"),
+            r#"{"id":"legacy-wins","updated_at":"2026-07-01T10:06:00Z","accumulated_usage":{"input_tokens":1000,"output_tokens":1000}}
+"#,
+        )
+        .unwrap();
+        let database_path = fs::canonicalize(root.join("sessions.db")).unwrap();
+        fs::write(&database_path, "not sqlite").unwrap();
+        let mut database_state = file_state_of(&database_path);
+        database_state.byte_offset = super::PARSER_VERSION;
+        set_file_state(
+            &ledger,
+            &database_path.to_string_lossy(),
+            database_state,
+        )
+        .unwrap();
+        let second = scan_goose(&mut ledger, &[root.clone(), root.clone()]);
+        assert!(
+            !second
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("database")),
+            "an unchanged modern database was reopened: {:?}",
+            second.error
+        );
         assert_eq!(second.events_inserted, 0);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE source = 'goose'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            4
+        );
+
+        ledger.execute_batch("DROP TABLE source_sessions;").unwrap();
+        fs::write(
+            root.join("legacy-wins.jsonl"),
+            r#"{"id":"legacy-wins","updated_at":"2026-07-01T10:07:00Z","accumulated_usage":{"input_tokens":2000,"output_tokens":2000}}
+"#,
+        )
+        .unwrap();
+        let third = scan_goose(&mut ledger, &[root.clone(), root]);
+        assert!(third
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("Session metadata read failed")));
+        assert_eq!(third.events_inserted, 0);
         assert_eq!(
             ledger
                 .query_row(
@@ -895,5 +1033,76 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn unchanged_database_is_not_reopened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("goose/sessions");
+        build_fixture(&root);
+        for name in ["legacy-wins.jsonl", "legacy-only.jsonl", "malformed.jsonl"] {
+            fs::remove_file(root.join(name)).unwrap();
+        }
+        let database_path = fs::canonicalize(root.join("sessions.db")).unwrap();
+        let mut ledger = open_db(&tmp.path().join("ledger.db")).unwrap();
+
+        scan_goose(&mut ledger, &[root.clone()]);
+        assert!(get_file_state(&ledger, &database_path.to_string_lossy())
+            .unwrap()
+            .is_some());
+
+        fs::write(&database_path, "not sqlite").unwrap();
+        let mut state = file_state_of(&database_path);
+        state.byte_offset = 1;
+        set_file_state(&ledger, &database_path.to_string_lossy(), state).unwrap();
+
+        let second = scan_goose(&mut ledger, &[root]);
+        assert!(second.error.is_none());
+        assert_eq!(second.events_inserted, 0);
+    }
+
+    #[test]
+    fn unchanged_legacy_file_is_not_reopened() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_path = tmp.path().join("legacy.jsonl");
+        fs::write(
+            &session_path,
+            r#"{"id":"legacy","created_at":"2026-07-01T10:07:00Z","usage":{"input_tokens":10,"output_tokens":2}}
+"#,
+        )
+        .unwrap();
+        let session_path = fs::canonicalize(session_path).unwrap();
+        let mut ledger = open_db(&tmp.path().join("ledger.db")).unwrap();
+
+        scan_goose(&mut ledger, std::slice::from_ref(&session_path));
+        assert!(get_file_state(&ledger, &session_path.to_string_lossy())
+            .unwrap()
+            .is_some());
+
+        fs::write(&session_path, "not json\n").unwrap();
+        let mut state = file_state_of(&session_path);
+        state.byte_offset = 1;
+        set_file_state(&ledger, &session_path.to_string_lossy(), state).unwrap();
+
+        let second = scan_goose(&mut ledger, std::slice::from_ref(&session_path));
+        assert!(second.error.is_none());
+        assert_eq!(second.events_inserted, 0);
+    }
+
+    #[test]
+    fn file_state_failure_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("goose/sessions");
+        build_fixture(&root);
+        let mut ledger = open_db(&tmp.path().join("ledger.db")).unwrap();
+        ledger.execute("DROP TABLE scanned_files", []).unwrap();
+
+        let result = scan_goose(&mut ledger, &[root]);
+
+        assert_eq!(result.events_inserted, 4);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("file-state update failed")));
     }
 }

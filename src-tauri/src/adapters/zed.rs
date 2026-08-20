@@ -5,11 +5,15 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value};
 
-use crate::adapters::{is_absolute_path, normalize_epoch, upsert_events_count};
+use crate::adapters::{
+    is_absolute_path, normalize_epoch, remember_file_states, sqlite_file_states, unchanged,
+    upsert_events_count,
+};
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
 
 const SOURCE: &str = "zed";
+const PARSER_VERSION: i64 = 1;
 const HOSTED_PROVIDER: &str = "zed.dev";
 const SUPPORTED_VERSIONS: &[&str] = &["0.2.0", "0.3.0"];
 const REQUIRED_COLUMNS: &[&str] = &["id", "summary", "updated_at", "data_type", "data"];
@@ -45,6 +49,7 @@ pub fn scan_zed(conn: &mut Connection, databases: &[PathBuf]) -> SourceScanResul
     let mut events = HashMap::new();
     let mut lines_skipped = 0;
     let mut warnings = Vec::new();
+    let mut parsed_states = Vec::new();
 
     for database in roots {
         if !database.exists() {
@@ -55,8 +60,14 @@ pub fn scan_zed(conn: &mut Connection, databases: &[PathBuf]) -> SourceScanResul
             continue;
         }
 
+        let states = sqlite_file_states(&database, PARSER_VERSION);
+        if states.iter().all(|(path, state)| unchanged(conn, path, state)) {
+            continue;
+        }
+
         match scan_database(&database) {
             Ok(scan) => {
+                parsed_states.push(states);
                 lines_skipped += scan.lines_skipped;
                 warnings.extend(scan.warnings);
                 for event in scan.events {
@@ -77,7 +88,16 @@ pub fn scan_zed(conn: &mut Connection, databases: &[PathBuf]) -> SourceScanResul
     let mut events = events.into_values().collect::<Vec<_>>();
     events.sort_by(|left, right| left.dedup_key.cmp(&right.dedup_key));
     let events_inserted = match upsert_events_count(conn, &events) {
-        Ok(inserted) => inserted,
+        Ok(inserted) => {
+            for states in parsed_states {
+                if let Err(error) = remember_file_states(conn, &states) {
+                    warnings.push(format!(
+                        "{SOURCE}: Ledger file-state update failed: {error}"
+                    ));
+                }
+            }
+            inserted
+        }
         Err(error) => {
             warnings.push(format!("{SOURCE}: Ledger insert failed: {error}"));
             0
@@ -586,6 +606,215 @@ mod tests {
         assert!(!ledger_bytes
             .windows(PRIVATE_TOOL.len())
             .any(|window| window == PRIVATE_TOOL.as_bytes()));
+    }
+
+    #[test]
+    fn unchanged_database_is_not_reopened() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("threads.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_thread(
+            &database,
+            "hosted",
+            Some(HOSTED_PROVIDER),
+            Some("zed-model"),
+            "2026-07-01T10:00:00Z",
+            [1, 1, 0, 0],
+            1,
+            None,
+            "private",
+        );
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&directory.path().join("ledger.db")).unwrap();
+        assert_eq!(
+            scan_zed(&mut ledger, std::slice::from_ref(&database_path)).events_inserted,
+            1
+        );
+        let saved = crate::db::get_file_state(&ledger, &database_path.to_string_lossy())
+            .unwrap()
+            .expect("a successful scan records the database fingerprint");
+
+        Connection::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TABLE threads;")
+            .unwrap();
+        let mut current = crate::adapters::file_state_of(&database_path);
+        current.byte_offset = saved.byte_offset;
+        crate::db::set_file_state(&ledger, &database_path.to_string_lossy(), current).unwrap();
+
+        let second = scan_zed(&mut ledger, std::slice::from_ref(&database_path));
+        assert!(second.error.is_none(), "unchanged database was reopened");
+        assert_eq!(second.events_inserted, 0);
+    }
+
+    #[test]
+    fn file_state_failure_is_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("threads.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_thread(
+            &database,
+            "hosted",
+            Some(HOSTED_PROVIDER),
+            Some("zed-model"),
+            "2026-07-01T10:00:00Z",
+            [1, 1, 0, 0],
+            1,
+            None,
+            "private",
+        );
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&directory.path().join("ledger.db")).unwrap();
+        ledger.execute("DROP TABLE scanned_files", []).unwrap();
+        let result = scan_zed(&mut ledger, std::slice::from_ref(&database_path));
+
+        assert_eq!(result.events_inserted, 1);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("file-state update failed")));
+    }
+
+    #[test]
+    fn old_parser_version_reopens_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("threads.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_thread(
+            &database,
+            "hosted",
+            Some(HOSTED_PROVIDER),
+            Some("zed-model"),
+            "2026-07-01T10:00:00Z",
+            [1, 1, 0, 0],
+            1,
+            None,
+            "private",
+        );
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&directory.path().join("ledger.db")).unwrap();
+        assert_eq!(
+            scan_zed(&mut ledger, std::slice::from_ref(&database_path)).events_inserted,
+            1
+        );
+        let saved = crate::db::get_file_state(&ledger, &database_path.to_string_lossy())
+            .unwrap()
+            .expect("a successful scan records the database fingerprint");
+        assert!(saved.byte_offset > 0, "fingerprint carries the parser version");
+
+        Connection::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TABLE threads;")
+            .unwrap();
+        let mut old = crate::adapters::file_state_of(&database_path);
+        old.byte_offset = saved.byte_offset - 1;
+        crate::db::set_file_state(&ledger, &database_path.to_string_lossy(), old).unwrap();
+
+        let second = scan_zed(&mut ledger, std::slice::from_ref(&database_path));
+        assert!(
+            second
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("unsupported")),
+            "an old parser version must force a reparse"
+        );
+    }
+
+    #[test]
+    fn wal_only_write_reopens_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("threads.db");
+        create_database(&database_path);
+        let writer = Connection::open(&database_path).unwrap();
+        writer
+            .execute_batch("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;")
+            .unwrap();
+        insert_thread(
+            &writer,
+            "first",
+            Some(HOSTED_PROVIDER),
+            Some("zed-model"),
+            "2026-07-01T10:00:00Z",
+            [1, 1, 0, 0],
+            1,
+            None,
+            "private",
+        );
+
+        let mut ledger = crate::db::open_db(&directory.path().join("ledger.db")).unwrap();
+        assert_eq!(
+            scan_zed(&mut ledger, std::slice::from_ref(&database_path)).events_inserted,
+            1
+        );
+
+        insert_thread(
+            &writer,
+            "second",
+            Some(HOSTED_PROVIDER),
+            Some("zed-model"),
+            "2026-07-01T11:00:00Z",
+            [2, 2, 0, 0],
+            1,
+            None,
+            "private",
+        );
+        let second = scan_zed(&mut ledger, std::slice::from_ref(&database_path));
+
+        assert_eq!(second.events_inserted, 1, "WAL-only write was skipped");
+        assert_eq!(stored_events(&ledger).len(), 2);
+    }
+
+    #[test]
+    fn shm_only_change_reopens_the_database() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("threads.db");
+        create_database(&database_path);
+        let database = Connection::open(&database_path).unwrap();
+        insert_thread(
+            &database,
+            "hosted",
+            Some(HOSTED_PROVIDER),
+            Some("zed-model"),
+            "2026-07-01T10:00:00Z",
+            [1, 1, 0, 0],
+            1,
+            None,
+            "private",
+        );
+        drop(database);
+
+        let mut ledger = crate::db::open_db(&directory.path().join("ledger.db")).unwrap();
+        assert_eq!(
+            scan_zed(&mut ledger, std::slice::from_ref(&database_path)).events_inserted,
+            1
+        );
+        let saved = crate::db::get_file_state(&ledger, &database_path.to_string_lossy())
+            .unwrap()
+            .unwrap();
+
+        Connection::open(&database_path)
+            .unwrap()
+            .execute_batch("DROP TABLE threads;")
+            .unwrap();
+        let mut current = crate::adapters::file_state_of(&database_path);
+        current.byte_offset = saved.byte_offset;
+        crate::db::set_file_state(&ledger, &database_path.to_string_lossy(), current).unwrap();
+        fs::write(format!("{}-shm", database_path.display()), b"changed").unwrap();
+
+        let second = scan_zed(&mut ledger, std::slice::from_ref(&database_path));
+        assert!(
+            second
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("unsupported")),
+            "SHM-only change must force a reparse"
+        );
     }
 
     #[test]

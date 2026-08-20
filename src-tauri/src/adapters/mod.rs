@@ -22,7 +22,7 @@ pub mod zed;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::db::{get_file_state, upsert_events};
+use crate::db::{get_file_state, set_file_state, upsert_events};
 use crate::types::{FileState, UsageEvent};
 
 pub(crate) fn upsert_events_count(
@@ -144,10 +144,38 @@ pub(crate) fn file_state_of(path: &Path) -> FileState {
         mtime: meta
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
+            .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
             .unwrap_or(0),
         byte_offset: 0,
     }
+}
+
+pub(crate) fn sqlite_file_states(
+    path: &Path,
+    parser_version: i64,
+) -> [(PathBuf, FileState); 3] {
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    [path.to_path_buf(), sidecar("-wal"), sidecar("-shm")].map(|path| {
+        let mut state = file_state_of(&path);
+        state.byte_offset = parser_version;
+        (path, state)
+    })
+}
+
+pub(crate) fn remember_file_states(
+    conn: &rusqlite::Connection,
+    states: &[(PathBuf, FileState)],
+) -> rusqlite::Result<()> {
+    for (path, state) in states {
+        if path.is_file() {
+            set_file_state(conn, &path.to_string_lossy(), *state)?;
+        }
+    }
+    Ok(())
 }
 
 /// Normalize an epoch value a Source writer may store in seconds,
