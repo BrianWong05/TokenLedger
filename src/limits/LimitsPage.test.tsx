@@ -210,6 +210,13 @@ describe('the opt-in disclosure', () => {
   });
 });
 
+describe('the toolbar', () => {
+  it('pins a window-drag strip at the window top so dragging never selects cards', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([CODEX_WEEKLY]) }));
+    expect(c.querySelector('.tl-lim-toolbar')?.hasAttribute('data-tauri-drag-region')).toBe(true);
+  });
+});
+
 describe('card states', () => {
   it('renders a live card per window with its plan pill and freshness', async () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_LIVE, CODEX_WEEKLY]) }));

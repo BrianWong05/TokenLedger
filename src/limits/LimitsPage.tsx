@@ -220,7 +220,9 @@ export default function LimitsPage({
 
   return (
     <div className="tl-page tl-page-limits">
-      {/* the toolbar's empty stretch is a window-drag handle (frameless window) */}
+      {/* the toolbar pins to the window top and its empty stretch is a
+          window-drag handle (frameless window); mousedown on the child
+          controls does not start a drag */}
       <div className="tl-lim-toolbar" data-tauri-drag-region>
         <h1>{t('limits.title')}</h1>
         <span className="tl-lim-note">{t('limits.note')}</span>

@@ -26,7 +26,8 @@ const WRAP_CHAIN = ['.tl-lim-est', '.tl-lim-body', '.tl-lim-row', '.tl-lim-card'
 
 // Anything that would stop the line wrapping or cut a translation off.
 // `min-width` is deliberately absent — it is the mechanism, asserted below — and
-// so is `overflow-y`, which the page sets to scroll vertically by design.
+// so is `overflow-y`: vertical scroll is the window's job (the toolbar pins to
+// it), and this file only cares about clipping the evidence line sideways.
 const CLIPPING =
   /text-overflow|white-space:\s*(nowrap|pre)\b|overflow(-x)?:\s*(hidden|scroll|auto)|-webkit-line-clamp|flex-wrap:\s*nowrap|max-width/;
 
@@ -74,5 +75,28 @@ describe('the evidence line’s layout', () => {
     // to every check above. There are none today. If that changes, this fails
     // rather than letting the scans quietly stop covering half the file.
     expect(source, 'nested at-rules need a real parser here').not.toMatch(/@(media|supports|container)/);
+  });
+});
+
+describe('the pinned toolbar', () => {
+  it('sticks to the window top above the cards', () => {
+    const bar = rule('.tl-lim-toolbar');
+    expect(bar, 'no `.tl-lim-toolbar` rule — has the class been renamed?').toBeTruthy();
+    expect(bar.body).toMatch(/position:\s*sticky/);
+    expect(bar.body).toMatch(/top:\s*0/);
+    expect(bar.body).toMatch(/z-index:\s*10/);
+  });
+
+  it('does not nest a scroll container that would steal sticky from the window', () => {
+    // overflow on `.tl-page-limits` would make sticky relative to the page box,
+    // which travels with the window scroll — the bar would never pin.
+    const page = rule('.tl-page-limits');
+    expect(page, 'no `.tl-page-limits` rule — has the class been renamed?').toBeTruthy();
+    expect(page.body).not.toMatch(/overflow(-y)?:\s*(auto|scroll|hidden)/);
+  });
+
+  it('covers scrolled cards with an opaque background', () => {
+    const bar = rule('.tl-lim-toolbar');
+    expect(bar.body).toContain('var(--bg-app)');
   });
 });
