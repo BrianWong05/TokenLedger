@@ -613,11 +613,12 @@ fn quit_app(app: AppHandle) {
 }
 
 // The panel reports its rendered content height (logical px) and the window
-// hugs it — the panel must never scroll or clip.
+// hugs it — the panel must never scroll or clip. Width matches the card
+// (TrayPanel.tsx's PANEL_WIDTH and tauri.conf.json's traypanel entry).
 #[tauri::command]
 fn resize_panel(app: AppHandle, height: f64) {
     if let Some(w) = app.get_webview_window("traypanel") {
-        let _ = w.set_size(tauri::LogicalSize::new(300.0, height.max(1.0)));
+        let _ = w.set_size(tauri::LogicalSize::new(320.0, height.max(1.0)));
     }
 }
 

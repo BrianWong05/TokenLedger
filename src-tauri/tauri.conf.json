@@ -36,12 +36,12 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": true,
-        "width": 300,
+        "width": 320,
         "height": 480,
         "windowEffects": {
           "effects": ["popover"],
           "state": "active",
-          "radius": 8
+          "radius": 14
         }
       }
     ],

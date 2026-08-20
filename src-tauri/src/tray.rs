@@ -146,7 +146,7 @@ fn toggle_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) -> tauri::Res
     let panel = w
         .outer_size()
         .map(|s| (f64::from(s.width), f64::from(s.height)))
-        .unwrap_or((300.0 * scale, 480.0 * scale));
+        .unwrap_or((320.0 * scale, 480.0 * scale));
     // An unresolvable monitor collapses the work area to the icon, which
     // disables clamping (see clamp) and leaves the anchored position standing.
     let (cx, cy) = icon.center();

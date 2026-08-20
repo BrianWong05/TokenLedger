@@ -1,13 +1,13 @@
-/* Design 2b's panel, lifted from the mock's inline styles (Menu Bar -
-   Options.dc.html #2b). Dark-only, like the mock. The window itself is
-   transparent; .tp paints the rounded card, and macOS draws the window
-   shadow from the card's alpha (conf: shadow true) — a CSS box-shadow
-   would clip at the window edge. The body.tp-window class (set by
-   TrayPanel on mount) outranks index.css's body background, which is
-   imported later and would otherwise paint the window black.
+/* The "Glance + Models · bars" panel, lifted from the redesign canvas
+   (menu-bar-panel-redesign, artboard "Option A + Models · bars"). Dark-only,
+   like the design. The window itself is transparent; .tp paints the rounded
+   card, and macOS draws the window shadow from the card's alpha (conf: shadow
+   true) — a CSS box-shadow would clip at the window edge. The body.tp-window
+   class (set by TrayPanel on mount) outranks index.css's body background,
+   which is imported later and would otherwise paint the window black.
 
    On macOS the card is translucent over a native material (conf:
-   windowEffects popover, radius 8 to match the card's own corners). Two
+   windowEffects popover, radius 14 to match the card's own corners). Two
    things that look like polish are load-bearing:
 
    - The gradient is a veil over the material, and how heavy it needs to be
@@ -21,7 +21,7 @@
      calibrations of one veil, not a light theme.
    - Both halves of that are scoped to macOS, and they have to move together.
      Windows would take acrylic/mica, but radius is macOS-only there, so a
-     square blurred rect would show at the 8px corners; Win10 acrylic also
+     square blurred rect would show at the 14px corners; Win10 acrylic also
      drags laggily. So the conf lists no effect Windows supports — but the
      window is transparent on every platform (ADR-0010: one window list, no
      per-platform entries), so an unscoped translucent card would composite
@@ -38,12 +38,12 @@ body.tp-window #root {
 }
 
 .tp {
-  width: 300px;
+  width: 320px;
   box-sizing: border-box;
   background: #1e1e24;
   border: 1px solid #3f3f47;
-  border-radius: 8px;
-  padding: 5px;
+  border-radius: 14px;
+  padding: 16px;
   font-family: -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
   color: #f2f2f5;
@@ -87,81 +87,107 @@ body.tp-macos .tp {
   }
 }
 
-/* The chrome drawn on the card tints with what is behind it too, or it reads
-   as grey slabs sitting on the glass. Scoped for the same reason the card is:
-   off macOS there is no material to tint with, and the mock's flat greys are
-   the right answer against a solid card. */
-body.tp-macos .tp-seg {
-  background: rgba(255, 255, 255, 0.07);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-}
-body.tp-macos .tp-seg-btn.active {
-  background: rgba(255, 255, 255, 0.16);
-}
-body.tp-macos .tp-sep {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.tp-header { padding: 7px 10px 8px; }
-
-/* Period segments (mock: 2px-padded #2a2a31 pill, active #46464f). */
-.tp-seg {
-  display: flex;
-  padding: 2px;
-  border-radius: 7px;
-  background: #2a2a31;
-  gap: 2px;
-}
+/* Top row: the period tabs double as the panel's label (the active tab says
+   what the figures below cover), the refresh icon is Rescan. */
+.tp-top { display: flex; align-items: center; justify-content: space-between; }
+.tp-seg { display: flex; gap: 12px; }
 .tp-seg-btn {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 22px;
   border: 0;
-  border-radius: 5px;
   background: none;
+  padding: 0;
   font: inherit;
   font-size: 11.5px;
   font-weight: 500;
-  color: #a3a3ab;
+  color: #7b7b84;
   cursor: default;
 }
-.tp-seg-btn.active {
-  background: #46464f;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  font-weight: 600;
-  color: #f2f2f5;
+.tp-seg-btn.active { color: #f2f2f5; font-weight: 600; }
+.tp-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: #8a8a93;
+  cursor: default;
 }
+.tp-refresh:hover { background: rgba(255, 255, 255, 0.08); color: #f2f2f5; }
+.tp-refresh:disabled { color: #a99dff; } /* scanning: the accent, and the icon spins */
+.tp-refresh svg { display: block; }
 
-.tp-figures { margin-top: 10px; }
-.tp-cost-row { display: flex; align-items: baseline; justify-content: space-between; }
-.tp-cost { font-family: ui-monospace, monospace; font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
-.tp-delta { font-family: ui-monospace, monospace; font-size: 12px; }
-.tp-delta.up { color: #7bd3aa; }
-.tp-delta.down { color: #e2937e; }
+.tp-figures { margin-top: 8px; }
+.tp-cost-row { display: flex; align-items: center; gap: 10px; }
+.tp-cost { font-family: ui-monospace, monospace; font-size: 34px; font-weight: 600; letter-spacing: -0.03em; }
+.tp-delta {
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+  padding: 2px 7px;
+  border-radius: 20px;
+}
+.tp-delta.up { color: #7bd3aa; background: rgba(123, 211, 170, 0.13); }
+.tp-delta.down { color: #e2937e; background: rgba(226, 147, 126, 0.13); }
 .tp-sub {
   display: block;
   font-family: ui-monospace, monospace;
-  font-size: 13px;
+  font-size: 12.5px;
   color: #a3a3ab;
   margin-top: 4px;
 }
 
-.tp-sep { height: 1px; background: #35353c; margin: 4px 10px; }
+/* Sources: the stacked bar splits the period's priced Cost by brand colour;
+   the legend beneath names each slice and its Cost. */
+.tp-sources { margin-top: 16px; }
+.tp-bar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
+.tp-bar span { height: 8px; }
+.tp-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; }
+.tp-leg { display: flex; flex-direction: column; gap: 2px; }
+.tp-leg-name { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #d6d6dc; }
+.tp-leg-name img { display: block; }
+.tp-leg-cost { font-family: ui-monospace, monospace; font-size: 12px; color: #a3a3ab; padding-left: 17px; }
+.tp-icon-gap { width: 12px; }
 
-.tp-row {
+/* Cost bar chart: one column per bucket, the peak bucket in the brighter
+   fill. The svg stretches to the panel's content width; its geometry comes
+   from the normalised points the model hands over. */
+.tp-chart { margin-top: 16px; }
+.tp-chart svg { display: block; width: 100%; height: 56px; }
+.tp-bars { fill: #7c6bf2; fill-opacity: 0.62; }
+.tp-bar-peak { fill: #a99dff; }
+.tp-bar-hover { fill: rgba(255, 255, 255, 0.3); }
+/* The read-out row above the chart: peak caption left, the inspected
+   bucket right (reserved so inspecting never resizes the window). */
+.tp-chart-cap-row {
   display: flex;
-  align-items: center;
-  height: 26px;
-  padding: 0 10px;
-  gap: 8px;
+  justify-content: space-between;
+  height: 13px;
+  margin-bottom: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
 }
+.tp-chart-peak { color: #6e6e76; }
+.tp-chart-read { color: #d9d4ff; }
+.tp-chart-cap {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: #6e6e76;
+}
+
+/* Models: the Source rows' idiom, led by the owning Source's mark. Long
+   Model names ellipsize so the columns stay aligned. */
+.tp-models { margin-top: 16px; }
+.tp-sec { font-size: 11.5px; font-weight: 500; color: #a3a3ab; margin-bottom: 4px; }
+.tp-row { display: flex; align-items: center; height: 24px; gap: 8px; }
 .tp-row img { display: block; }
-.tp-icon-gap { width: 13px; }
 .tp-row-label { color: #f2f2f5; }
 .tp-spacer { flex: 1; }
-.tp-row-tokens { font-family: ui-monospace, monospace; font-size: 11px; color: #6e6e76; }
+.tp-row-tokens { font-family: ui-monospace, monospace; font-size: 10.5px; color: #6e6e76; }
 .tp-row-cost {
   font-family: ui-monospace, monospace;
   font-size: 12px;
@@ -169,97 +195,87 @@ body.tp-macos .tp-sep {
   min-width: 42px;
   text-align: right;
 }
-
-/* Cost sparkline: the period's shape, captioned with its bucket size and peak.
-   The svg stretches to the panel's content width; its geometry comes from the
-   normalised points the model hands over. */
-.tp-spark { padding: 6px 10px 2px; }
-.tp-spark svg { display: block; width: 100%; height: 44px; }
-.tp-spark-area { fill: #7c6bf2; fill-opacity: 0.16; }
-.tp-spark-line { fill: none; stroke: #a99dff; stroke-width: 1.5; }
-.tp-spark-now { fill: #a99dff; }
-.tp-spark-cap {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 2px;
-  font-family: ui-monospace, monospace;
-  font-size: 10.5px;
-  color: #6e6e76;
-}
-.tp-spark-peak { justify-content: flex-end; margin-top: 1px; }
-
-/* Models: the Source rows' idiom, with the owning Source's colour as a dot in
-   place of its icon. Long Model names ellipsize so the columns stay aligned. */
-.tp-sec {
-  padding: 4px 10px 2px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: #6e6e76;
-}
-.tp-dot { width: 7px; height: 7px; border-radius: 50%; margin: 0 3px; }
 .tp-model {
   font-family: ui-monospace, monospace;
   font-size: 11.5px;
-  max-width: 150px;
+  color: #d6d6dc;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tp-more { padding: 0 10px 4px; font-size: 11px; color: #6e6e76; }
+.tp-more { font-size: 10.5px; color: #6e6e76; margin-top: 2px; }
 
-/* Stats strip: label left, figure right. */
-.tp-stat {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  height: 20px;
-  padding: 0 10px;
+/* Stat tiles: value over caption, three across. */
+.tp-tiles { display: flex; gap: 8px; margin-top: 16px; }
+.tp-tile {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 10px;
+  padding: 9px 10px 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
-.tp-stats { padding-bottom: 4px; }
-.tp-stat-k { font-size: 12px; color: #a3a3ab; }
-.tp-stat-v { font-family: ui-monospace, monospace; font-size: 11.5px; color: #f2f2f5; }
+.tp-tile-v {
+  font-family: ui-monospace, monospace;
+  font-size: 14.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-tile-k { font-size: 10px; color: #8a8a93; margin-top: 2px; }
 
+/* Actions: icon over label, three across, accent on hover. */
+.tp-actions { display: flex; gap: 8px; margin-top: 16px; }
 .tp-action {
+  flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  height: 26px;
-  padding: 0 10px;
+  gap: 4px;
+  padding: 8px 0 7px;
   border: 0;
-  border-radius: 5px;
-  background: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
   font: inherit;
-  color: #f2f2f5;
-  text-align: left;
+  color: #d6d6dc;
   cursor: default;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .tp-action:hover { background: #7c6bf2; color: #fff; }
-.tp-action:hover .tp-key { color: rgba(255, 255, 255, 0.75); }
-.tp-key { color: #6e6e76; font-size: 12px; }
+.tp-action svg { width: 15px; height: 15px; }
+.tp-act-k { font-size: 9px; opacity: 0.8; }
+.tp-act-meta { display: flex; align-items: baseline; gap: 4px; }
+/* Printed beside the action it fires (CONTEXT.md) — not a tooltip. */
+.tp-key {
+  font-family: ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  opacity: 0.7;
+}
+.tp-action:hover .tp-key,
+.tp-refresh:hover .tp-key { opacity: 1; }
 
 /* Loading shimmer (panel open): blocks where the figures will land. */
 .tp-skel {
-  display: inline-block;
+  display: block;
   border-radius: 4px;
   background: linear-gradient(90deg, #26262c 25%, #3a3a42 50%, #26262c 75%);
   background-size: 200% 100%;
   animation: tp-shimmer 1.1s linear infinite;
 }
-.tp-skel-cost { width: 104px; height: 24px; }
-.tp-skel-sub { width: 130px; height: 13px; margin-top: 4px; }
-.tp-skel-dot { width: 13px; height: 13px; border-radius: 50%; }
-.tp-skel-name { width: 72px; height: 12px; }
-.tp-skel-num { width: 96px; height: 12px; }
-.tp-skel-spark { width: 100%; height: 44px; }
+.tp-skel-cost { width: 150px; height: 34px; }
+.tp-skel-sub { width: 170px; height: 13px; margin-top: 6px; }
+.tp-skel-bar { width: 100%; height: 8px; margin-top: 16px; }
+.tp-skel-chart { width: 100%; height: 56px; margin-top: 16px; }
+.tp-skel-tile { flex: 1; height: 48px; border-radius: 10px; }
 @keyframes tp-shimmer {
   from { background-position: 200% 0; }
   to { background-position: -200% 0; }
 }
 
-/* Rescan in flight: the Today figures breathe so an unchanged total still
-   reads as a refresh happening. */
+/* Rescan in flight: the figures breathe so an unchanged total still reads
+   as a refresh happening. */
 .tp-pulse {
   animation: tp-pulse 0.9s ease-in-out infinite;
 }
@@ -267,28 +283,9 @@ body.tp-macos .tp-sep {
   50% { opacity: 0.35; }
 }
 
-.tp-action:disabled { color: #a3a3ab; }
-.tp-action:disabled:hover { background: none; }
 .tp-spin {
-  color: #a99dff;
   animation: tp-rotate 0.9s linear infinite;
 }
 @keyframes tp-rotate {
   to { transform: rotate(360deg); }
 }
-
-/* The sparkline's hover inspector: a reserved read-out line above the chart
-   (reserved so inspecting never resizes the window), and the guide marking
-   the inspected bucket on the chart itself. */
-.tp-spark-read {
-  display: flex;
-  justify-content: flex-end;
-  height: 13px;
-  margin-bottom: 3px;
-  font-family: ui-monospace, monospace;
-  font-size: 10.5px;
-  color: #d9d4ff;
-}
-.tp-spark-read.idle { color: #4a4a52; }
-.tp-spark-hover-line { stroke: rgba(169, 157, 255, 0.35); stroke-width: 1; }
-.tp-spark-hover-dot { fill: #e6e1ff; }
