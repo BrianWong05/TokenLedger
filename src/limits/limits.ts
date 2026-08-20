@@ -10,7 +10,6 @@
 import { listen } from '@tauri-apps/api/event';
 import { fetchLimits, checkLiveLimits, scan } from '../api';
 import type { SourceLimits } from '../types';
-import { limitsSources } from './limits.derive';
 
 // The stored preference keys this page owns. Two booleans-worth of state, so
 // they live in web storage rather than growing the Settings contract: neither is
@@ -37,72 +36,6 @@ export function lastCheckKey(source: string): string {
 // the floor cannot invent a different result without making another check.
 export function lastFailureKey(source: string): string {
   return `tl.limits.lastFailure.${source}`;
-}
-
-// Decision 5's floor: at most one live check per Source per minute, however
-// often a surface asks. Stored (not held in a ref) because both surfaces that
-// check — the Limits page and the tray panel — are unmounted and remounted
-// constantly, and the floor is a promise to the vendor, not to a component.
-export const LIVE_FLOOR_MS = 60_000;
-export const ERROR_FAILURE_PREFIX = 'error:';
-
-// A missing or refused credential is the one failure that reads as "sign in
-// again"; every other failure is a failure and must not wear that face. The
-// Companion marks the signed-out case with this phrase and callers trust that,
-// rather than re-deriving it from a status code that also appears in the text
-// of a genuine error.
-export function signedOut(detail: string): boolean {
-  return /\bnot signed in\b/i.test(detail);
-}
-
-export type LiveFailure = 'signed-out' | { detail: string };
-
-/**
- * One live check per due `live` Source — the write protocol both surfaces must
- * speak identically, because each replays the other's stored verdicts: stamp
- * the floor and forget the old verdict as the check STARTS (a settle handler
- * may never run if the caller unmounts), then record the classified outcome as
- * it settles. Gated internally on the opt-in and the floor; returns null when
- * nothing is due so a caller can skip its own bracketing. The floor has no
- * override: "a person asked" (a page open, a panel open, a Refresh press) is
- * what permits a call at all, never what exempts it. Never rejects.
- */
-export function checkLiveDue(
-  port: LimitsPort,
-  nowMs: number,
-  onVerdict?: (source: string, failure: LiveFailure | null) => void,
-): Promise<void> | null {
-  if (port.read(LIVE_ENABLED_KEY) !== 'true') return null;
-  const due = limitsSources()
-    .filter(({ via }) => via === 'live')
-    .map(({ meta }) => meta.key)
-    .filter((key) => nowMs - Number(port.read(lastCheckKey(key)) ?? 0) >= LIVE_FLOOR_MS);
-  if (!due.length) return null;
-
-  return Promise.all(
-    due.map((key) => {
-      port.write(lastCheckKey(key), String(nowMs));
-      port.write(lastFailureKey(key), '');
-      return Promise.resolve(port.checkLive(key)).then(
-        () => {
-          port.write(lastFailureKey(key), '');
-          onVerdict?.(key, null);
-        },
-        (err: unknown) => {
-          const detail = String((err as { message?: string })?.message ?? err ?? '');
-          const failure: LiveFailure = signedOut(detail) ? 'signed-out' : { detail };
-          port.write(
-            lastFailureKey(key),
-            failure === 'signed-out' ? failure : ERROR_FAILURE_PREFIX + failure.detail,
-          );
-          onVerdict?.(key, failure);
-        },
-      );
-    }),
-  ).then(
-    () => {},
-    () => {},
-  );
 }
 
 export interface LimitsPort {

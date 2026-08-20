@@ -16,14 +16,11 @@ import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
 import {
-  cards, durationParts, freshness, limitsSources, nextDueAt, planLabel, windowLabel,
+  cards, durationParts, freshness, nextDueAt, planLabel, windowLabel,
   type CardView, type EstimateView, type Mode, type WindowView,
 } from './limits.derive';
-import {
-  tauriLimits, lastCheckKey, lastFailureKey, checkLiveDue,
-  LIVE_ENABLED_KEY, LIVE_FLOOR_MS, MODE_KEY, ERROR_FAILURE_PREFIX,
-  type LimitsPort, type LiveFailure,
-} from './limits';
+import { tauriLimits, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
+import { runDueLiveChecks, storedFailures, type LiveFailure } from './limits.live';
 
 type T = ReturnType<typeof useT>['t'];
 
@@ -64,22 +61,12 @@ export default function LimitsPage({
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [mode, setMode] = useState<Mode>(() => (port.read(MODE_KEY) === 'used' ? 'used' : 'left'));
   const [liveEnabled, setLiveEnabled] = useState(() => port.read(LIVE_ENABLED_KEY) === 'true');
-  const [failures, setFailures] = useState<Record<string, LiveFailure>>(() => {
-    const remembered: Record<string, LiveFailure> = {};
-    for (const { meta } of limitsSources()) {
-      // Only a verdict the floor is still holding may be replayed. Past the
-      // floor this mount will check again anyway, and a stale verdict would
-      // meanwhile suppress held Readings — `cards()` gives a failure priority
-      // over windows — showing yesterday's blip as a current fact.
-      if (now() - Number(port.read(lastCheckKey(meta.key)) ?? 0) >= LIVE_FLOOR_MS) continue;
-      const value = port.read(lastFailureKey(meta.key));
-      if (value === 'signed-out') remembered[meta.key] = 'signed-out';
-      else if (value?.startsWith(ERROR_FAILURE_PREFIX)) {
-        remembered[meta.key] = { detail: value.slice(ERROR_FAILURE_PREFIX.length) };
-      }
-    }
-    return remembered;
-  });
+  // Replays the verdicts the floor is still holding — `cards()` gives a
+  // failure priority over windows. The replay rules live with the codec in
+  // limits.live.ts, shared with the Menu Bar Extra panel.
+  const [failures, setFailures] = useState<Record<string, LiveFailure>>(() =>
+    storedFailures(port, now()),
+  );
   // In-flight checks, counted rather than boolean: a Refresh runs a scan and a
   // live check concurrently, and whichever finishes first must not re-enable the
   // button under the other.
@@ -100,14 +87,14 @@ export default function LimitsPage({
   // One live check per `live` Source, subject to the floor. Failures are recorded
   // per Source and kept distinct: exit 44 or a refused credential is "not signed
   // in", anything else is "couldn't check" with the Companion's own line. The
-  // floor, the classification and the stored-key protocol all live in
-  // `checkLiveDue` (limits.ts), shared with the tray panel; this wrapper only
-  // mirrors the verdicts into React state and brackets the Refresh button.
-  // Refresh still always runs a scan, which is how a `logs` Source updates, so
-  // the button is never inert.
+  // floor, the opt-in gate, the classification and the stored-key protocol all
+  // live in `runDueLiveChecks` (limits.live.ts), shared with the Menu Bar Extra
+  // panel; this wrapper only mirrors the verdicts into React state and brackets
+  // the Refresh button. Refresh still always runs a scan, which is how a `logs`
+  // Source updates, so the button is never inert.
   const checkLive = useCallback(
     () => {
-      const run = checkLiveDue(port, now(), (key, failure) => {
+      const run = runDueLiveChecks(port, now(), (key, failure) => {
         setFailures((f) => {
           if (!failure) {
             const { [key]: _gone, ...rest } = f;
@@ -126,11 +113,13 @@ export default function LimitsPage({
     [port, now, reload],
   );
 
-  // Page open: read the stored series always, and check live only once the
-  // disclosure has been accepted. No credential is read before that.
+  // Page open: read the stored series always. The live check gates itself on
+  // the stored opt-in (runDueLiveChecks), so no credential is read before the
+  // disclosure has been accepted — the stored key is the one source of truth,
+  // and `liveEnabled` state only picks which surface renders.
   useEffect(() => {
     reload();
-    if (liveEnabled) checkLive();
+    checkLive();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- page-open only, by design
   }, []);
 
@@ -153,7 +142,7 @@ export default function LimitsPage({
         setChecking((n) => n - 1);
         reload();
       });
-    if (liveEnabled) checkLive();
+    checkLive();
   };
 
   const enableLive = () => {

@@ -18,11 +18,14 @@ import { hotkeyHint, isHotkey } from '../lib/hotkeys';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
-import { checkLiveDue, tauriLimits, MODE_KEY, type LimitsPort } from '../limits/limits';
+import { tauriLimits, MODE_KEY, type LimitsPort } from '../limits/limits';
+import { runDueLiveChecks, storedFailures, type LiveFailure } from '../limits/limits.live';
 import {
   cards, durationParts, planLabel, windowLabel,
-  type CardView, type Mode as LimitsMode, type WindowView,
+  type Mode as LimitsMode, type WindowView,
 } from '../limits/limits.derive';
+import { limits as limitStrings } from '../lib/strings/limits';
+import { fill } from '../lib/format';
 import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import { sourceMeta } from '../overview/meta';
 import { sourceIcon } from '../overview/icons';
@@ -75,40 +78,57 @@ function ipc(cmd: string) {
     .catch(() => {});
 }
 
-// English window labels, panel-local like every other string here. Pools ride
-// the label the way the Limits page prefixes them; a per-model window carries
-// its "Weekly" as a sub so long model names stay scannable.
-function limitLabel(w: WindowView, source: string): { text: string; sub?: string } {
-  const l = windowLabel(w.key, source);
-  const pools: Record<string, string> = { gemini: 'Gemini', '3p': 'Other models' };
-  const pool = l.pool ? `${pools[l.pool] ?? l.pool} · ` : '';
-  if (l.kind === 'model') return { text: `${pool}${l.model}`, sub: 'Weekly' };
-  if (l.kind === 'other') return { text: `${pool}${l.minutes}m window` };
+// The panel is English-only, but its Limits vocabulary is not its own: labels,
+// pool names and duration units read straight off the dictionary's `en` table
+// — the same keys the Limits page renders through `t()` — so the words have
+// one home and cannot drift.
+const LIMITS_EN = limitStrings.en;
+
+// A window's label parts, parsed once and carried beside the window so the
+// pick (which two meters collapse to) and the render read the same parse.
+type ParsedWindow = { w: WindowView; label: ReturnType<typeof windowLabel> };
+
+// Label parts to render. Pools ride the label the way the Limits page
+// prefixes them; a per-model window carries "· Weekly" as a sub so long model
+// names stay scannable.
+function limitText(label: ParsedWindow['label']): { text: string; sub?: string } {
+  const pools: Record<string, string> = {
+    gemini: LIMITS_EN['limits.pool.gemini'],
+    '3p': LIMITS_EN['limits.pool.other'],
+  };
+  const pool = label.pool ? `${pools[label.pool] ?? label.pool} · ` : '';
+  if (label.kind === 'model') {
+    return { text: `${pool}${label.model}`, sub: `· ${LIMITS_EN['limits.win.weeklySub']}` };
+  }
+  if (label.kind === 'other') {
+    return { text: pool + fill(LIMITS_EN['limits.win.other'], { n: label.minutes }) };
+  }
   const names = {
-    session: 'Session',
-    weekly: 'Weekly',
-    weeklyCredits: 'Weekly credits',
-    monthlyCredits: 'Monthly credits',
+    session: LIMITS_EN['limits.win.session'],
+    weekly: LIMITS_EN['limits.win.weekly'],
+    weeklyCredits: LIMITS_EN['limits.win.weeklyCredits'],
+    monthlyCredits: LIMITS_EN['limits.win.monthlyCredits'],
   } as const;
-  return { text: pool + names[l.kind] };
+  return { text: pool + names[label.kind] };
 }
 
-// "1d 6h" — durationParts' largest two units, English-only like the panel.
+// "1d 6h" — durationParts' largest two units, through the dictionary's own
+// unit templates (the same `as` the page's fmtDuration uses, for the same
+// reason: both keys stay checked against the dictionary).
 function limitDuration(minutes: number): string {
   return durationParts(minutes)
-    .map((p) => `${p.n}${p.unit}`)
+    .map((p) => fill(LIMITS_EN[`limits.t.${p.unit}` as 'limits.t.d'], { n: p.n }))
     .join(' ');
 }
 
 // Collapsed shows the two windows a glance wants — the session and the weekly
-// (or credit) pool; everything else appears on expand. A Source with neither
-// named lane still shows its first two windows rather than nothing.
-function primaryWindows(card: CardView): WindowView[] {
-  const kind = (w: WindowView) => windowLabel(w.key, card.source).kind;
-  const session = card.windows.find((w) => kind(w) === 'session');
-  const weekly = card.windows.find((w) => kind(w) === 'weekly' || kind(w) === 'weeklyCredits');
-  const picked = [session, weekly].filter((w): w is WindowView => w !== undefined);
-  return picked.length ? picked : card.windows.slice(0, 2);
+// (or credit) pool; everything else appears on expand.
+function primaryWindows(parsed: ParsedWindow[]): ParsedWindow[] {
+  const session = parsed.find((p) => p.label.kind === 'session');
+  const weekly = parsed.find(
+    (p) => p.label.kind === 'weekly' || p.label.kind === 'weeklyCredits',
+  );
+  return [session, weekly].filter((p): p is ParsedWindow => p !== undefined);
 }
 
 // One limit bar, shared by the collapsed meters and the expanded rows: the
@@ -180,6 +200,7 @@ export default function TrayPanel({
   // Sources the user has flipped open. The panel is destroyed on dismissal
   // (ADR-0007), so the open set naturally resets per open.
   const [limitsStored, setLimitsStored] = useState<SourceLimits[]>([]);
+  const [limitsFailures, setLimitsFailures] = useState<Record<string, LiveFailure>>({});
   const [limitsNow, setLimitsNow] = useState(() => Math.floor(Date.now() / 1000));
   const [limitsOpen, setLimitsOpen] = useState<Record<string, boolean>>({});
   // The selected window's token figure is a floor (≥) when an Unreadable
@@ -222,6 +243,10 @@ export default function TrayPanel({
   // IPC throws synchronously when no Tauri runtime is present.
   const loadLimits = useCallback(() => {
     setLimitsNow(Math.floor(Date.now() / 1000));
+    // The verdicts the floor still holds ride along with every read, so a
+    // signed-out or erroring Source keeps its strip off the panel (its
+    // trouble state renders on the app's Limits page instead).
+    setLimitsFailures(storedFailures(limits, Date.now()));
     try {
       // The Array guard covers an IPC that answers but answers nothing (the
       // tests' recording invoke mock does exactly that) — an absent runtime
@@ -300,11 +325,13 @@ export default function TrayPanel({
     scanningRef.current = true;
     setScanning(true);
     // Live limits ride the same "a person asked" moments as the Limits page:
-    // panel open (open() rescans) and the Rescan press. checkLiveDue gates on
-    // the page's opt-in and the per-Source floor; fresh Readings land in the
-    // store, so the settle re-reads it. Never rejects, and deliberately not
-    // awaited — a slow vendor must not hold the scan spinner.
-    checkLiveDue(limits, Date.now())?.then(loadLimits);
+    // panel open (open() rescans) and the Rescan press. runDueLiveChecks
+    // gates on the page's opt-in and the per-Source floor; fresh Readings
+    // land in the store, so the settle re-reads it. Never rejects, and
+    // deliberately not awaited — a slow vendor must not hold the scan
+    // spinner. If this window is destroyed mid-check the verdict goes
+    // unwritten; the floor bounds that window (see runDueLiveChecks).
+    runDueLiveChecks(limits, Date.now())?.then(loadLimits);
     // A fast no-change scan must still visibly happen: hold the spinner and
     // the pulsing figures for ≥1s.
     const minDone = new Promise((r) => setTimeout(r, minLoadingMs()));
@@ -424,14 +451,17 @@ export default function TrayPanel({
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
 
   // Only Sources whose card is live render a strip; trouble states (signed
-  // out, error, nothing recorded) stay on the app's Limits page. Framing
+  // out, error, nothing recorded) stay on the app's Limits page, so the
+  // stored verdicts ride along and take their Sources' strips down. Framing
   // follows the page's stored Left/Used choice — the panel adds no second
-  // toggle. Failures are not passed: the tray runs its checks fire-and-forget
-  // and shows whatever Readings are held either way.
+  // toggle.
   const limitsMode: LimitsMode = limits.read(MODE_KEY) === 'used' ? 'used' : 'left';
   const liveLimits = useMemo(
-    () => cards(limitsStored, limitsNow, limitsMode, {}).filter((c) => c.state === 'live'),
-    [limitsStored, limitsNow, limitsMode],
+    () =>
+      cards(limitsStored, limitsNow, limitsMode, limitsFailures).filter(
+        (c) => c.state === 'live',
+      ),
+    [limitsStored, limitsNow, limitsMode, limitsFailures],
   );
 
   return (
@@ -621,6 +651,10 @@ export default function TrayPanel({
           {liveLimits.map((card) => {
             const open = !!limitsOpen[card.source];
             const plan = planLabel(card.plan);
+            const parsed: ParsedWindow[] = card.windows.map((w) => ({
+              w,
+              label: windowLabel(w.key, card.source),
+            }));
             return (
               <div className="tp-limcard" key={card.source}>
                 <button
@@ -650,8 +684,8 @@ export default function TrayPanel({
                   </svg>
                 </button>
                 {open ? (
-                  card.windows.map((w) => {
-                    const l = limitLabel(w, card.source);
+                  parsed.map(({ w, label }) => {
+                    const l = limitText(label);
                     return (
                       <div className="tp-limwin" key={w.key}>
                         <div className="tp-limwin-labels">
@@ -659,7 +693,7 @@ export default function TrayPanel({
                             {l.text}
                             {l.sub && <span className="sub">{l.sub}</span>}
                           </span>
-                          <span className={'tp-limwin-pct t-' + w.tone}>{w.pctShown}%</span>
+                          <span className={'tp-limwin-pct tp-t-' + w.tone}>{w.pctShown}%</span>
                           <span className="tp-limwin-resets">
                             {w.resetsInMin !== null &&
                               `resets in ${limitDuration(w.resetsInMin)}`}
@@ -671,12 +705,12 @@ export default function TrayPanel({
                   })
                 ) : (
                   <div className="tp-limmeters">
-                    {primaryWindows(card).map((w) => (
+                    {primaryWindows(parsed).map(({ w, label }) => (
                       <div className="tp-limmeter" key={w.key}>
                         <div className="tp-limmeter-row">
-                          <span className="tp-limmeter-k">{limitLabel(w, card.source).text}</span>
+                          <span className="tp-limmeter-k">{limitText(label).text}</span>
                           <span>
-                            <span className={'tp-limmeter-v t-' + w.tone}>{w.pctShown}%</span>
+                            <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
                             {w.resetsInMin !== null && (
                               <span className="tp-limmeter-t">· {limitDuration(w.resetsInMin)}</span>
                             )}

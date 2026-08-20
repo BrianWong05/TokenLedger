@@ -279,9 +279,9 @@ body.tp-macos .tp {
 .tp-limcard-chev { display: block; color: #6e6e76; transition: transform 0.15s; }
 .tp-limcard-chev.open { transform: rotate(90deg); }
 
-.t-ok { color: #7bd3aa; }
-.t-low { color: #e8c476; }
-.t-dry { color: #f09090; }
+.tp-t-ok { color: #7bd3aa; }
+.tp-t-low { color: #e8c476; }
+.tp-t-dry { color: #f09090; }
 
 .tp-limmeters { display: flex; gap: 12px; margin-top: 7px; }
 .tp-limmeter { flex: 1; min-width: 0; }

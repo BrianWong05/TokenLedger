@@ -9,7 +9,7 @@ import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { makeFakeEstimate } from '../limits/limits.fake';
-import { LIVE_ENABLED_KEY, type LimitsPort } from '../limits/limits';
+import { LIVE_ENABLED_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from '../limits/limits';
 import type { BreakdownRow, SourceLimits, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -906,12 +906,12 @@ describe('TrayPanel limits', () => {
         m.querySelector('.tp-limmeter-t')?.textContent,
       ]);
     expect(meters(cardEls[0])).toEqual([
-      ['Session', '62%', 'tp-limmeter-v t-ok', '· 3h 10m'],
-      ['Weekly', '31%', 'tp-limmeter-v t-low', '· 2d 4h'],
+      ['Session', '62%', 'tp-limmeter-v tp-t-ok', '· 3h 10m'],
+      ['Weekly', '31%', 'tp-limmeter-v tp-t-low', '· 2d 4h'],
     ]);
     expect(meters(cardEls[1])).toEqual([
-      ['Session', '71%', 'tp-limmeter-v t-ok', '· 2h 5m'],
-      ['Weekly', '14%', 'tp-limmeter-v t-dry', '· 5d 12h'],
+      ['Session', '71%', 'tp-limmeter-v tp-t-ok', '· 2h 5m'],
+      ['Weekly', '14%', 'tp-limmeter-v tp-t-dry', '· 5d 12h'],
     ]);
     expect(container.textContent).not.toContain('Fable');
 
@@ -942,12 +942,13 @@ describe('TrayPanel limits', () => {
     expect(rows).toEqual([
       ['Session', '62%', 'resets in 3h 10m'],
       ['Weekly', '31%', 'resets in 2d 4h'],
-      // The per-model weekly, discovered from the key's own tail.
-      ['FableWeekly', '54%', 'resets in 2d 4h'],
+      // The per-model weekly, discovered from the key's own tail — the "·"
+      // rides the sub, so the row reads "Fable · Weekly".
+      ['Fable· Weekly', '54%', 'resets in 2d 4h'],
     ]);
     expect(
       container.querySelector('.tp-limwin:last-of-type .tp-limwin-k .sub')?.textContent,
-    ).toBe('Weekly');
+    ).toBe('· Weekly');
     // Only the clicked Source expanded; Codex keeps its meters.
     const codexCard = container.querySelectorAll('.tp-limcard')[1];
     expect(codexCard.querySelectorAll('.tp-limmeter').length).toBe(2);
@@ -957,6 +958,35 @@ describe('TrayPanel limits', () => {
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelectorAll('.tp-limwin').length).toBe(0);
     expect(container.querySelectorAll('.tp-limmeter').length).toBe(4);
+  });
+
+  it('keeps a Source with a stored failure verdict off the panel while the floor holds it', async () => {
+    // Held Readings do not earn a strip past a failure verdict the floor is
+    // still holding: a signed-out Claude must not show yesterday's
+    // percentages as a current fact. Its trouble state renders on the app's
+    // Limits page, not here.
+    const withFresh = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [lastFailureKey('claude')]: 'signed-out',
+        [lastCheckKey('claude')]: String(Date.now()),
+      }),
+    );
+    expect(
+      Array.from(withFresh.querySelectorAll('.tp-limcard-name')).map((e) => e.textContent),
+    ).toEqual(['Codex']);
+
+    // A verdict older than the floor says nothing about now — the strip
+    // returns, same replay rule as the page.
+    document.body.replaceChildren();
+    const withStale = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [lastFailureKey('claude')]: 'signed-out',
+        [lastCheckKey('claude')]: String(Date.now() - 24 * 3600 * 1000),
+      }),
+    );
+    expect(
+      Array.from(withStale.querySelectorAll('.tp-limcard-name')).map((e) => e.textContent),
+    ).toEqual(['Claude', 'Codex']);
   });
 
   it('frames the numerals by the stored Left/Used mode', async () => {
