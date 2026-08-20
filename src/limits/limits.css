@@ -2,22 +2,29 @@
    tokens only, so light and dark both come free from index.css. */
 
 .tl-page-limits {
-  /* the top padding lives on the toolbar so it sits flush at the window top and
-     doubles as the window-drag strip */
+  /* the top padding lives on the pinned toolbar so it sits flush at the window
+     top and doubles as the window-drag strip. No overflow here: a nested
+     scroller would steal `position: sticky` from the window, and the bar
+     would scroll away with the cards. */
   padding: 0 30px 26px;
-  overflow-y: auto;
-  height: 100%;
 }
 
 /* ── toolbar ── */
 .tl-lim-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10; /* above the scrolling cards, below any dialog overlay */
   display: flex;
   align-items: center;
   gap: 12px;
-  /* full-bleed: the page owns the side padding, but the drag strip must cover
-     the whole main area up to the window edges */
-  margin: 0 -30px 18px;
-  padding: 26px 30px 0;
+  /* full-bleed: the page owns the side padding, but the pinned bar must cover
+     the whole main area so scrolled cards never slip past its edges */
+  margin: 0 -30px;
+  padding: 26px 30px 18px;
+  border-bottom: 1px solid var(--border-subtle);
+  /* the Overview toolbar's opaque stack, so scrolled content never shows
+     through the pinned bar */
+  background: linear-gradient(180deg, var(--bg-hover), transparent), var(--bg-app);
 }
 .tl-lim-toolbar h1 {
   font-size: 17px;
