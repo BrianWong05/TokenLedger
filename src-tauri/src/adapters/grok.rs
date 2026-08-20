@@ -42,6 +42,7 @@ const SUPPORTED_UPDATE_KINDS: &[&str] = &[
     "current_mode_update",
     "hook_execution",
     "image_compressed",
+    "image_dropped",
     "plan",
     "retry_state",
     "session_recap",
@@ -959,6 +960,12 @@ mod tests {
         )
     }
 
+    fn image_dropped_line(ts: i64) -> String {
+        format!(
+            r#"{{"timestamp":{ts},"method":"_x.ai/session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"image_dropped","notes":["dropped"]}},"_meta":{{"eventId":"e"}}}}}}"#
+        )
+    }
+
     #[test]
     fn task_lifecycle_updates_do_not_reject_the_session() {
         // Background bash / monitor emits task_backgrounded then task_completed
@@ -985,6 +992,38 @@ mod tests {
         let tokens: i64 = conn
             .query_row(
                 "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-tasks:0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokens, 4000);
+    }
+
+    #[test]
+    fn image_dropped_updates_do_not_reject_the_session() {
+        // Grok Build emits image_dropped on `_x.ai/session/update` with no
+        // totalTokens, same family as image_compressed. A session that also
+        // has a real turn must still book that turn — not abort as malformed.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fimages",
+            "sess-images",
+            &[
+                update_line(100, "user_message_chunk", None),
+                update_line(101, "agent_message_chunk", Some(4000)),
+                image_dropped_line(102),
+            ],
+            Some(r#"{"info":{"id":"sess-images","cwd":"/Users/dev/images"},"current_model_id":"grok-4.6","updated_at":"2026-08-20T12:00:00Z"}"#),
+            None,
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1);
+        let tokens: i64 = conn
+            .query_row(
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-images:0'",
                 [],
                 |r| r.get(0),
             )
