@@ -57,6 +57,43 @@ describe('PricingPage', () => {
     const opus = rowByModel(c, 'claude-opus-4-8');
     const cells = Array.from(opus.querySelectorAll('.tl-pr-rate')).map((s) => s.textContent);
     expect(cells).toEqual(['$15.00', '$75.00', '$1.50', '$18.75']);
+    // Overall = sum of the four (15+75+1.5+18.75)
+    expect(opus.querySelector('.tl-pr-overall')!.textContent).toBe('$110.25');
+  });
+
+  it('sorts by the Overall total when its header is clicked', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    const overallHead = c.querySelector('button[aria-label="Sort by Overall"]') as HTMLButtonElement;
+    await act(async () => overallHead.click());
+    expect(rows(c)[0].querySelector('.tl-pr-model .name')!.textContent).toBe('claude-opus-4-8'); // priciest total
+  });
+
+  it('groups the rendered Rate source column when its header is clicked', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    const head = c.querySelector('button[aria-label="Sort by Rate source"]') as HTMLButtonElement;
+    await act(async () => head.click());
+
+    // The first badge in each row IS the Rate source cell. Keying the sort on the
+    // Source under Model instead left this interleaved: LiteLLM, Anthropic, LiteLLM…
+    const shown = rows(c).map((r) => r.querySelector('.tl-pr-badges .tl-pr-badge')!.textContent);
+    expect(shown).toEqual([...new Set(shown)].flatMap((l) => shown.filter((x) => x === l)));
+    expect([...new Set(shown)]).toEqual(['Anthropic', 'LiteLLM', 'OpenRouter', 'Override', 'Unpriced']);
+  });
+
+  it('sorts by a rate column on header click — highest first, flipping on a second click', async () => {
+    const c = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    const modelName = (r: HTMLElement) => r.querySelector('.tl-pr-model .name')!.textContent;
+    const inputHead = c.querySelector('button[aria-label="Sort by Input"]') as HTMLButtonElement;
+    const arrow = () => inputHead.querySelector('.tl-pr-sortarrow')!.textContent;
+
+    await act(async () => inputHead.click());
+    expect(arrow()).toBe('↓'); // descending
+    expect(inputHead.getAttribute('aria-label')).toBe('Input, sorted descending');
+    expect(modelName(rows(c)[0])).toBe('claude-opus-4-8'); // 15/1M, priciest input
+
+    await act(async () => inputHead.click());
+    expect(arrow()).toBe('↑'); // ascending
+    expect(modelName(rows(c)[0])).toBe('grok-4-fast'); // cheapest input; unpriced still last
   });
 
   it('pins a window-drag toolbar at the window top so dragging never selects rows', async () => {
@@ -112,7 +149,8 @@ describe('PricingPage', () => {
     expect(rows(c)).toHaveLength(3);
 
     await act(async () => typeInto(input, 'gemini cli'));
-    expect(rows(c).map((r) => r.querySelector('.name')?.textContent)).toEqual(['gemini-3-pro', 'gemini-3-flash']);
+    // Default sort is Model A–Z (TOKL-10), so search results read alphabetically.
+    expect(rows(c).map((r) => r.querySelector('.name')?.textContent)).toEqual(['gemini-3-flash', 'gemini-3-pro']);
   });
 
   it('lets the unpriced banner Review jump to the Unpriced filter', async () => {
@@ -200,6 +238,11 @@ describe('PricingPage', () => {
     const c = await mount(<PricingPage ports={{ pricing: pending }} />);
     expect(c.querySelector('.tl-pr-skel')).not.toBeNull();
     expect(rows(c).length).toBe(5); // skeleton rows, no data
+
+    // A skeleton row must fill the same grid tracks as a real one, or the last
+    // column sits empty and the action skeleton slides under a rate heading.
+    const real = await mount(<PricingPage ports={{ pricing: makeFakePricing() }} />);
+    expect(rows(c)[0].children.length).toBe(rows(real)[0].children.length);
   });
 
   it('shows the empty state and scans on demand', async () => {

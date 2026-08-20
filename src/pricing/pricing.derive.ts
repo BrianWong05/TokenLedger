@@ -82,6 +82,84 @@ export function filterModels(models: ModelPricing[], query: string, filter: Pric
   });
 }
 
+// ---- table sorting (TOKL-10) ----
+
+// The columns the Pricing table can be sorted by: two text columns, the Overall
+// column, and the four rate columns (which map 1:1 onto RatesPerTok keys).
+export type SortCol = 'model' | 'source' | 'overall' | 'input' | 'output' | 'cacheRead' | 'cacheWrite';
+export type SortDir = 'asc' | 'desc';
+
+const RATE_COLS = new Set<SortCol>(['input', 'output', 'cacheRead', 'cacheWrite']);
+// Columns that hold a price: they open highest-first and put unpriced Models last.
+const NUMERIC_COLS = new Set<SortCol>([...RATE_COLS, 'overall']);
+
+// The Overall List Price: the sum of a Model's four resolved rates (Override →
+// catalog), nulls treated as 0. null only when NO rate resolves at all (an
+// unpriced Model), so Overall sinks it last like the per-rate columns; a
+// cache-estimated Model sums its Input + Output.
+export function overallRate(m: ModelPricing): number | null {
+  const r = resolvedRates(m);
+  if (!r) return null;
+  const parts = [r.input, r.output, r.cacheRead, r.cacheWrite].filter((x): x is number => x != null);
+  return parts.length ? parts.reduce((a, b) => a + b, 0) : null;
+}
+
+// The direction a column opens in when first chosen: price columns open
+// highest-price-first ("sort by highest price"); the text columns open A–Z.
+export function defaultDir(col: SortCol): SortDir {
+  return NUMERIC_COLS.has(col) ? 'desc' : 'asc';
+}
+
+// The Rate source column's own value, for sorting: a catalog origin sorts by the
+// label that column shows (A–Z), then every Override, then every Unpriced Model.
+// Keyed off what the column displays — not the Source that produced the usage,
+// which lives under Model — so the visible column really does come out grouped.
+// The two states sort as tiers rather than by their badge words, which keeps this
+// i18n-free like the rest of the module.
+function rateSourceKey(m: ModelPricing): [number, string] {
+  const s = modelState(m);
+  if (s === 'unpriced') return [2, ''];
+  if (s === 'override') return [1, ''];
+  return [0, originLabel(m.catalog!.origin)];
+}
+
+// A stable, total order for the Pricing table. Price columns read the resolved
+// List Price (Override → catalog); a Model with no price for that column — an
+// unpriced Model everywhere, or one missing that one rate — always sinks to the
+// bottom, both directions, rather than ordering as a real 0. Ties break by Model
+// name NEWEST-first, so the order never depends on input order.
+export function sortPricing(models: ModelPricing[], col: SortCol, dir: SortDir): ModelPricing[] {
+  const sign = dir === 'asc' ? 1 : -1;
+  // Model names carry version numbers, so collate them numerically: a plain
+  // string compare reads "claude-opus-4-10" as older than "claude-opus-4-9".
+  const byName = (a: ModelPricing, b: ModelPricing) =>
+    a.model.localeCompare(b.model, undefined, { numeric: true });
+  const priceOf = (m: ModelPricing) =>
+    col === 'overall' ? overallRate(m) : resolvedRates(m)?.[col as keyof RatesPerTok] ?? null;
+  return [...models].sort((a, b) => {
+    let primary = 0;
+    if (col === 'model') {
+      primary = sign * byName(a, b);
+    } else if (col === 'source') {
+      const [ta, la] = rateSourceKey(a);
+      const [tb, lb] = rateSourceKey(b);
+      primary = sign * (ta - tb || la.localeCompare(lb));
+    } else {
+      const ra = priceOf(a);
+      const rb = priceOf(b);
+      if (ra == null && rb == null) primary = 0;
+      else if (ra == null) return 1; // unpriced last, regardless of direction
+      else if (rb == null) return -1;
+      else primary = sign * (ra - rb);
+    }
+    // Ties break newest-Model-first: where a whole family shares one price, the
+    // opus-5 row belongs above opus-4-8, not buried under its own back
+    // catalogue. Direction-independent, like the unpriced tail above — flipping
+    // the sorted column must not sink the newest Model of a tied family.
+    return primary || -byName(a, b);
+  });
+}
+
 export interface ChipCounts {
   all: number;
   unpriced: number;
