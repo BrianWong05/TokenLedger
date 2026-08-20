@@ -23,6 +23,15 @@
 //! 4. A 401/403 says so and points at the Source's own CLI. It never tries to
 //!    repair a session it does not own.
 //!
+//! One thing runs BEFORE any of that (TOKL-20): Claude Code caches its own
+//! last answer from this same endpoint in its config document
+//! (`cachedUsageUtilization`), stamped with when it fetched. Inside a short
+//! freshness gate that cache IS the reading — no network, no credential, no
+//! shared budget spent — and past the gate it remains the fallback when the
+//! live fetch is rate-limited. A person still has to ask (bound 3 is about
+//! when this runs, not what it reads), and a sign-in failure never borrows
+//! the cache: old figures must not paper over a dead login.
+//!
 //! The credential read goes through `/usr/bin/security`, and that detail is the
 //! whole reason this does not prompt: Claude Code creates the keystore item by
 //! shelling out to `security add-generic-password` with neither `-A` nor `-T`,
@@ -70,6 +79,22 @@ fn main() {
 }
 
 fn run() -> Result<String, String> {
+    // The diagnostics exist to inspect the LIVE payload and the STORED
+    // credential, so neither may be answered from the cache.
+    let diagnostic = std::env::args()
+        .skip(1)
+        .any(|a| a == "--shape" || a == "--credential-shape");
+
+    // Claude Code's own last answer from this endpoint. Fresh enough, it IS the
+    // reading: the moments the vendor is likeliest to refuse (a session actively
+    // spending the shared budget) are exactly the moments this cache is being
+    // refreshed, so serving it dodges the 429 AND stops spending the budget the
+    // session is using. Held past the gate too — it is the 429 fallback below.
+    let cache = if diagnostic { None } else { cache_reading() };
+    if let Some(fresh) = cache.as_ref().filter(|c| cache_is_fresh(c.fetched_at, now())) {
+        return deliver(cache_export(fresh));
+    }
+
     let credential = credential()?;
     if let Some(scopes) = &credential.scopes {
         if !scopes.is_empty() && !scopes.iter().any(|s| s == REQUIRED_SCOPE) {
@@ -79,7 +104,22 @@ fn run() -> Result<String, String> {
         }
     }
 
-    let body = fetch(USAGE_URL, &credential.access_token)?;
+    let body = match fetch(&usage_url(), &credential.access_token) {
+        Ok(body) => body,
+        // The 429 verdict — and ONLY it — falls back to the cache at any age: a
+        // refusal does not invalidate the newest answer the vendor already gave,
+        // and the Artifact carries the cache's own stamp so the card dates it
+        // honestly. Sign-in failures take the arm below instead (401/403) or
+        // returned before the fetch (absent credential, missing scope), so a
+        // dead login is never papered over with old figures.
+        Err(err) if err == RATE_LIMITED && !diagnostic => {
+            return match &cache {
+                Some(held) => deliver(cache_export(held)),
+                None => Err(err),
+            };
+        }
+        Err(err) => return Err(err),
+    };
 
     // `--shape` is the hand-run diagnostic for when the vendor's payload moves:
     // it prints the response's structure — keys, numbers, short enum-ish strings —
@@ -96,31 +136,128 @@ fn run() -> Result<String, String> {
     if std::env::args().skip(1).any(|a| a == "--credential-shape") {
         return Ok(credential_shape(&credential_document()?));
     }
-    let export = LimitsExport {
+    deliver(LimitsExport {
         schema: limits_artifact::SCHEMA,
         source: "claude".to_string(),
         fetched_at: now(),
         plan: credential.plan,
-        // One meter answers this endpoint, whichever shape it answers in: the
-        // usage limits themselves. Nothing in the response distinguishes a
-        // second regime, so naming one would be inventing it — and if one ever
-        // appears, this identity changes deliberately and a new Series starts.
-        metering_regime: Some("claude:usage_limits".to_string()),
+        metering_regime: Some(METERING_REGIME.to_string()),
         account_id: account_id(&body),
         windows: windows(&body),
         ..Default::default()
-    };
+    })
+}
 
-    // The durable Artifact is how the reading reaches the app at all — the scan
-    // and the command both read the file, never this process's stdout (ADR-0019).
-    // So a failed write is a failed run: exiting 0 here would report success
-    // having delivered nothing, and the card would show an absence rather than
-    // the error that caused it. A hand run with no directory named just prints.
+/// One meter answers this endpoint, whichever shape (or cache) it answers in:
+/// the usage limits themselves. Nothing in the response distinguishes a second
+/// regime, so naming one would be inventing it — and if one ever appears, this
+/// identity changes deliberately and a new Series starts. One constant for both
+/// producers, so a cache Reading and a live Reading can never split a Series
+/// over a typo.
+const METERING_REGIME: &str = "claude:usage_limits";
+
+/// The end of every successful run, whichever path answered. The durable
+/// Artifact is how the reading reaches the app at all — the scan and the
+/// command both read the file, never this process's stdout (ADR-0019). So a
+/// failed write is a failed run: exiting 0 here would report success having
+/// delivered nothing, and the card would show an absence rather than the error
+/// that caused it. A hand run with no directory named just prints.
+fn deliver(export: LimitsExport) -> Result<String, String> {
     if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
         limits_artifact::write(&PathBuf::from(dir), &export)
             .map_err(|err| format!("could not write the export: {err}"))?;
     }
     serde_json::to_string(&export).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Claude Code's own cache of this endpoint
+// ---------------------------------------------------------------------------
+
+/// The freshness gate, in seconds. Inside it the cache answers INSTEAD of the
+/// vendor; past it the cache only survives as the 429 fallback. ~5 minutes
+/// tracks the refresh cadence observed while Claude Code is in use — a fresher
+/// demand would miss real refreshes and re-open the shared-budget collision
+/// this gate exists to avoid.
+const CACHE_FRESH_SECS: i64 = 300;
+
+fn cache_is_fresh(fetched_at: i64, now: i64) -> bool {
+    // A future stamp (clock skew) reads as fresh, never as negative age.
+    now - fetched_at <= CACHE_FRESH_SECS
+}
+
+/// Claude Code's last answer from this same endpoint, as its config document
+/// caches it — windows already parsed, the stamp already in seconds. Holding
+/// parsed windows rather than the raw document makes "nothing usable in it"
+/// equal "no cache" at both decision points.
+struct Cache {
+    fetched_at: i64,
+    account_id: Option<String>,
+    plan: Option<String>,
+    windows: Vec<WindowExport>,
+}
+
+/// Read and parse the cache, or None. Claude Code keeps this document BESIDE
+/// its config dir's contents — `~/.claude.json`, not inside `~/.claude/` —
+/// unless `CLAUDE_CONFIG_DIR` moves the whole root, the same override the
+/// credential-file fallback honors. A missing, torn, or mid-rewrite document
+/// is an absent cache, never an error: Claude Code rewrites this file
+/// constantly underneath us.
+fn cache_reading() -> Option<Cache> {
+    let path = match std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from) {
+        Some(dir) => dir.join(".claude.json"),
+        None => dirs::home_dir()?.join(".claude.json"),
+    };
+    let raw = std::fs::read_to_string(path).ok()?;
+    parse_cache(&serde_json::from_str::<Value>(&raw).ok()?)
+}
+
+/// `cachedUsageUtilization` → a usable cache, or None. The `utilization` value
+/// is the usage endpoint's own response body shape, so it goes through the one
+/// window parser both response shapes already share — a cache Reading and a
+/// live Reading can never disagree about what a window is.
+fn parse_cache(document: &Value) -> Option<Cache> {
+    let cached = document.get("cachedUsageUtilization")?;
+    // Millis (a JS timestamp) → the epoch seconds every Reading speaks.
+    let fetched_at = cached.get("fetchedAtMs").and_then(|v| v.as_i64())? / 1000;
+    let windows = windows(cached.get("utilization")?);
+    // A cache with nothing usable in it must not outbid a live fetch.
+    if windows.is_empty() {
+        return None;
+    }
+    Some(Cache {
+        fetched_at,
+        account_id: cached
+            .get("accountUuid")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_string),
+        // The same tier grammar the credential's `rateLimitTier` carries, read
+        // from the same document as the cache — so the plan component of a
+        // Series identity cannot differ by which path answered.
+        plan: document
+            .pointer("/oauthAccount/userRateLimitTier")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        windows,
+    })
+}
+
+/// The cache as an Export Artifact. `fetched_at` is the cache's OWN stamp,
+/// never now(): the Readings' `observed_at` comes from it, and a stale answer
+/// wearing a fresh face is the one dishonesty this whole feature must not
+/// commit.
+fn cache_export(cache: &Cache) -> LimitsExport {
+    LimitsExport {
+        schema: limits_artifact::SCHEMA,
+        source: "claude".to_string(),
+        fetched_at: cache.fetched_at,
+        plan: cache.plan.clone(),
+        metering_regime: Some(METERING_REGIME.to_string()),
+        account_id: cache.account_id.clone(),
+        windows: cache.windows.clone(),
+        ..Default::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +470,19 @@ const RATE_LIMITED: &str = "the vendor rate-limited this check (429) — try aga
 const RETRY_FLOOR_SECS: u64 = 1;
 const RETRY_FALLBACK_SECS: u64 = 2;
 const RETRY_CAP_SECS: u64 = 10;
+
+/// Where the fetch goes — the vendor, hardcoded, in every release build. The
+/// debug-only override exists so the integration tests can aim this binary at
+/// a fake vendor; it is compiled out of release builds because an
+/// env-redirectable URL in a credential-presenting binary is an exfiltration
+/// knob, and the shipped sidecars are release builds.
+fn usage_url() -> String {
+    #[cfg(debug_assertions)]
+    if let Some(url) = std::env::var_os("TOKENLEDGER_CLAUDE_USAGE_URL") {
+        return url.to_string_lossy().into_owned();
+    }
+    USAGE_URL.to_string()
+}
 
 fn fetch(url: &str, access_token: &str) -> Result<Value, String> {
     let mut retried = false;
@@ -950,4 +1100,111 @@ mod tests {
         assert!(names.iter().all(|n| !n.contains("-a ")));
     }
 
+    // Claude Code's config document, verbatim in structure from a real machine
+    // (2026-08-21, Max 5x account; identifier digits scrubbed): the null
+    // experiment windows, the no-reset `nimbus_quill` decoy, and the
+    // `extra_usage`/`spend` blocks all ride along so the parse is proven
+    // against the document Claude Code actually writes, not a convenient one.
+    const CACHED_DOCUMENT: &str = r#"{
+        "oauthAccount": {
+            "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
+            "organizationRateLimitTier": "default_raven",
+            "userRateLimitTier": "default_claude_max_5x"
+        },
+        "hasVisitedExtraUsage": true,
+        "cachedUsageUtilization": {
+            "fetchedAtMs": 1787256759360,
+            "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
+            "utilization": {
+                "five_hour": {"utilization": 36, "resets_at": "2026-08-20T23:50:00.011981+00:00",
+                    "limit_dollars": null, "used_dollars": null, "remaining_dollars": null},
+                "seven_day": {"utilization": 31, "resets_at": "2026-08-23T13:00:00.012002+00:00",
+                    "limit_dollars": null, "used_dollars": null, "remaining_dollars": null},
+                "seven_day_oauth_apps": null, "seven_day_opus": null, "seven_day_sonnet": null,
+                "nimbus_quill": {"utilization": 0, "resets_at": null},
+                "extra_usage": {"is_enabled": false, "monthly_limit": null, "utilization": null},
+                "limits": [
+                    {"kind": "session", "group": "session", "percent": 36, "severity": "normal",
+                     "resets_at": "2026-08-20T23:50:00.011981+00:00", "scope": null, "is_active": false},
+                    {"kind": "weekly_all", "group": "weekly", "percent": 31, "severity": "normal",
+                     "resets_at": "2026-08-23T13:00:00.012002+00:00", "scope": null, "is_active": false},
+                    {"kind": "weekly_scoped", "group": "weekly", "percent": 41, "severity": "normal",
+                     "resets_at": "2026-08-23T13:00:00.012230+00:00",
+                     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null},
+                     "is_active": true}
+                ],
+                "spend": {"used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
+                    "limit": null, "percent": 0, "severity": "normal", "enabled": false},
+                "member_dashboard_available": false
+            }
+        }
+    }"#;
+
+    #[test]
+    fn the_cache_parses_through_the_same_window_parser_as_a_live_answer() {
+        let document: Value = serde_json::from_str(CACHED_DOCUMENT).unwrap();
+        let cache = parse_cache(&document).expect("the real document must parse");
+
+        // Millis → the epoch seconds every Reading speaks.
+        assert_eq!(cache.fetched_at, 1_787_256_759);
+        assert_eq!(cache.account_id.as_deref(), Some("ca9db76e-0000-4000-a000-a91c5789ed3a"));
+        // The user tier, not the organization one beside it.
+        assert_eq!(cache.plan.as_deref(), Some("default_claude_max_5x"));
+        // The one shared parser: the modern list wins, the scoped Fable window
+        // rides under the legacy key grammar, and the no-reset decoy is skipped —
+        // exactly what a live answer of this shape yields.
+        assert_eq!(
+            cache
+                .windows
+                .iter()
+                .map(|w| (w.key.as_str(), w.used_pct))
+                .collect::<Vec<_>>(),
+            vec![("five_hour", 36.0), ("seven_day", 31.0), ("seven_day_fable", 41.0)],
+        );
+    }
+
+    #[test]
+    fn the_freshness_gate_is_a_pure_decision_over_the_caches_own_stamp() {
+        let stamp = 1_787_256_759;
+        assert!(cache_is_fresh(stamp, stamp), "just written");
+        assert!(cache_is_fresh(stamp, stamp + CACHE_FRESH_SECS), "at the gate");
+        assert!(!cache_is_fresh(stamp, stamp + CACHE_FRESH_SECS + 1), "past the gate");
+        // Clock skew: a stamp from the future is fresh, never negative age.
+        assert!(cache_is_fresh(stamp, stamp - 90));
+    }
+
+    #[test]
+    fn a_cache_missing_or_unusable_is_absent_never_an_error() {
+        let parse = |raw: &str| parse_cache(&serde_json::from_str::<Value>(raw).unwrap());
+        // The key itself absent — an older Claude Code, or another machine.
+        assert!(parse(r#"{"oauthAccount": {}}"#).is_none());
+        // A stamp-less or body-less cache proves nothing.
+        assert!(parse(r#"{"cachedUsageUtilization": {"utilization": {}}}"#).is_none());
+        assert!(parse(r#"{"cachedUsageUtilization": {"fetchedAtMs": 1787256759360}}"#).is_none());
+        // Windows present but none usable (no reset instant): nothing to say,
+        // and it must not outbid a live fetch.
+        assert!(parse(
+            r#"{"cachedUsageUtilization": {"fetchedAtMs": 1787256759360,
+                "utilization": {"five_hour": {"utilization": 0.0, "resets_at": null}}}}"#,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_cache_export_carries_the_caches_stamp_and_the_one_shared_regime() {
+        let document: Value = serde_json::from_str(CACHED_DOCUMENT).unwrap();
+        let export = cache_export(&parse_cache(&document).unwrap());
+
+        // The cache's OWN stamp, never now(): observed_at downstream is this
+        // figure, and it is what keeps the card's freshness line honest.
+        assert_eq!(export.fetched_at, 1_787_256_759);
+        assert_eq!(export.schema, limits_artifact::SCHEMA);
+        assert_eq!(export.source, "claude");
+        // One regime constant for both producers: a cache Reading and a live
+        // Reading land in one Series, never split over a divergent string.
+        assert_eq!(export.metering_regime.as_deref(), Some(METERING_REGIME));
+        assert_eq!(export.account_id.as_deref(), Some("ca9db76e-0000-4000-a000-a91c5789ed3a"));
+        assert_eq!(export.plan.as_deref(), Some("default_claude_max_5x"));
+        assert_eq!(export.windows.len(), 3);
+    }
 }
