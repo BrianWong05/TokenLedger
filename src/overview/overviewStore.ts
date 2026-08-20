@@ -206,6 +206,11 @@ class Store implements OverviewStore {
   // tick's scan may then honestly report idle — the idle gate must still not
   // mistake the pre-scan paint for post-scan truth.
   private provisional = false;
+  // ingestRev of the Scan whose series this window last painted. Another Scan
+  // (resident loop, Menu Bar Extra) can add Usage Records while we are paused;
+  // comparing revisions — not last-scan time — is what keeps an idle bar tick
+  // from paying the fan-out.
+  private loadedIngestRev = 0;
 
   constructor(private ledger: LedgerPort, private clock: ClockPort) {
     this.snapshot = this.buildSnapshot(this.clock.now());
@@ -284,7 +289,10 @@ class Store implements OverviewStore {
       // figure it rolls is the post-scan SERIES total. An eager publish here
       // would emit provisional false with reloading still false for one render,
       // and the reel would roll the pre-scan Summary instead (#14).
-      if (await this.fetchSeries()) this.provisional = false;
+      if (await this.fetchSeries()) {
+        this.provisional = false;
+        this.loadedIngestRev = status.ingestRev;
+      }
       this.scheduleReload();
       return;
     }
@@ -297,9 +305,16 @@ class Store implements OverviewStore {
     // own listener.
     // fetchError null required: a failed cycle must retry on the next tick
     // even when the scan reports nothing new.
+    // Zero-insert is not "unchanged" when another Scan already wrote: the
+    // resident loop and the Menu Bar Extra keep recording while this window
+    // is minimized, and skip-state then makes our pass report nothing.
+    // ingestRev moves only on ingest, so an idle Menu Bar Extra tick — which
+    // does stamp last_scan — still skips the fan-out.
     const idle = status.sources.every((s) => !s.error && s.eventsInserted === 0);
+    const ingestedElsewhere = status.ingestRev !== this.loadedIngestRev;
     if (
       idle &&
+      !ingestedElsewhere &&
       this.state.allPoints !== null &&
       this.state.fetchError === null &&
       !this.windowMoved(this.clock.now())
@@ -307,7 +322,10 @@ class Store implements OverviewStore {
       return;
     }
 
-    if (await this.fetchSeries()) this.scheduleReload();
+    if (await this.fetchSeries()) {
+      this.loadedIngestRev = status.ingestRev;
+      this.scheduleReload();
+    }
   }
 
   // Fetch the unbounded daily series, publish, and report whether it landed.

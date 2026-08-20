@@ -56,6 +56,7 @@ function pt(over: Partial<SeriesPoint>): SeriesPoint {
 
 const scanWith = (errs: [string, string | null][]): ScanStatus => ({
   scannedAt: 0,
+  ingestRev: 0,
   sources: errs.map(([source, error]) => ({ source, eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error })),
 });
 
@@ -115,7 +116,7 @@ describe('overviewStore refresh / scan', () => {
   it('backend scannedAt arrives in epoch seconds and is stored as epoch ms', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({
-      scan: { scannedAt: 1_780_300_000, sources: [] },
+      scan: { scannedAt: 1_780_300_000, ingestRev: 0, sources: [] },
     });
     const store = await boot(ledger, clock);
     expect(store.getSnapshot().scanAt).toBe(1_780_300_000_000);
@@ -146,6 +147,7 @@ describe('overviewStore refresh / scan', () => {
 
     ledger.data.scan = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     await store.refresh();
@@ -153,6 +155,62 @@ describe('overviewStore refresh / scan', () => {
     await flush();
 
     expect(ledger.calls.series.length).toBeGreaterThan(seriesCalls);
+  });
+
+  // The resident loop and the Menu Bar Extra scan while this window is
+  // minimized. Their inserts are already in the Ledger, so this window's
+  // next Scan reports zero inserted — the idle gate's "unchanged" signal.
+  // The Trend still has to re-read, or Usage over time stays on the pre-minimize
+  // hourly buckets while last-scan ticks forward.
+  it('a zero-insert scan still reloads when another scan already ingested', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ totalTokens: 100 })],
+      hourPoints: [pt({ bucket: '2026-07-16 09:00', totalTokens: 100 })],
+    });
+    const store = await boot(ledger, clock);
+    store.setRange('day');
+    clock.advance(0);
+    await flush();
+    const seriesCalls = ledger.calls.series.length;
+    const heldHours = store.getSnapshot().hourPoints;
+
+    ledger.data.dayPoints = [pt({ totalTokens: 999 })];
+    ledger.data.hourPoints = [pt({ bucket: '2026-07-16 20:00', totalTokens: 999 })];
+    ledger.data.scan = {
+      scannedAt: 1_780_300_030,
+      ingestRev: 1,
+      sources: [{ source: 'claude', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
+    };
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+
+    expect(ledger.calls.series.length).toBeGreaterThan(seriesCalls);
+    expect(store.getSnapshot().hourPoints).not.toBe(heldHours);
+    expect(store.getSnapshot().hourPoints[0]?.totalTokens).toBe(999);
+  });
+
+  // A Menu Bar Extra / resident tick stamps last_scan but inserts nothing.
+  // ingestRev is unchanged, so the focused idle budget still skips.
+  it('a zero-insert scan that did not ingest still skips the fan-out', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger();
+    const store = await boot(ledger, clock);
+    const seriesCalls = ledger.calls.series.length;
+    const summaryCalls = ledger.calls.summary.length;
+
+    ledger.data.scan = {
+      scannedAt: 1_780_300_030,
+      ingestRev: 0,
+      sources: [{ source: 'claude', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
+    };
+    await store.refresh();
+    clock.advance(0);
+    await flush();
+
+    expect(ledger.calls.series).toHaveLength(seriesCalls);
+    expect(ledger.calls.summary).toHaveLength(summaryCalls);
   });
 
   it('scan() throw on first load sets scanError but keeps the provisional paint', async () => {
@@ -472,6 +530,7 @@ describe('overviewStore reload orchestration', () => {
 
     ledger.data.scan = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{ source: 'claude', eventsInserted: 3, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     await store.refresh(); // reloads the current (week) window fresh
@@ -667,6 +726,7 @@ describe('overviewStore first-load vs later series failure', () => {
     // Scan must report an ingest: an idle rescan would skip the fetch entirely.
     ledger.data.scan = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{ source: 'claude', eventsInserted: 1, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     ledger.failNext('series', 'sboom2');
@@ -708,6 +768,7 @@ describe('overviewStore selection auto-correct', () => {
     ledger.data.dayPoints = [pt({ source: 'goose', totalTokens: 42 })];
     ledger.data.scan = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{ source: 'goose', eventsInserted: 1, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null }],
     };
     await store.refresh();
@@ -962,6 +1023,7 @@ async function mountStoreWithUnreadableArtifact() {
     toolRows: [sourceRow('claude')],
     scan: {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{
         source: 'claude', eventsInserted: 0, linesSkipped: 0, limitReadings: 0,
         artifactsUnreadable: 2, unreadableMaxMtime: null, error: null,

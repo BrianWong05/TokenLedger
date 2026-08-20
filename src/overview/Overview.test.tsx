@@ -261,6 +261,7 @@ describe('Overview presentation', () => {
       projectRows: [{ ...piModel, key: '/Users/dev/projects/pi-demo', source: null }],
       scan: {
         scannedAt: 1_782_907_202,
+        ingestRev: 0,
         sources: [
           { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
           { source: 'pi', eventsInserted: 3, linesSkipped: 2, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
@@ -573,6 +574,7 @@ describe('Overview presentation', () => {
   it('lists per-source scan stats in the footer', async () => {
     const scan: ScanStatus = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [
         { source: 'claude', eventsInserted: 412, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
         { source: 'codex', eventsInserted: 88, linesSkipped: 2, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
@@ -595,6 +597,7 @@ describe('Overview presentation', () => {
   it('marks token totals as floors when a Source holds Unreadable Artifacts', async () => {
     const scan: ScanStatus = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [
         { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
         { source: 'claude', eventsInserted: 412, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
@@ -645,6 +648,7 @@ describe('Overview presentation', () => {
       summary,
       scan: {
         scannedAt: 0,
+      ingestRev: 0,
         sources: [
           { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 100, unreadableMaxMtime: 1_782_907_202, error: null },
         ],
@@ -676,6 +680,7 @@ describe('Overview presentation', () => {
       summary,
       scan: {
         scannedAt: 0,
+      ingestRev: 0,
         sources: [
           { source: 'claude', eventsInserted: 412, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
         ],
@@ -690,6 +695,7 @@ describe('Overview presentation', () => {
   it('drops the ≥ marker when the window starts after the last unreadable write', async () => {
     const scan: ScanStatus = {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [
         // mtime far in the past; the day/week/month ranges all start later.
         { source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 100, unreadableMaxMtime: 946_684_800, error: null },
@@ -713,7 +719,7 @@ describe('Overview presentation', () => {
 
   it('renders the last-scan label at the scan wall-clock time (backend sends epoch seconds)', async () => {
     const scannedAtSec = 1_780_300_000; // 2026-06-01T… — any real epoch-second instant
-    const scan: ScanStatus = { scannedAt: scannedAtSec, sources: [] };
+    const scan: ScanStatus = { scannedAt: scannedAtSec, ingestRev: 0, sources: [] };
     const { container: c } = await mountSettled({
       dayPoints: [pt({ source: 'claude', totalTokens: 300 })],
       summary,

@@ -368,6 +368,7 @@ describe('Usage-trend Enlarge', () => {
   it('marks the window total and the inspected bucket ≥ under Unreadable Artifacts', async () => {
     const { container: c } = await mount({}, undefined, undefined, {
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{
         source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0,
         artifactsUnreadable: 100,

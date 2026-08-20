@@ -646,6 +646,7 @@ fn run_scan_sources(
     ScanStatus {
         sources,
         scanned_at,
+        ingest_rev: 0,
     }
 }
 

@@ -51,7 +51,7 @@ mod performance;
 #[cfg(test)]
 mod report;
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use rusqlite::Connection;
@@ -207,6 +207,9 @@ pub struct AppState {
     /// figures are, and the resident capture scans at start-up, so freshness
     /// from a previous launch would answer a question nobody asked.
     pub last_scan: AtomicI64,
+    /// How many Scans this launch have added Usage Records. Distinct from
+    /// `last_scan`, which advances on every pass including idle ones.
+    pub ingest_rev: AtomicU64,
 }
 
 /// Run a read on the read connection. The db-vs-read_db choice every read
@@ -287,6 +290,16 @@ fn limits_changed(status: &ScanStatus) -> bool {
     status.sources.iter().any(|source| source.limit_readings > 0)
 }
 
+/// Next launch-local ingest revision after `status`. Bumps only when this Scan
+/// added Usage Records — an idle Menu Bar Extra or resident pass leaves it.
+fn ingest_rev_after(current: u64, status: &ScanStatus) -> u64 {
+    if status.sources.iter().any(|source| source.events_inserted > 0) {
+        current.saturating_add(1)
+    } else {
+        current
+    }
+}
+
 /// The three clock facts one wake of the resident loop needs, taken together
 /// under a single read lock: the reader's resolved cadence, which local day the
 /// bar is painting, and when that day ends. SQLite does the timezone math here
@@ -312,12 +325,18 @@ fn resident_inputs_from(db: &Connection, now: i64) -> rusqlite::Result<Inputs> {
 pub(crate) fn scan_now(app: &AppHandle) -> Result<ScanStatus, String> {
     let state = app.state::<AppState>();
     let _guard = state.scan_lock.lock().map_err(|e| e.to_string())?;
-    let status = {
+    let mut status = {
         // The scan holds `db` for its whole pass; the read commands run on
         // `read_db` (WAL) so the launch scan cannot queue the first paint.
         let mut db = state.db.lock().map_err(|e| e.to_string())?;
         run_scan(&mut db, &state.roots)
     };
+    // Under the lock so a resident or Menu Bar Extra Scan that ingested just
+    // before we ran is already in `ingest_rev`. Overview's idle gate reads this
+    // rather than `last_scan`, which also moves on idle ticks.
+    let ingest_rev = ingest_rev_after(state.ingest_rev.load(Ordering::Relaxed), &status);
+    state.ingest_rev.store(ingest_rev, Ordering::Relaxed);
+    status.ingest_rev = ingest_rev;
     // Every scan lands here — the command, the tray's "Scan now", and the
     // resident capture — so the panel's freshness read-out cannot miss one.
     state.last_scan.store(status.scanned_at, Ordering::Relaxed);
@@ -726,6 +745,7 @@ pub fn run() {
                 scan_lock: Mutex::new(()),
                 price_lookups: Mutex::new(Default::default()),
                 last_scan: AtomicI64::new(0),
+                ingest_rev: AtomicU64::new(0),
             });
 
             tray::build(app.handle())?;
@@ -879,7 +899,7 @@ mod tests {
     use crate::queries::Filters;
     use crate::scan::SourceRoots;
     use crate::{db, queries, scan};
-    use std::sync::atomic::AtomicI64;
+    use std::sync::atomic::{AtomicI64, AtomicU64};
     use std::sync::Mutex;
     use tauri::Manager;
 
@@ -1191,9 +1211,29 @@ mod tests {
                 error: None,
             }],
             scanned_at: 0,
+            ingest_rev: 0,
         };
         assert!(super::limits_changed(&status(1)));
         assert!(!super::limits_changed(&status(0)));
+    }
+
+    #[test]
+    fn ingest_rev_bumps_only_when_this_scan_added_usage_records() {
+        let status = |events_inserted| crate::types::ScanStatus {
+            sources: vec![crate::types::SourceStatus {
+                source: "claude".to_string(),
+                events_inserted,
+                lines_skipped: 0,
+                limit_readings: 0,
+                artifacts_unreadable: 0,
+                unreadable_max_mtime: None,
+                error: None,
+            }],
+            scanned_at: 0,
+            ingest_rev: 0,
+        };
+        assert_eq!(super::ingest_rev_after(4, &status(0)), 4);
+        assert_eq!(super::ingest_rev_after(4, &status(3)), 5);
     }
 
     #[test]
@@ -1289,6 +1329,7 @@ mod tests {
             scan_lock: Mutex::new(()),
             price_lookups: Mutex::new(Default::default()),
             last_scan: AtomicI64::new(0),
+            ingest_rev: AtomicU64::new(0),
         };
 
         let mut db = state.db.lock().unwrap();

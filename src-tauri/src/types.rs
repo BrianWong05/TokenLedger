@@ -227,4 +227,9 @@ pub struct ScanStatus {
     pub sources: Vec<SourceStatus>,
     #[ts(type = "number")]
     pub scanned_at: i64,
+    /// Launch-local count of Scans that added Usage Records. Unchanged when a
+    /// Scan finishes and inserts nothing, so the Overview idle gate can tell
+    /// "another Scan already ingested" from "the Menu Bar Extra ticked".
+    #[ts(type = "number")]
+    pub ingest_rev: u64,
 }

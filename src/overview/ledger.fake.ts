@@ -61,7 +61,7 @@ const EMPTY_SUMMARY: Summary = {
 
 export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
   const data: Data = {
-    scan: { sources: [], scannedAt: 0 },
+    scan: { sources: [], scannedAt: 0, ingestRev: 0 },
     lastScan: 0,
     dayPoints: [], hourPoints: [], summary: EMPTY_SUMMARY,
     modelRows: [], projectRows: [], ctxResources: [], ctxBuckets: [],

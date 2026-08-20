@@ -57,4 +57,43 @@ describe('useAutoRefresh window activity', () => {
     });
     expect(work).toHaveBeenCalledTimes(2);
   });
+
+  it('pauses while hidden (minimized) even if JS focus never dropped, and refreshes on restore', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    let hidden = false;
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => (hidden ? 'hidden' : 'visible'),
+    });
+    const work = vi.fn(async () => {});
+
+    const host = document.createElement('div');
+    await act(async () => {
+      root = createRoot(host);
+      root.render(<Probe work={work} />);
+    });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(work).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(MIN_SPIN_MS);
+    });
+
+    hidden = true;
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(work).toHaveBeenCalledTimes(1);
+
+    hidden = false;
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      await Promise.resolve();
+    });
+    expect(work).toHaveBeenCalledTimes(2);
+  });
 });

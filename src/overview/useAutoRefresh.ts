@@ -122,22 +122,30 @@ export function createRefreshGate(onRefresh: () => Promise<void>): {
 
 // Auto-refresh exists to keep the visible Overview current. The resident Rust
 // loop owns background capture, so scanning while this window is unfocused
-// spends CPU without changing anything the person can see.
-function useWindowFocused(): boolean {
-  const [focused, setFocused] = useState(() =>
-    typeof document === 'undefined' || document.hasFocus(),
+// or hidden spends CPU without changing anything the person can see.
+// Minimizing (macOS yellow button) may not fire window blur in the webview;
+// `visibilityState` does go `hidden`, and restoring must count as a return so
+// the one-shot refresh on the way back actually runs.
+function windowIsActive(): boolean {
+  return document.hasFocus() && document.visibilityState !== 'hidden';
+}
+
+function useWindowActive(): boolean {
+  const [active, setActive] = useState(() =>
+    typeof document === 'undefined' || windowIsActive(),
   );
   useEffect(() => {
-    const onFocus = () => setFocused(true);
-    const onBlur = () => setFocused(false);
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('blur', onBlur);
+    const sync = () => setActive(windowIsActive());
+    window.addEventListener('focus', sync);
+    window.addEventListener('blur', sync);
+    document.addEventListener('visibilitychange', sync);
     return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', sync);
+      window.removeEventListener('blur', sync);
+      document.removeEventListener('visibilitychange', sync);
     };
   }, []);
-  return focused;
+  return active;
 }
 
 export function useAutoRefresh(onRefresh: () => Promise<void>): {
@@ -145,7 +153,7 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
   refreshing: boolean;
 } {
   const [refreshSec] = useRefreshSec();
-  const focused = useWindowFocused();
+  const active = useWindowActive();
   const [refreshing, setRefreshing] = useState(false);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
@@ -174,18 +182,18 @@ export function useAutoRefresh(onRefresh: () => Promise<void>): {
     }
   }, []);
 
-  const previouslyFocused = useRef(focused);
+  const previouslyActive = useRef(active);
   useEffect(() => {
-    const returnedToWindow = focused && !previouslyFocused.current;
-    previouslyFocused.current = focused;
+    const returnedToWindow = active && !previouslyActive.current;
+    previouslyActive.current = active;
     // Off means this window scans only when asked: no tick, and no scan on the
     // way back to it either. The initial load is not auto-refresh and still runs.
-    if (!focused || refreshSec === REFRESH_OFF) return;
+    if (!active || refreshSec === REFRESH_OFF) return;
     if (returnedToWindow) void refresh();
     return scheduleAutoRefresh(refreshSec, () => {
       void refresh();
     });
-  }, [focused, refreshSec, refresh]);
+  }, [active, refreshSec, refresh]);
 
   return { refresh, refreshing };
 }

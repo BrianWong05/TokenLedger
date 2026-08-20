@@ -138,6 +138,7 @@ describe('Activity Enlarge', () => {
   it('marks the year token total ≥ when Unreadable Artifacts touch the window', async () => {
     const { container: c } = await mount({
       scannedAt: 0,
+      ingestRev: 0,
       sources: [{
         source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0,
         artifactsUnreadable: 100,
