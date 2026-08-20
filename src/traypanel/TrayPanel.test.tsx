@@ -8,7 +8,9 @@ import { SOURCE_ICONS } from '../overview/icons';
 import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
-import type { BreakdownRow, Summary } from '../types';
+import { makeFakeEstimate } from '../limits/limits.fake';
+import { LIVE_ENABLED_KEY, type LimitsPort } from '../limits/limits';
+import type { BreakdownRow, SourceLimits, Summary } from '../types';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -67,6 +69,32 @@ const point = (bucket: string, cost: number) => ({
   ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
   ctxAgents: null, ctxMcp: null, ctxSkills: null,
 });
+
+// A silent limits port: tests that are not about the strips pass one so the
+// default port's IPC read never lands in `invoked`, and the limits tests seed
+// it with stored Readings. `checked` records live checks the way the ledger
+// fake records scans.
+function makeFakeLimits(
+  stored: SourceLimits[] = [],
+  store: Record<string, string> = {},
+): LimitsPort & { checked: string[] } {
+  const map = new Map(Object.entries(store));
+  const checked: string[] = [];
+  return {
+    checked,
+    list: () => Promise.resolve(stored),
+    checkLive: (s: string) => {
+      checked.push(s);
+      return Promise.resolve();
+    },
+    scan: () => Promise.resolve(),
+    onLimitsChanged: () => () => {},
+    read: (k) => map.get(k) ?? null,
+    write: (k, v) => {
+      map.set(k, v);
+    },
+  };
+}
 
 const mountedRoots: Root[] = [];
 
@@ -212,8 +240,10 @@ describe('TrayPanel', () => {
     expect(tiles).toEqual([
       ['91.2%', 'cache hit'],
       ['1,912', 'requests'],
-      ['2 min ago', 'scanned'],
     ]);
+    // The scan time moved beside Rescan (TOKL-19) — the same string the third
+    // tile used to carry, now quiet mono in the top bar.
+    expect(container.querySelector('.tp-top-right .tp-scanned')?.textContent).toBe('2 min ago');
 
     // The extra reads: Models, the period's series, the Scan time — each
     // twice over, because an open paints from the Ledger and then re-reads
@@ -645,7 +675,12 @@ describe('TrayPanel', () => {
       const root = createRoot(container);
       mountedRoots.push(root);
       await act(async () => {
-        root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} platform={platform} />);
+        root.render(
+          <TrayPanel
+            ports={{ ledger, settings: makeFakeSettings(), limits: makeFakeLimits() }}
+            platform={platform}
+          />,
+        );
       });
       await settle();
       return ledger;
@@ -789,5 +824,169 @@ describe('TrayPanel', () => {
       expect(ledger.calls.scan.length).toBe(scans);
       expect(invoked).toEqual([]);
     });
+  });
+});
+
+// The Limit strips (TOKL-19): one per live Source, collapsed to Session +
+// Weekly meters, the header a disclosure to every window. Fixtures seed the
+// real provenance mix — a plan string the label derives from, a per-model
+// window beside the named lanes — because an impossible fixture is how a walk
+// bug hides.
+describe('TrayPanel limits', () => {
+  // Readings as the store would hold them, reset instants relative to the real
+  // clock the panel derives against. 38% used session (62% left, ok, 3h10m),
+  // 69% used weekly (31% left, low, 2d4h), and a per-model weekly at 46%.
+  function claudeStored(): SourceLimits {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      source: 'claude',
+      plan: 'default_claude_max_5x',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + (2 * 1440 + 245) * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + (2 * 1440 + 245) * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+  }
+
+  function codexStored(): SourceLimits {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      source: 'codex',
+      plan: 'pro',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 29, resetsAt: now + 125 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'w10080', windowMinutes: 10080, usedPct: 86, resetsAt: now + (5 * 1440 + 725) * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+  }
+
+  async function mountWithLimits(limits: LimitsPort) {
+    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(
+        <TrayPanel ports={{ ledger, settings: makeFakeSettings(), limits }} platform="macos" />,
+      );
+    });
+    await settle();
+    return container;
+  }
+
+  it('renders one collapsed strip per live Source: name, plan, Session + Weekly meters', async () => {
+    const container = await mountWithLimits(makeFakeLimits([claudeStored(), codexStored()]));
+
+    // Two strips — Sources with no Readings (copilot, grok, …) get none; their
+    // trouble states live on the app's Limits page.
+    const cardEls = Array.from(container.querySelectorAll('.tp-limcard'));
+    expect(cardEls.length).toBe(2);
+    expect(
+      cardEls.map((c) => [
+        c.querySelector('.tp-limcard-name')?.textContent,
+        c.querySelector('.tp-limcard-plan')?.textContent,
+        c.querySelector('img')?.getAttribute('src'),
+      ]),
+    ).toEqual([
+      ['Claude', 'Max 5x', SOURCE_ICONS.claude],
+      ['Codex', 'Pro', SOURCE_ICONS.codex],
+    ]);
+
+    // Collapsed: the two named lanes only — the per-model window waits behind
+    // the disclosure. Label, toned numeral, countdown, and the fill geometry.
+    const meters = (el: Element) =>
+      Array.from(el.querySelectorAll('.tp-limmeter')).map((m) => [
+        m.querySelector('.tp-limmeter-k')?.textContent,
+        m.querySelector('.tp-limmeter-v')?.textContent,
+        m.querySelector('.tp-limmeter-v')?.className,
+        m.querySelector('.tp-limmeter-t')?.textContent,
+      ]);
+    expect(meters(cardEls[0])).toEqual([
+      ['Session', '62%', 'tp-limmeter-v t-ok', '· 3h 10m'],
+      ['Weekly', '31%', 'tp-limmeter-v t-low', '· 2d 4h'],
+    ]);
+    expect(meters(cardEls[1])).toEqual([
+      ['Session', '71%', 'tp-limmeter-v t-ok', '· 2h 5m'],
+      ['Weekly', '14%', 'tp-limmeter-v t-dry', '· 5d 12h'],
+    ]);
+    expect(container.textContent).not.toContain('Fable');
+
+    const claudeFills = Array.from(cardEls[0].querySelectorAll('.tp-limbar .fill')).map((f) => [
+      (f as HTMLElement).style.width,
+      f.className,
+    ]);
+    expect(claudeFills).toEqual([
+      ['62%', 'fill ok'],
+      ['31%', 'fill low'],
+    ]);
+    // The tick is time: 190 of 300 minutes left ≈ 63.3% under Left framing.
+    const tick = cardEls[0].querySelector('.tp-limbar .tick') as HTMLElement;
+    expect(parseFloat(tick.style.left)).toBeCloseTo((190 / 300) * 100, 1);
+  });
+
+  it('expands a Source to every window on header click, and collapses back', async () => {
+    const container = await mountWithLimits(makeFakeLimits([claudeStored(), codexStored()]));
+    const head = container.querySelector('.tp-limcard-head') as HTMLButtonElement;
+
+    await act(async () => head.click());
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    const rows = Array.from(container.querySelectorAll('.tp-limwin')).map((r) => [
+      r.querySelector('.tp-limwin-k')?.textContent,
+      r.querySelector('.tp-limwin-pct')?.textContent,
+      r.querySelector('.tp-limwin-resets')?.textContent,
+    ]);
+    expect(rows).toEqual([
+      ['Session', '62%', 'resets in 3h 10m'],
+      ['Weekly', '31%', 'resets in 2d 4h'],
+      // The per-model weekly, discovered from the key's own tail.
+      ['FableWeekly', '54%', 'resets in 2d 4h'],
+    ]);
+    expect(
+      container.querySelector('.tp-limwin:last-of-type .tp-limwin-k .sub')?.textContent,
+    ).toBe('Weekly');
+    // Only the clicked Source expanded; Codex keeps its meters.
+    const codexCard = container.querySelectorAll('.tp-limcard')[1];
+    expect(codexCard.querySelectorAll('.tp-limmeter').length).toBe(2);
+    expect(codexCard.querySelectorAll('.tp-limwin').length).toBe(0);
+
+    await act(async () => head.click());
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelectorAll('.tp-limwin').length).toBe(0);
+    expect(container.querySelectorAll('.tp-limmeter').length).toBe(4);
+  });
+
+  it('frames the numerals by the stored Left/Used mode', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored()], { 'tl.limits.mode': 'used' }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limmeter-v')).map((v) => v.textContent),
+    ).toEqual(['38%', '69%']);
+  });
+
+  it('checks live Sources on open only behind the opt-in, at most once per floor', async () => {
+    // Not opted in: opening the panel must read stored Readings only.
+    const silent = makeFakeLimits([claudeStored()]);
+    await mountWithLimits(silent);
+    expect(silent.checked).toEqual([]);
+
+    // Opted in: the open checks each live Source once; the Rescan press inside
+    // the floor adds nothing — the floor is a promise to the vendor, and a
+    // person asking is what permits a call, never what exempts it.
+    const port = makeFakeLimits([claudeStored()], { [LIVE_ENABLED_KEY]: 'true' });
+    const container = await mountWithLimits(port);
+    expect(port.checked.length).toBeGreaterThan(0);
+    expect(port.checked).toContain('claude');
+    const perSource = new Map<string, number>();
+    for (const s of port.checked) perSource.set(s, (perSource.get(s) ?? 0) + 1);
+
+    await act(async () => (container.querySelector('.tp-refresh') as HTMLButtonElement).click());
+    await settle();
+    expect(port.checked.length).toBe([...perSource.values()].reduce((a, b) => a + b, 0));
+    for (const n of perSource.values()) expect(n).toBe(1);
   });
 });
