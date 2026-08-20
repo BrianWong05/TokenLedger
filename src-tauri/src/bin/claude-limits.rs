@@ -17,7 +17,9 @@
 //!    which revokes the whole tree including the live session.)
 //! 2. It fetches Limit state only, never usage.
 //! 3. It runs only because a person asked — the app calls it on page open or
-//!    manual Refresh, with a floor between calls, never on a timer.
+//!    manual Refresh, with a floor between calls, never on a timer. Within one
+//!    such run a refused 429 earns a single bounded retry (seconds, clamped) —
+//!    never a second run.
 //! 4. A 401/403 says so and points at the Source's own CLI. It never tries to
 //!    repair a session it does not own.
 //!
@@ -77,7 +79,7 @@ fn run() -> Result<String, String> {
         }
     }
 
-    let body = fetch(&credential.access_token)?;
+    let body = fetch(USAGE_URL, &credential.access_token)?;
 
     // `--shape` is the hand-run diagnostic for when the vendor's payload moves:
     // it prints the response's structure — keys, numbers, short enum-ish strings —
@@ -319,26 +321,74 @@ fn parse_credential(raw: &str) -> Result<Credential, String> {
 // The fetch
 // ---------------------------------------------------------------------------
 
-fn fetch(access_token: &str) -> Result<Value, String> {
-    let response = ureq::get(USAGE_URL)
-        .set("Authorization", &format!("Bearer {access_token}"))
-        .set("anthropic-beta", OAUTH_BETA)
-        .timeout(Duration::from_secs(15))
-        .call();
-    match response {
-        Ok(response) => response
-            .into_string()
-            .map_err(|e| e.to_string())
-            .and_then(|body| serde_json::from_str::<Value>(&body).map_err(|e| e.to_string()))
-            .map_err(|e| format!("the vendor's answer could not be read: {e}")),
-        // Bound 4: report it and point at the Source's own CLI. Nothing is
-        // written or refreshed in response.
-        Err(ureq::Error::Status(401 | 403, _)) => Err(format!(
-            "{NOT_SIGNED_IN}: Claude rejected the saved sign-in (401/403)"
-        )),
-        Err(ureq::Error::Status(code, _)) => Err(format!("the vendor answered {code}")),
-        Err(err) => Err(format!("could not reach the vendor: {err}")),
+/// The one 429 failure line, named so a test can hold it against the page's
+/// signed-out classifier: a rate limit must never wear the "not signed in"
+/// face (src/limits/LimitsPage.tsx `signedOut`). "a minute" is literal — the
+/// page's LIVE_FLOOR_MS is when the next check is allowed.
+const RATE_LIMITED: &str = "the vendor rate-limited this check (429) — try again in a minute";
+/// Bounds on the one 429 retry's wait. The floor exists because the vendor
+/// answers `retry-after: 0` in the field, and an instant re-fire is the retry
+/// least likely to clear a budget this endpoint shares with Claude Code
+/// itself; the cap so a hostile header cannot hold the check open.
+const RETRY_FLOOR_SECS: u64 = 1;
+const RETRY_FALLBACK_SECS: u64 = 2;
+const RETRY_CAP_SECS: u64 = 10;
+
+fn fetch(url: &str, access_token: &str) -> Result<Value, String> {
+    let mut retried = false;
+    loop {
+        let response = ureq::get(url)
+            .set("Authorization", &format!("Bearer {access_token}"))
+            .set("anthropic-beta", OAUTH_BETA)
+            .timeout(Duration::from_secs(15))
+            .call();
+        match response {
+            Ok(response) => {
+                return response
+                    .into_string()
+                    .map_err(|e| e.to_string())
+                    .and_then(|body| {
+                        serde_json::from_str::<Value>(&body).map_err(|e| e.to_string())
+                    })
+                    .map_err(|e| format!("the vendor's answer could not be read: {e}"))
+            }
+            // Bound 4: report it and point at the Source's own CLI. Nothing is
+            // written or refreshed in response.
+            Err(ureq::Error::Status(401 | 403, _)) => {
+                return Err(format!(
+                    "{NOT_SIGNED_IN}: Claude rejected the saved sign-in (401/403)"
+                ))
+            }
+            // A 429 is usually transient: this endpoint's budget is shared with
+            // Claude Code itself, so a check landing beside a running session
+            // can catch a momentary refusal. One retry after the vendor's own
+            // Retry-After, still within this single person-asked run — never a
+            // second run and never a timer (bound 3).
+            Err(ureq::Error::Status(429, response)) => {
+                if retried {
+                    return Err(RATE_LIMITED.to_string());
+                }
+                retried = true;
+                std::thread::sleep(Duration::from_secs(retry_after_secs(
+                    response.header("retry-after"),
+                )));
+            }
+            Err(ureq::Error::Status(code, _)) => {
+                return Err(format!("the vendor answered {code}"))
+            }
+            Err(err) => return Err(format!("could not reach the vendor: {err}")),
+        }
     }
+}
+
+/// The wait before the one 429 retry: the vendor's Retry-After where it names
+/// seconds, the fallback where it is absent or an HTTP-date, clamped to the
+/// bounds above.
+fn retry_after_secs(header: Option<&str>) -> u64 {
+    header
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(RETRY_FALLBACK_SECS)
+        .clamp(RETRY_FLOOR_SECS, RETRY_CAP_SECS)
 }
 
 /// The response's windows. The modern shape carries a normalized `limits[]`
@@ -806,6 +856,74 @@ mod tests {
         assert!(printed.contains(".claudeAiOauth.expiresAt: <number>"), "{printed}");
         assert!(printed.contains(".claudeAiOauth.isMax: true"), "{printed}");
         assert!(printed.contains(".claudeAiOauth.nothing: null"), "{printed}");
+    }
+
+    #[test]
+    fn the_429_retry_waits_the_vendors_own_delay_bounded() {
+        assert_eq!(retry_after_secs(Some("5")), 5, "the vendor's stated seconds");
+        assert_eq!(retry_after_secs(Some(" 3 ")), 3);
+        assert_eq!(retry_after_secs(None), 2, "a short default when unstated");
+        assert_eq!(
+            retry_after_secs(Some("Wed, 21 Oct 2026 07:28:00 GMT")),
+            2,
+            "an HTTP-date falls back to the default",
+        );
+        assert_eq!(retry_after_secs(Some("3600")), 10, "capped — no hostage-taking");
+        // The value the vendor actually sends in the field: an instant re-fire
+        // is the retry least likely to clear a shared budget, so zero is floored.
+        assert_eq!(retry_after_secs(Some("0")), 1, "floored — never an instant re-fire");
+    }
+
+    /// A throwaway server answering each canned response on its own connection.
+    /// Every response says `connection: close`, so ureq cannot pool a socket
+    /// across attempts and each retry is a fresh accept. When the responses run
+    /// out the listener drops, and a further attempt fails to connect — which is
+    /// how a retry loop that stopped being bounded would show itself here.
+    fn serve(responses: Vec<String>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for response in responses {
+                let (mut socket, _) = listener.accept().unwrap();
+                // One read suffices: the request is a small GET with no body.
+                let _ = socket.read(&mut [0u8; 1024]);
+                socket.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        url
+    }
+
+    // `retry-after: 1` keeps the retry real but the test fast — the floor and
+    // cap are pinned by the delay test above, not re-proven here.
+    const REFUSED: &str =
+        "HTTP/1.1 429 Too Many Requests\r\nretry-after: 1\r\nconnection: close\r\ncontent-length: 0\r\n\r\n";
+
+    fn answered() -> String {
+        let body = r#"{"five_hour":{"utilization":1.0,"resets_at":1786503900}}"#;
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len(),
+        )
+    }
+
+    #[test]
+    fn a_refused_429_is_retried_once_and_the_second_answer_wins() {
+        let url = serve(vec![REFUSED.to_string(), answered()]);
+        let body = fetch(&url, "test-token").expect("the retry must deliver the second answer");
+        assert_eq!(body["five_hour"]["utilization"], 1.0);
+    }
+
+    #[test]
+    fn a_second_429_is_the_verdict_and_never_wears_the_signed_out_face() {
+        let url = serve(vec![REFUSED.to_string(), REFUSED.to_string()]);
+        let trouble = fetch(&url, "test-token").expect_err("two refusals are a failure");
+        assert_eq!(trouble, RATE_LIMITED);
+        // The page classifies by phrase (LimitsPage.tsx `signedOut`): a rate
+        // limit reading as "sign in again" would send someone to re-authenticate
+        // a login they already have — the same hazard EXIT_ITEM_NOT_FOUND guards.
+        assert!(!trouble.starts_with(NOT_SIGNED_IN));
+        assert!(!trouble.to_lowercase().contains("not signed in"), "{trouble}");
     }
 
     #[test]
