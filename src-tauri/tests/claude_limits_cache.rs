@@ -32,40 +32,13 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
 }
 
-/// Claude Code's config document, in the shape the real one writes (the null
-/// experiment windows and decoys matter — the parser must walk past them),
-/// stamped as fetched at `fetched_at_ms`.
+/// Claude Code's config document — the SAME captured fixture the Companion's
+/// unit seam parses, so the two seams can never drift — re-stamped as fetched
+/// at `fetched_at_ms`.
 fn write_cache_document(dir: &Path, fetched_at_ms: i64) {
-    let document = format!(
-        r#"{{
-        "oauthAccount": {{
-            "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
-            "organizationRateLimitTier": "default_raven",
-            "userRateLimitTier": "default_claude_max_5x"
-        }},
-        "cachedUsageUtilization": {{
-            "fetchedAtMs": {fetched_at_ms},
-            "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
-            "utilization": {{
-                "five_hour": {{"utilization": 36, "resets_at": "2026-08-20T23:50:00.011981+00:00"}},
-                "seven_day": {{"utilization": 31, "resets_at": "2026-08-23T13:00:00.012002+00:00"}},
-                "seven_day_opus": null,
-                "nimbus_quill": {{"utilization": 0, "resets_at": null}},
-                "limits": [
-                    {{"kind": "session", "group": "session", "percent": 36, "severity": "normal",
-                      "resets_at": "2026-08-20T23:50:00.011981+00:00", "scope": null, "is_active": false}},
-                    {{"kind": "weekly_all", "group": "weekly", "percent": 31, "severity": "normal",
-                      "resets_at": "2026-08-23T13:00:00.012002+00:00", "scope": null, "is_active": false}},
-                    {{"kind": "weekly_scoped", "group": "weekly", "percent": 41, "severity": "normal",
-                      "resets_at": "2026-08-23T13:00:00.012230+00:00",
-                      "scope": {{"model": {{"id": null, "display_name": "Fable"}}, "surface": null}},
-                      "is_active": true}}
-                ],
-                "spend": {{"percent": 0, "severity": "normal"}}
-            }}
-        }}
-    }}"#,
-    );
+    let document = include_str!("fixtures/claude/cached-config-document.json")
+        .replace("1787256759360", &fetched_at_ms.to_string());
+    assert!(document.contains(&fetched_at_ms.to_string()), "the fixture's stamp must be replaced");
     std::fs::write(dir.join(".claude.json"), document).unwrap();
 }
 
@@ -171,6 +144,18 @@ fn a_fresh_cache_answers_fully_locally_and_lands_through_the_real_ingest() {
             ("seven_day_fable".into(), 41.0, fetched_at_ms / 1000, "live".into(), uuid, None),
         ],
     );
+
+    // Re-serving an unchanged cache is the SAME observation: the rewritten
+    // Artifact re-ingests as a no-op, never a duplicate Reading — and this is
+    // the highest-frequency path there is (every page open inside the gate).
+    assert!(run_companion(&config, &limits, DEAD_VENDOR).status.success());
+    assert_eq!(limits_artifact::ingest(&mut conn, &limits, "claude"), Ok(0));
+    let held: i64 = conn
+        .query_row("SELECT COUNT(*) FROM limit_readings WHERE source = 'claude'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(held, 3, "append-only means no duplicates, not more rows");
 }
 
 #[test]
@@ -258,8 +243,11 @@ fn no_cache_and_a_rate_limited_fetch_is_still_the_honest_error() {
 
     let output = run_companion(&config, &limits, &url);
     assert!(!output.status.success(), "with nothing to fall back on, the 429 is the verdict");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("rate-limited this check (429)"), "{stderr}");
-    assert!(!stderr.to_lowercase().contains("not signed in"), "{stderr}");
+    // Verbatim: the page classifies failures by their wording, so the exact
+    // line — never wearing the signed-out face — is the contract.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "claude-limits: the vendor rate-limited this check (429) — try again in a minute",
+    );
     assert!(limits_artifact::read(&limits, "claude").is_none(), "nothing may be written");
 }

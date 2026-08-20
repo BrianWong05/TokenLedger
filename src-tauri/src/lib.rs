@@ -2,8 +2,11 @@ mod adapters;
 mod db;
 // The one crack in `db`'s privacy: the Companion integration tests
 // (src-tauri/tests/) ingest a real Export Artifact through the same
-// schema-checked path the app uses, and that needs a migrated Connection.
-// Everything else in `db` stays private.
+// schema-checked path the app uses, and that needs a migrated Connection —
+// which `CARGO_BIN_EXE_*` tests, living outside the crate, cannot otherwise
+// reach. `doc(hidden)` keeps it a test seam, not an offered API; everything
+// else in `db` stays private.
+#[doc(hidden)]
 pub use db::open_db;
 pub mod export_artifact;
 pub mod limits_artifact;

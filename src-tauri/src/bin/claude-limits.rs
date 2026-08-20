@@ -29,8 +29,10 @@
 //! freshness gate that cache IS the reading — no network, no credential, no
 //! shared budget spent — and past the gate it remains the fallback when the
 //! live fetch is rate-limited. A person still has to ask (bound 3 is about
-//! when this runs, not what it reads), and a sign-in failure never borrows
-//! the cache: old figures must not paper over a dead login.
+//! when this runs, not what it reads). Inside the gate no sign-in question is
+//! asked at all; past it, a sign-in failure never borrows the cache — old
+//! figures must not paper over a dead login, which therefore surfaces on the
+//! first check past the gate.
 //!
 //! The credential read goes through `/usr/bin/security`, and that detail is the
 //! whole reason this does not prompt: Claude Code creates the keystore item by
@@ -92,7 +94,7 @@ fn run() -> Result<String, String> {
     // session is using. Held past the gate too — it is the 429 fallback below.
     let cache = if diagnostic { None } else { cache_reading() };
     if let Some(fresh) = cache.as_ref().filter(|c| cache_is_fresh(c.fetched_at, now())) {
-        return deliver(cache_export(fresh));
+        return deliver(fresh.clone());
     }
 
     let credential = credential()?;
@@ -111,10 +113,11 @@ fn run() -> Result<String, String> {
         // and the Artifact carries the cache's own stamp so the card dates it
         // honestly. Sign-in failures take the arm below instead (401/403) or
         // returned before the fetch (absent credential, missing scope), so a
-        // dead login is never papered over with old figures.
-        Err(err) if err == RATE_LIMITED && !diagnostic => {
-            return match &cache {
-                Some(held) => deliver(cache_export(held)),
+        // dead login is never papered over with old figures. A diagnostic run
+        // never loaded a cache, so its 429 stays a plain error here too.
+        Err(err) if err == RATE_LIMITED => {
+            return match cache {
+                Some(held) => deliver(held),
                 None => Err(err),
             };
         }
@@ -186,24 +189,13 @@ fn cache_is_fresh(fetched_at: i64, now: i64) -> bool {
     now - fetched_at <= CACHE_FRESH_SECS
 }
 
-/// Claude Code's last answer from this same endpoint, as its config document
-/// caches it — windows already parsed, the stamp already in seconds. Holding
-/// parsed windows rather than the raw document makes "nothing usable in it"
-/// equal "no cache" at both decision points.
-struct Cache {
-    fetched_at: i64,
-    account_id: Option<String>,
-    plan: Option<String>,
-    windows: Vec<WindowExport>,
-}
-
 /// Read and parse the cache, or None. Claude Code keeps this document BESIDE
 /// its config dir's contents — `~/.claude.json`, not inside `~/.claude/` —
 /// unless `CLAUDE_CONFIG_DIR` moves the whole root, the same override the
 /// credential-file fallback honors. A missing, torn, or mid-rewrite document
 /// is an absent cache, never an error: Claude Code rewrites this file
 /// constantly underneath us.
-fn cache_reading() -> Option<Cache> {
+fn cache_reading() -> Option<LimitsExport> {
     let path = match std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from) {
         Some(dir) => dir.join(".claude.json"),
         None => dirs::home_dir()?.join(".claude.json"),
@@ -212,11 +204,15 @@ fn cache_reading() -> Option<Cache> {
     parse_cache(&serde_json::from_str::<Value>(&raw).ok()?)
 }
 
-/// `cachedUsageUtilization` → a usable cache, or None. The `utilization` value
-/// is the usage endpoint's own response body shape, so it goes through the one
-/// window parser both response shapes already share — a cache Reading and a
-/// live Reading can never disagree about what a window is.
-fn parse_cache(document: &Value) -> Option<Cache> {
+/// `cachedUsageUtilization` → a ready Export Artifact, or None. The
+/// `utilization` value is the usage endpoint's own response body shape, so it
+/// goes through the one window parser both response shapes already share — a
+/// cache Reading and a live Reading can never disagree about what a window is.
+///
+/// `fetched_at` is the cache's OWN stamp, never now(): the Readings'
+/// `observed_at` comes from it, and a stale answer wearing a fresh face is the
+/// one dishonesty this whole feature must not commit.
+fn parse_cache(document: &Value) -> Option<LimitsExport> {
     let cached = document.get("cachedUsageUtilization")?;
     // Millis (a JS timestamp) → the epoch seconds every Reading speaks.
     let fetched_at = cached.get("fetchedAtMs").and_then(|v| v.as_i64())? / 1000;
@@ -225,39 +221,38 @@ fn parse_cache(document: &Value) -> Option<Cache> {
     if windows.is_empty() {
         return None;
     }
-    Some(Cache {
+    Some(LimitsExport {
+        schema: limits_artifact::SCHEMA,
+        source: "claude".to_string(),
         fetched_at,
+        // The tier as this document states it. In the field it carries the
+        // same grammar as the credential's `rateLimitTier` (the live path's
+        // plan), but they are two fields in two documents — nothing PROVES
+        // they agree, so this stays the cache document's own claim, and an
+        // absent or blank tier means no plan pill, exactly as on the live
+        // path. Blank identity fields are absent, never Some(""): an empty
+        // string is a Series-identity component that would differ from NULL.
+        plan: document
+            .pointer("/oauthAccount/userRateLimitTier")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .map(str::to_string),
+        metering_regime: Some(METERING_REGIME.to_string()),
+        // Claude Code wrote this identity beside the very payload it fetched
+        // with it, so a cache Reading PROVES its account — which a live
+        // Reading cannot (the response body names none, and stamping one from
+        // a different document would synthesize evidence, ADR-0024). The
+        // resulting proven/unproven mix in one timeline is deliberate: it is
+        // the production shape the evidence walk already handles for Codex,
+        // where unproven Readings pass through veto-only.
         account_id: cached
             .get("accountUuid")
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty())
             .map(str::to_string),
-        // The same tier grammar the credential's `rateLimitTier` carries, read
-        // from the same document as the cache — so the plan component of a
-        // Series identity cannot differ by which path answered.
-        plan: document
-            .pointer("/oauthAccount/userRateLimitTier")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
         windows,
-    })
-}
-
-/// The cache as an Export Artifact. `fetched_at` is the cache's OWN stamp,
-/// never now(): the Readings' `observed_at` comes from it, and a stale answer
-/// wearing a fresh face is the one dishonesty this whole feature must not
-/// commit.
-fn cache_export(cache: &Cache) -> LimitsExport {
-    LimitsExport {
-        schema: limits_artifact::SCHEMA,
-        source: "claude".to_string(),
-        fetched_at: cache.fetched_at,
-        plan: cache.plan.clone(),
-        metering_regime: Some(METERING_REGIME.to_string()),
-        account_id: cache.account_id.clone(),
-        windows: cache.windows.clone(),
         ..Default::default()
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1105,62 +1100,44 @@ mod tests {
     // experiment windows, the no-reset `nimbus_quill` decoy, and the
     // `extra_usage`/`spend` blocks all ride along so the parse is proven
     // against the document Claude Code actually writes, not a convenient one.
-    const CACHED_DOCUMENT: &str = r#"{
-        "oauthAccount": {
-            "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
-            "organizationRateLimitTier": "default_raven",
-            "userRateLimitTier": "default_claude_max_5x"
-        },
-        "hasVisitedExtraUsage": true,
-        "cachedUsageUtilization": {
-            "fetchedAtMs": 1787256759360,
-            "accountUuid": "ca9db76e-0000-4000-a000-a91c5789ed3a",
-            "utilization": {
-                "five_hour": {"utilization": 36, "resets_at": "2026-08-20T23:50:00.011981+00:00",
-                    "limit_dollars": null, "used_dollars": null, "remaining_dollars": null},
-                "seven_day": {"utilization": 31, "resets_at": "2026-08-23T13:00:00.012002+00:00",
-                    "limit_dollars": null, "used_dollars": null, "remaining_dollars": null},
-                "seven_day_oauth_apps": null, "seven_day_opus": null, "seven_day_sonnet": null,
-                "nimbus_quill": {"utilization": 0, "resets_at": null},
-                "extra_usage": {"is_enabled": false, "monthly_limit": null, "utilization": null},
-                "limits": [
-                    {"kind": "session", "group": "session", "percent": 36, "severity": "normal",
-                     "resets_at": "2026-08-20T23:50:00.011981+00:00", "scope": null, "is_active": false},
-                    {"kind": "weekly_all", "group": "weekly", "percent": 31, "severity": "normal",
-                     "resets_at": "2026-08-23T13:00:00.012002+00:00", "scope": null, "is_active": false},
-                    {"kind": "weekly_scoped", "group": "weekly", "percent": 41, "severity": "normal",
-                     "resets_at": "2026-08-23T13:00:00.012230+00:00",
-                     "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null},
-                     "is_active": true}
-                ],
-                "spend": {"used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
-                    "limit": null, "percent": 0, "severity": "normal", "enabled": false},
-                "member_dashboard_available": false
-            }
-        }
-    }"#;
+    // One file serves this seam and the process-level one (tests/), so the two
+    // can never drift apart.
+    const CACHED_DOCUMENT: &str =
+        include_str!("../../tests/fixtures/claude/cached-config-document.json");
 
     #[test]
     fn the_cache_parses_through_the_same_window_parser_as_a_live_answer() {
         let document: Value = serde_json::from_str(CACHED_DOCUMENT).unwrap();
-        let cache = parse_cache(&document).expect("the real document must parse");
+        let export = parse_cache(&document).expect("the real document must parse");
 
         // Millis → the epoch seconds every Reading speaks.
-        assert_eq!(cache.fetched_at, 1_787_256_759);
-        assert_eq!(cache.account_id.as_deref(), Some("ca9db76e-0000-4000-a000-a91c5789ed3a"));
+        assert_eq!(export.fetched_at, 1_787_256_759);
+        assert_eq!(export.account_id.as_deref(), Some("ca9db76e-0000-4000-a000-a91c5789ed3a"));
         // The user tier, not the organization one beside it.
-        assert_eq!(cache.plan.as_deref(), Some("default_claude_max_5x"));
+        assert_eq!(export.plan.as_deref(), Some("default_claude_max_5x"));
         // The one shared parser: the modern list wins, the scoped Fable window
         // rides under the legacy key grammar, and the no-reset decoy is skipped —
         // exactly what a live answer of this shape yields.
         assert_eq!(
-            cache
+            export
                 .windows
                 .iter()
                 .map(|w| (w.key.as_str(), w.used_pct))
                 .collect::<Vec<_>>(),
             vec![("five_hour", 36.0), ("seven_day", 31.0), ("seven_day_fable", 41.0)],
         );
+    }
+
+    #[test]
+    fn blank_identity_fields_are_absent_never_empty_strings() {
+        // An empty string is a Series-identity component that would differ
+        // from NULL — the plan and account must vanish, not blank.
+        let mut blanked: Value = serde_json::from_str(CACHED_DOCUMENT).unwrap();
+        blanked["oauthAccount"]["userRateLimitTier"] = " ".into();
+        blanked["cachedUsageUtilization"]["accountUuid"] = "".into();
+        let export = parse_cache(&blanked).expect("blank identity does not unmake the cache");
+        assert_eq!(export.plan, None);
+        assert_eq!(export.account_id, None);
     }
 
     #[test]
@@ -1193,7 +1170,7 @@ mod tests {
     #[test]
     fn a_cache_export_carries_the_caches_stamp_and_the_one_shared_regime() {
         let document: Value = serde_json::from_str(CACHED_DOCUMENT).unwrap();
-        let export = cache_export(&parse_cache(&document).unwrap());
+        let export = parse_cache(&document).unwrap();
 
         // The cache's OWN stamp, never now(): observed_at downstream is this
         // figure, and it is what keeps the card's freshness line honest.
@@ -1203,8 +1180,17 @@ mod tests {
         // One regime constant for both producers: a cache Reading and a live
         // Reading land in one Series, never split over a divergent string.
         assert_eq!(export.metering_regime.as_deref(), Some(METERING_REGIME));
-        assert_eq!(export.account_id.as_deref(), Some("ca9db76e-0000-4000-a000-a91c5789ed3a"));
-        assert_eq!(export.plan.as_deref(), Some("default_claude_max_5x"));
-        assert_eq!(export.windows.len(), 3);
+    }
+
+    /// Runs only under `cargo test --release`, because it pins a fact about
+    /// release builds: with the override compiled out, the vendor URL wins
+    /// even when the variable is set. Deleting the `#[cfg(debug_assertions)]`
+    /// gate on `usage_url` makes this fail.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_release_build_ignores_the_url_override() {
+        std::env::set_var("TOKENLEDGER_CLAUDE_USAGE_URL", "http://127.0.0.1:1");
+        assert_eq!(usage_url(), USAGE_URL);
+        std::env::remove_var("TOKENLEDGER_CLAUDE_USAGE_URL");
     }
 }
