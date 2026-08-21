@@ -7,7 +7,7 @@ import {
   useTransform,
   type MotionValue,
 } from 'motion/react';
-import { formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
+import { fill, formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
 import { useOverviewT } from './localize';
 
 type TokenDisplayMode = 'compact' | 'exact';
@@ -31,6 +31,10 @@ interface ModeAnimation {
 
 interface TokenTotalHeadlineProps {
   total: number;
+  // Fresh Tokens — Input + Output + Cache Write, the sub-line under the total.
+  // Derived by the store from the SAME snapshot `total` comes from, so the two
+  // lines can never describe different windows.
+  fresh: number;
   // Whether `total` descends from a settled scan. False through the launch's
   // provisional paint, which shows real figures the reconcile may still
   // correct: the entrance is spent once (#14) and a same-window correction
@@ -56,6 +60,18 @@ interface TokenTotalHeadlineProps {
 type HeadlineStyle = CSSProperties & {
   '--tt-counter-height': string;
   '--tt-headline-font-size': string;
+};
+
+// The Fresh Tokens sub-line: the headline's mono figures, quiet enough to read
+// as a caption of the total rather than a second total.
+const FRESH_STYLE: CSSProperties = {
+  display: 'block',
+  marginTop: '3px',
+  fontSize: '12.5px',
+  fontWeight: 550,
+  color: 'var(--text-tertiary)',
+  fontVariantNumeric: 'tabular-nums',
+  fontFamily: 'var(--tt-mono)',
 };
 
 function loadDisplayMode(): TokenDisplayMode {
@@ -187,6 +203,7 @@ function SpringCounter({ displayValue }: { displayValue: string }) {
 
 export default function TokenTotalHeadline({
   total,
+  fresh,
   authoritative,
   windowKey,
   visible = true,
@@ -210,6 +227,12 @@ export default function TokenTotalHeadline({
   const revealImmediately = authoritative && prefersReducedMotion();
   const restingDisplay =
     awaitingInitialLoad && !revealImmediately ? zeroShaped(display) : display;
+  // The sub-line follows the headline's mode and its zero-shaped entrance: one
+  // toggle moves both figures, and neither reads real usage before the other.
+  const freshDisplay =
+    mode === 'exact' ? formatExactTokenTotal(fresh) : formatCompactTokenTotal(fresh, 3);
+  const freshResting =
+    awaitingInitialLoad && !revealImmediately ? zeroShaped(freshDisplay) : freshDisplay;
   const action = mode === 'exact' ? t('overview.showCompact') : t('overview.showExact');
   // The ≥ marker sits outside the counter but inside the width budget.
   const layoutLength =
@@ -307,25 +330,35 @@ export default function TokenTotalHeadline({
   };
 
   return (
-    <button
-      type="button"
-      className="tt-b8-total"
-      onClick={toggleMode}
-      title={action}
-      aria-label={`${incomplete ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${incomplete ? `${incomplete}. ` : ''}${action}`}
-      aria-busy={modeAnimation ? true : undefined}
-      style={headlineStyle}
-    >
-      {incomplete && (
-        <span className="tt-b8-total-mark" title={incomplete}>
-          {'≥ '}
-        </span>
-      )}
-      {modeAnimation ? (
-        <SpringCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
-      ) : (
-        restingDisplay
-      )}
-    </button>
+    <>
+      <button
+        type="button"
+        className="tt-b8-total"
+        onClick={toggleMode}
+        title={action}
+        aria-label={`${incomplete ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${incomplete ? `${incomplete}. ` : ''}${action}`}
+        aria-busy={modeAnimation ? true : undefined}
+        style={headlineStyle}
+      >
+        {incomplete && (
+          <span className="tt-b8-total-mark" title={incomplete}>
+            {'≥ '}
+          </span>
+        )}
+        {modeAnimation ? (
+          <SpringCounter key={modeAnimation.id} displayValue={modeAnimation.to} />
+        ) : (
+          restingDisplay
+        )}
+      </button>
+      {/* Outside the button: the counter's row owns the headline's height, and
+          the reels must keep rolling over a figure that holds still. A floor
+          total makes fresh a floor too, marked and explained the same way. */}
+      <span style={FRESH_STYLE} title={incomplete ?? undefined}>
+        {fill(t('overview.freshTokens'), {
+          n: incomplete ? `≥ ${freshResting}` : freshResting,
+        })}
+      </span>
+    </>
   );
 }

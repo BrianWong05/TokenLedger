@@ -4,6 +4,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TokenTotalHeadline from './TokenTotalHeadline';
+import { I18nProvider, type Lang } from '../lib/i18n';
 import './overview.css';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -40,6 +41,7 @@ function mountHeadline(total: number, authoritative: boolean, initialWindowKey =
       root.render(
         <TokenTotalHeadline
           total={nextTotal}
+          fresh={nextTotal}
           authoritative={nextAuthoritative}
           windowKey={windowKey}
           visible={visible}
@@ -607,5 +609,70 @@ describe('TokenTotalHeadline', () => {
     const button = renderHeadline(4_500_000_000);
 
     expect(getComputedStyle(button).display).toBe('block');
+  });
+});
+
+// The Fresh Tokens sub-line: Input + Output + Cache Write, quoted under the
+// total in the same shape the headline is wearing.
+describe('TokenTotalHeadline fresh sub-line', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+    setReducedMotion(false);
+    sessionStorage.setItem(ENTRANCE_PLAYED_KEY, 'true');
+  });
+
+  afterEach(() => {
+    for (const root of mountedRoots.splice(0)) {
+      act(() => root.unmount());
+    }
+    document.body.replaceChildren();
+  });
+
+  function renderFresh(
+    fresh: number,
+    { lang = 'en', incomplete = null }: { lang?: Lang; incomplete?: string | null } = {},
+  ): string {
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    act(() =>
+      root.render(
+        <I18nProvider lang={lang}>
+          <TokenTotalHeadline
+            total={14_287_948}
+            fresh={fresh}
+            authoritative
+            windowKey="day::"
+            incomplete={incomplete}
+          />
+        </I18nProvider>,
+      ),
+    );
+    return container.textContent ?? '';
+  }
+
+  it('quotes the window fresh figure under the total', () => {
+    expect(renderFresh(399_590)).toContain('399.59K fresh');
+  });
+
+  it('reads an empty window as zero instead of dropping the line', () => {
+    expect(renderFresh(0)).toContain('0 fresh');
+  });
+
+  it('follows the headline into exact mode', () => {
+    localStorage.setItem('tokenledger.tokenTotalDisplayMode', 'exact');
+    expect(renderFresh(399_590)).toContain('399,590 fresh');
+  });
+
+  it('leads with the label under zh-Hant', () => {
+    expect(renderFresh(399_590, { lang: 'zh-Hant' })).toContain('新工作 399.59K');
+  });
+
+  it('marks fresh a floor when the total is one', () => {
+    expect(renderFresh(399_590, { incomplete: 'Antigravity: 100 sessions unreadable' })).toContain(
+      '≥ 399.59K fresh',
+    );
   });
 });

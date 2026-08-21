@@ -213,6 +213,9 @@ export const overview = {
     'overview.showCompact': 'Show compact token count',
     'overview.showExact': 'Show exact token count',
     'overview.totalTokensAria': 'total tokens.',
+    // Fresh Tokens sub-line. The figure is interpolated rather than led, because
+    // Chinese puts the label first.
+    'overview.freshTokens': '{n} fresh',
   },
   'zh-Hant': {
     'overview.title': '總覽',
@@ -399,5 +402,6 @@ export const overview = {
     'overview.showCompact': '顯示精簡 token 數',
     'overview.showExact': '顯示完整 token 數',
     'overview.totalTokensAria': '總 token 數。',
+    'overview.freshTokens': '新工作 {n}',
   },
 };

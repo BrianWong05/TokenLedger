@@ -1413,3 +1413,28 @@ describe('overviewStore across local midnight', () => {
     expect(windowsSince(ledger, issued)).toEqual([]);
   });
 });
+
+describe('overviewStore headline Fresh Tokens', () => {
+  // Fresh Tokens = Input + Output + Cache Write, and it must come from whichever
+  // snapshot the total came from. The Summary is seeded to DISAGREE with the
+  // series, so a pair assembled from both cannot pass.
+  it('takes the total and fresh figures from one snapshot', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
+      summary: {
+        ...makeFakeLedger().data.summary,
+        inputTokens: 40, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 10,
+        totalTokens: 100,
+      },
+    });
+    const s = (await boot(ledger, clock)).getSnapshot();
+
+    expect(selectView(s, NOW).headline).toMatchObject({ total: 100, fresh: 70 });
+    // Reloading falls back to the series: two points of 10 + 5 + 3 out of 38.
+    expect(selectView({ ...s, reloading: true }, NOW).headline).toMatchObject({
+      total: 76,
+      fresh: 36,
+    });
+  });
+});

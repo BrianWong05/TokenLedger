@@ -639,6 +639,13 @@ export function sumPoints(pts: SeriesPoint[]): number {
   return pts.reduce((a, p) => a + p.totalTokens, 0);
 }
 
+// Fresh Tokens: Input + Output + Cache Write, i.e. every token not served as a
+// cache read. Summed over the same points as sumPoints, so the headline's total
+// and its sub-line describe one snapshot.
+export function sumFreshPoints(pts: SeriesPoint[]): number {
+  return pts.reduce((a, p) => a + p.inputTokens + p.outputTokens + p.cacheWriteTokens, 0);
+}
+
 export function toolTotalsOfPoints(pts: SeriesPoint[]): Record<string, number> {
   const out = emptyBySource();
   for (const p of pts) out[p.source] = (out[p.source] ?? 0) + p.totalTokens;

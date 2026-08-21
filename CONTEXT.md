@@ -51,8 +51,9 @@ else; a Scan only reads what is already on this machine
 
 **Overview**:
 The application's home tab: the presentation of the Ledger over a
-user-selected date window and Source selection — headline token total, Cost,
-usage trends, and per-Source breakdowns. Activity ignores that selection
+user-selected date window and Source selection — headline token total, which
+carries a Fresh Tokens sub-line, Cost, usage trends, and per-Source
+breakdowns. Activity ignores that selection
 entirely; the Profile follows the date window but never the Source
 selection. What it shows is always a view of the
 Ledger; it never holds usage data of its own. Its Source selection contains
@@ -316,6 +317,13 @@ The fraction of prompt tokens served from cache:
 Cache Read ÷ (Input + Cache Read + Cache Write). Well-defined only because
 Input excludes cache reads (ADR-0001).
 _Avoid_: Cache ratio, hit ratio
+
+**Fresh Tokens**:
+Input + Output + Cache Write — every token not served as a cache read;
+equivalently the token total less Cache Read Tokens. Derived at display time,
+never stored. It names how much of a window's tokens were new work rather than
+context re-reads, and is the figure the Overview headline's sub-line shows.
+_Avoid_: New tokens, uncached tokens, real-work tokens
 
 **Context**:
 Where a Request's billed input came from — the same tokens the categories above

@@ -8,6 +8,7 @@ import {
   windowOf,
   pointsIn,
   toolTotalsOfPoints,
+  sumFreshPoints,
   seriesToDays,
   rangeToFilters,
   hourlyDayOf,
@@ -644,7 +645,7 @@ export interface OverviewView {
   selMcp: McpBar[];
   selModels: ModelBar[];
   tool: SourceMeta;
-  headline: { total: number; authoritative: boolean };
+  headline: { total: number; fresh: number; authoritative: boolean };
   canOpenCostBreakdown: boolean;
   // Sources whose Unreadable Artifacts could hold usage in this window
   // (ADR-0017) — every token total shown for the window is a floor.
@@ -725,8 +726,16 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     // reads while the window fan-out is in flight, and it lands one query pair
     // after the scan rather than ten. A Summary alone would not do — the
     // launch's provisional one describes a pre-scan Ledger.
+    // The Fresh Tokens sub-line is the same snapshot's Input + Output + Cache
+    // Write, so both figures come out of ONE branch: a Summary total above a
+    // series-derived fresh would report two different windows in two lines.
     headline: {
-      total: s.reloading ? total : s.summary?.totalTokens ?? total,
+      ...(s.reloading || !s.summary
+        ? { total, fresh: sumFreshPoints(rpts) }
+        : {
+            total: s.summary.totalTokens,
+            fresh: s.summary.inputTokens + s.summary.outputTokens + s.summary.cacheWriteTokens,
+          }),
       authoritative: !s.provisional && s.allPoints !== null,
     },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,

@@ -323,6 +323,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
               background scan. */}
           <TokenTotalHeadline
             total={headline.total}
+            fresh={headline.fresh}
             authoritative={headline.authoritative}
             windowKey={`${range}:${from}:${to}`}
             visible={visible}
