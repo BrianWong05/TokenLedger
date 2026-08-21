@@ -60,14 +60,24 @@ function ContextBreakdown({
       key={key}
       onClick={opts.expandable ? () => toggle(key) : undefined}
       style={opts.expandable ? { cursor: 'pointer' } : undefined}
-      title={opts.info}
     >
       <span className="name">
         <span className="dot" style={{ background: opts.muted ? 'var(--border-strong)' : tool.color }} />
         {label}
-        {/* A row can both explain itself and open: the ⓘ marks the tooltip,
-            the chevron marks the drill-down, and neither hides the other. */}
-        {opts.info && <span className="aff">ⓘ</span>}
+        {/* A row can both explain itself and open: the ⓘ carries the tooltip
+            (CSS attr(data-tip) — WKWebView never shows native title tips), the
+            chevron marks the drill-down, and neither hides the other. Clicking
+            the ⓘ must not toggle the drill-down. */}
+        {opts.info && (
+          <span
+            className="aff tip"
+            tabIndex={0}
+            data-tip={opts.info}
+            onClick={(e) => e.stopPropagation()}
+          >
+            ⓘ
+          </span>
+        )}
         {opts.expandable && <span className="aff">{open.has(key) ? '▾' : '›'}</span>}
       </span>
       <span className="vals">

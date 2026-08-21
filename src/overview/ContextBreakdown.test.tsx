@@ -162,7 +162,7 @@ describe('ContextBreakdown drilldown', () => {
     // The instructions a skill loads are its cost, and the use count is what
     // explains the size — a skill re-invoked twice loaded its body twice.
     expect(leaf?.querySelector('.val')?.textContent).toBe('4.8K');
-    expect(leaf?.getAttribute('title')).toBe('2 uses');
+    expect(leaf?.querySelector<HTMLElement>('.aff.tip')?.dataset.tip).toBe('2 uses');
   });
 
   it('folds the skills past the cap into one remainder row', () => {
@@ -191,7 +191,16 @@ describe('ContextBreakdown drilldown', () => {
     // The server's share of the MCP total, with the call count that explains
     // whether it is chatty or each round trip is heavy.
     expect(leaf?.querySelector('.val')?.textContent).toBe('400');
-    expect(leaf?.getAttribute('title')).toBe('4 calls');
+    expect(leaf?.querySelector<HTMLElement>('.aff.tip')?.dataset.tip).toBe('4 calls');
+  });
+
+  it('keeps a click on the ⓘ from toggling the drill-down', () => {
+    const c = render();
+    const info = queryRow(c, 'MCP servers')?.querySelector<HTMLElement>('.aff.tip');
+    if (!info) throw new Error('info trigger not found');
+    act(() => info.click());
+    expect(queryRow(c, 'pencil')).toBeUndefined();
+    expect(affs(c, 'MCP servers')).toEqual(['ⓘ', '›']); // still collapsed
   });
 
   it('offers no drill-down for a Source that names no servers', () => {
