@@ -5,6 +5,8 @@ import type { Lang } from './i18n';
 // unconverted (identity); any other currency multiplies by the user's fixed
 // usdRate and formats with Intl in the language's locale. Stored figures never
 // leave USD — this is a display-time multiplication only (ADR-0002).
+// The Menu Bar Extra's bar title renders the same figure natively
+// (src-tauri/src/readout.rs); readout-cases.json pins the two together.
 export function formatCost(
   usd: number,
   settings: Pick<Settings, 'currency' | 'usdRate'>,

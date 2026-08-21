@@ -18,6 +18,7 @@ pub(crate) mod limits_readiness;
 mod pricing;
 pub mod proto;
 mod queries;
+mod readout;
 mod scan;
 mod settings;
 mod source_catalog;

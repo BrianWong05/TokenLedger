@@ -48,7 +48,9 @@ function compactTokenUnit(n: number, rolloverFactor: number) {
 // The rollover has to track the precision: a unit holds until its value would
 // round to a full 1000 (999.995 at two decimals, 999.9995 at three). Pinning it
 // to the two-decimal threshold would roll 999.997M up to "1B" and spend the
-// third decimal on nothing.
+// third decimal on nothing. The Menu Bar Extra's bar title renders the same
+// figure natively (src-tauri/src/readout.rs); readout-cases.json pins the two
+// together.
 export function formatCompactTokenTotal(total: number, maxFractionDigits = 2): string {
   const rounded = Math.max(0, Math.round(total));
   const unit = compactTokenUnit(rounded, (1000 - 0.5 * 10 ** -maxFractionDigits) / 1000);

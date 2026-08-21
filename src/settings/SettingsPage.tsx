@@ -36,7 +36,10 @@ import './settings.css';
 
 // "CODE — English name" per the design ("HKD — Hong Kong dollar"). ISO codes are
 // universal, so these names stay English in both languages.
-const CURRENCIES: [string, string][] = [
+// Exported for readoutCases.test.ts: every code offered here must have rows
+// in readout-cases.json, or the Menu Bar Extra could render it as the
+// generic fallback while the panel shows a real symbol.
+export const CURRENCIES: [string, string][] = [
   ['USD', 'US dollar'],
   ['HKD', 'Hong Kong dollar'],
   ['EUR', 'Euro'],
