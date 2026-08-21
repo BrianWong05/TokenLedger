@@ -20,7 +20,7 @@
   /* full-bleed: the page owns the side padding, but the pinned bar must cover
      the whole main area so scrolled cards never slip past its edges */
   margin: 0 -30px;
-  padding: 26px 30px 18px;
+  padding: 30px 30px 22px;
   border-bottom: 1px solid var(--border-subtle);
   /* the Overview toolbar's opaque stack, so scrolled content never shows
      through the pinned bar */
@@ -88,12 +88,13 @@
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 14px;
   max-width: 980px;
+  padding-top: 20px;
 }
 .tl-lim-card {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
-  padding: 16px 18px;
+  padding: 20px 22px;
 }
 /* A Source we can see but have no figures for is dimmed, not hidden: a missing
    card would read as "unsupported", which is a lie. */
