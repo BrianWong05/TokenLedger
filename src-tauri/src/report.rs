@@ -69,14 +69,17 @@ fn local_midnight(date: NaiveDate) -> i64 {
     }
 }
 
-/// How much of a set of Records' Cost the Ledger could compute. Carried as a
+/// How much of a set of Records' Cost the Ledger could compute — carried as a
 /// column of its own so a partial figure is never mistaken for a total and an
 /// Unpriced Model never reads as `$0` (glossary: Partial Cost, Unpriced).
+/// readout::is_partial_cost's rule, worded for a CSV column.
 fn cost_basis(cost: Option<f64>, has_unpriced: bool, unattributed: i64) -> &'static str {
-    match cost {
-        None => "unavailable",
-        Some(_) if has_unpriced || unattributed > 0 => "partial",
-        Some(_) => "exact",
+    if cost.is_none() {
+        "unavailable"
+    } else if crate::readout::is_partial_cost(cost, has_unpriced, unattributed) {
+        "partial"
+    } else {
+        "exact"
     }
 }
 
@@ -86,14 +89,11 @@ fn cost_cell(cost: Option<f64>) -> String {
     cost.map_or(String::new(), |c| format!("{c:.6}"))
 }
 
-/// Mirror of `unreadableSourcesIn` (src/lib/tokenCompleteness.ts) and
-/// `tokens_are_floor` (src-tauri/src/tray.rs): a token figure is a floor when a
-/// Source holds an Unreadable Artifact whose content could fall in the window.
+/// A token figure is a floor when a Source holds an Unreadable Artifact whose
+/// content could fall in the window — readout::tokens_are_floor's rule, worded
+/// for a CSV column.
 fn tokens_basis(unreadable: &[SourceUnreadable], window_start: i64) -> &'static str {
-    let floor = unreadable.iter().any(|u| {
-        u.artifacts_unreadable > 0 && u.unreadable_max_mtime.is_none_or(|m| m >= window_start)
-    });
-    if floor {
+    if crate::readout::tokens_are_floor(unreadable, window_start) {
         "floor"
     } else {
         "exact"

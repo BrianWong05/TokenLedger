@@ -84,7 +84,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<(Menu<Wry>, MenuItem<Wry>)> {
     // into it. Normally that is the same instant — build calls refresh — but a
     // refresh that bails (a poisoned lock, a query that errors) leaves the
     // ellipsis standing, which claims nothing, rather than a figure that would.
-    let today = MenuItem::with_id(app, "today", today_row("…"), false, None::<&str>)?;
+    let today = MenuItem::with_id(app, "today", crate::readout::today_row("…"), false, None::<&str>)?;
     let menu = Menu::new(app)?;
     menu.append(&today)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
@@ -277,7 +277,7 @@ fn focus_main<R: Runtime>(window: &WebviewWindow<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Recomputes Today's figures (Today's Summary + Settings → tray_title) and
+/// Recomputes Today's figures (Today's Summary + Settings → bar_title) and
 /// rewrites them in place, wherever this platform shows them. Called after
 /// every scan and on settings save; no-op until the tray exists. Reads run on
 /// `read_db` so opening the Menu Bar Extra during a scan never waits on it.
@@ -309,8 +309,8 @@ pub fn refresh(app: &AppHandle) {
         ) else {
             return;
         };
-        let floor = tokens_are_floor(&crate::db::load_unreadable(&db), start);
-        tray_title(&today, &settings, floor)
+        let floor = crate::readout::tokens_are_floor(&crate::db::load_unreadable(&db), start);
+        crate::readout::bar_title(&today, &settings, floor)
     };
     show_today(&tray, &title);
 }
@@ -325,7 +325,7 @@ fn show_today(tray: &Tray, title: &str) {
     #[cfg(target_os = "windows")]
     let _ = tray.tray.set_tooltip(Some(title));
     #[cfg(target_os = "linux")]
-    let _ = tray.today.set_text(today_row(title));
+    let _ = tray.today.set_text(crate::readout::today_row(title));
 }
 
 // --- Panel placement ---
@@ -415,113 +415,9 @@ fn clamp_or_leave(v: f64, lo: f64, hi: f64) -> f64 {
     }
 }
 
-// --- Menu Bar Extra title (design 2b) ---
-// Pure: constructed inputs in, strings out. The Tauri glue above stays thin.
-
-/// The bar title for Today's Summary: "3.4M · $12.84", and "0 · $0.00" on a
-/// day with no usage — a day that recorded nothing has a Cost of zero, not a
-/// missing one (queries::summary), so it needs no case of its own here. Cost
-/// follows the glossary: "≥ " marker when Partial (priced total over a set
-/// with Unpriced Models or Unattributed Usage), and a day with usage but no
-/// available Cost shows tokens alone — never $0. The token figure carries its
-/// own "≥ " floor marker when an Unreadable Artifact could hold usage in the
-/// window (ADR-0017) — the same rules as everywhere else, per the glossary's
-/// Menu Bar Extra entry. ponytail: the bar drops the missing-Cost wording for
-/// space; the menu's per-Source rows (#24) spell it out.
-fn tray_title(
-    today: &crate::queries::Summary,
-    settings: &crate::settings::Settings,
-    tokens_floor: bool,
-) -> String {
-    let floor_mark = if tokens_floor { "≥ " } else { "" };
-    let toks = format!("{floor_mark}{}", fmt_tokens(today.total_tokens));
-    match today.cost {
-        None => toks,
-        Some(c) => {
-            let marker = if today.has_unpriced || today.unattributed_tokens > 0 { "≥ " } else { "" };
-            format!("{toks} · {marker}{cost}", cost = fmt_cost(c, settings))
-        }
-    }
-}
-
-/// A token figure is a floor when any Source holds an Unreadable Artifact
-/// whose content could fall in the window. Content is never newer than its
-/// file, so `mtime >= window start` is the test — nothing bounds the content's
-/// age downward (Antigravity's migration rewrote old Sessions as new files) —
-/// and an unknown mtime marks conservatively. Mirror of unreadableSourcesIn
-/// in src/lib/tokenCompleteness.ts; keep the two shapes in step.
-fn tokens_are_floor(unreadable: &[crate::types::SourceUnreadable], window_start: i64) -> bool {
-    unreadable.iter().any(|u| {
-        u.artifacts_unreadable > 0
-            && u.unreadable_max_mtime.is_none_or(|m| m >= window_start)
-    })
-}
-
-/// The Linux menu's Today row: the bar title, prefixed — a menu row, unlike a
-/// title welded to the icon, has to name what it is counting.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn today_row(title: &str) -> String {
-    format!("Today: {title}")
-}
-
-/// Token total in the frontend's compact form (format.ts
-/// formatCompactTokenTotal): K/M/B suffix, up to 2 decimals with trailing
-/// zeros trimmed, and the same 0.999995 rollover so 999,999 reads "1M".
-fn fmt_tokens(n: i64) -> String {
-    const UNITS: [(f64, &str); 3] = [(1e9, "B"), (1e6, "M"), (1e3, "K")];
-    let n = n.max(0) as f64;
-    for (div, suffix) in UNITS {
-        if n >= div * 0.999995 {
-            let s = format!("{:.2}", n / div);
-            let s = s.trim_end_matches('0').trim_end_matches('.');
-            return format!("{s}{suffix}");
-        }
-    }
-    format!("{}", n as i64)
-}
-
-/// A USD Cost rendered in the Display Currency — the display-time
-/// multiplication of ADR-0002: USD passes through, anything else multiplies
-/// by the user's fixed usd_rate; stored figures never leave USD.
-/// ponytail: hand-rolled symbol map + comma grouping (Rust has no Intl),
-/// "21.00 SEK" fallback for unmapped codes. Not full Intl parity: locale
-/// digit/symbol tables (e.g. zh-Hant variants) are the upgrade path if a
-/// mismatch is ever reported.
-fn fmt_cost(usd: f64, s: &crate::settings::Settings) -> String {
-    let amount = if s.currency == "USD" { usd } else { usd * s.usd_rate };
-    let (sym, dec): (&str, usize) = match s.currency.as_str() {
-        "USD" => ("$", 2),
-        "EUR" => ("€", 2),
-        "GBP" => ("£", 2),
-        "HKD" => ("HK$", 2),
-        "TWD" => ("NT$", 2),
-        "CNY" => ("CN¥", 2),
-        "JPY" => ("¥", 0),
-        "KRW" => ("₩", 0),
-        code => return format!("{} {code}", fmt_amount(amount, 2)),
-    };
-    format!("{sym}{}", fmt_amount(amount, dec))
-}
-
-/// Rounds to `dec` places and comma-groups the integer part, matching the
-/// frontend's Intl output ("1,560.00"). Costs are non-negative by
-/// construction (list rates × token counts), so no sign handling.
-fn fmt_amount(amount: f64, dec: usize) -> String {
-    let s = format!("{amount:.dec$}");
-    let (int, frac) = s.split_once('.').map_or((s.as_str(), ""), |(i, f)| (i, f));
-    let mut grouped = String::new();
-    for (i, ch) in int.chars().enumerate() {
-        if i > 0 && (int.len() - i) % 3 == 0 {
-            grouped.push(',');
-        }
-        grouped.push(ch);
-    }
-    if frac.is_empty() {
-        grouped
-    } else {
-        format!("{grouped}.{frac}")
-    }
-}
+// The title itself — figures, markers, currency — is readout.rs's: one home
+// for how a Summary reads out, shared with the Linux menu row and the CSV
+// report, and pinned to the frontend's Intl rendering by readout-cases.json.
 
 /// [local midnight, next local midnight) as epoch seconds for the day
 /// containing `now_epoch`. SQLite does the timezone math with the same
@@ -543,8 +439,6 @@ pub(crate) fn day_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::queries::Summary;
-    use crate::settings::Settings;
 
     #[cfg(not(target_os = "linux"))]
     #[test]
@@ -578,186 +472,6 @@ mod tests {
             .unwrap();
         close_panel(app.handle());
         assert!(app.get_webview_window("traypanel").is_none());
-    }
-
-    fn sum(total_tokens: i64, cost: Option<f64>, has_unpriced: bool) -> Summary {
-        Summary {
-            input_tokens: 0,
-            output_tokens: 0,
-            cache_read_tokens: 0,
-            cache_write_tokens: 0,
-            total_tokens,
-            requests: 0,
-            cost,
-            has_unpriced,
-            unattributed_tokens: 0,
-            unpriced_models: vec![],
-            cache_estimated_models: vec![],
-            cache_hit_rate: 0.0,
-            convs: 0,
-        }
-    }
-
-    // Zero is a figure the day has, so the bar reads it out — the icon never
-    // stands alone wondering whether the app is still counting. The Some(0.0)
-    // is what queries::summary reports for a window holding no usage; the
-    // no-usage-costs-zero rule lives there, not here.
-    #[test]
-    fn no_usage_day_reads_zero_in_the_display_currency() {
-        assert_eq!(
-            tray_title(&sum(0, Some(0.0), false), &Settings::default(), false),
-            "0 · $0.00"
-        );
-        assert_eq!(
-            tray_title(&sum(0, Some(0.0), false), &currency("JPY", 155.0), false),
-            "0 · ¥0"
-        );
-    }
-
-    #[test]
-    fn plain_day_shows_tokens_and_cost() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(12.84), false), &Settings::default(), false),
-            "3.4M · $12.84"
-        );
-    }
-
-    #[test]
-    fn partial_cost_carries_the_marker() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default(), false),
-            "3.4M · ≥ $12.80"
-        );
-    }
-
-    // The token figure carries its own ≥ (ADR-0017): an Unreadable Artifact
-    // makes the count a floor, independently of whether the Cost is Partial.
-    #[test]
-    fn unreadable_artifacts_mark_the_token_figure() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(12.84), false), &Settings::default(), true),
-            "≥ 3.4M · $12.84"
-        );
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(12.8), true), &Settings::default(), true),
-            "≥ 3.4M · ≥ $12.80"
-        );
-    }
-
-    fn unreadable(count: u64, max_mtime: Option<i64>) -> crate::types::SourceUnreadable {
-        crate::types::SourceUnreadable {
-            source: "antigravity".to_string(),
-            artifacts_unreadable: count,
-            unreadable_max_mtime: max_mtime,
-        }
-    }
-
-    // mtime is the only honest bound: content is never newer than its file,
-    // and nothing bounds it downward (Antigravity's migration rewrote old
-    // Sessions as new files). So only a window starting after every
-    // Unreadable Artifact's last write is definitely complete — and an
-    // unknown mtime marks conservatively.
-    #[test]
-    fn tokens_are_floor_tests_mtime_against_window_start() {
-        assert!(tokens_are_floor(&[unreadable(100, Some(1_000))], 1_000));
-        assert!(tokens_are_floor(&[unreadable(100, Some(1_001))], 1_000));
-        assert!(!tokens_are_floor(&[unreadable(100, Some(999))], 1_000));
-        assert!(tokens_are_floor(&[unreadable(100, None)], 1_000));
-        assert!(!tokens_are_floor(&[unreadable(0, None)], 0));
-        assert!(!tokens_are_floor(&[], 0));
-    }
-
-    #[test]
-    fn unattributed_usage_marks_priced_cost_partial() {
-        let mut today = sum(3_400_000, Some(12.8), false);
-        today.unattributed_tokens = 400;
-        assert_eq!(
-            tray_title(&today, &Settings::default(), false),
-            "3.4M · ≥ $12.80"
-        );
-    }
-
-    #[test]
-    fn all_unattributed_day_shows_tokens_alone() {
-        let mut today = sum(964_200, None, false);
-        today.unattributed_tokens = 964_200;
-        assert_eq!(
-            tray_title(&today, &Settings::default(), false),
-            "964.2K"
-        );
-    }
-
-    fn currency(code: &str, rate: f64) -> Settings {
-        Settings {
-            currency: code.to_string(),
-            usd_rate: rate,
-            ..Settings::default()
-        }
-    }
-
-    #[test]
-    fn display_currency_multiplies_and_uses_its_symbol() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(10.0), false), &currency("HKD", 7.8), false),
-            "3.4M · HK$78.00"
-        );
-    }
-
-    #[test]
-    fn zero_decimal_currency_drops_the_cents() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(1.0), false), &currency("JPY", 155.0), false),
-            "3.4M · ¥155"
-        );
-    }
-
-    #[test]
-    fn large_amounts_group_thousands_like_the_frontend() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(200.0), false), &currency("HKD", 7.8), false),
-            "3.4M · HK$1,560.00"
-        );
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(12345.6), false), &Settings::default(), false),
-            "3.4M · $12,345.60"
-        );
-    }
-
-    #[test]
-    fn unmapped_currency_falls_back_to_amount_code() {
-        assert_eq!(
-            tray_title(&sum(3_400_000, Some(2.0), false), &currency("SEK", 10.5), false),
-            "3.4M · 21.00 SEK"
-        );
-    }
-
-    #[test]
-    fn all_unpriced_day_shows_tokens_alone_never_zero_dollars() {
-        assert_eq!(
-            tray_title(&sum(964_200, None, true), &Settings::default(), false),
-            "964.2K"
-        );
-    }
-
-    // Mirrors format.ts formatCompactTokenTotal: 0.999995 rollover, ≤2
-    // decimals trimmed, plain digits under 1K.
-    #[test]
-    fn token_totals_use_the_frontend_compact_form() {
-        let t = |n| tray_title(&sum(n, None, false), &Settings::default(), false);
-        assert_eq!(t(999_999), "1M");
-        assert_eq!(t(847), "847");
-        assert_eq!(t(1_912_345_678), "1.91B");
-    }
-
-    // --- Menu row (Linux) ---
-
-    // The same title the bar carries, named — a row in a menu cannot rely on
-    // sitting next to the icon to say what it is counting.
-    #[test]
-    fn the_menu_row_names_the_figures_the_bar_shows_bare() {
-        assert_eq!(today_row("3.4M · $12.84"), "Today: 3.4M · $12.84");
-        assert_eq!(today_row("964.2K"), "Today: 964.2K");
-        assert_eq!(today_row("0 · $0.00"), "Today: 0 · $0.00");
     }
 
     // --- Panel placement ---

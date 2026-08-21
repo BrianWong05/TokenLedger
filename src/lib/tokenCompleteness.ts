@@ -12,7 +12,8 @@ export interface UnreadableCounts {
 // downward (Antigravity's migration rewrote old Sessions as new files), so
 // the window's end never clears a marker, an unknown mtime marks
 // conservatively, and a null start means unbounded. Mirror of
-// `tokens_are_floor` in src-tauri/src/tray.rs; keep the two shapes in step.
+// `tokens_are_floor` in src-tauri/src/readout.rs, pinned by
+// readout-cases.json's floors rows.
 export function unreadableSourcesIn<T extends UnreadableCounts>(
   sources: T[],
   windowStartSec: number | null,
