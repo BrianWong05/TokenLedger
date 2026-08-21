@@ -325,6 +325,9 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
       `${day(0).slice(5)} · $9.00 · 1K tok`,
     );
+    // The peak caption yields the row to the read-out — side by side it
+    // squeezed the detail into an ellipsis.
+    expect(container.querySelector('.tp-chart-peak')).toBeNull();
     expect(container.querySelector('.tp-chart-hover')).not.toBeNull();
     await act(async () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 3 }));
@@ -342,6 +345,7 @@ describe('TrayPanel', () => {
     });
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
     expect(container.querySelector('.tp-chart-hover')).toBeNull();
+    expect(container.querySelector('.tp-chart-peak')).not.toBeNull(); // the caption returns
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {

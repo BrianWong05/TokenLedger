@@ -157,10 +157,10 @@ body.tp-macos .tp {
 .tp-bars { fill: #7c6bf2; fill-opacity: 0.62; }
 .tp-bar-peak { fill: #a99dff; }
 .tp-chart-hover { fill: rgba(255, 255, 255, 0.09); } /* the hovered bucket's whole slot, behind the columns */
-/* The read-out row above the chart (peak caption left, the inspected bucket
-   right — reserved so inspecting never resizes the window) and the axis row
-   below it share one text style. The read-out truncates rather than wrap
-   over the chart: a 30-day hover detail can outrun the row. */
+/* The read-out row above the chart (the peak caption when idle, the inspected
+   bucket while hovering — reserved so inspecting never resizes the window)
+   and the axis row below it share one text style. The read-out still
+   ellipsizes rather than wrap over the chart if it ever outruns the row. */
 .tp-chart-cap,
 .tp-chart-cap-row {
   display: flex;

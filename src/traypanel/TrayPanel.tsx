@@ -586,9 +586,11 @@ export default function TrayPanel({
         <div className="tp-chart">
           {/* The hover inspector's read-out row. Reserved so inspecting never
               shifts the layout (the window is sized to the content); the peak
-              caption holds the left, the inspected bucket reads on the right. */}
+              caption holds the row when idle and yields it to the inspected
+              bucket while hovering — side by side they squeezed the read-out
+              into an ellipsis. */}
           <div className="tp-chart-cap-row">
-            <span className="tp-chart-peak">{model.chart.peak}</span>
+            {chartHover == null && <span className="tp-chart-peak">{model.chart.peak}</span>}
             <span className="tp-chart-read">
               {chartHover != null ? model.chart.details[chartHover] : ''}
             </span>
