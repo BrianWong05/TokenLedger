@@ -42,10 +42,6 @@ function ContextBreakdown({
 
   const hit = ctx.billed > 0 ? ctx.reused / ctx.billed : 0;
   const denom = Math.max(1, v?.total ?? 0);
-  const estTip =
-    ctx.messages != null && ctx.system != null
-      ? `${t('overview.estComposition')} ${t('overview.messagesWord')} ${fmtTok(ctx.messages)} · ${t('overview.systemWord')} ${fmtTok(ctx.system)}`
-      : undefined;
 
   const row = (
     key: string,
@@ -104,7 +100,13 @@ function ContextBreakdown({
         <b>{fmtTok(ctx.billed)}</b> {t('overview.ctxInputWord')}
       </div>
 
-      {row('messages', t('overview.messages'), v ? v.messages : null, { pct: true, expandable: !!v, info: estTip })}
+      {/* ⓘ tips are brief static descriptions of what a row counts — never
+          live numbers, which duplicate the panel and go stale in a tooltip. */}
+      {row('messages', t('overview.messages'), v ? v.messages : null, {
+        pct: true,
+        expandable: !!v,
+        info: t('overview.messagesInfo'),
+      })}
       {v && open.has('messages') && (
         <>
           {row('history', t('overview.convHistory'), v.history, { indent: 1 })}
@@ -152,7 +154,6 @@ function ContextBreakdown({
                     {row(`tool:${leaf.name}`, leaf.name, leaf.tokens, {
                       muted: true,
                       indent: 2,
-                      info: `${leaf.calls} ${t('overview.calls')}`,
                       expandable: !!facets,
                     })}
                     {facets && open.has(`tool:${leaf.name}`) && (
@@ -172,14 +173,10 @@ function ContextBreakdown({
       {open.has('mcp') &&
         mcp.map((m) =>
           // Heaviest first, no cap: a server list is bounded by what the user
-          // configured. The weight is the traffic its tools moved, which is
-          // what `calls` explains — the definitions it publishes are counted
-          // under the system prompt, which names no owner.
-          row(`mcp:${m.name}`, m.name, m.tokens, {
-            muted: true,
-            indent: 1,
-            info: `${m.calls} ${t('overview.calls')}`,
-          }),
+          // configured. The weight is the traffic its tools moved — the
+          // definitions it publishes are counted under the system prompt,
+          // which names no owner.
+          row(`mcp:${m.name}`, m.name, m.tokens, { muted: true, indent: 1 }),
         )}
       {row('skills', t('overview.skills'), ctx.skills, {
         muted: true,
@@ -190,12 +187,12 @@ function ContextBreakdown({
         skills.map((s) =>
           // Heaviest first, everything past the cap folded into one row. A
           // skill's weight is the instructions it loads, re-counted on every
-          // invocation — which is what `uses` explains.
+          // invocation.
           row(
             s.rest ? 'skill:__more__' : `skill:${s.name}`,
             s.rest ? `${s.rest} ${t('overview.moreSkills')}` : s.name,
             s.tokens,
-            { muted: true, indent: 1, info: `${s.uses} ${t('overview.skillUses')}` },
+            { muted: true, indent: 1 },
           ),
         )}
 

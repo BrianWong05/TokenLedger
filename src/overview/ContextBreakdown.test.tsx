@@ -159,10 +159,9 @@ describe('ContextBreakdown drilldown', () => {
     const leaf = queryRow(c, 'graphify');
     expect(leaf).toBeDefined();
     expect(queryRow(c, 'verify')).toBeDefined();
-    // The instructions a skill loads are its cost, and the use count is what
-    // explains the size — a skill re-invoked twice loaded its body twice.
     expect(leaf?.querySelector('.val')?.textContent).toBe('4.8K');
-    expect(leaf?.querySelector<HTMLElement>('.aff.tip')?.dataset.tip).toBe('2 uses');
+    // Leaves carry no ⓘ: tips are static descriptions, never live counts.
+    expect(leaf?.querySelector('.aff.tip')).toBeNull();
   });
 
   it('folds the skills past the cap into one remainder row', () => {
@@ -188,10 +187,16 @@ describe('ContextBreakdown drilldown', () => {
     const leaf = queryRow(c, 'pencil');
     expect(leaf).toBeDefined();
     expect(queryRow(c, 'codebase-memory-mcp')).toBeDefined();
-    // The server's share of the MCP total, with the call count that explains
-    // whether it is chatty or each round trip is heavy.
+    // The server's share of the MCP total; no ⓘ on leaves.
     expect(leaf?.querySelector('.val')?.textContent).toBe('400');
-    expect(leaf?.querySelector<HTMLElement>('.aff.tip')?.dataset.tip).toBe('4 calls');
+    expect(leaf?.querySelector('.aff.tip')).toBeNull();
+  });
+
+  it('describes a row statically — the tip never embeds current data', () => {
+    const c = render();
+    const tip = queryRow(c, 'Messages')?.querySelector<HTMLElement>('.aff.tip')?.dataset.tip;
+    expect(tip).toBe('conversation content — history, new input, and the assistant response');
+    expect(tip).not.toMatch(/\d/);
   });
 
   it('keeps a click on the ⓘ from toggling the drill-down', () => {
