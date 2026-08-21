@@ -29,7 +29,6 @@ function ContextBreakdown({
   mcp: McpBar[];
 }) {
   const { t } = useOverviewT();
-  const estShareTip = t('overview.estTip');
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [execTab, setExecTab] = useState<'type' | 'exe' | 'cmd'>('type');
   const toggle = (k: string) =>
@@ -47,7 +46,7 @@ function ContextBreakdown({
     key: string,
     label: string,
     tokens: number | null,
-    opts: { pct?: boolean; muted?: boolean; indent?: 0 | 1 | 2; expandable?: boolean; info?: string; calls?: number } = {},
+    opts: { pct?: boolean; muted?: boolean; indent?: 0 | 1 | 2; expandable?: boolean; calls?: number } = {},
   ) => (
     <div
       className={
@@ -60,20 +59,6 @@ function ContextBreakdown({
       <span className="name">
         <span className="dot" style={{ background: opts.muted ? 'var(--border-strong)' : tool.color }} />
         {label}
-        {/* A row can both explain itself and open: the ⓘ carries the tooltip
-            (CSS attr(data-tip) — WKWebView never shows native title tips), the
-            chevron marks the drill-down, and neither hides the other. Clicking
-            the ⓘ must not toggle the drill-down. */}
-        {opts.info && (
-          <span
-            className="aff tip"
-            tabIndex={0}
-            data-tip={opts.info}
-            onClick={(e) => e.stopPropagation()}
-          >
-            ⓘ
-          </span>
-        )}
         {opts.expandable && <span className="aff">{open.has(key) ? '▾' : '›'}</span>}
       </span>
       <span className="vals">
@@ -100,41 +85,31 @@ function ContextBreakdown({
         <b>{fmtTok(ctx.billed)}</b> {t('overview.ctxInputWord')}
       </div>
 
-      {/* ⓘ tips are brief static descriptions of what a row counts — never
-          live numbers, which duplicate the panel and go stale in a tooltip. */}
       {row('messages', t('overview.messages'), v ? v.messages : null, {
         pct: true,
         expandable: !!v,
-        info: t('overview.messagesInfo'),
       })}
       {v && open.has('messages') && (
         <>
           {row('history', t('overview.convHistory'), v.history, { indent: 1 })}
-          {row('newInput', t('overview.newInput'), v.newInput, {
-            indent: 1,
-            info: t('overview.newInputInfo'),
-          })}
+          {row('newInput', t('overview.newInput'), v.newInput, { indent: 1 })}
           {row('response', t('overview.assistantResponse'), v.response, { indent: 1 })}
         </>
       )}
-      {row('system', t('overview.systemPrompt'), v ? v.system : null, {
-        pct: true,
-        info: t('overview.systemInfo'),
-      })}
+      {row('system', t('overview.systemPrompt'), v ? v.system : null, { pct: true })}
       {/* Anthropic usage never splits thinking out of output, so the exact
           bucket is NULL for Claude — fall back to the v3 content-byte
-          estimate, est-styled (muted, ⓘ, no pct: percentages are for exact
+          estimate, est-styled (muted, no pct: percentages are for exact
           primaries only). */}
       {v?.reasoning != null
         ? row('reasoning', t('overview.reasoning'), v.reasoning, { pct: true })
-        : row('reasoning', t('overview.reasoning'), ctx.reasoning, { muted: true, info: estShareTip })}
+        : row('reasoning', t('overview.reasoning'), ctx.reasoning, { muted: true })}
 
       <div style={{ height: 1, background: 'var(--border-subtle)', margin: '8px 4px' }} />
 
       {row('toolcalls', t('overview.toolCalls'), ctx.toolcalls, {
         muted: true,
         expandable: tree.length > 0,
-        info: estShareTip,
       })}
       {open.has('toolcalls') &&
         tree.map((cat) => (
@@ -164,11 +139,10 @@ function ContextBreakdown({
               })}
           </div>
         ))}
-      {row('agents', t('overview.customAgents'), ctx.agents, { muted: true, info: estShareTip })}
+      {row('agents', t('overview.customAgents'), ctx.agents, { muted: true })}
       {row('mcp', t('overview.mcpServers'), ctx.mcp, {
         muted: true,
         expandable: mcp.length > 0,
-        info: t('overview.mcpTip'),
       })}
       {open.has('mcp') &&
         mcp.map((m) =>
@@ -181,7 +155,6 @@ function ContextBreakdown({
       {row('skills', t('overview.skills'), ctx.skills, {
         muted: true,
         expandable: skills.length > 0,
-        info: estShareTip,
       })}
       {open.has('skills') &&
         skills.map((s) =>

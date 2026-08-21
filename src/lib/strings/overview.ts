@@ -123,11 +123,7 @@ export const overview = {
     // context breakdown
     'overview.contextBreakdown': 'Context Breakdown',
     'overview.ctxInputWord': 'input',
-    'overview.estTip': 'estimated share of billed context (content bytes ÷ 4)',
-    'overview.mcpTip':
-      'estimated share of billed context (content bytes ÷ 4) — call traffic only; tool definitions in the system prompt are not counted',
     'overview.messages': 'Messages',
-    'overview.messagesInfo': 'conversation content — history, new input, and the assistant response',
     'overview.convHistory': 'Conversation history',
     'overview.newInput': 'New input',
     'overview.assistantResponse': 'Assistant response',
@@ -137,8 +133,6 @@ export const overview = {
     'overview.customAgents': 'Custom agents',
     'overview.mcpServers': 'MCP servers',
     'overview.skills': 'Skills',
-    'overview.newInputInfo': 'uncached input for the newest turn — user text and fresh tool results',
-    'overview.systemInfo': 'first cache write of each session',
     'overview.exec.byType': 'By type',
     'overview.exec.executable': 'Executable',
     'overview.exec.command': 'Command',
@@ -315,11 +309,7 @@ export const overview = {
 
     'overview.contextBreakdown': '內容明細',
     'overview.ctxInputWord': '輸入',
-    'overview.estTip': '已計費內容的估算佔比（內容位元組 ÷ 4）',
-    'overview.mcpTip':
-      '已計費內容的估算佔比（內容位元組 ÷ 4）—— 僅計呼叫往返，不含系統提示中的工具定義',
     'overview.messages': '訊息',
-    'overview.messagesInfo': '對話內容 — 歷史訊息、新輸入與助理回應',
     'overview.convHistory': '對話記錄',
     'overview.newInput': '新輸入',
     'overview.assistantResponse': '助手回應',
@@ -329,8 +319,6 @@ export const overview = {
     'overview.customAgents': '自訂代理',
     'overview.mcpServers': 'MCP 伺服器',
     'overview.skills': '技能',
-    'overview.newInputInfo': '最新一輪未快取的輸入 — 使用者文字與新的工具結果',
-    'overview.systemInfo': '每個工作階段的首次快取寫入',
     'overview.exec.byType': '按類型',
     'overview.exec.executable': '可執行檔',
     'overview.exec.command': '指令',

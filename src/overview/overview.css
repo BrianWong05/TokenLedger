@@ -1011,44 +1011,6 @@
   color: var(--text-tertiary);
   font-size: 11px;
 }
-/* ⓘ tooltip (TOKL-8): CSS-only, instant on hover/keyboard focus. The row's
-   overflow clip only exists for the .bar fill (TokenBreakdown), which never
-   coexists with a tip — so let the bubble escape on rows that carry one. */
-.tt-ctx-row:has(.aff.tip) {
-  overflow: visible;
-}
-.tt-ctx-row .aff.tip {
-  position: relative;
-  cursor: help;
-}
-.tt-ctx-row .aff.tip:hover {
-  color: var(--text-primary);
-}
-.tt-ctx-row .aff.tip::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: -6px;
-  top: calc(100% + 7px);
-  width: max-content;
-  max-width: 260px;
-  padding: 7px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--tooltip-bg);
-  color: var(--tooltip-text);
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: normal;
-  box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  pointer-events: none;
-  z-index: 6;
-  transition: opacity 0.12s ease;
-}
-.tt-ctx-row .aff.tip:hover::after,
-.tt-ctx-row .aff.tip:focus-visible::after {
-  opacity: 1;
-}
 .tt-ctx-row .vals {
   display: flex;
   align-items: center;

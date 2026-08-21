@@ -160,8 +160,6 @@ describe('ContextBreakdown drilldown', () => {
     expect(leaf).toBeDefined();
     expect(queryRow(c, 'verify')).toBeDefined();
     expect(leaf?.querySelector('.val')?.textContent).toBe('4.8K');
-    // Leaves carry no ⓘ: tips are static descriptions, never live counts.
-    expect(leaf?.querySelector('.aff.tip')).toBeNull();
   });
 
   it('folds the skills past the cap into one remainder row', () => {
@@ -178,41 +176,21 @@ describe('ContextBreakdown drilldown', () => {
   it('lists every server when MCP servers is expanded', () => {
     const c = render();
     expect(queryRow(c, 'pencil')).toBeUndefined();
-    // Both affordances: the traffic-only caveat is a tooltip worth advertising
-    // even though the chevron is what the row does.
-    expect(affs(c, 'MCP servers')).toEqual(['ⓘ', '›']);
+    expect(affs(c, 'MCP servers')).toEqual(['›']);
 
     clickRow(c, 'MCP servers');
-    expect(affs(c, 'MCP servers')).toEqual(['ⓘ', '▾']);
+    expect(affs(c, 'MCP servers')).toEqual(['▾']);
     const leaf = queryRow(c, 'pencil');
     expect(leaf).toBeDefined();
     expect(queryRow(c, 'codebase-memory-mcp')).toBeDefined();
-    // The server's share of the MCP total; no ⓘ on leaves.
+    // The server's share of the MCP total.
     expect(leaf?.querySelector('.val')?.textContent).toBe('400');
-    expect(leaf?.querySelector('.aff.tip')).toBeNull();
-  });
-
-  it('describes a row statically — the tip never embeds current data', () => {
-    const c = render();
-    const tip = queryRow(c, 'Messages')?.querySelector<HTMLElement>('.aff.tip')?.dataset.tip;
-    expect(tip).toBe('conversation content — history, new input, and the assistant response');
-    expect(tip).not.toMatch(/\d/);
-  });
-
-  it('keeps a click on the ⓘ from toggling the drill-down', () => {
-    const c = render();
-    const info = queryRow(c, 'MCP servers')?.querySelector<HTMLElement>('.aff.tip');
-    if (!info) throw new Error('info trigger not found');
-    act(() => info.click());
-    expect(queryRow(c, 'pencil')).toBeUndefined();
-    expect(affs(c, 'MCP servers')).toEqual(['ⓘ', '›']); // still collapsed
   });
 
   it('offers no drill-down for a Source that names no servers', () => {
     const c = render(null, skills, ctx, []);
-    // Keeps the tooltip, loses the chevron: no drill-down that expands to
-    // nothing.
-    expect(affs(c, 'MCP servers')).toEqual(['ⓘ']);
+    // No chevron: no drill-down that expands to nothing.
+    expect(affs(c, 'MCP servers')).toEqual([]);
     clickRow(c, 'MCP servers');
     expect(queryRow(c, 'pencil')).toBeUndefined();
   });
