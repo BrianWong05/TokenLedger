@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::Value;
 
 use crate::adapters::{
@@ -299,10 +299,10 @@ fn add_unique(paths: &mut Vec<PathBuf>, path: &Path) {
 }
 
 fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("{SOURCE}: database open failed: {error}"))?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
-    ensure_schema(&conn)?;
+    let conn = super::open_sqlite_artifact(SOURCE, path)?;
+    for (table, columns) in SUPPORTED_SCHEMA {
+        super::require_columns(SOURCE, &conn, table, columns)?;
+    }
 
     let mut scan = OpencodeScan::default();
     let mut sessions = conn
@@ -384,28 +384,11 @@ fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
     Ok(scan)
 }
 
-fn ensure_schema(conn: &Connection) -> Result<(), String> {
-    for (table, columns) in [
-        (
-            "session",
-            ["id", "directory", "time_created", "time_updated"],
-        ),
-        ("message", ["id", "session_id", "time_created", "data"]),
-    ] {
-        let mut statement = conn
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|error| format!("{SOURCE}: schema inspection failed: {error}"))?;
-        let found = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|error| format!("{SOURCE}: schema inspection failed: {error}"))?
-            .collect::<rusqlite::Result<HashSet<_>>>()
-            .map_err(|error| format!("{SOURCE}: schema inspection failed: {error}"))?;
-        if !columns.iter().all(|column| found.contains(*column)) {
-            return Err(format!("{SOURCE}: unsupported database schema"));
-        }
-    }
-    Ok(())
-}
+// The tables and columns the parse below is about to trust.
+const SUPPORTED_SCHEMA: &[(&str, &[&str])] = &[
+    ("session", &["id", "directory", "time_created", "time_updated"]),
+    ("message", &["id", "session_id", "time_created", "data"]),
+];
 
 fn discover_legacy_sessions(root: &Path) -> Vec<PathBuf> {
     let session_root = legacy_session_root(root);

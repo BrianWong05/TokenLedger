@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use rusqlite::{types::ValueRef, Connection, OpenFlags, Row};
+use rusqlite::{types::ValueRef, Connection, Row};
 use serde_json::Value;
 
 use crate::adapters::{
@@ -209,14 +209,7 @@ fn add_unique(paths: &mut Vec<PathBuf>, path: &Path) {
 }
 
 fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
-    // A plain path (not a `file:` URI) keeps Windows verbatim temp paths, which
-    // can carry a `\\?\` prefix, working in both production and tests.
-    let conn = Connection::open_with_flags(
-        path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|error| format!("goose: sessions database open failed: {error}"))?;
-    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
+    let conn = super::open_sqlite_artifact("goose", path)?;
 
     if let Some(version) = schema_version(&conn)? {
         if !(1..=SUPPORTED_SCHEMA_VERSION).contains(&version) {

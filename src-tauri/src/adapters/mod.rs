@@ -178,6 +178,68 @@ pub(crate) fn remember_file_states(
     Ok(())
 }
 
+/// A readable handle on a Source's SQLite Artifact, or a Source-named
+/// refusal. One place decides how the scan reads a live database another
+/// program may be writing: read-only flags (a Scan only ever reads, ADR-0013),
+/// a five-second busy wait so a Source mid-write means waiting, not failing,
+/// and one failure wording (it had drifted five ways across the adapters, one
+/// of which dropped the error entirely). The wait is stated here even though
+/// rusqlite happens to default every connection to the same five seconds
+/// (inner_connection.rs, sqlite3_busy_timeout(db, 5000)): eight adapters
+/// restated that default by hand and one (workbuddy) leaned on it without
+/// knowing — a library upgrade must not silently change how long a scan
+/// waits. A plain path (not a `file:` URI) keeps Windows verbatim temp
+/// paths, which can carry a `\\?\` prefix, working in both production and
+/// tests. Parsing, skip strategy and persistence stay per-Source (ADR-0004)
+/// — this is the read-side shell they all shared.
+pub(crate) fn open_sqlite_artifact(
+    source: &str,
+    path: &Path,
+) -> Result<rusqlite::Connection, String> {
+    open_sqlite_artifact_waiting(source, path, std::time::Duration::from_secs(5))
+}
+
+/// The timeout-parameterised core — an internal seam so the contention test
+/// need not sit out the production five seconds.
+fn open_sqlite_artifact_waiting(
+    source: &str,
+    path: &Path,
+    wait: std::time::Duration,
+) -> Result<rusqlite::Connection, String> {
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("{source}: database open failed: {error}"))?;
+    let _ = conn.busy_timeout(wait);
+    Ok(conn)
+}
+
+/// Refuses an Artifact whose table lacks the columns the parse is about to
+/// trust, naming the Source — the check every SQLite adapter runs between
+/// opening and querying, so "this Source changed its schema" reads as a
+/// malformed-Artifact warning instead of a parse mystery. Returns the table's
+/// actual column set: one caller (Zed) branches on an optional column, and
+/// the set is already in hand. A missing table yields an empty set from
+/// PRAGMA table_info, so it refuses the same way a missing column does.
+pub(crate) fn require_columns(
+    source: &str,
+    conn: &rusqlite::Connection,
+    table: &str,
+    columns: &[&str],
+) -> Result<HashSet<String>, String> {
+    let mut statement = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| format!("{source}: schema inspection failed: {error}"))?;
+    let found = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("{source}: schema inspection failed: {error}"))?
+        .collect::<rusqlite::Result<HashSet<_>>>()
+        .map_err(|error| format!("{source}: schema inspection failed: {error}"))?;
+    if !columns.iter().all(|column| found.contains(*column)) {
+        return Err(format!("{source}: unsupported database schema"));
+    }
+    Ok(found)
+}
+
 /// Normalize an epoch value a Source writer may store in seconds,
 /// milliseconds, or microseconds into epoch seconds. Shared by the adapters
 /// whose writers emit timestamps in more than one unit; callers that require a
@@ -291,6 +353,124 @@ pub(crate) fn claude_shaped_usage(message: &serde_json::Value) -> Option<ClaudeS
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seeded_db(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("artifact.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT, directory TEXT, tokens INTEGER);
+             INSERT INTO session VALUES ('s1', '/w', 42);",
+        )
+        .unwrap();
+        path
+    }
+
+    // A Scan only ever reads (ADR-0013): the handle the reader returns cannot
+    // write the Source's Artifact even if a parse path tried.
+    #[test]
+    fn the_reader_cannot_write_the_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seeded_db(temp.path());
+        let ro = open_sqlite_artifact("kilo", &path).unwrap();
+        let denied = ro.execute("INSERT INTO session VALUES ('s2', '/w', 1)", []);
+        assert!(denied.is_err(), "a read-only handle accepted a write");
+    }
+
+    // The reason the wait exists: a Source mid-write holds the database for a
+    // moment, and the scan must wait it out rather than fail the whole Source.
+    // This passes whether the wait is this module's or the library default's —
+    // the bounded test below is what pins the policy to this module.
+    #[test]
+    fn the_reader_waits_out_a_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seeded_db(temp.path());
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+
+        let ro = open_sqlite_artifact("kilo", &path).unwrap();
+        let handle = std::thread::spawn(move || {
+            ro.query_row("SELECT count(*) FROM session", [], |r| r.get::<_, i64>(0))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        writer.execute_batch("COMMIT").unwrap();
+        assert_eq!(handle.join().unwrap().unwrap(), 1);
+    }
+
+    // The wait is bounded, and it is THIS module's, not rusqlite's: the
+    // 30-millisecond override below expires long before the library's own
+    // 5-second default would, proving the reader sets the policy rather than
+    // inheriting it — and a writer that never lets go surfaces as a busy
+    // error rather than a hung scan. The elapsed assertion is load-bearing:
+    // without it, deleting the busy_timeout call would leave the library
+    // default to return the same error five seconds later and the test would
+    // still pass. Through the internal seam so the test need not sit out the
+    // production five seconds.
+    #[test]
+    fn the_wait_is_bounded_by_the_reader_not_the_library() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seeded_db(temp.path());
+        let writer = rusqlite::Connection::open(&path).unwrap();
+        writer.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let ro =
+            open_sqlite_artifact_waiting("kilo", &path, std::time::Duration::from_millis(30))
+                .unwrap();
+        let start = std::time::Instant::now();
+        assert!(ro.query_row("SELECT count(*) FROM session", [], |r| r.get::<_, i64>(0)).is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "the 30ms override did not take: waited {:?} — the library default is deciding",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn an_open_failure_names_the_source() {
+        let missing = std::path::Path::new("/definitely/not/here/artifact.db");
+        let err = open_sqlite_artifact("hermes", missing).unwrap_err();
+        assert!(err.starts_with("hermes: database open failed: "), "{err}");
+    }
+
+    #[test]
+    fn require_columns_returns_the_actual_set_and_tolerates_extras() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seeded_db(temp.path());
+        let ro = open_sqlite_artifact("zed", &path).unwrap();
+        let found = require_columns("zed", &ro, "session", &["id", "directory"]).unwrap();
+        // The full set comes back, so a caller can branch on an optional column.
+        assert!(found.contains("tokens"));
+    }
+
+    // A schema that lost a column, and a table that is missing outright, both
+    // refuse the same way: this Source's Artifact is a shape the parse cannot
+    // trust (a malformed instance of a supported shape — a warning, per the
+    // glossary, not a new Artifact class).
+    #[test]
+    fn require_columns_refuses_missing_columns_and_missing_tables_alike() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = seeded_db(temp.path());
+        let ro = open_sqlite_artifact("qoder", &path).unwrap();
+        assert_eq!(
+            require_columns("qoder", &ro, "session", &["id", "vanished"]).unwrap_err(),
+            "qoder: unsupported database schema"
+        );
+        assert_eq!(
+            require_columns("qoder", &ro, "no_such_table", &["id"]).unwrap_err(),
+            "qoder: unsupported database schema"
+        );
+    }
+
+    // Not SQLite at all: the open may succeed (SQLite reads lazily), but the
+    // first inspection refuses with the Source named.
+    #[test]
+    fn garbage_bytes_surface_as_a_named_refusal() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("garbage.db");
+        std::fs::write(&path, b"not a database at all, not even close......").unwrap();
+        let result = open_sqlite_artifact("goose", &path)
+            .and_then(|ro| require_columns("goose", &ro, "session", &["id"]).map(|_| ()));
+        let err = result.unwrap_err();
+        assert!(err.starts_with("goose: schema inspection failed"), "{err}");
+    }
 
     #[cfg(unix)]
     #[test]

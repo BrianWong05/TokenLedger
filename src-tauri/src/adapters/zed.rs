@@ -1,8 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::{Map, Value};
 
 use crate::adapters::{
@@ -114,10 +114,8 @@ pub fn scan_zed(conn: &mut Connection, databases: &[PathBuf]) -> SourceScanResul
 
 fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
     let source_file = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let database = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|_| format!("{SOURCE}: database open failed"))?;
-    let _ = database.busy_timeout(std::time::Duration::from_millis(5000));
-    let columns = ensure_schema(&database)?;
+    let database = super::open_sqlite_artifact(SOURCE, path)?;
+    let columns = super::require_columns(SOURCE, &database, "threads", REQUIRED_COLUMNS)?;
     let folder_paths = columns.contains("folder_paths");
     let query = if folder_paths {
         "SELECT id, updated_at, data_type, data, folder_paths
@@ -163,24 +161,6 @@ fn scan_database(path: &Path) -> Result<DatabaseScan, String> {
     }
 
     Ok(scan)
-}
-
-fn ensure_schema(database: &Connection) -> Result<HashSet<String>, String> {
-    let mut statement = database
-        .prepare("PRAGMA table_info(threads)")
-        .map_err(|_| format!("{SOURCE}: schema inspection failed"))?;
-    let found = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|_| format!("{SOURCE}: schema inspection failed"))?
-        .collect::<rusqlite::Result<HashSet<_>>>()
-        .map_err(|_| format!("{SOURCE}: schema inspection failed"))?;
-    if !REQUIRED_COLUMNS
-        .iter()
-        .all(|column| found.contains(*column))
-    {
-        return Err(format!("{SOURCE}: unsupported database schema"));
-    }
-    Ok(found)
 }
 
 fn event_from_thread(row: ThreadRow, source_file: &Path) -> Result<Option<UsageEvent>, String> {
