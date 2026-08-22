@@ -285,6 +285,45 @@ describe('Overview presentation', () => {
     expect(c.querySelector('.tt-scan-foot')?.textContent).toContain('pi: 3 in / 2 skipped');
   });
 
+  it('shows a soft notice when Grok Build skipped unrecognized log lines', async () => {
+    // A Grok Build release's new update kind: skipped lines surface as a
+    // heads-up, never the red banner — and only for grok (pi skips by design).
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'grok', totalTokens: 100 })],
+      summary,
+      scan: {
+        scannedAt: 1_782_907_202,
+        ingestRev: 0,
+        sources: [
+          { source: 'grok', eventsInserted: 5, linesSkipped: 3, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+          { source: 'pi', eventsInserted: 3, linesSkipped: 2, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        ],
+      },
+    });
+
+    const notices = c.querySelectorAll('.tt-notice');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toBe('Grok Build: 3 unrecognized log lines skipped');
+    expect(c.querySelector('.tt-error')).toBeNull();
+  });
+
+  it('keeps the red banner and no notice when the Grok scan itself failed', async () => {
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'grok', totalTokens: 100 })],
+      summary,
+      scan: {
+        scannedAt: 1_782_907_202,
+        ingestRev: 0,
+        sources: [
+          { source: 'grok', eventsInserted: 0, linesSkipped: 3, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: 'grok: malformed or unsupported Source Artifact' },
+        ],
+      },
+    });
+
+    expect(c.querySelector('.tt-notice')).toBeNull();
+    expect(c.querySelector('.tt-error')?.textContent).toContain('malformed or unsupported');
+  });
+
   it('drives the rest of the Overview when a source card is selected', async () => {
     const { container: c } = await mount({
       dayPoints: [

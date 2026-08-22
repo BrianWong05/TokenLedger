@@ -360,6 +360,16 @@
   border: 1px solid var(--danger-subtle);
 }
 
+/* new-telemetry heads-up line: informational, never a Source in trouble */
+.tt-notice {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: var(--warning-text);
+  background: var(--warning-subtle);
+  border: 1px solid var(--warning-subtle);
+}
+
 /* ---- generic surface card ---- */
 .tt-card {
   background: var(--bg-surface);
