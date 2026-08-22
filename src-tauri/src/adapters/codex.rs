@@ -327,30 +327,47 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                     .and_then(|x| x.as_i64())
                     .unwrap_or(0);
                 let cur_output = usage.get("output_tokens").and_then(|x| x.as_i64()).unwrap_or(0);
+                // Cumulative like the rest, but Option: an absent field is this
+                // build reporting no cache writes, never a measured zero. Held as
+                // Option so prev_cache_write tracks only snapshots that carried a
+                // figure — a field that vanishes and returns then books its true
+                // increment instead of its whole cumulative total a second time.
+                // (First appearance books the running total on one event, exactly
+                // as prev_input does from 0 at the head of a Session.)
+                let cur_cache_write = usage
+                    .get("cache_write_input_tokens")
+                    .and_then(|x| x.as_i64());
 
                 let d_input = (cur_input - prev_input).max(0);
                 let d_cached = (cur_cached - prev_cached).max(0);
                 let d_output = (cur_output - prev_output).max(0);
+                let d_cache_write =
+                    cur_cache_write.map_or(0, |cur| (cur - prev_cache_write).max(0));
+
+                // Containment is Codex's own: codex-rs maps both figures out of
+                // `input_tokens_details` (`cached_tokens` / `cache_write_tokens`),
+                // so each is a detail *of* input_tokens. Together they can saturate
+                // the prompt — OpenAI's own fixture is 100 = 40 cached + 60 written
+                // — but never exceed it. A step that says otherwise has had its
+                // shape moved under us: skip it and count it, the way grok.rs
+                // rejects the same contradiction, rather than clamp Input to 0 and
+                // book a prompt total the Source never reported. Not observed once
+                // in 33,467 local delta steps (TOKL-27). No prev has advanced yet,
+                // so the next trustworthy snapshot measures from the last
+                // trustworthy one and the step is dropped, not lost.
+                if d_cached + d_cache_write > d_input {
+                    skipped += 1;
+                    continue;
+                }
+
                 prev_input = cur_input;
                 prev_cached = cur_cached;
                 prev_output = cur_output;
-                // Cumulative like the rest. Absent field => this build reports no
-                // cache writes, which is not a measured zero: prev is left where it
-                // is so a field that appears mid-Session is not booked as one giant
-                // delta from 0.
-                let d_cache_write = usage
-                    .get("cache_write_input_tokens")
-                    .and_then(|x| x.as_i64())
-                    .map(|cur| {
-                        let d = (cur - prev_cache_write).max(0);
-                        prev_cache_write = cur;
-                        d
-                    })
-                    .unwrap_or(0);
+                if let Some(cur) = cur_cache_write {
+                    prev_cache_write = cur;
+                }
 
-                // cached and written are both subsets of input (total_tokens ==
-                // input_tokens + output_tokens on every observed event); keep the
-                // three prompt buckets mutually exclusive per ADR-0001.
+                // Keep the three prompt buckets mutually exclusive per ADR-0001.
                 let input = (d_input - d_cached - d_cache_write).max(0);
                 let cache_read = d_cached;
                 let cache_write = d_cache_write;
@@ -415,9 +432,10 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                     input_tokens: input,
                     output_tokens: output,
                     cache_read_tokens: cache_read,
+                    // ponytail: Codex names no TTL, so every write goes to the
+                    // 5-minute bucket; split it if a token_count ever distinguishes
+                    // the two.
                     cache_write_5m_tokens: cache_write,
-                    // Codex names no TTL, so every write goes to the 5-minute
-                    // bucket; the 1-hour bucket has nothing to fill it.
                     cache_write_1h_tokens: 0,
                     source_file: path_str.to_string(),
                     session_id: Some(file_stem.to_string()),
@@ -715,14 +733,17 @@ mod tests {
     #[test]
     fn codex_cache_write_is_booked_to_five_minutes_and_excluded_from_input() {
         // cache_write_input_tokens is cumulative and sits *inside* input_tokens:
-        // total_tokens == input_tokens + output_tokens on every observed event,
-        // so ADR-0001 requires Input to exclude it exactly as it excludes
-        // cached_input_tokens.
+        // codex-rs builds it from `input_tokens_details.cache_write_tokens`,
+        // the sibling of the `cached_tokens` this adapter already subtracts, so
+        // ADR-0001 requires Input to exclude both. The first line here is the
+        // exact payload OpenAI's own parser test asserts — 100 = 40 cached + 60
+        // written — which is also the saturating case: Input is legitimately 0
+        // while 100 prompt tokens were billed.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
         write_rollout(&root, "rollout-2026-08-20-cw.jsonl", &[
-            r#"{"type":"event_msg","timestamp":"2026-08-20T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":30,"output_tokens":10,"total_tokens":110}}}}"#,
-            r#"{"type":"event_msg","timestamp":"2026-08-20T09:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":50,"cache_write_input_tokens":45,"output_tokens":20,"total_tokens":220}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":60,"output_tokens":10,"reasoning_output_tokens":5,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T09:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":250,"cached_input_tokens":90,"cache_write_input_tokens":100,"output_tokens":30,"reasoning_output_tokens":12,"total_tokens":280}}}}"#,
         ]);
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
         let r = scan_codex(&mut conn, std::slice::from_ref(&root));
@@ -741,8 +762,8 @@ mod tests {
                 .unwrap();
             it.collect::<rusqlite::Result<Vec<_>>>().unwrap()
         };
-        assert_eq!(rows[0], (50, 20, 30, 0), "100 - 20 cached - 30 written");
-        assert_eq!(rows[1], (55, 30, 15, 0), "deltas: 100 - 30 cached - 15 written");
+        assert_eq!(rows[0], (0, 40, 60, 0), "cache saturates the prompt: Input is 0");
+        assert_eq!(rows[1], (60, 50, 40, 0), "deltas: 150 - 50 cached - 40 written");
 
         // The three prompt buckets partition the final cumulative input_tokens:
         // nothing double counted, nothing dropped. Codex names no TTL, so every
@@ -755,7 +776,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(prompt, 200, "exclusive buckets sum to the reported prompt");
+        assert_eq!(prompt, 250, "exclusive buckets sum to the reported prompt");
     }
 
     #[test]
@@ -785,8 +806,9 @@ mod tests {
 
     #[test]
     fn codex_absent_cache_write_field_leaves_input_unchanged() {
-        // 9,429 real token_count events never report the field. Absent is not a
-        // measured zero: those Sessions must book exactly what they book today.
+        // 9,429 of 33,476 real token_count events never report the field
+        // (measured across 335 local Sessions, TOKL-27). Absent is not a measured
+        // zero: those Sessions must book exactly what they book today.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
         write_rollout(&root, "rollout-2026-08-20-nocw.jsonl", &[
@@ -807,6 +829,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!((input, read, write), (150, 50, 0), "unchanged from before the field existed");
+    }
+
+    #[test]
+    fn codex_a_step_whose_cache_exceeds_the_prompt_is_skipped_not_clamped() {
+        // cached + written can equal input_tokens but never exceed it. A step
+        // that breaks containment is a shape moved under us, so it is counted as
+        // a skipped line rather than clamped: clamping books Input 0 *and* still
+        // books the excess as cache, inflating the prompt above what Codex said.
+        // No prev advances, so the next good snapshot measures from the last good
+        // one and the tokens ride along instead of vanishing.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-08-20-bad.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-08-20T12:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T12:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":0,"cache_write_input_tokens":80,"output_tokens":20,"total_tokens":170}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T12:00:10.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"cache_write_input_tokens":80,"output_tokens":30,"total_tokens":330}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
+        assert_eq!(
+            (r.events_inserted, r.lines_skipped),
+            (2, 1),
+            "the contradictory step is skipped, and counted"
+        );
+
+        let prompt: i64 = conn
+            .query_row(
+                "SELECT SUM(input_tokens + cache_read_tokens + cache_write_5m_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(prompt, 300, "never more prompt than the Source reported");
+    }
+
+    #[test]
+    fn codex_cache_write_that_vanishes_and_returns_books_only_its_increment() {
+        // The middle snapshot drops the field. prev_cache_write must hold at 30,
+        // or the third books its whole cumulative 50 a second time.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-08-20-gap.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-08-20T13:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":30,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T13:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":0,"output_tokens":20,"total_tokens":220}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T13:00:10.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":0,"cache_write_input_tokens":50,"output_tokens":30,"total_tokens":330}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
+        assert_eq!(r.events_inserted, 3);
+
+        let (input, write): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(input_tokens), SUM(cache_write_5m_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((input, write), (250, 50), "the final cumulative 50, booked once");
     }
 
     #[test]

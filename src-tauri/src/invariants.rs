@@ -113,7 +113,10 @@ fn build_claude(base: &Path) {
 
 // codex: session_meta + turn_context + response_items (message/reasoning/
 // function_call/function_call_output) then TWO cumulative token_count lines
-// with growing reasoning_output_tokens and cached_input_tokens.
+// with growing reasoning_output_tokens, cached_input_tokens and
+// cache_write_input_tokens — the write is carried so the partition assertions
+// exercise a nonzero cache_write_5m_tokens term rather than a constant 0
+// (TOKL-27). Billed per event is unchanged by it: the write comes out of Input.
 fn build_codex(base: &Path) {
     let lines = [
         r#"{"type":"session_meta","timestamp":"2026-05-01T09:00:00.000Z","payload":{"id":"sess-cx","cwd":"/Users/dev/projects/alpha"}}"#,
@@ -122,8 +125,8 @@ fn build_codex(base: &Path) {
         r#"{"type":"response_item","timestamp":"2026-05-01T09:00:01.500Z","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}}"#,
         r#"{"type":"response_item","timestamp":"2026-05-01T09:00:02.000Z","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{\"command\":[\"ls\"]}"}}"#,
         r#"{"type":"response_item","timestamp":"2026-05-01T09:00:02.500Z","payload":{"type":"function_call_output","call_id":"c1","output":"cccccccccccccccccccccccccccccccccccccccc"}}"#,
-        r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"output_tokens":50,"reasoning_output_tokens":20,"total_tokens":950}}}}"#,
-        r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:04.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":300,"output_tokens":120,"reasoning_output_tokens":60,"total_tokens":1620}}}}"#,
+        r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:03.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":100,"cache_write_input_tokens":200,"output_tokens":50,"reasoning_output_tokens":20,"total_tokens":950}}}}"#,
+        r#"{"type":"event_msg","timestamp":"2026-05-01T09:00:04.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":300,"cache_write_input_tokens":500,"output_tokens":120,"reasoning_output_tokens":60,"total_tokens":1620}}}}"#,
     ];
     write(
         &base.join("codex/rollout-2026-05-01-ctx.jsonl"),
