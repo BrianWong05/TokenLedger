@@ -11,12 +11,10 @@ precise meaning of each domain term, independent of how the code implements it.
 **Usage Record**:
 The token usage attributed to one unit of billable work from a Source. The
 "unit of work" is one API call/response for Claude, Codex, Gemini,
-Antigravity, and a pi assistant message; one reported auxiliary usage block for
-a pi summary or tool result; one usage-ledger row for Goose; one user Turn for
-Grok; but one whole Session for Hermes, Kilo, or Zed when their
-Artifacts expose no trustworthy finer timestamps — with OpenCode splitting
-a Session into one Record per Model its Requests prove, plus one Record
-for any Requests whose Model is unproven. Failed or aborted work
+Antigravity, OpenCode, and a pi assistant message; one reported auxiliary usage
+block for a pi summary or tool result; one usage-ledger row for Goose; one user
+Turn for Grok; but one whole Session for Hermes, Kilo, or Zed when their
+Artifacts expose no trustworthy finer timestamps. Failed or aborted work
 counts when it reports non-zero usage, while a zero-token observation is not a
 Usage Record. (Implemented as `UsageEvent`.)
 _Avoid_: Event, row, entry
@@ -27,7 +25,7 @@ record, not a cache. Because Sources prune their logs (Claude Code deletes
 transcripts after ~30 days), a Usage Record persists in the Ledger after its
 source log is gone; scans only ever add Records, never delete them — except
 to supersede a coarser Record with Records that the Source proves carry the
-same usage, as OpenCode's per-Model split does.
+same usage, as OpenCode's split of a Session into its Requests does.
 _Avoid_: Cache, database, store
 
 **Scan**:
@@ -242,11 +240,11 @@ _Avoid_: Conversation, run, thread
 
 **Request**:
 One observable unit of model work, normally one API call. The displayed
-**Requests** figure is exact for Claude, Codex, Gemini, Antigravity, pi assistant
-messages, Hermes (via its summed `api_call_count`), and Grok (whose Turn reports
-the calls it made, so a Turn is many Requests rather than one); each pi auxiliary
-usage block counts as one Request even when it may aggregate several calls,
-making that contribution a documented lower bound. Requests
+**Requests** figure is exact for Claude, Codex, Gemini, Antigravity, OpenCode,
+pi assistant messages, Hermes (via its summed `api_call_count`), and Grok (whose
+Turn reports the calls it made, so a Turn is many Requests rather than one);
+each pi auxiliary usage block counts as one Request even when it may aggregate
+several calls, making that contribution a documented lower bound. Requests
 is a sum of source-observable calls or call groups, never a Ledger row count.
 _Avoid_: Call count, hits
 
