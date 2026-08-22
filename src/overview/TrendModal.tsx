@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import type { SeriesPoint, SourceUnreadable, Summary } from '../types';
-import { bucketCsv, bucketFilters, csvFilename, hourlyDayOf, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
+import { useMemo, useRef, useState, type RefObject } from 'react';
+import type { SeriesPoint, SourceUnreadable } from '../types';
+import { bucketCsv, bucketFilters, bucketStats, csvFilename, effectiveBounds, hourlyDayOf, modelOwner, peakOf, rangeToFilters, splitRows, stackModels, trendSlice, UNATTRIBUTED_COLOR, windowModelSplit, type Bucket, type Granularity, type SplitRow } from './data';
 import { orderedSourceKeys, sourceMeta, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
 import type { ExportPort } from './export';
@@ -21,6 +21,7 @@ import {
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import { useDialogChrome } from './useDialogChrome';
+import { useLatest } from './useLatest';
 import { RangeSegments } from './RangePicker';
 
 // Design 1b — the Usage-trend card's full-screen enlarge. A centered dialog
@@ -31,12 +32,17 @@ import { RangeSegments } from './RangePicker';
 // automatic fit. The stacked-by-tool chart, footer
 // figures and Est. cost all describe the dialog's local window — buckets from
 // the shared trendSlice (its own hourly fetch for a Day window), Cost from a
-// per-window Summary fetch the dialog owns (epoch-guarded, like the Activity
-// enlarge). The window's own per-Model split sits under the footer stats it
+// per-window Summary fetch the dialog owns (useLatest: a superseded response
+// never lands, same as the Activity enlarge). The window's own per-Model split sits under the footer stats it
 // belongs with. Exactly one bucket is always selected — the window's peak until
 // a bar is hovered — and the right-hand inspector reads it out (rank, delta vs
 // the window average, per-model split). The inspector's per-bucket Cost and CSV
 // export land in later slices.
+
+// Stable empty: hourPoints feeds the trendSlice memo, so the non-hourly case
+// (the common one) must not mint a fresh [] per render — that would recompute
+// the whole slice on every hover.
+const NO_POINTS: SeriesPoint[] = [];
 
 // Bar-interval options: Auto (the automatic fit) or an explicit bucket size.
 // No Hour override — a Day window's automatic hourly view already covers it.
@@ -100,37 +106,24 @@ export default function TrendModal({
   // within one open (an independent axis: the window says which slice, the
   // interval says how finely it's bucketed), forgotten on close.
   const [barInterval, setBarInterval] = useState<BarInterval>('auto');
-  // Effective bounds — the raw custom inputs fall back to the data extent,
-  // exactly as the store derives from/to (never the empty string).
-  const from = customFrom || firstIso;
-  const to = customTo || lastIso;
+  // Effective bounds: the same effectiveBounds rule the store derives from/to
+  // with (never the empty string).
+  const { from, to } = effectiveBounds(customFrom, customTo, firstIso, lastIso);
 
-  // Per-window fetches the dialog owns: a Summary for the footer Cost, and the
-  // hourly series a single-day window needs (the page only holds it while it is
-  // itself on one). Epoch-guarded so a stale response can't land on a new window.
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [hourPoints, setHourPoints] = useState<SeriesPoint[]>([]);
-  const fetchEpoch = useRef(0);
-  useEffect(() => {
-    const epoch = ++fetchEpoch.current;
-    setSummary(null);
-    setHourPoints([]); // the old window's hours key off its own day — never this one's
-    const filters = rangeToFilters(range, from, to);
-    ledger.summary(filters).then(
-      (s) => {
-        if (fetchEpoch.current === epoch) setSummary(s);
-      },
-      () => {},
-    );
-    if (hourlyDayOf(range, from, to, firstIso, lastIso)) {
-      ledger.series(filters, 'hour').then(
-        (pts) => {
-          if (fetchEpoch.current === epoch) setHourPoints(pts);
-        },
-        () => {},
-      );
-    }
-  }, [range, from, to, firstIso, lastIso, ledger]);
+  // Per-window figures the dialog owns: a Summary for the footer Cost, and the
+  // hourly series a single-day window needs (the page only holds it while it
+  // is itself on one). useLatest owns the rule that a superseded response
+  // never lands on a new window; the old window's hours key off its own day,
+  // so both reset the moment the window moves.
+  const windowKey = [range, from, to, firstIso, lastIso, ledger];
+  const summary = useLatest(() => ledger.summary(rangeToFilters(range, from, to)), windowKey);
+  const hourPoints =
+    useLatest(
+      hourlyDayOf(range, from, to, firstIso, lastIso)
+        ? () => ledger.series(rangeToFilters(range, from, to), 'hour')
+        : null,
+      windowKey,
+    ) ?? NO_POINTS;
 
   const override: Exclude<Granularity, 'hour'> | undefined = barInterval === 'auto' ? undefined : barInterval;
   const { trend: data, per, modelTool, total } = useMemo(
@@ -177,31 +170,22 @@ export default function TrendModal({
   // key if it survives.
   const winId = `${range}|${from}|${to}|${per}`;
   const [sel, setSel] = useState<{ win: string; key: string } | null>(null);
-  const peak = data.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
+  const peak = peakOf(data);
   const activeKey = sel && sel.win === winId ? sel.key : null;
   const selBucket = data.find((b) => b.key === activeKey) ?? peak;
   const selIndex = selBucket ? data.indexOf(selBucket) : -1;
 
   // The selected bucket's exact Cost: a Summary scoped to just that bucket's
-  // time bounds, refetched per selection (or granularity) and epoch-guarded so
-  // a superseded bucket's Cost can't land after a newer pick. Its own rules —
+  // time bounds, refetched per selection (or granularity) — useLatest keeps a
+  // superseded bucket's Cost from landing after a newer pick. Its own rules —
   // ≥ Partial Cost, unpriced never $0, Display Currency — all via
   // formatDisplayCost. Keyed by bucket key + granularity, so a background
   // refresh that keeps the selection does not refetch.
   const selKey = selBucket?.key;
-  const [selCost, setSelCost] = useState<Summary | null>(null);
-  const costEpoch = useRef(0);
-  useEffect(() => {
-    if (!selKey) return;
-    const epoch = ++costEpoch.current;
-    setSelCost(null);
-    ledger.summary(bucketFilters(selKey, per)).then(
-      (s) => {
-        if (costEpoch.current === epoch) setSelCost(s);
-      },
-      () => {},
-    );
-  }, [selKey, per, ledger]);
+  const selCost = useLatest(
+    selKey ? () => ledger.summary(bucketFilters(selKey, per)) : null,
+    [selKey, per, ledger],
+  );
 
   // The floor rule (ADR-0017) against the dialog's own window and against the
   // inspected bucket: a figure is marked when unreadable content could fall in
@@ -211,76 +195,31 @@ export default function TrendModal({
     ? tokenFloor(unreadable, bucketFilters(selKey, per).startTs ?? null, lang)
     : NO_FLOOR;
 
-  // Inspector read-outs for the selected bucket.
-  const selRank = selBucket ? 1 + data.filter((b) => b.total > selBucket.total).length : 0;
-  const selDeltaPct = selBucket && avg > 0 ? Math.round((selBucket.total / avg - 1) * 100) : 0;
+  // Inspector read-outs for the selected bucket, computed by the selector
+  // seam against the same window average the footer displays.
+  const { rank: selRank, deltaPct: selDeltaPct } = selBucket
+    ? bucketStats(data, selBucket, avg)
+    : { rank: 0, deltaPct: 0 };
   const selDate = (b: Bucket) =>
     per === 'hour'
       ? b.key.slice(11, 16)
       : per === 'month'
         ? `${monthShortL(parseInt(b.key.slice(5, 7), 10) - 1, lang)} ${b.key.slice(0, 4)}`
         : fmtIsoDateL(b.key, lang);
-  // Top-N models, largest first; the rest fold into one muted remainder row
-  // (color '' → grey). Shared by the bucket read-out in the inspector (top-6)
-  // and the window-scoped breakdown under the footer stats (top-5, so the
-  // section stays short and the chart keeps its height on small windows).
+  // Model rows for the inspector (top-6) and the window-scoped breakdown
+  // under the footer stats (top-5, so the section stays short and the chart
+  // keeps its height on small windows). splitRows carries the facts; only the
+  // display strings for the fold and Unattributed rows are added here.
   type InspRow = { key: string; name: string; source?: string; val: number; color: string; more: boolean };
-  const buildRows = (
-    byModel: Record<string, number>,
-    modelSources: Record<string, string[]> | undefined,
-    unattributedTokens: number,
-    top: number,
-  ): InspRow[] => {
-    const rows: InspRow[] = [];
-    const ranked = rankedModels(byModel);
-    for (const [m, v] of ranked.slice(0, top)) {
-      // Owner resolved from THIS record: a Model name shared by two Sources
-      // would otherwise take whichever the window-wide map happened to pick.
-      const owner = modelOwner(modelSources, modelTool, m);
-      rows.push({ key: m, name: m, source: owner.label, val: v, color: owner.color, more: false });
-    }
-    const rest = ranked.slice(top);
-    if (rest.length) {
-      rows.push({
-        key: '__more__',
-        name: `${rest.length} ${t('overview.trend.moreModels')}`,
-        val: rest.reduce((a, [, v]) => a + v, 0),
-        color: '',
-        more: true,
-      });
-    }
-    if (unattributedTokens > 0) {
-      rows.push({
-        key: 'unattributed-usage',
-        name: t('overview.unattributedUsage'),
-        val: unattributedTokens,
-        color: UNATTRIBUTED_COLOR,
-        more: false,
-      });
-    }
-    return rows;
-  };
-  const selRows: InspRow[] = selBucket
-    ? buildRows(selBucket.byModel, selBucket.modelSources, selBucket.unattributedTokens, 6)
-    : [];
-  // The whole window's model split, aggregated across its buckets (byModel
-  // summed; modelSources unioned so a Model name two Sources share reads
-  // 'Codex + pi' rather than claiming one Source).
-  const win = useMemo(() => {
-    const byModel: Record<string, number> = {};
-    const modelSources: Record<string, string[]> = {};
-    let unattributedTokens = 0;
-    for (const b of data) {
-      for (const [m, v] of Object.entries(b.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
-      for (const [m, srcs] of Object.entries(b.modelSources ?? {})) {
-        const owners = (modelSources[m] ??= []);
-        for (const s of srcs) if (!owners.includes(s)) owners.push(s);
-      }
-      unattributedTokens += b.unattributedTokens;
-    }
-    return { byModel, modelSources, unattributedTokens };
-  }, [data]);
-  const winRows: InspRow[] = buildRows(win.byModel, win.modelSources, win.unattributedTokens, 5);
+  const toInsp = (r: SplitRow): InspRow =>
+    r.kind === 'model'
+      ? { key: r.model, name: r.model, source: r.owner.label, val: r.val, color: r.owner.color, more: false }
+      : r.kind === 'more'
+        ? { key: '__more__', name: `${r.count} ${t('overview.trend.moreModels')}`, val: r.val, color: '', more: true }
+        : { key: 'unattributed-usage', name: t('overview.unattributedUsage'), val: r.val, color: UNATTRIBUTED_COLOR, more: false };
+  const selRows: InspRow[] = selBucket ? splitRows(selBucket, modelTool, 6).map(toInsp) : [];
+  const win = useMemo(() => windowModelSplit(data), [data]);
+  const winRows: InspRow[] = splitRows(win, modelTool, 5).map(toInsp);
   const selTotal = selBucket?.total ?? 0;
   // WebKit can't resolve var() in an SVG stroke; pick the outline per theme.
   const outline = colors === CHART_LIGHT ? '#12151b' : '#e8ecf4';

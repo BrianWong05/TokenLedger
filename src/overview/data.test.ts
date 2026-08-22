@@ -1,8 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResource, CtxToolRow, CtxSkillRow, CtxExecRow } from '../types';
-import type { PresetSlot, PresetSlots } from './data';
+import type { Bucket, PresetSlot, PresetSlots } from './data';
 import { emptyBySource } from './meta';
 import {
+  effectiveBounds,
+  windowModelSplit,
+  splitRows,
+  peakOf,
+  bucketStats,
   seriesToDays,
   heatStats,
   heatFilters,
@@ -949,5 +954,87 @@ describe('dailyTotals', () => {
     // Days with no Usage Record are absent, not zero — the picker reads a
     // missing key as no usage.
     expect(totals['2026-07-02']).toBeUndefined();
+  });
+});
+
+// --- The Trend Enlarge's read-out arithmetic, behind the selector seam ---
+// These were computed inside TrendModal and reachable only through its DOM;
+// value-level cases live here, the component renders a model it did not
+// compute.
+
+const bk = (key: string, total: number, byModel: Record<string, number> = {}, extras: Partial<Bucket> = {}): Bucket => ({
+  key, label: key, byTool: {}, byModel, unattributedTokens: 0, hasUnpriced: false, total, ...extras,
+});
+
+describe('effectiveBounds', () => {
+  it('falls back to the data extent when a raw custom input is empty', () => {
+    expect(effectiveBounds('', '', '2026-01-01', '2026-08-01')).toEqual({ from: '2026-01-01', to: '2026-08-01' });
+    expect(effectiveBounds('2026-02-01', '', '2026-01-01', '2026-08-01')).toEqual({ from: '2026-02-01', to: '2026-08-01' });
+  });
+
+  it('keeps both bounds when both are given', () => {
+    expect(effectiveBounds('2026-02-01', '2026-03-01', '2026-01-01', '2026-08-01')).toEqual({ from: '2026-02-01', to: '2026-03-01' });
+  });
+});
+
+describe('windowModelSplit', () => {
+  it('sums byModel, unions modelSources, and totals Unattributed across buckets', () => {
+    const split = windowModelSplit([
+      bk('2026-07-01', 155, { m1: 100, shared: 50 }, { modelSources: { m1: ['claude'], shared: ['codex'] }, unattributedTokens: 5 }),
+      bk('2026-07-02', 28, { shared: 25 }, { modelSources: { shared: ['pi', 'codex'] }, unattributedTokens: 3 }),
+    ]);
+    expect(split.byModel).toEqual({ m1: 100, shared: 75 });
+    expect(split.modelSources).toEqual({ m1: ['claude'], shared: ['codex', 'pi'] });
+    expect(split.unattributedTokens).toBe(8);
+  });
+});
+
+describe('splitRows', () => {
+  it('ranks Models largest first, folds the rest, Unattributed Usage last', () => {
+    const rows = splitRows({ byModel: { a: 70, b: 20, c: 8, d: 2 }, modelSources: undefined, unattributedTokens: 5 }, { a: 'claude', b: 'codex', c: 'claude', d: 'pi' }, 2);
+    expect(rows.map((r) => r.kind)).toEqual(['model', 'model', 'more', 'unattributed']);
+    expect(rows[0]).toMatchObject({ kind: 'model', model: 'a', val: 70 });
+    expect(rows[2]).toMatchObject({ kind: 'more', count: 2, val: 10 });
+    expect(rows[3]).toMatchObject({ kind: 'unattributed', val: 5 });
+  });
+
+  it('resolves each owner from THIS split, not the window-wide map', () => {
+    const rows = splitRows({ byModel: { a: 10 }, modelSources: { a: ['pi'] }, unattributedTokens: 0 }, { a: 'codex' }, 6);
+    expect(rows[0]).toMatchObject({ kind: 'model', model: 'a' });
+    expect((rows[0] as { owner: { keys: string[] } }).owner.keys).toEqual(['pi']);
+  });
+
+  it('omits the fold and the Unattributed row when there is nothing to say', () => {
+    const rows = splitRows({ byModel: { a: 10, b: 5 }, modelSources: undefined, unattributedTokens: 0 }, {}, 6);
+    expect(rows.map((r) => r.kind)).toEqual(['model', 'model']);
+  });
+});
+
+describe('peakOf', () => {
+  it('picks the biggest bucket; a tie keeps the earlier one; empty is undefined', () => {
+    const first = bk('2026-07-01', 5);
+    expect(peakOf([first, bk('2026-07-02', 9), bk('2026-07-03', 9)])?.key).toBe('2026-07-02');
+    expect(peakOf([first, bk('2026-07-02', 5)])).toBe(first);
+    expect(peakOf([])).toBeUndefined();
+  });
+});
+
+describe('bucketStats', () => {
+  it('ranks by total (ties share the better rank) and rounds delta vs the displayed average', () => {
+    const buckets = [bk('a', 100), bk('b', 300), bk('c', 300), bk('d', 0)];
+    expect(bucketStats(buckets, buckets[1], 175)).toEqual({ rank: 1, deltaPct: 71 });
+    expect(bucketStats(buckets, buckets[2], 175)).toEqual({ rank: 1, deltaPct: 71 });
+    expect(bucketStats(buckets, buckets[0], 175)).toEqual({ rank: 3, deltaPct: -43 });
+  });
+
+  it('reads a zero bucket against a live displayed average as -100%', () => {
+    // An hourly window mid-fetch: buckets are zero while the footer average
+    // (from the daily points) is not — the delta reads against the screen.
+    expect(bucketStats([bk('a', 0)], bk('a', 0), 200)).toEqual({ rank: 1, deltaPct: -100 });
+  });
+
+  it('pins delta to 0 for a window with no usage rather than dividing by it', () => {
+    const buckets = [bk('a', 0), bk('b', 0)];
+    expect(bucketStats(buckets, buckets[0], 0)).toEqual({ rank: 1, deltaPct: 0 });
   });
 });

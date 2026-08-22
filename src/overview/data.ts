@@ -120,6 +120,77 @@ export interface Bucket {
   total: number;
 }
 
+// --- The Trend Enlarge's read-out arithmetic ---
+// Pure selectors behind the same seam the page's panels use, so the dialog
+// renders a model it did not compute.
+
+// A set of Usage Records' model split — the shape one Bucket already carries,
+// and what a whole window aggregates to.
+export type ModelSplit = Pick<Bucket, 'byModel' | 'modelSources' | 'unattributedTokens'>;
+
+// The whole window's model split, aggregated across its buckets: byModel
+// summed, modelSources unioned (so a Model name two Sources share reads
+// "Codex + pi" rather than claiming one Source), Unattributed totalled.
+export function windowModelSplit(buckets: Bucket[]): ModelSplit {
+  const byModel: Record<string, number> = {};
+  const modelSources: Record<string, string[]> = {};
+  let unattributedTokens = 0;
+  for (const b of buckets) {
+    for (const [m, v] of Object.entries(b.byModel)) byModel[m] = (byModel[m] ?? 0) + v;
+    for (const [m, srcs] of Object.entries(b.modelSources ?? {})) {
+      const owners = (modelSources[m] ??= []);
+      for (const s of srcs) if (!owners.includes(s)) owners.push(s);
+    }
+    unattributedTokens += b.unattributedTokens;
+  }
+  return { byModel, modelSources, unattributedTokens };
+}
+
+// A split read out as rows: top-N Models largest first, the rest folded into
+// one remainder row, Unattributed Usage last (it names no Model, so it can
+// never rank as one). Owners resolve from THIS split's modelSources — a Model
+// name shared by two Sources must not take whichever the window-wide map
+// happened to pick. Display strings for the fold and Unattributed rows are
+// the caller's; the rows carry only facts.
+export type SplitRow =
+  | { kind: 'model'; model: string; val: number; owner: ModelOwner }
+  | { kind: 'more'; count: number; val: number }
+  | { kind: 'unattributed'; val: number };
+
+export function splitRows(split: ModelSplit, modelTool: Record<string, string>, top: number): SplitRow[] {
+  const ranked = rankedModels(split.byModel);
+  const rows: SplitRow[] = ranked
+    .slice(0, top)
+    .map(([m, val]) => ({ kind: 'model', model: m, val, owner: modelOwner(split.modelSources, modelTool, m) }));
+  const rest = ranked.slice(top);
+  if (rest.length) {
+    rows.push({ kind: 'more', count: rest.length, val: rest.reduce((a, [, v]) => a + v, 0) });
+  }
+  if (split.unattributedTokens > 0) {
+    rows.push({ kind: 'unattributed', val: split.unattributedTokens });
+  }
+  return rows;
+}
+
+// The window's peak bucket — the default selection while nothing is hovered.
+// A tie keeps the earlier bucket.
+export function peakOf(buckets: Bucket[]): Bucket | undefined {
+  return buckets.reduce<Bucket | undefined>((a, b) => (a && a.total >= b.total ? a : b), undefined);
+}
+
+// The inspector's arithmetic for one bucket against its window: rank by total
+// (ties share the better rank) and the rounded % delta vs `avg` — the window
+// average the footer displays, supplied by the caller because the two can
+// briefly disagree on an hourly window (buckets come from the hourly fetch,
+// the footer average from the daily points) and the delta must read against
+// the figure on screen. avg 0 pins the delta to 0 rather than dividing by it.
+export function bucketStats(buckets: Bucket[], bucket: Bucket, avg: number): { rank: number; deltaPct: number } {
+  return {
+    rank: 1 + buckets.filter((b) => b.total > bucket.total).length,
+    deltaPct: avg > 0 ? Math.round((bucket.total / avg - 1) * 100) : 0,
+  };
+}
+
 export interface TableRow {
   label: string; // iso date (daily) or project path — also the sort key
   total: number;
@@ -403,6 +474,18 @@ export function pointsIn(points: SeriesPoint[], win: Window): SeriesPoint[] {
   return points.filter(
     (p) => (!win.fromIso || p.bucket >= win.fromIso) && (!win.toIso || p.bucket <= win.toIso.slice(0, 10) + '~'),
   );
+}
+
+// The effective custom window: a raw input left empty falls back to the data
+// extent, so the bounds are never the empty string. One rule for every
+// surface holding a custom window — the store and the Trend Enlarge.
+export function effectiveBounds(
+  customFrom: string,
+  customTo: string,
+  firstIso: string,
+  lastIso: string,
+): { from: string; to: string } {
+  return { from: customFrom || firstIso, to: customTo || lastIso };
 }
 
 export function rangeToFilters(range: Range8b, customFrom: string, customTo: string): Filters {
