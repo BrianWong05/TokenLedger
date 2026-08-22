@@ -286,6 +286,50 @@ describe('overviewStore refresh / scan', () => {
     await refreshing;
   });
 
+  // The ≥ floor's provenance is the persisted per-scan state — the same read
+  // the Menu Bar Extra's panel uses — not this launch's scan verdict. The
+  // Ledger data on screen predates this launch either way, so the marker must
+  // not wait for a scan to land (or vanish because one threw).
+  it('the launch paint already carries the ≥ floor, before any scan settles', async () => {
+    const clock = fakeClock();
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ totalTokens: 500 })],
+      scan: {
+        scannedAt: 0,
+        ingestRev: 0,
+        sources: [{ source: 'antigravity', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 6, unreadableMaxMtime: null, error: null }],
+      },
+    });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock });
+    const refreshing = store.refresh();
+    await flush();
+
+    // The scan is still running, yet the window's figures already read as a
+    // floor, naming the Source.
+    const view = selectView(store.getSnapshot(), NOW);
+    expect(view.unreadable.map((u) => u.source)).toEqual(['antigravity']);
+
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+  });
+
+  // The pin on the provenance decision itself: the persisted state is the ≥
+  // floor's one source of truth, so a floor stands even when this launch's
+  // scan verdict lists nothing unreadable — reverting the store to
+  // s.scanSources would fail this.
+  it('the floor follows the persisted state, not this launch scan verdict', async () => {
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ totalTokens: 500 })],
+      scan: { scannedAt: 1, ingestRev: 0, sources: [] },
+      unreadableArtifacts: [{ source: 'antigravity', artifactsUnreadable: 6, unreadableMaxMtime: null }],
+    });
+    const store = createOverviewStore({ ledger, clock: fakeClock() });
+    await store.refresh();
+
+    expect(selectView(store.getSnapshot(), NOW).unreadable.map((u) => u.source)).toEqual(['antigravity']);
+  });
+
   it('reconciles the provisional paint after the scan even when it reports idle', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });

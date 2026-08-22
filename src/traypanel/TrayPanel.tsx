@@ -26,10 +26,8 @@ import {
 } from '../limits/limits.derive';
 import { limits as limitStrings } from '../lib/strings/limits';
 import { fill } from '../lib/format';
-import { unreadableSourcesIn } from '../lib/tokenCompleteness';
-import { sourceMeta } from '../overview/meta';
 import { sourceIcon } from '../overview/icons';
-import { countLabel } from '../overview/localize';
+import { NO_FLOOR, tokenFloor, markedTokenFigure, type TokenFloor } from '../overview/localize';
 import type { Filters, SourceLimits } from '../types';
 import './TrayPanel.css';
 
@@ -204,12 +202,9 @@ export default function TrayPanel({
   const [limitsNow, setLimitsNow] = useState(() => Math.floor(Date.now() / 1000));
   const [limitsOpen, setLimitsOpen] = useState<Record<string, boolean>>({});
   // The selected window's token figure is a floor (≥) when an Unreadable
-  // Artifact could hold usage in it (ADR-0017) — same rules as everywhere.
-  // The reason rides along as the marker's hover text.
-  const [tokensFloor, setTokensFloor] = useState<{ marked: boolean; reason: string }>({
-    marked: false,
-    reason: '',
-  });
+  // Artifact could hold usage in it (ADR-0017) — the same tokenFloor shape
+  // every ≥ surface carries; reason rides along as the marker's hover text.
+  const [tokensFloor, setTokensFloor] = useState<TokenFloor>(NO_FLOOR);
   const [scanning, setScanning] = useState(false);
   // The gate rescan() reads, mirroring useAutoRefresh's busyRef: `scanning`
   // is for the view, and a memoized rescan() would close over a stale copy of
@@ -281,13 +276,7 @@ export default function TrayPanel({
     if (fetched[0].status === 'fulfilled') {
       const [t, y, rows, s, models, series, scannedAt, sources] = fetched[0].value;
       const lang = s.language === 'zh-Hant' ? 'zh-Hant' : 'en';
-      const unread = unreadableSourcesIn(sources, w.start);
-      setTokensFloor({
-        marked: unread.length > 0,
-        reason: unread
-          .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.artifactsUnreadable, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}`)
-          .join(' · '),
-      });
+      setTokensFloor(tokenFloor(sources, w.start, lang));
       setModel(
         panelModel(t, y, rows, s, lang, {
           period: periodRef.current,
@@ -537,10 +526,10 @@ export default function TrayPanel({
               <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
             )}
           </div>
-          <span className="tp-sub" title={tokensFloor.marked ? tokensFloor.reason : undefined}>
+          <span className="tp-sub" title={tokensFloor.reason || undefined}>
             {/* Tokens only — the requests figure lives in its stat tile, and
                 saying it twice two lines apart bought nothing. */}
-            {model ? `${tokensFloor.marked ? '≥ ' : ''}${model.fmtTokens(animTokens)} tokens` : ''}
+            {model ? `${markedTokenFigure(model.fmtTokens(animTokens), tokensFloor)} tokens` : ''}
           </span>
         </div>
       )}

@@ -40,6 +40,11 @@ interface Data {
   ctxExec: CtxExecRow[];
   // What the export companion reports back; seeded per test.
   exportReport?: string;
+  // The persisted per-scan Unreadable Artifact state. Defaults to deriving
+  // from scan.sources; seed it explicitly to express the persisted state
+  // DIVERGING from this launch's scan verdict — the case the ≥ floor's
+  // one-provenance rule exists for.
+  unreadableArtifacts?: SourceUnreadable[];
 }
 
 export interface FakeLedger extends LedgerPort {
@@ -81,7 +86,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     switch (method) {
       case 'scan': return data.scan;
       case 'lastScan': return data.lastScan;
-      case 'unreadableArtifacts': return data.scan.sources.filter((s) => s.artifactsUnreadable > 0);
+      case 'unreadableArtifacts': return data.unreadableArtifacts ?? data.scan.sources.filter((s) => s.artifactsUnreadable > 0);
       case 'exportAntigravity': return data.exportReport ?? 'exported 0 Session(s), 0 generation(s)';
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
