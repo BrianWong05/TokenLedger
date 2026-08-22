@@ -729,7 +729,7 @@ fn day_where(f: &Filters) -> (String, Vec<Value>) {
 
 // Distinct resource names (skills / MCP servers / agents / memory files) seen
 // in range, per source — the Context Breakdown meta line and skill drill-down.
-pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResource>> {
+pub(crate) fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResource>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT DISTINCT source, kind, name FROM ctx_resources {where_sql} \
@@ -764,7 +764,7 @@ pub struct CtxBuckets {
 // which cache-write was its first; range/tool/model/project filters apply
 // OUTSIDE the window. A first-cw event outside the range means in-range
 // writes count as history — conservative, never inflates System.
-pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBuckets>> {
+pub(crate) fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBuckets>> {
     // A Hermes Usage Record is Session-granularity — one Record stands for a
     // whole Session of calls — so "first cache-write per session = System
     // prompt" cannot apply to it; its writes count as history, not System.
@@ -844,7 +844,7 @@ pub struct CtxToolRow {
 }
 
 // Per-tool weights in range. Ignores model/project.
-pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxToolRow>> {
+pub(crate) fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxToolRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, name, SUM(est_tokens), SUM(calls) FROM ctx_tools {where_sql} \
@@ -873,7 +873,7 @@ pub struct CtxSkillRow {
 
 // Per-skill weights in range, heaviest first. Ignores model/project, like
 // ctx_tools — these are context composition, not billed usage.
-pub fn ctx_skills(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSkillRow>> {
+pub(crate) fn ctx_skills(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSkillRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, name, SUM(est_tokens), SUM(uses) FROM ctx_skills_usage {where_sql} \
@@ -904,7 +904,7 @@ pub struct CtxExecRow {
 // `source` groups by producer but is claude-only by design: codex logs shell
 // commands as JSON arrays inside function_call payloads (no shell string for
 // exec_class), and the Overview renders exec facets only under the Bash node.
-pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
+pub(crate) fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, kind, exe, cmd, SUM(est_tokens), SUM(calls) FROM ctx_exec {where_sql} \
@@ -918,6 +918,94 @@ pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecR
         })
     })?;
     rows.collect()
+}
+
+/// Per-Source billed Context for a window. `messages`/`system`/`reasoning` and
+/// the estimated categories are NULL when the Source cannot attribute them —
+/// the same "—" vs zero rule the card uses, so series is not a second home.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct CtxSourceTotals {
+    pub source: String,
+    #[ts(type = "number")]
+    pub billed: i64,
+    #[ts(type = "number")]
+    pub reused: i64,
+    #[ts(type = "number | null")]
+    pub messages: Option<i64>,
+    #[ts(type = "number | null")]
+    pub system: Option<i64>,
+    #[ts(type = "number | null")]
+    pub reasoning: Option<i64>,
+    #[ts(type = "number | null")]
+    pub toolcalls: Option<i64>,
+    #[ts(type = "number | null")]
+    pub agents: Option<i64>,
+    #[ts(type = "number | null")]
+    pub mcp: Option<i64>,
+    #[ts(type = "number | null")]
+    pub skills: Option<i64>,
+}
+
+fn ctx_source_totals(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSourceTotals>> {
+    let (where_sql, params) = build_where(f);
+    let sql = format!(
+        "SELECT source, \
+         SUM(input_tokens) + SUM(cache_read_tokens) + SUM(cache_write_5m_tokens) + SUM(cache_write_1h_tokens), \
+         SUM(cache_read_tokens), \
+         SUM(ctx_messages), SUM(ctx_system), SUM(ctx_reasoning), \
+         SUM(ctx_toolcalls), SUM(ctx_agents), SUM(ctx_mcp), SUM(ctx_skills) \
+         FROM events {where_sql} GROUP BY source ORDER BY source"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxSourceTotals {
+            source: r.get(0)?,
+            billed: r.get(1)?,
+            reused: r.get(2)?,
+            messages: r.get(3)?,
+            system: r.get(4)?,
+            reasoning: r.get(5)?,
+            toolcalls: r.get(6)?,
+            agents: r.get(7)?,
+            mcp: r.get(8)?,
+            skills: r.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// One date window of the Ledger's Context. Source selection is a
+/// presentation filter, not a query filter — the report stacks every
+/// reporting Source.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LedgerContext {
+    pub resources: Vec<CtxResource>,
+    pub buckets: Vec<CtxBuckets>,
+    pub tools: Vec<CtxToolRow>,
+    pub skills: Vec<CtxSkillRow>,
+    pub exec: Vec<CtxExecRow>,
+    pub totals: Vec<CtxSourceTotals>,
+}
+
+/// Context for a date window as one snapshot, so a Scan cannot commit between
+/// the exact buckets, the weight tables, and the billed totals — the same
+/// reason `window` holds an unchecked transaction.
+pub fn context(conn: &Connection, f: &Filters) -> rusqlite::Result<LedgerContext> {
+    let read = conn.unchecked_transaction()?;
+    let out = LedgerContext {
+        resources: ctx_resources(conn, f)?,
+        buckets: ctx_buckets(conn, f)?,
+        tools: ctx_tools(conn, f)?,
+        skills: ctx_skills(conn, f)?,
+        exec: ctx_exec(conn, f)?,
+        totals: ctx_source_totals(conn, f)?,
+    };
+    read.finish()?;
+    Ok(out)
 }
 
 #[derive(Debug, Serialize, TS, PartialEq)]
@@ -2255,6 +2343,32 @@ mod tests {
 
         let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
         assert!(ctx_exec(&conn, &f2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn context_totals_keep_unattributable_distinct_from_zero() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut claude = ev("a", "claude", DAY1_TS, "m", None, 1, 100, 50, 20, 0, 0);
+        claude.ctx.messages = Some(1000);
+        claude.ctx.system = Some(90);
+        claude.ctx.toolcalls = Some(300);
+        let hermes = ev("h", "hermes", DAY1_TS, "hermes-local", None, 1, 300, 100, 0, 0, 0);
+        db::insert_events(&mut conn, &[claude, hermes]).unwrap();
+
+        let c = context(&conn, &Filters::default()).unwrap();
+        let cl = c.totals.iter().find(|t| t.source == "claude").unwrap();
+        assert_eq!(cl.billed, 120);
+        assert_eq!(cl.reused, 20);
+        assert_eq!(cl.messages, Some(1000));
+        assert_eq!(cl.system, Some(90));
+        assert_eq!(cl.toolcalls, Some(300));
+        assert_eq!(cl.agents, None, "a Source that cannot attribute a category yields no figure");
+        let hm = c.totals.iter().find(|t| t.source == "hermes").unwrap();
+        assert_eq!(hm.billed, 300);
+        assert_eq!(hm.messages, None);
+        assert_eq!(hm.toolcalls, None);
     }
 
     #[allow(clippy::too_many_arguments)]

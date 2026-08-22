@@ -96,7 +96,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     },
     [
       snap.allPoints, snap.hourPoints, snap.summary, snap.modelRows, snap.projectRows,
-      snap.ctxResources, snap.ctxBuckets, snap.ctxToolRows, snap.ctxExecRows,
+      snap.context,
       snap.range, snap.selected, snap.customFrom, snap.customTo,
       snap.from, snap.to, snap.firstIso, snap.lastIso,
       snap.reloading,

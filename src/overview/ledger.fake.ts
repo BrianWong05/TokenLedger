@@ -9,6 +9,8 @@ import type {
   SeriesPoint,
   Summary,
   LedgerWindow,
+  LedgerContext,
+  CtxSourceTotals,
   BreakdownRow,
   CtxResource,
   CtxBuckets,
@@ -39,6 +41,7 @@ interface Data {
   ctxTools: CtxToolRow[];
   ctxSkills: CtxSkillRow[];
   ctxExec: CtxExecRow[];
+  ctxTotals?: CtxSourceTotals[];
   // What the export companion reports back; seeded per test.
   exportReport?: string;
   // The persisted per-scan Unreadable Artifact state. Defaults to deriving
@@ -79,7 +82,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
   };
   const calls: Record<string, unknown[][]> = {
     scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], window: [], breakdown: [],
-    ctxResources: [], ctxBuckets: [], ctxTools: [], ctxSkills: [], ctxExec: [],
+    context: [],
   };
   const fails = new Map<string, unknown>();
   const holds = new Set<string>();
@@ -91,6 +94,40 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     models: data.modelRows,
     projects: data.projectRows,
     sources: data.sourceRows ?? data.modelRows,
+  });
+
+  const addOpt = (a: number | null, b: number | null): number | null =>
+    b == null ? a : (a ?? 0) + b;
+
+  const totalsFromPoints = (): CtxSourceTotals[] => {
+    const by = new Map<string, CtxSourceTotals>();
+    for (const p of data.dayPoints) {
+      const t = by.get(p.source) ?? {
+        source: p.source, billed: 0, reused: 0,
+        messages: null, system: null, reasoning: null,
+        toolcalls: null, agents: null, mcp: null, skills: null,
+      };
+      t.billed += p.inputTokens + p.cacheReadTokens + p.cacheWriteTokens;
+      t.reused += p.cacheReadTokens;
+      t.messages = addOpt(t.messages, p.ctxMessages);
+      t.system = addOpt(t.system, p.ctxSystem);
+      t.reasoning = addOpt(t.reasoning, p.ctxReasoning);
+      t.toolcalls = addOpt(t.toolcalls, p.ctxToolcalls);
+      t.agents = addOpt(t.agents, p.ctxAgents);
+      t.mcp = addOpt(t.mcp, p.ctxMcp);
+      t.skills = addOpt(t.skills, p.ctxSkills);
+      by.set(p.source, t);
+    }
+    return [...by.values()];
+  };
+
+  const contextOf = (): LedgerContext => ({
+    resources: data.ctxResources,
+    buckets: data.ctxBuckets,
+    tools: data.ctxTools,
+    skills: data.ctxSkills,
+    exec: data.ctxExec,
+    totals: data.ctxTotals ?? totalsFromPoints(),
   });
 
   const cannedFor = (method: string, args: unknown[]): unknown => {
@@ -106,11 +143,8 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
         if (args[0] === 'project') return data.projectRows;
         if (args[0] === 'tool') return data.sourceRows ?? data.modelRows;
         return data.modelRows;
-      case 'ctxResources': return data.ctxResources;
-      case 'ctxBuckets': return data.ctxBuckets;
-      case 'ctxTools': return data.ctxTools;
-      case 'ctxSkills': return data.ctxSkills;
-      default: return data.ctxExec;
+      case 'context': return contextOf();
+      default: throw new Error(`unknown ledger method ${method}`);
     }
   };
 
@@ -141,15 +175,9 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     summary: (filters: Filters) => respond('summary', [filters]) as Promise<Summary>,
     window: (filters: Filters) => respond('window', [filters]) as Promise<LedgerWindow>,
     windowPayload,
+    context: (filters: Filters) => respond('context', [filters]) as Promise<LedgerContext>,
     breakdown: (by: 'model' | 'project' | 'tool', filters: Filters) =>
       respond('breakdown', [by, filters]) as Promise<BreakdownRow[]>,
-    ctxResources: (filters: Filters) =>
-      respond('ctxResources', [filters]) as Promise<CtxResource[]>,
-    ctxBuckets: (filters: Filters) =>
-      respond('ctxBuckets', [filters]) as Promise<CtxBuckets[]>,
-    ctxTools: (filters: Filters) => respond('ctxTools', [filters]) as Promise<CtxToolRow[]>,
-    ctxSkills: (filters: Filters) => respond('ctxSkills', [filters]) as Promise<CtxSkillRow[]>,
-    ctxExec: (filters: Filters) => respond('ctxExec', [filters]) as Promise<CtxExecRow[]>,
     onPricesRebuilt: (cb: () => void) => {
       priceCbs.add(cb);
       return () => priceCbs.delete(cb);

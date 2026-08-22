@@ -14,13 +14,9 @@ import {
   trendSlice,
   smallMultiples,
   catTotals,
-  ctxTotals,
   dailyTableRows,
   projectTableRows,
   modelBars,
-  ctxMeta,
-  bucketView,
-  toolTree,
   profileView,
   type Bucket,
   type Day,
@@ -32,13 +28,11 @@ import {
   type TableRow,
   type BucketView,
   type ToolCategory,
-  skillBars,
   type SkillBar,
-  mcpBars,
-  execSignatures,
   type McpBar,
   effectiveBounds,
 } from './data';
+import { sourceContext } from './context';
 import type { ReportCtxCategory, ReportInput, ReportUsageRow } from './reportCsv';
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
 import type { Lang } from '../lib/i18n';
@@ -52,11 +46,8 @@ import type {
   SeriesPoint,
   Summary,
   LedgerWindow,
+  LedgerContext,
   BreakdownRow,
-  CtxResource,
-  CtxSkillRow,
-  CtxBuckets,
-  CtxToolRow,
   CtxExecRow,
   Settings,
 } from '../types';
@@ -106,11 +97,7 @@ export interface OverviewSnapshot {
   // block with the same Cost honesty the Model and Project blocks carry.
   sourceRows: BreakdownRow[];
   projectRows: BreakdownRow[];
-  ctxResources: CtxResource[];
-  ctxSkillRows: CtxSkillRow[];
-  ctxBuckets: CtxBuckets[];
-  ctxToolRows: CtxToolRow[];
-  ctxExecRows: CtxExecRow[];
+  context: LedgerContext;
   scanSources: SourceStatus[]; // per-source scan stats (eventsInserted / linesSkipped) for the footer
   // The persisted per-scan Unreadable Artifact state (ADR-0017) — the ≥
   // floor's one provenance, shared with the Menu Bar Extra's panel: honest
@@ -132,7 +119,7 @@ export interface OverviewSnapshot {
   to: string;
   loading: boolean;
   // A window-scoped reload is scheduled or in flight, so the fields it owns —
-  // summary, the three breakdowns, every ctx row — still describe the PREVIOUS
+  // summary, the three breakdowns, Context — still describe the PREVIOUS
   // window while range/from/to already name the new one. The headline uses the
   // series-derived total during this gap; other window-scoped figures and any
   // file export wait for this to clear.
@@ -164,7 +151,7 @@ type State = Omit<
 
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'modelRows', 'sourceRows', 'projectRows',
-  'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
+  'context',
   'scanSources', 'unreadableArtifacts', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading', 'provisional',
 ];
@@ -177,7 +164,7 @@ class Store implements OverviewStore {
   private state: State = {
     allPoints: null, hourPoints: [], summary: null,
     modelRows: [], sourceRows: [], projectRows: [],
-    ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxSkillRows: [], ctxExecRows: [],
+    context: { resources: [], buckets: [], tools: [], skills: [], exec: [], totals: [] },
     scanSources: [], unreadableArtifacts: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
   };
@@ -586,13 +573,13 @@ class Store implements OverviewStore {
     if (this.state.hourPoints.length && held !== hourDay) {
       this.patch({ hourPoints: [] });
     }
-    const apply = ([win, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour]: ReloadResult) =>
+    const apply = ([win, context, hour]: ReloadResult) =>
       this.patch({
         summary: win.summary,
         modelRows: win.models,
         projectRows: win.projects,
         sourceRows: win.sources,
-        ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows,
+        context,
         ...(hour ? { hourPoints: hour } : {}),
         fetchError: null,
       });
@@ -603,11 +590,7 @@ class Store implements OverviewStore {
     }
     Promise.all([
       L.window(filters),
-      L.ctxResources(filters),
-      L.ctxBuckets(filters),
-      L.ctxTools(filters),
-      L.ctxSkills(filters),
-      L.ctxExec(filters),
+      L.context(filters),
       hourDay ? L.series(filters, 'hour') : null,
     ])
       .then((result) =>
@@ -641,16 +624,8 @@ class Store implements OverviewStore {
 }
 
 // What one reload fetches, in Promise.all order: the date window's priced
-// facts, the five Context reads, and the optional hourly series.
-type ReloadResult = [
-  LedgerWindow,
-  CtxResource[],
-  CtxBuckets[],
-  CtxToolRow[],
-  CtxSkillRow[],
-  CtxExecRow[],
-  SeriesPoint[] | null,
-];
+// facts, Context, and the optional hourly series.
+type ReloadResult = [LedgerWindow, LedgerContext, SeriesPoint[] | null];
 
 export function createOverviewStore(ports?: {
   ledger?: LedgerPort;
@@ -721,14 +696,12 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     pts, s.hourPoints, s.range, s.from, s.to, s.firstIso, s.lastIso, now, lang,
   );
   const toolTotals = toolTotalsOfPoints(rpts);
-  const ctx = ctxTotals(rpts, s.selected);
+  const card = sourceContext(s.context, s.selected, lang);
   const win = windowOf(s.range, s.from, s.to, now);
   const unreadable = unreadableSourcesIn(
     s.unreadableArtifacts,
     win.fromIso ? Math.floor(parseLocalDate(win.fromIso).getTime() / 1000) : null,
   );
-  const selBuckets = s.ctxBuckets.find((b) => b.source === s.selected) ?? null;
-  const selToolRows = s.ctxToolRows.filter((r) => r.source === s.selected);
   return {
     rpts,
     total,
@@ -738,7 +711,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     modelTool,
     sparks: smallMultiples(trend),
     cats: catTotals(rpts, s.selected),
-    ctx,
+    ctx: card.totals,
     dailyRows: dailyTableRows(rpts),
     projectRows: projectTableRows(s.projectRows),
     // Custom shows the entered bounds (s.from/s.to), not the normalized window.
@@ -747,14 +720,12 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
         ? `${fmtIsoDateL(s.from, lang)} – ${fmtIsoDateL(s.to, lang)}`
         : overviewT(lang, RANGE_LONG_KEY[s.range]),
     grand: total || 1,
-    // Context drill-down derivations, memoized per snapshot here instead of per
-    // render in ContextBreakdown.
-    ctxView: bucketView(selBuckets),
-    ctxTree: toolTree(selToolRows, ctx.toolcalls),
-    selExecRows: s.ctxExecRows.filter((r) => r.source === s.selected),
-    selMeta: ctxMeta(s.ctxResources, s.selected, lang),
-    selSkills: skillBars(s.ctxSkillRows, s.selected),
-    selMcp: mcpBars(selToolRows, ctx.mcp),
+    ctxView: card.view,
+    ctxTree: card.tree,
+    selExecRows: card.exec,
+    selMeta: card.meta,
+    selSkills: card.skills,
+    selMcp: card.mcp,
     selModels: modelBars(s.modelRows, s.selected, toolTotals[s.selected]),
     tool: sourceMeta(s.selected),
     // `authoritative` is #14's own word for the figure the entrance reel is
@@ -886,44 +857,35 @@ export function selectReportInput(
 
   // Every Source in the catalog — toolTotalsOfPoints seeds them all, so a
   // Source absent from the window is walked too and simply contributes nothing:
-  // ctxTotals reports null for every category and each helper below returns []
-  // for a Source it has no rows for. The file therefore does not depend on which
-  // card happened to be selected, and a Source with usage but no Context
-  // capability yields no rows rather than a row of zeros.
+  // sourceContext reports null for every category and empty lists. The file
+  // therefore does not depend on which card happened to be selected, and a
+  // Source with usage but no Context capability yields no rows rather than a
+  // row of zeros.
   for (const key of Object.keys(view.toolTotals).sort()) {
-    const ctx = ctxTotals(view.rpts, key);
+    const card = sourceContext(s.context, key);
     for (const category of CTX_EXACT) {
-      const v = ctx[category];
+      const v = card.totals[category];
       if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'exact' });
     }
     for (const category of CTX_ESTIMATED) {
-      const v = ctx[category];
+      const v = card.totals[category];
       if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'estimated' });
     }
-    const toolRows = s.ctxToolRows.filter((r) => r.source === key);
-    const tree = toolTree(toolRows, ctx.toolcalls);
-    for (const cat of tree) {
+    for (const cat of card.tree) {
       for (const leaf of cat.tools) {
         ctxTools.push({ source: key, category: cat.label, name: leaf.name, estTokens: leaf.tokens, calls: leaf.calls });
       }
     }
-    for (const m of mcpBars(toolRows, ctx.mcp)) {
+    for (const m of card.mcp) {
       ctxMcp.push({ source: key, name: m.name, estTokens: m.tokens, calls: m.calls });
     }
-    // The raw rows, not skillBars: that helper is card layout — it keeps the
-    // top ten and folds the rest into one nameless row, which here would drop
-    // skills 11..N from a report whose whole point is completeness and write a
-    // total row into a Context block with an empty first cell meaning "unknown".
-    for (const sk of s.ctxSkillRows.filter((r) => r.source === key)) {
+    // The raw rows, not the card's folded skillBars: that helper keeps the top
+    // ten and folds the rest into one nameless row, which here would drop
+    // skills 11..N from a report whose whole point is completeness.
+    for (const sk of card.skillRows) {
       ctxSkills.push({ source: key, name: sk.name, estTokens: sk.estTokens, uses: sk.uses });
     }
-    // Allocated against the Bash leaf, exactly as the drill-down allocates its
-    // facets: the raw ctx_exec weights are content sizes, while the leaf holds
-    // that Source's share of the billed Tool-calls total, so writing the raw
-    // figures would put this block on a scale no other block in the file — and
-    // no panel the file was taken from — is on.
-    const bashLeaf = tree.flatMap((c) => c.tools).find((leaf) => leaf.name === 'Bash') ?? null;
-    for (const e of execSignatures(s.ctxExecRows.filter((r) => r.source === key), bashLeaf?.tokens ?? null)) {
+    for (const e of card.signatures) {
       ctxExec.push({ source: key, exe: e.exe, cmd: e.cmd, estTokens: e.tokens, calls: e.calls });
     }
   }

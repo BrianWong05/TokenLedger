@@ -68,8 +68,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
-    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, LedgerWindow,
-    SeriesPoint, SourceLimits, Summary,
+    BreakdownRow, Filters, LedgerContext, LedgerWindow, SeriesPoint, SourceLimits, Summary,
 };
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
@@ -450,32 +449,10 @@ fn breakdown(
     read(&state, |db| queries::breakdown(db, &by, &filters))
 }
 
+/// One date window of Context. Overview range reloads use this.
 #[tauri::command(async)]
-fn ctx_resources(
-    state: State<'_, AppState>,
-    filters: Filters,
-) -> Result<Vec<CtxResource>, String> {
-    read(&state, |db| queries::ctx_resources(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBuckets>, String> {
-    read(&state, |db| queries::ctx_buckets(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
-    read(&state, |db| queries::ctx_tools(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSkillRow>, String> {
-    read(&state, |db| queries::ctx_skills(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
-    read(&state, |db| queries::ctx_exec(db, &filters))
+fn context(state: State<'_, AppState>, filters: Filters) -> Result<LedgerContext, String> {
+    read(&state, |db| queries::context(db, &filters))
 }
 
 /// The current state of every Limit the Ledger holds Readings for. Takes no
@@ -861,11 +838,7 @@ pub fn run() {
             window,
             series,
             breakdown,
-            ctx_resources,
-            ctx_buckets,
-            ctx_tools,
-            ctx_skills,
-            ctx_exec,
+            context,
             limits,
             check_live_limits,
             model_pricing,
