@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -39,7 +39,7 @@ pub struct SourceRoots {
     /// place to write, and a missing directory is not an error.
     pub limit_exports: PathBuf,
     env: HashMap<String, OsString>,
-    artifacts: HashMap<(String, String), Vec<PathBuf>>,
+    artifacts: BTreeMap<String, BTreeMap<String, Vec<PathBuf>>>,
     /// Production reads the process environment; a planted home (`at`) does not,
     /// so a developer's `HERMES_HOME` cannot leak into a fixture or validation.
     live_env: bool,
@@ -57,7 +57,7 @@ impl SourceRoots {
             home: home.into(),
             limit_exports: PathBuf::new(),
             env: HashMap::new(),
-            artifacts: HashMap::new(),
+            artifacts: BTreeMap::new(),
             live_env: false,
         }
     }
@@ -67,14 +67,18 @@ impl SourceRoots {
         self
     }
 
+    #[cfg(test)]
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<OsString>) -> Self {
         self.env.insert(key.into(), value.into());
         self
     }
 
+    #[cfg(test)]
     pub fn with_artifact(mut self, source: &str, id: &str, path: PathBuf) -> Self {
         self.artifacts
-            .entry((source.to_string(), id.to_string()))
+            .entry(source.to_string())
+            .or_default()
+            .entry(id.to_string())
             .or_default()
             .push(path);
         self
@@ -82,6 +86,7 @@ impl SourceRoots {
 
     /// Overlay `path` onto every catalog Artifact of `source`. Validation and
     /// tests plant one scan root without naming a per-Source Artifact id.
+    #[cfg(test)]
     pub fn with_source_path(mut self, source: &str, path: PathBuf) -> Self {
         let ids: Vec<String> = source_catalog::source(source)
             .map(|definition| {
@@ -100,17 +105,21 @@ impl SourceRoots {
 
     fn overlay(&self, source: &str, id: &str) -> Option<&[PathBuf]> {
         self.artifacts
-            .get(&(source.to_string(), id.to_string()))
+            .get(source)?
+            .get(id)
             .map(Vec::as_slice)
             .filter(|paths| !paths.is_empty())
     }
 
+    /// The first planted path for one Artifact. Every resolver that answers with
+    /// a single root starts here, so "an overlay wins" is written once.
+    fn overlay_first(&self, source: &str, id: &str) -> Option<PathBuf> {
+        self.overlay(source, id).map(|paths| paths[0].clone())
+    }
+
     fn overlays_for(&self, source: &str) -> Option<Vec<PathBuf>> {
         let mut out = Vec::new();
-        for ((src, _), paths) in &self.artifacts {
-            if src != source {
-                continue;
-            }
+        for paths in self.artifacts.get(source).into_iter().flat_map(BTreeMap::values) {
             for path in paths {
                 push_unique_root(&mut out, path.clone());
             }
@@ -137,7 +146,307 @@ impl SourceRoots {
         let name = source_catalog::artifact(source, artifact)?.environment.as_deref()?;
         self.env_os(name)
     }
-}
+
+    fn artifact_path(&self, source: &str, id: &str) -> PathBuf {
+        self.overlay_first(source, id)
+            .unwrap_or_else(|| catalog_root(&self.home, source, id))
+    }
+
+    pub(crate) fn cline_roots(&self, platform: &str) -> Vec<PathBuf> {
+        if let Some(paths) = self.overlays_for("cline") {
+            return paths;
+        }
+        let mut out = Vec::new();
+        for artifact in default_artifacts_on_platform("cline", platform) {
+            // The chain below picks exactly one of these; scanning them here too
+            // would add a second root for the same tasks directory.
+            if CLINE_CLI_ROOT_CHAIN.contains(&artifact.id.as_str()) {
+                continue;
+            }
+            if let Some(path) = artifact.path.as_deref() {
+                push_unique_root(&mut out, self.home.join(path));
+            }
+        }
+
+        let cli_root = self
+            .catalog_env("cline", "cli-data")
+            .and_then(|value| visible_path(&self.home, &value))
+            .or_else(|| {
+                self.catalog_env("cline", "cli-sandbox")
+                    .and_then(|value| visible_path(&self.home, &value))
+            })
+            .or_else(|| catalog_root_for_platform(&self.home, "cline", "cli-default-data", platform));
+        if let Some(path) = cli_root {
+            push_unique_root(&mut out, path);
+        }
+        out
+    }
+
+    fn codex_session_roots(&self) -> Vec<PathBuf> {
+        if let Some(paths) = self.overlay("codex", "sessions") {
+            return paths.to_vec();
+        }
+        let mut out = vec![catalog_root(&self.home, "codex", "sessions")];
+        let suffix = source_catalog::artifact("codex", "home")
+            .and_then(|artifact| artifact.suffix.as_deref())
+            .unwrap_or_else(|| panic!("source catalog must define codex.home suffix"));
+        if let Some(root) = self
+            .catalog_env("codex", "home")
+            .and_then(|value| visible_path(&self.home, &value))
+        {
+            push_unique_root(&mut out, root.join(suffix));
+        }
+        out
+    }
+
+    pub(crate) fn pi_session_roots(&self) -> Vec<PathBuf> {
+        self.session_roots_with_overrides("pi")
+    }
+
+    fn omp_session_roots(&self) -> Vec<PathBuf> {
+        self.session_roots_with_overrides("omp")
+    }
+
+    fn session_roots_with_overrides(&self, source: &str) -> Vec<PathBuf> {
+        if let Some(paths) = self.overlay(source, "sessions") {
+            return paths.to_vec();
+        }
+        let mut out = vec![catalog_root(&self.home, source, "sessions")];
+        append_session_override(
+            &mut out,
+            &self.home,
+            source,
+            "session-dir",
+            self.catalog_env(source, "session-dir").as_deref(),
+        );
+        append_session_override(
+            &mut out,
+            &self.home,
+            source,
+            "agent-dir",
+            self.catalog_env(source, "agent-dir").as_deref(),
+        );
+        out
+    }
+
+    pub(crate) fn goose_session_roots(&self, platform: &str) -> Vec<PathBuf> {
+        if let Some(paths) = self.overlays_for("goose") {
+            return paths;
+        }
+        if let Some(root) = self
+            .catalog_env("goose", "root")
+            .and_then(|value| visible_path(&self.home, &value))
+            .filter(|path| path.is_absolute())
+        {
+            return vec![root.join(catalog_suffix("goose", "root"))];
+        }
+        // Catalog order is scan order: Goose's current per-platform directory is
+        // listed before the pre-1.10 `.local/share/goose/sessions` it replaced.
+        let mut out = Vec::new();
+        for artifact in default_artifacts_on_platform("goose", platform) {
+            if let Some(path) = artifact.path.as_deref() {
+                push_unique_root(&mut out, self.home.join(path));
+            }
+        }
+        out
+    }
+
+    pub(crate) fn opencode_roots(&self) -> (PathBuf, PathBuf, Option<PathBuf>) {
+        let data = self
+            .overlay_first("opencode", "data")
+            .or_else(|| {
+                self.catalog_env("opencode", "data")
+                    .and_then(|value| visible_path(&self.home, &value))
+                    .filter(|path| path.is_absolute())
+            })
+            .or_else(|| {
+                let rel = source_catalog::artifact("opencode", "xdg-data")
+                    .and_then(|artifact| artifact.path.clone())?;
+                self.catalog_env("opencode", "xdg-data")
+                    .and_then(|value| visible_path(&self.home, &value))
+                    .filter(|path| path.is_absolute())
+                    .map(|path| path.join(rel))
+            })
+            .unwrap_or_else(|| catalog_root(&self.home, "opencode", "data"));
+        let legacy = self
+            .overlay_first("opencode", "legacy-storage")
+            .unwrap_or_else(|| data.join(catalog_suffix("opencode", "legacy-storage")));
+        let database = self
+            .overlay_first("opencode", "db")
+            .or_else(|| {
+                self.catalog_env("opencode", "db")
+                    .and_then(|value| visible_path(&self.home, &value))
+                    .filter(|path| path.is_absolute())
+            });
+        (data, legacy, database)
+    }
+
+    pub(crate) fn kilo_db_root(&self, platform: &str) -> PathBuf {
+        if let Some(paths) = self.overlays_for("kilo") {
+            return paths[0].clone();
+        }
+        let default = default_artifacts_on_platform("kilo", platform)
+            .into_iter()
+            .next()
+            .and_then(|artifact| artifact.path.as_deref())
+            .map(|path| self.home.join(path))
+            .unwrap_or_else(|| panic!("source catalog must define a kilo database path for {platform}"));
+        let Some(value) = self
+            .catalog_env("kilo", "db")
+            .and_then(|value| visible_path(&self.home, &value))
+        else {
+            return default;
+        };
+        if value.is_absolute() {
+            return value;
+        }
+        default
+            .parent()
+            .map(|parent| parent.join(value))
+            .unwrap_or(default)
+    }
+
+    /// Qoder's roots of one Artifact `kind`. The IDE ships as two products —
+    /// QoderCN and the plain-Qoder edition — which may coexist on one machine,
+    /// and the CLI keeps its transcripts in its own directories; all of them
+    /// belong to the one Qoder Source.
+    fn qoder_roots(&self, platform: &str, kind: &str) -> Vec<PathBuf> {
+        let mut over = Vec::new();
+        for artifact in catalog_artifacts("qoder").iter().filter(|a| a.kind == kind) {
+            for path in self.overlay("qoder", &artifact.id).unwrap_or(&[]) {
+                push_unique_root(&mut over, path.clone());
+            }
+        }
+        if !over.is_empty() {
+            return over;
+        }
+        default_artifacts_on_platform("qoder", platform)
+            .into_iter()
+            .filter(|artifact| artifact.kind == kind)
+            .filter_map(|artifact| artifact.path.as_deref().map(|path| self.home.join(path)))
+            .collect()
+    }
+
+    pub(crate) fn zed_database_roots(&self, platform: &str) -> Vec<PathBuf> {
+        if let Some(paths) = self.overlays_for("zed") {
+            return paths;
+        }
+        let mut out = Vec::new();
+        let override_data_home = if platform == "linux" {
+            self.catalog_env("zed", "database-flatpak")
+                .and_then(|value| visible_path(&self.home, &value))
+                .filter(|path| path.is_absolute())
+                .map(|path| (path, "database-flatpak"))
+                .or_else(|| {
+                    self.catalog_env("zed", "database-xdg")
+                        .and_then(|value| visible_path(&self.home, &value))
+                        .filter(|path| path.is_absolute())
+                        .map(|path| (path, "database-xdg"))
+                })
+        } else {
+            None
+        };
+
+        if let Some((data_home, artifact)) = override_data_home {
+            if let Some(path) = source_catalog::artifact("zed", artifact)
+                .and_then(|artifact| artifact.path.as_deref())
+            {
+                push_unique_root(&mut out, data_home.join(path));
+            }
+        } else {
+            for artifact in default_artifacts_on_platform("zed", platform) {
+                if let Some(path) = artifact.path.as_deref() {
+                    push_unique_root(&mut out, self.home.join(path));
+                }
+            }
+        }
+        out
+    }
+
+    fn hermes_db(&self) -> PathBuf {
+        if let Some(path) = self.overlay_first("hermes", "state") {
+            return path;
+        }
+        let home = self
+            .catalog_env("hermes", "state")
+            .and_then(|value| visible_path(&self.home, &value))
+            .unwrap_or_else(|| {
+                catalog_root(&self.home, "hermes", "state")
+                    .parent()
+                    .expect("Hermes state artifact must have a parent directory")
+                    .to_path_buf()
+            });
+        home.join(source_catalog::artifact_filename("hermes", "state"))
+    }
+
+    fn gemini_paths(&self) -> (PathBuf, PathBuf) {
+        if let (Some(tmp), Some(projects)) = (
+            self.overlay("gemini", "tmp"),
+            self.overlay("gemini", "projects"),
+        ) {
+            return (tmp[0].clone(), projects[0].clone());
+        }
+        if let Some(tmp) = self.overlay("gemini", "tmp") {
+            let tmp = &tmp[0];
+            return (
+                tmp.clone(),
+                tmp.parent()
+                    .unwrap_or(tmp)
+                    .join(source_catalog::artifact_filename("gemini", "projects")),
+            );
+        }
+        let gemini_dir = catalog_artifact_parent("gemini", "tmp");
+        let gemini_home = self
+            .catalog_env("gemini", "tmp")
+            .and_then(|value| visible_path(&self.home, &value))
+            .map(|path| path.join(&gemini_dir))
+            .unwrap_or_else(|| self.home.join(&gemini_dir));
+        (
+            gemini_home.join(source_catalog::artifact_filename("gemini", "tmp")),
+            gemini_home.join(source_catalog::artifact_filename("gemini", "projects")),
+        )
+    }
+
+    fn grok_home(&self) -> PathBuf {
+        self.catalog_env("grok", "sessions")
+            .and_then(|value| visible_path(&self.home, &value))
+            .unwrap_or_else(|| self.home.join(catalog_artifact_parent("grok", "sessions")))
+    }
+
+    fn grok_sessions(&self) -> PathBuf {
+        if let Some(path) = self.overlay_first("grok", "sessions") {
+            return path;
+        }
+        self.grok_home().join(source_catalog::artifact_filename("grok", "sessions"))
+    }
+
+    /// The CLI's own unified log, where every credits snapshot it fetches lands.
+    /// A separate artifact from the sessions above, discovered and failing
+    /// independently of them (ADR-0015).
+    fn grok_logs(&self) -> PathBuf {
+        if let Some(path) = self.overlay_first("grok", "logs") {
+            return path;
+        }
+        self.grok_home().join(catalog_artifact_tail("grok", "logs"))
+    }
+
+    fn copilot_db(&self) -> PathBuf {
+        if let Some(path) = self.overlay_first("copilot", "session-store") {
+            return path;
+        }
+        let home = self
+            .catalog_env("copilot", "session-store")
+            .and_then(|value| visible_path(&self.home, &value))
+            .unwrap_or_else(|| self.home.join(catalog_artifact_parent("copilot", "session-store")));
+        home.join(source_catalog::artifact_filename("copilot", "session-store"))
+    }
+    }
+
+/// Cline's CLI data directory, in precedence order: two environment overrides,
+/// then the default path. Exactly one of these is scanned — they all name the
+/// same tasks directory — which is why `cline_roots` skips them in its walk of
+/// the editor Artifacts.
+const CLINE_CLI_ROOT_CHAIN: [&str; 3] = ["cli-data", "cli-sandbox", "cli-default-data"];
 
 fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
     let path = source_catalog::artifact(source, artifact)
@@ -146,12 +455,6 @@ fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
     home.join(path)
 }
 
-fn artifact_path(roots: &SourceRoots, source: &str, id: &str) -> PathBuf {
-    if let Some(paths) = roots.overlay(source, id) {
-        return paths[0].clone();
-    }
-    catalog_root(&roots.home, source, id)
-}
 
 fn catalog_root_for_platform(
     home: &Path,
@@ -185,7 +488,7 @@ fn catalog_suffix(source: &str, id: &str) -> String {
         .unwrap_or_else(|| panic!("source catalog must define {source}.{id} suffix"))
 }
 
-fn default_path_on_platform(
+fn default_artifacts_on_platform(
     source: &str,
     platform: &str,
 ) -> Vec<&'static source_catalog::ArtifactDescriptor> {
@@ -199,34 +502,6 @@ fn default_path_on_platform(
         .collect()
 }
 
-pub(crate) fn cline_roots(roots: &SourceRoots, platform: &str) -> Vec<PathBuf> {
-    if let Some(paths) = roots.overlays_for("cline") {
-        return paths;
-    }
-    let mut out = Vec::new();
-    for artifact in default_path_on_platform("cline", platform) {
-        if artifact.id.starts_with("cli") {
-            continue;
-        }
-        if let Some(path) = artifact.path.as_deref() {
-            push_unique_root(&mut out, roots.home.join(path));
-        }
-    }
-
-    let cli_root = roots
-        .catalog_env("cline", "cli-data")
-        .and_then(|value| visible_path(&roots.home, &value))
-        .or_else(|| {
-            roots
-                .catalog_env("cline", "cli-sandbox")
-                .and_then(|value| visible_path(&roots.home, &value))
-        })
-        .or_else(|| catalog_root_for_platform(&roots.home, "cline", "cli-default-data", platform));
-    if let Some(path) = cli_root {
-        push_unique_root(&mut out, path);
-    }
-    out
-}
 
 fn push_unique_root(roots: &mut Vec<PathBuf>, path: PathBuf) {
     let normalized = normalized_path(&path);
@@ -249,302 +524,21 @@ fn normalized_path(path: &Path) -> PathBuf {
     normalized
 }
 
-fn codex_session_roots(roots: &SourceRoots) -> Vec<PathBuf> {
-    if let Some(paths) = roots.overlay("codex", "sessions") {
-        return paths.to_vec();
-    }
-    let mut out = vec![catalog_root(&roots.home, "codex", "sessions")];
-    let suffix = source_catalog::artifact("codex", "home")
-        .and_then(|artifact| artifact.suffix.as_deref())
-        .unwrap_or_else(|| panic!("source catalog must define codex.home suffix"));
-    if let Some(root) = roots
-        .catalog_env("codex", "home")
-        .and_then(|value| visible_path(&roots.home, &value))
-    {
-        push_unique_root(&mut out, root.join(suffix));
-    }
-    out
-}
 
-pub(crate) fn pi_session_roots(roots: &SourceRoots) -> Vec<PathBuf> {
-    session_roots_with_overrides(roots, "pi")
-}
 
-fn omp_session_roots(roots: &SourceRoots) -> Vec<PathBuf> {
-    session_roots_with_overrides(roots, "omp")
-}
 
-fn session_roots_with_overrides(roots: &SourceRoots, source: &str) -> Vec<PathBuf> {
-    if let Some(paths) = roots.overlay(source, "sessions") {
-        return paths.to_vec();
-    }
-    let mut out = vec![catalog_root(&roots.home, source, "sessions")];
-    append_session_override(
-        &mut out,
-        &roots.home,
-        source,
-        "session-dir",
-        roots.catalog_env(source, "session-dir").as_deref(),
-    );
-    append_session_override(
-        &mut out,
-        &roots.home,
-        source,
-        "agent-dir",
-        roots.catalog_env(source, "agent-dir").as_deref(),
-    );
-    out
-}
 
-pub(crate) fn goose_session_roots(roots: &SourceRoots, platform: &str) -> Vec<PathBuf> {
-    if let Some(paths) = roots.overlays_for("goose") {
-        return paths;
-    }
-    if let Some(root) = roots
-        .catalog_env("goose", "root")
-        .and_then(|value| visible_path(&roots.home, &value))
-        .filter(|path| path.is_absolute())
-    {
-        return vec![root.join(catalog_suffix("goose", "root"))];
-    }
-    let mut exclusive = Vec::new();
-    let mut shared = Vec::new();
-    for artifact in default_path_on_platform("goose", platform) {
-        if artifact.platforms.len() == 1 && artifact.platforms[0] != "all" {
-            exclusive.push(artifact);
-        } else {
-            shared.push(artifact);
-        }
-    }
-    let mut out = Vec::new();
-    for artifact in exclusive.into_iter().chain(shared) {
-        if let Some(path) = artifact.path.as_deref() {
-            push_unique_root(&mut out, roots.home.join(path));
-        }
-    }
-    out
-}
 
-pub(crate) fn opencode_roots(roots: &SourceRoots) -> (PathBuf, PathBuf, Option<PathBuf>) {
-    let data = roots
-        .overlay("opencode", "data")
-        .map(|paths| paths[0].clone())
-        .or_else(|| {
-            roots
-                .catalog_env("opencode", "data")
-                .and_then(|value| visible_path(&roots.home, &value))
-                .filter(|path| path.is_absolute())
-        })
-        .or_else(|| {
-            let rel = source_catalog::artifact("opencode", "xdg-data")
-                .and_then(|artifact| artifact.path.clone())?;
-            roots
-                .catalog_env("opencode", "xdg-data")
-                .and_then(|value| visible_path(&roots.home, &value))
-                .filter(|path| path.is_absolute())
-                .map(|path| path.join(rel))
-        })
-        .unwrap_or_else(|| catalog_root(&roots.home, "opencode", "data"));
-    let legacy = roots
-        .overlay("opencode", "legacy-storage")
-        .map(|paths| paths[0].clone())
-        .unwrap_or_else(|| data.join(catalog_suffix("opencode", "legacy-storage")));
-    let database = roots
-        .overlay("opencode", "db")
-        .map(|paths| paths[0].clone())
-        .or_else(|| {
-            roots
-                .catalog_env("opencode", "db")
-                .and_then(|value| visible_path(&roots.home, &value))
-                .filter(|path| path.is_absolute())
-        });
-    (data, legacy, database)
-}
 
-pub(crate) fn kilo_db_root(roots: &SourceRoots, platform: &str) -> PathBuf {
-    if let Some(paths) = roots.overlays_for("kilo") {
-        return paths[0].clone();
-    }
-    let default = default_path_on_platform("kilo", platform)
-        .into_iter()
-        .next()
-        .and_then(|artifact| artifact.path.as_deref())
-        .map(|path| roots.home.join(path))
-        .unwrap_or_else(|| panic!("source catalog must define a kilo database path for {platform}"));
-    let Some(value) = roots
-        .catalog_env("kilo", "db")
-        .and_then(|value| visible_path(&roots.home, &value))
-    else {
-        return default;
-    };
-    if value.is_absolute() {
-        return value;
-    }
-    default
-        .parent()
-        .map(|parent| parent.join(value))
-        .unwrap_or(default)
-}
 
-fn qoder_database_roots(roots: &SourceRoots, platform: &str) -> Vec<PathBuf> {
-    let mut over = Vec::new();
-    for artifact in catalog_artifacts("qoder") {
-        if artifact.kind != "file" {
-            continue;
-        }
-        if let Some(paths) = roots.overlay("qoder", &artifact.id) {
-            for path in paths {
-                push_unique_root(&mut over, path.clone());
-            }
-        }
-    }
-    if !over.is_empty() {
-        return over;
-    }
-    // The IDE ships as two products — QoderCN and the plain-Qoder edition —
-    // which may coexist on one machine; both databases belong to one Source.
-    default_path_on_platform("qoder", platform)
-        .into_iter()
-        .filter(|artifact| artifact.kind == "file")
-        .filter_map(|artifact| artifact.path.as_deref().map(|path| roots.home.join(path)))
-        .collect()
-}
 
-fn qoder_cli_project_roots(roots: &SourceRoots) -> Vec<PathBuf> {
-    let mut over = Vec::new();
-    for artifact in catalog_artifacts("qoder") {
-        if artifact.kind != "directory" {
-            continue;
-        }
-        if let Some(paths) = roots.overlay("qoder", &artifact.id) {
-            for path in paths {
-                push_unique_root(&mut over, path.clone());
-            }
-        }
-    }
-    if !over.is_empty() {
-        return over;
-    }
-    catalog_artifacts("qoder")
-        .iter()
-        .filter(|artifact| artifact.kind == "directory" && artifact.path.is_some())
-        .filter_map(|artifact| artifact.path.as_deref().map(|path| roots.home.join(path)))
-        .collect()
-}
 
-pub(crate) fn zed_database_roots(roots: &SourceRoots, platform: &str) -> Vec<PathBuf> {
-    if let Some(paths) = roots.overlays_for("zed") {
-        return paths;
-    }
-    let mut out = Vec::new();
-    let override_data_home = if platform == "linux" {
-        roots
-            .catalog_env("zed", "database-flatpak")
-            .and_then(|value| visible_path(&roots.home, &value))
-            .filter(|path| path.is_absolute())
-            .map(|path| (path, "database-flatpak"))
-            .or_else(|| {
-                roots
-                    .catalog_env("zed", "database-xdg")
-                    .and_then(|value| visible_path(&roots.home, &value))
-                    .filter(|path| path.is_absolute())
-                    .map(|path| (path, "database-xdg"))
-            })
-    } else {
-        None
-    };
 
-    if let Some((data_home, artifact)) = override_data_home {
-        if let Some(path) = source_catalog::artifact("zed", artifact)
-            .and_then(|artifact| artifact.path.as_deref())
-        {
-            push_unique_root(&mut out, data_home.join(path));
-        }
-    } else {
-        for artifact in default_path_on_platform("zed", platform) {
-            if let Some(path) = artifact.path.as_deref() {
-                push_unique_root(&mut out, roots.home.join(path));
-            }
-        }
-    }
-    out
-}
 
-fn hermes_db(roots: &SourceRoots) -> PathBuf {
-    if let Some(paths) = roots.overlay("hermes", "state") {
-        return paths[0].clone();
-    }
-    let home = roots
-        .catalog_env("hermes", "state")
-        .and_then(|value| visible_path(&roots.home, &value))
-        .unwrap_or_else(|| {
-            catalog_root(&roots.home, "hermes", "state")
-                .parent()
-                .expect("Hermes state artifact must have a parent directory")
-                .to_path_buf()
-        });
-    home.join(source_catalog::artifact_filename("hermes", "state"))
-}
 
-fn gemini_paths(roots: &SourceRoots) -> (PathBuf, PathBuf) {
-    if let (Some(tmp), Some(projects)) = (
-        roots.overlay("gemini", "tmp"),
-        roots.overlay("gemini", "projects"),
-    ) {
-        return (tmp[0].clone(), projects[0].clone());
-    }
-    if let Some(tmp) = roots.overlay("gemini", "tmp") {
-        let tmp = &tmp[0];
-        return (
-            tmp.clone(),
-            tmp.parent()
-                .unwrap_or(tmp)
-                .join(source_catalog::artifact_filename("gemini", "projects")),
-        );
-    }
-    let gemini_dir = catalog_artifact_parent("gemini", "tmp");
-    let gemini_home = roots
-        .catalog_env("gemini", "tmp")
-        .and_then(|value| visible_path(&roots.home, &value))
-        .map(|path| path.join(&gemini_dir))
-        .unwrap_or_else(|| roots.home.join(&gemini_dir));
-    (
-        gemini_home.join(source_catalog::artifact_filename("gemini", "tmp")),
-        gemini_home.join(source_catalog::artifact_filename("gemini", "projects")),
-    )
-}
 
-fn grok_home(roots: &SourceRoots) -> PathBuf {
-    roots
-        .catalog_env("grok", "sessions")
-        .and_then(|value| visible_path(&roots.home, &value))
-        .unwrap_or_else(|| roots.home.join(catalog_artifact_parent("grok", "sessions")))
-}
 
-fn grok_sessions(roots: &SourceRoots) -> PathBuf {
-    if let Some(paths) = roots.overlay("grok", "sessions") {
-        return paths[0].clone();
-    }
-    grok_home(roots).join(source_catalog::artifact_filename("grok", "sessions"))
-}
 
-fn grok_logs(roots: &SourceRoots) -> PathBuf {
-    if let Some(paths) = roots.overlay("grok", "logs") {
-        return paths[0].clone();
-    }
-    grok_home(roots).join(catalog_artifact_tail("grok", "logs"))
-}
-
-fn copilot_db(roots: &SourceRoots) -> PathBuf {
-    if let Some(paths) = roots.overlay("copilot", "session-store") {
-        return paths[0].clone();
-    }
-    let home = roots
-        .catalog_env("copilot", "session-store")
-        .and_then(|value| visible_path(&roots.home, &value))
-        .unwrap_or_else(|| roots.home.join(catalog_artifact_parent("copilot", "session-store")));
-    home.join(source_catalog::artifact_filename("copilot", "session-store"))
-}
 
 fn catalog_artifact_path(source: &str, artifact: &str) -> &'static str {
     source_catalog::artifact(source, artifact)
@@ -645,53 +639,58 @@ fn run_scan_sources(
             Err(error) => unavailable_source_status(&source.key, error),
             Ok(()) => match source.key.as_str() {
                 "claude" => run_one(&source.key, || {
-                    scan_claude(conn, &artifact_path(roots, "claude", "projects"))
+                    scan_claude(conn, &roots.artifact_path("claude", "projects"))
                 }),
-                "codex" => run_one(&source.key, || scan_codex(conn, &codex_session_roots(roots))),
-                "copilot" => run_one(&source.key, || scan_copilot(conn, &copilot_db(roots))),
+                "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex_session_roots())),
+                "copilot" => run_one(&source.key, || scan_copilot(conn, &roots.copilot_db())),
                 "gemini" => run_one(&source.key, || {
-                    let (tmp, projects) = gemini_paths(roots);
+                    let (tmp, projects) = roots.gemini_paths();
                     scan_gemini(conn, &tmp, &projects)
                 }),
-                "hermes" => run_one(&source.key, || scan_hermes(conn, &hermes_db(roots))),
+                "hermes" => run_one(&source.key, || scan_hermes(conn, &roots.hermes_db())),
                 "grok" => {
                     run_one(&source.key, || {
-                        scan_grok(conn, &grok_sessions(roots), &grok_logs(roots))
+                        scan_grok(conn, &roots.grok_sessions(), &roots.grok_logs())
                     })
                 }
+                // The IDE writes under either `antigravity/` or `antigravity-ide/`
+                // depending on its `--app_data_dir`, and the CLI under
+                // `antigravity-cli/`. All three share one SQLite schema, and all
+                // three are scanned — a dir left out is a dir whose exports
+                // nothing would ever read.
                 "antigravity" => run_one(&source.key, || {
-                    let conversations = artifact_path(roots, "antigravity", "conversations");
-                    let ide = artifact_path(roots, "antigravity", "ide-conversations");
-                    let cli = artifact_path(roots, "antigravity", "cli-conversations");
+                    let conversations = roots.artifact_path("antigravity", "conversations");
+                    let ide = roots.artifact_path("antigravity", "ide-conversations");
+                    let cli = roots.artifact_path("antigravity", "cli-conversations");
                     scan_antigravity(conn, &[conversations.as_path(), ide.as_path(), cli.as_path()])
                 }),
                 "goose" => run_one(&source.key, || {
-                    scan_goose(conn, &goose_session_roots(roots, target_platform))
+                    scan_goose(conn, &roots.goose_session_roots(target_platform))
                 }),
-                "pi" => run_one(&source.key, || scan_pi(conn, &pi_session_roots(roots))),
-                "omp" => run_one(&source.key, || scan_omp(conn, &omp_session_roots(roots))),
+                "pi" => run_one(&source.key, || scan_pi(conn, &roots.pi_session_roots())),
+                "omp" => run_one(&source.key, || scan_omp(conn, &roots.omp_session_roots())),
                 "opencode" => run_one(&source.key, || {
-                    let (data, legacy, db) = opencode_roots(roots);
+                    let (data, legacy, db) = roots.opencode_roots();
                     scan_opencode(conn, &data, &legacy, db.as_deref())
                 }),
                 "kilo" => run_one(&source.key, || {
-                    scan_kilo(conn, &kilo_db_root(roots, target_platform))
+                    scan_kilo(conn, &roots.kilo_db_root(target_platform))
                 }),
                 "zed" => run_one(&source.key, || {
-                    scan_zed(conn, &zed_database_roots(roots, target_platform))
+                    scan_zed(conn, &roots.zed_database_roots(target_platform))
                 }),
-                "cline" => run_one(&source.key, || scan_cline(conn, &cline_roots(roots, target_platform))),
+                "cline" => run_one(&source.key, || scan_cline(conn, &roots.cline_roots(target_platform))),
                 "workbuddy" => run_one(&source.key, || {
-                    scan_workbuddy(conn, &artifact_path(roots, "workbuddy", "projects"))
+                    scan_workbuddy(conn, &roots.artifact_path("workbuddy", "projects"))
                 }),
                 "codebuddy" => run_one(&source.key, || {
-                    scan_codebuddy(conn, &artifact_path(roots, "codebuddy", "projects"))
+                    scan_codebuddy(conn, &roots.artifact_path("codebuddy", "projects"))
                 }),
                 "qoder" => run_one(&source.key, || {
                     scan_qoder(
                         conn,
-                        &qoder_database_roots(roots, target_platform),
-                        &qoder_cli_project_roots(roots),
+                        &roots.qoder_roots(target_platform, "file"),
+                        &roots.qoder_roots(target_platform, "directory"),
                     )
                 }),
                 _ => SourceStatus {
@@ -912,9 +911,11 @@ mod tests {
                 ("antigravity", "conversations", ".gemini/antigravity/conversations"),
                 ("antigravity", "ide-conversations", ".gemini/antigravity-ide/conversations"),
                 ("antigravity", "cli-conversations", ".gemini/antigravity-cli/conversations"),
-                ("goose", "sessions", ".local/share/goose/sessions"),
+                // Catalog order is scan order: the current per-platform directory
+                // precedes the pre-1.10 `.local/share` path it replaced.
                 ("goose", "sessions-macos", "Library/Application Support/Block/goose/data/sessions"),
                 ("goose", "sessions-windows", "AppData/Roaming/Block/goose/data/sessions"),
+                ("goose", "sessions", ".local/share/goose/sessions"),
                 ("opencode", "data", ".local/share/opencode"),
                 ("opencode", "db", ".local/share/opencode/opencode.db"),
                 ("opencode", "channel-db", ".local/share/opencode/opencode-<channel>.db"),
@@ -1041,11 +1042,12 @@ mod tests {
                 .iter()
                 .map(|artifact| artifact.id.as_str())
                 .collect::<Vec<_>>(),
-            ["sessions", "sessions-macos", "sessions-windows", "root"]
+            ["sessions-macos", "sessions-windows", "sessions", "root"]
         );
         assert_eq!(
-            goose.artifacts[0].path.as_deref(),
-            Some(".local/share/goose/sessions")
+            goose.artifacts[2].path.as_deref(),
+            Some(".local/share/goose/sessions"),
+            "the pre-1.10 path is scanned last, after the current per-platform one"
         );
         assert_eq!(
             goose.artifacts[3].environment.as_deref(),
@@ -1132,7 +1134,7 @@ mod tests {
             .with_env("PI_CODING_AGENT_SESSION_DIR", OsStr::new("~/custom-sessions"))
             .with_env("PI_CODING_AGENT_DIR", OsStr::new("~/custom-agent"));
         assert_eq!(
-            pi_session_roots(&roots),
+            roots.pi_session_roots(),
             vec![
                 home.path().join(".pi/agent/sessions"),
                 home.path().join("custom-sessions"),
@@ -1147,18 +1149,18 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         assert_eq!(
-            codex_session_roots(&SourceRoots::at(home.path()).with_env("CODEX_HOME", OsStr::new("~/relocated-codex"))),
+            SourceRoots::at(home.path()).with_env("CODEX_HOME", OsStr::new("~/relocated-codex")).codex_session_roots(),
             vec![
                 home.path().join(".codex/sessions"),
                 home.path().join("relocated-codex/sessions"),
             ]
         );
         assert_eq!(
-            codex_session_roots(&SourceRoots::at(home.path()).with_env("CODEX_HOME", OsStr::new("  "))),
+            SourceRoots::at(home.path()).with_env("CODEX_HOME", OsStr::new("  ")).codex_session_roots(),
             vec![home.path().join(".codex/sessions")]
         );
         assert_eq!(
-            codex_session_roots(&SourceRoots::at(home.path()).with_env("CODEX_HOME", home.path().join(".codex").as_os_str())),
+            SourceRoots::at(home.path()).with_env("CODEX_HOME", home.path().join(".codex").as_os_str()).codex_session_roots(),
             vec![home.path().join(".codex/sessions")]
         );
     }
@@ -1169,11 +1171,9 @@ mod tests {
 
         let home = tempfile::tempdir().unwrap();
         let configured_db = home.path().join("configured/opencode.db");
-        let configured = opencode_roots(
-            &SourceRoots::at(home.path())
+        let configured = SourceRoots::at(home.path())
                 .with_env("OPENCODE_DATA_DIR", OsStr::new("~/configured-opencode"))
-                .with_env("OPENCODE_DB", OsStr::new(configured_db.to_str().unwrap())),
-        );
+                .with_env("OPENCODE_DB", OsStr::new(configured_db.to_str().unwrap())).opencode_roots();
         assert_eq!(configured.0, home.path().join("configured-opencode"));
         assert_eq!(
             configured.1,
@@ -1181,19 +1181,15 @@ mod tests {
         );
         assert_eq!(configured.2, Some(configured_db));
 
-        let xdg = opencode_roots(
-            &SourceRoots::at(home.path()).with_env("XDG_DATA_HOME", OsStr::new("~/configured-data")),
-        );
+        let xdg = SourceRoots::at(home.path()).with_env("XDG_DATA_HOME", OsStr::new("~/configured-data")).opencode_roots();
         assert_eq!(xdg.0, home.path().join("configured-data/opencode"));
         assert_eq!(xdg.1, home.path().join("configured-data/opencode/storage"));
         assert_eq!(xdg.2, None);
 
-        let blank = opencode_roots(
-            &SourceRoots::at(home.path())
+        let blank = SourceRoots::at(home.path())
                 .with_env("OPENCODE_DATA_DIR", OsStr::new("  "))
                 .with_env("OPENCODE_DB", OsStr::new("  "))
-                .with_env("XDG_DATA_HOME", OsStr::new("  ")),
-        );
+                .with_env("XDG_DATA_HOME", OsStr::new("  ")).opencode_roots();
         assert_eq!(blank.0, home.path().join(".local/share/opencode"));
         assert_eq!(blank.2, None);
     }
@@ -1205,28 +1201,25 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let r = SourceRoots::at(home.path());
         assert_eq!(
-            kilo_db_root(&r, "macos"),
+            r.kilo_db_root("macos"),
             home.path().join("Library/Application Support/kilo/kilo.db")
         );
         assert_eq!(
-            kilo_db_root(&r, "linux"),
+            r.kilo_db_root("linux"),
             home.path().join(".local/share/kilo/kilo.db")
         );
         assert_eq!(
-            kilo_db_root(&r, "windows"),
+            r.kilo_db_root("windows"),
             home.path().join("AppData/Local/kilo/kilo.db")
         );
 
         let configured = home.path().join("configured/kilo.db");
         assert_eq!(
-            kilo_db_root(
-                &SourceRoots::at(home.path()).with_env("KILO_DB", OsStr::new(configured.to_str().unwrap())),
-                "linux",
-            ),
+            SourceRoots::at(home.path()).with_env("KILO_DB", OsStr::new(configured.to_str().unwrap())).kilo_db_root("linux",),
             configured
         );
         assert_eq!(
-            kilo_db_root(&SourceRoots::at(home.path()).with_env("KILO_DB", OsStr::new("custom.db")), "linux"),
+            SourceRoots::at(home.path()).with_env("KILO_DB", OsStr::new("custom.db")).kilo_db_root("linux"),
             home.path().join(".local/share/kilo/custom.db")
         );
     }
@@ -1238,37 +1231,31 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let r = SourceRoots::at(home.path());
         assert_eq!(
-            zed_database_roots(&r, "macos"),
+            r.zed_database_roots("macos"),
             vec![home
                 .path()
                 .join("Library/Application Support/Zed/threads/threads.db")]
         );
         assert_eq!(
-            zed_database_roots(&r, "linux"),
+            r.zed_database_roots("linux"),
             vec![home.path().join(".local/share/zed/threads/threads.db")]
         );
         assert_eq!(
-            zed_database_roots(&r, "windows"),
+            r.zed_database_roots("windows"),
             vec![home.path().join("AppData/Local/Zed/threads/threads.db")]
         );
 
         let xdg = home.path().join("configured-data");
         assert_eq!(
-            zed_database_roots(
-                &SourceRoots::at(home.path()).with_env("XDG_DATA_HOME", OsStr::new(xdg.to_str().unwrap())),
-                "linux",
-            ),
+            SourceRoots::at(home.path()).with_env("XDG_DATA_HOME", OsStr::new(xdg.to_str().unwrap())).zed_database_roots("linux",),
             vec![xdg.join("zed/threads/threads.db")]
         );
 
         let flatpak = home.path().join("flatpak-data");
         assert_eq!(
-            zed_database_roots(
-                &SourceRoots::at(home.path())
+            SourceRoots::at(home.path())
                     .with_env("FLATPAK_XDG_DATA_HOME", OsStr::new(flatpak.to_str().unwrap()))
-                    .with_env("XDG_DATA_HOME", OsStr::new(xdg.to_str().unwrap())),
-                "linux",
-            ),
+                    .with_env("XDG_DATA_HOME", OsStr::new(xdg.to_str().unwrap())).zed_database_roots("linux",),
             vec![flatpak.join("zed/threads/threads.db")]
         );
     }
@@ -1281,13 +1268,13 @@ mod tests {
         let override_home = home.path().join("configured-hermes");
         let overridden = SourceRoots::at(home.path())
             .with_env("HERMES_HOME", OsStr::new(override_home.to_str().unwrap()));
-        assert_eq!(hermes_db(&overridden), override_home.join("state.db"));
+        assert_eq!(overridden.hermes_db(), override_home.join("state.db"));
 
         let blank = SourceRoots::at(home.path()).with_env("HERMES_HOME", OsStr::new("  "));
-        assert_eq!(hermes_db(&blank), home.path().join(".hermes/state.db"));
+        assert_eq!(blank.hermes_db(), home.path().join(".hermes/state.db"));
 
         let absent = SourceRoots::at(home.path());
-        assert_eq!(hermes_db(&absent), home.path().join(".hermes/state.db"));
+        assert_eq!(absent.hermes_db(), home.path().join(".hermes/state.db"));
     }
 
     #[test]
@@ -1297,17 +1284,17 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let overridden = SourceRoots::at(home.path())
             .with_env("GEMINI_CLI_HOME", OsStr::new("~/configured-gemini"));
-        let (tmp, projects) = gemini_paths(&overridden);
+        let (tmp, projects) = overridden.gemini_paths();
         assert_eq!(tmp, home.path().join("configured-gemini/.gemini/tmp"));
         assert_eq!(projects, home.path().join("configured-gemini/.gemini/projects.json"));
 
         let blank = SourceRoots::at(home.path()).with_env("GEMINI_CLI_HOME", OsStr::new("  "));
-        let (tmp, projects) = gemini_paths(&blank);
+        let (tmp, projects) = blank.gemini_paths();
         assert_eq!(tmp, home.path().join(".gemini/tmp"));
         assert_eq!(projects, home.path().join(".gemini/projects.json"));
 
         let absent = SourceRoots::at(home.path());
-        let (tmp, projects) = gemini_paths(&absent);
+        let (tmp, projects) = absent.gemini_paths();
         assert_eq!(tmp, home.path().join(".gemini/tmp"));
         assert_eq!(projects, home.path().join(".gemini/projects.json"));
     }
@@ -1320,22 +1307,22 @@ mod tests {
         let overridden = SourceRoots::at(home.path())
             .with_env("GROK_HOME", OsStr::new("~/configured-grok"));
         assert_eq!(
-            grok_sessions(&overridden),
+            overridden.grok_sessions(),
             home.path().join("configured-grok/sessions")
         );
         // The unified log sits a level deeper, so the override has to replace the
         // home-relative root rather than just the last component.
         assert_eq!(
-            grok_logs(&overridden),
+            overridden.grok_logs(),
             home.path().join("configured-grok/logs/unified.jsonl")
         );
 
         let blank = SourceRoots::at(home.path()).with_env("GROK_HOME", OsStr::new("  "));
-        assert_eq!(grok_sessions(&blank), home.path().join(".grok/sessions"));
+        assert_eq!(blank.grok_sessions(), home.path().join(".grok/sessions"));
 
         let absent = SourceRoots::at(home.path());
-        assert_eq!(grok_sessions(&absent), home.path().join(".grok/sessions"));
-        assert_eq!(grok_logs(&absent), home.path().join(".grok/logs/unified.jsonl"));
+        assert_eq!(absent.grok_sessions(), home.path().join(".grok/sessions"));
+        assert_eq!(absent.grok_logs(), home.path().join(".grok/logs/unified.jsonl"));
     }
 
     #[test]
@@ -1345,11 +1332,11 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let r = SourceRoots::at(home.path());
         assert_eq!(
-            goose_session_roots(&r, "linux"),
+            r.goose_session_roots("linux"),
             vec![home.path().join(".local/share/goose/sessions")]
         );
         assert_eq!(
-            goose_session_roots(&r, "macos"),
+            r.goose_session_roots("macos"),
             vec![
                 home.path()
                     .join("Library/Application Support/Block/goose/data/sessions"),
@@ -1357,17 +1344,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            goose_session_roots(
-                &SourceRoots::at(home.path()).with_env("GOOSE_PATH_ROOT", OsStr::new("~/configured-goose")),
-                "macos",
-            ),
+            SourceRoots::at(home.path()).with_env("GOOSE_PATH_ROOT", OsStr::new("~/configured-goose")).goose_session_roots("macos",),
             vec![home.path().join("configured-goose/data/sessions")]
         );
         assert_eq!(
-            goose_session_roots(
-                &SourceRoots::at(home.path()).with_env("GOOSE_PATH_ROOT", OsStr::new("relative-goose")),
-                "linux",
-            ),
+            SourceRoots::at(home.path()).with_env("GOOSE_PATH_ROOT", OsStr::new("relative-goose")).goose_session_roots("linux",),
             vec![home.path().join(".local/share/goose/sessions")]
         );
     }
@@ -1379,30 +1360,21 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let explicit = home.path().join("configured-cline");
         let sandbox = home.path().join("sandbox-cline");
-        let overridden = cline_roots(
-            &SourceRoots::at(home.path())
+        let overridden = SourceRoots::at(home.path())
                 .with_env("CLINE_DATA_DIR", explicit.as_os_str())
-                .with_env("CLINE_SANDBOX_DATA_DIR", sandbox.as_os_str()),
-            "linux",
-        );
+                .with_env("CLINE_SANDBOX_DATA_DIR", sandbox.as_os_str()).cline_roots("linux",);
         assert!(overridden.contains(&explicit));
         assert!(!overridden.contains(&sandbox));
 
-        let blank_data = cline_roots(
-            &SourceRoots::at(home.path())
+        let blank_data = SourceRoots::at(home.path())
                 .with_env("CLINE_DATA_DIR", OsStr::new(" \t"))
-                .with_env("CLINE_SANDBOX_DATA_DIR", OsStr::new("~/sandbox-cline")),
-            "linux",
-        );
+                .with_env("CLINE_SANDBOX_DATA_DIR", OsStr::new("~/sandbox-cline")).cline_roots("linux",);
         assert!(blank_data.contains(&sandbox));
 
-        let defaults = cline_roots(&SourceRoots::at(home.path()), "linux");
+        let defaults = SourceRoots::at(home.path()).cline_roots("linux");
         assert!(defaults.contains(&home.path().join(".cline/data")));
 
-        let equivalent = cline_roots(
-            &SourceRoots::at(home.path()).with_env("CLINE_DATA_DIR", OsStr::new("~/.cline/../.cline/data")),
-            "linux",
-        );
+        let equivalent = SourceRoots::at(home.path()).with_env("CLINE_DATA_DIR", OsStr::new("~/.cline/../.cline/data")).cline_roots("linux",);
         assert_eq!(
             equivalent
                 .iter()
@@ -1417,33 +1389,33 @@ mod tests {
     fn default_roots_live_under_home() {
         let r = SourceRoots::default_roots();
         let os = std::env::consts::OS;
-        assert!(artifact_path(&r, "claude", "projects").ends_with(".claude/projects"));
-        assert!(codex_session_roots(&r)[0].ends_with(".codex/sessions"));
+        assert!(r.artifact_path("claude", "projects").ends_with(".claude/projects"));
+        assert!(r.codex_session_roots()[0].ends_with(".codex/sessions"));
         let copilot_home = std::env::var_os("COPILOT_HOME")
             .and_then(|value| visible_path(&r.home, &value))
             .unwrap_or_else(|| r.home.join(".copilot"));
-        assert_eq!(copilot_db(&r), copilot_home.join("session-store.db"));
-        let (gemini_tmp, gemini_projects) = gemini_paths(&r);
+        assert_eq!(r.copilot_db(), copilot_home.join("session-store.db"));
+        let (gemini_tmp, gemini_projects) = r.gemini_paths();
         assert!(gemini_tmp.ends_with(".gemini/tmp"));
         assert!(gemini_projects.ends_with(".gemini/projects.json"));
-        assert!(hermes_db(&r).ends_with(".hermes/state.db"));
+        assert!(r.hermes_db().ends_with(".hermes/state.db"));
         let grok_home = std::env::var_os("GROK_HOME")
             .and_then(|value| visible_path(&r.home, &value))
             .unwrap_or_else(|| r.home.join(".grok"));
-        assert_eq!(grok_sessions(&r), grok_home.join("sessions"));
-        assert!(artifact_path(&r, "antigravity", "conversations")
+        assert_eq!(r.grok_sessions(), grok_home.join("sessions"));
+        assert!(r.artifact_path("antigravity", "conversations")
             .ends_with(".gemini/antigravity/conversations"));
-        assert!(artifact_path(&r, "antigravity", "cli-conversations")
+        assert!(r.artifact_path("antigravity", "cli-conversations")
             .ends_with(".gemini/antigravity-cli/conversations"));
-        assert!(pi_session_roots(&r)[0].ends_with(".pi/agent/sessions"));
+        assert!(r.pi_session_roots()[0].ends_with(".pi/agent/sessions"));
         let zed_suffix = match os {
             "macos" => "Library/Application Support/Zed/threads/threads.db",
             "windows" => "AppData/Local/Zed/threads/threads.db",
             _ => ".local/share/zed/threads/threads.db",
         };
-        assert!(zed_database_roots(&r, os)[0].ends_with(zed_suffix));
-        assert!(!goose_session_roots(&r, os).is_empty());
-        let cline = cline_roots(&r, os);
+        assert!(r.zed_database_roots(os)[0].ends_with(zed_suffix));
+        assert!(!r.goose_session_roots(os).is_empty());
+        let cline = r.cline_roots(os);
         assert!(cline.iter().any(|path| path.ends_with(".cline/data")));
         // Every platform carries at least one editor task root; the editor
         // vendor directory is `.vscode-server/...` on Unix and
@@ -1461,7 +1433,7 @@ mod tests {
         let base = tmp.path();
         let gemini_home = base.join("configured-gemini");
         let roots = SourceRoots::at(base).with_env("GEMINI_CLI_HOME", gemini_home.as_os_str());
-        let (gemini_tmp, gemini_projects) = gemini_paths(&roots);
+        let (gemini_tmp, gemini_projects) = roots.gemini_paths();
         let session_path = gemini_tmp.join("alpha/chats/session-override.json");
         fs::create_dir_all(session_path.parent().unwrap()).unwrap();
         fs::write(
@@ -1554,7 +1526,7 @@ mod tests {
         let base = tmp.path();
         let grok_home = base.join("configured-grok");
         let roots = SourceRoots::at(base).with_env("GROK_HOME", grok_home.as_os_str());
-        let updates_path = grok_sessions(&roots)
+        let updates_path = roots.grok_sessions()
             .join("%2FUsers%2Fdev%2Fprojects%2Fgrok-demo/sess-override/updates.jsonl");
         fs::create_dir_all(updates_path.parent().unwrap()).unwrap();
         fs::write(

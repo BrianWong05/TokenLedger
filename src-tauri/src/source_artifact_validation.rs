@@ -446,6 +446,44 @@ fn private_source_artifact_validation() {
 mod tests {
     use super::*;
 
+    /// Every Source root a planted Artifact must NOT reach. `roots_for` plants
+    /// one Source; every other Source has to keep resolving under the missing
+    /// home. Without this the per-Source assertions below pass even if
+    /// `with_source_path` overlays a Source it was never given — a check that
+    /// would survive removal of the thing it checks.
+    fn assert_only_the_planted_source_sees(roots: &SourceRoots, planted: &str, missing: &Path) {
+        let os = std::env::consts::OS;
+        let mut others: Vec<PathBuf> = Vec::new();
+        if planted != "pi" {
+            others.extend(roots.pi_session_roots());
+        }
+        if planted != "goose" {
+            others.extend(roots.goose_session_roots(os));
+        }
+        if planted != "kilo" {
+            others.push(roots.kilo_db_root(os));
+        }
+        if planted != "zed" {
+            others.extend(roots.zed_database_roots(os));
+        }
+        if planted != "cline" {
+            others.extend(roots.cline_roots(os));
+        }
+        if planted != "opencode" {
+            let (data, legacy, database) = roots.opencode_roots();
+            others.push(data);
+            others.push(legacy);
+            others.extend(database);
+        }
+        assert!(!others.is_empty(), "no other Source was checked for isolation");
+        for root in others {
+            assert!(
+                root.starts_with(missing),
+                "planting {planted} leaked into another Source: {root:?}"
+            );
+        }
+    }
+
     #[test]
     fn selected_artifact_is_used_as_the_single_source_root() {
         let artifact = PathBuf::from("/private/source-artifact");
@@ -453,7 +491,8 @@ mod tests {
 
         let roots = roots_for("pi", &artifact, missing);
 
-        assert_eq!(crate::scan::pi_session_roots(&roots), vec![artifact]);
+        assert_eq!(roots.pi_session_roots(), vec![artifact]);
+        assert_only_the_planted_source_sees(&roots, "pi", missing);
     }
 
     #[test]
@@ -463,7 +502,8 @@ mod tests {
 
         let roots = roots_for("goose", &artifact, missing);
 
-        assert_eq!(crate::scan::goose_session_roots(&roots, std::env::consts::OS), vec![artifact]);
+        assert_eq!(roots.goose_session_roots(std::env::consts::OS), vec![artifact]);
+        assert_only_the_planted_source_sees(&roots, "goose", missing);
     }
 
     #[test]
@@ -472,11 +512,16 @@ mod tests {
         let storage = PathBuf::from("/private/opencode/storage");
         let missing = Path::new("/private/missing");
 
-        let modern = crate::scan::opencode_roots(&roots_for("opencode", &database, missing));
-        assert_eq!(modern.2, Some(database));
+        let modern_roots = roots_for("opencode", &database, missing);
+        let (_data, _legacy, modern_db) = modern_roots.opencode_roots();
+        assert_eq!(modern_db, Some(database));
+        assert_only_the_planted_source_sees(&modern_roots, "opencode", missing);
 
-        let legacy = crate::scan::opencode_roots(&roots_for("opencode", &storage, missing));
-        assert_eq!(legacy.1, storage);
+        let legacy_roots = roots_for("opencode", &storage, missing);
+        let (_data, legacy_storage, legacy_db) = legacy_roots.opencode_roots();
+        assert_eq!(legacy_storage, storage);
+        assert_eq!(legacy_db, None, "a storage directory is not a database");
+        assert_only_the_planted_source_sees(&legacy_roots, "opencode", missing);
     }
 
     #[test]
@@ -486,7 +531,8 @@ mod tests {
 
         let roots = roots_for("kilo", &artifact, missing);
 
-        assert_eq!(crate::scan::kilo_db_root(&roots, std::env::consts::OS), artifact);
+        assert_eq!(roots.kilo_db_root(std::env::consts::OS), artifact);
+        assert_only_the_planted_source_sees(&roots, "kilo", missing);
     }
 
     #[test]
@@ -496,7 +542,8 @@ mod tests {
 
         let roots = roots_for("zed", &artifact, missing);
 
-        assert_eq!(crate::scan::zed_database_roots(&roots, std::env::consts::OS), vec![artifact]);
+        assert_eq!(roots.zed_database_roots(std::env::consts::OS), vec![artifact]);
+        assert_only_the_planted_source_sees(&roots, "zed", missing);
     }
 
     #[test]
@@ -506,7 +553,8 @@ mod tests {
 
         let roots = roots_for("cline", &artifact, missing);
 
-        assert_eq!(crate::scan::cline_roots(&roots, std::env::consts::OS), vec![artifact]);
+        assert_eq!(roots.cline_roots(std::env::consts::OS), vec![artifact]);
+        assert_only_the_planted_source_sees(&roots, "cline", missing);
     }
 
     #[test]

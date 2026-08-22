@@ -725,6 +725,8 @@ fn hermetic_seventeen_source_partition_invariants() {
         .with_artifact("grok", "logs", base.join("grok-logs"))
         .with_artifact("antigravity", "conversations", base.join("antigravity"))
         .with_artifact("antigravity", "ide-conversations", base.join("antigravity-ide"))
+        // No CLI fixture: a missing root is scanned quietly (zero events, no error).
+        .with_artifact("antigravity", "cli-conversations", base.join("antigravity-cli"))
         .with_artifact("goose", "sessions", base.join("goose"))
         .with_artifact("pi", "sessions", base.join("pi"))
         .with_artifact("omp", "sessions", base.join("omp"))

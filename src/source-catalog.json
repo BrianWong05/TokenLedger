@@ -111,9 +111,9 @@
       "color": "#f97316",
       "icon": "goose",
       "artifacts": [
-        { "id": "sessions", "kind": "directory", "path": ".local/share/goose/sessions", "environment": null, "suffix": null, "platforms": ["linux", "macos"], "prerequisite": null },
         { "id": "sessions-macos", "kind": "directory", "path": "Library/Application Support/Block/goose/data/sessions", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
         { "id": "sessions-windows", "kind": "directory", "path": "AppData/Roaming/Block/goose/data/sessions", "environment": null, "suffix": null, "platforms": ["windows"], "prerequisite": null },
+        { "id": "sessions", "kind": "directory", "path": ".local/share/goose/sessions", "environment": null, "suffix": null, "platforms": ["linux", "macos"], "prerequisite": null },
         { "id": "root", "kind": "directory", "path": null, "environment": "GOOSE_PATH_ROOT", "suffix": "data/sessions", "platforms": ["all"], "prerequisite": null }
       ],
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": false },
