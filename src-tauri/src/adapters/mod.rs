@@ -314,14 +314,27 @@ pub(crate) struct ClaudeShapedUsage {
 
 /// One API call made inside a single Claude-shaped assistant `message`.
 pub(crate) struct ClaudeCall {
-    /// The iteration's own Model, when it reported one. None means the figures
-    /// came from the top level, where the message's `model` is already right.
+    /// The iteration's own Model, when it reported one. None means it reported
+    /// none, and the message's own `model` is the right answer.
     pub model: Option<String>,
-    /// The call's position in `usage.iterations`, or None when the top-level
-    /// figures were used. Some(i) is what earns a dedup-key suffix, so the
-    /// single/empty/absent cases keep the historical key untouched.
-    pub index: Option<usize>,
+    /// The call's position in `usage.iterations`. Positions come from the
+    /// unfiltered array: an all-zero iteration books no Record, and the
+    /// survivors keep the slot they were logged in rather than closing the gap.
+    pub index: usize,
     pub usage: ClaudeShapedUsage,
+}
+
+/// What one Claude-shaped assistant `message` books. The distinction is
+/// all-or-nothing per message, so it lives in the type rather than in an
+/// Option every caller has to re-test.
+pub(crate) enum ClaudeCalls {
+    /// No Usage Record: an all-zero observation is not one.
+    Nothing,
+    /// One Record from the top-level figures, keyed as it always was.
+    OneMessage(ClaudeShapedUsage),
+    /// One Record per API call, each under its own Model and a suffixed key.
+    /// Never empty.
+    PerCall(Vec<ClaudeCall>),
 }
 
 /// Token figures from a Claude-Code-shaped assistant `message` object.
@@ -367,47 +380,56 @@ fn claude_shaped_buckets(usage: &serde_json::Value) -> Option<ClaudeShapedUsage>
     })
 }
 
-/// One entry per API call the message actually made (TOKL-26).
+/// What a Claude-shaped assistant `message` books, one entry per API call it
+/// actually made (TOKL-26). The canonical description of `usage.iterations`;
+/// other sites cite this one rather than restating it.
 ///
-/// `usage.iterations` lists each call inside one assistant message. A model
-/// fallback logs the first attempt and the fallback as separate entries under
-/// DIFFERENT Models, and the top-level object is NOT their rollup: input,
-/// output, cache_read and the 5m split are the LAST iteration's, while
-/// `cache_creation` carries the FIRST's. Reading only the top level therefore
-/// booked one Request of two, dropped the first call's tokens, and filed the
-/// first call's cache-write under the fallback's Model.
+/// `usage.iterations` lists each call inside one assistant message, and it is a
+/// model-fallback log: the first attempt and the fallback appear as separate
+/// entries under DIFFERENT Models, so no single Usage Record can hold both.
 ///
-/// Two or more entries → one call per entry, each with its own Model and its own
-/// figures. One entry, an EMPTY array, or no array at all → a single call from
-/// the top-level figures, byte-for-byte the historical behaviour. That fallback
-/// is load-bearing, not defensive: 2,324 Claude messages and 385 Qoder ones
-/// carry `iterations: []` beside a non-zero token count, and a parser that
-/// trusted the array length would book every one of them as zero Requests.
-/// The single-entry case is not re-derived from the array either — it is the
-/// same number, and re-deriving it only adds a way to be wrong.
-pub(crate) fn claude_shaped_calls(message: &serde_json::Value) -> Vec<ClaudeCall> {
-    if let Some(iterations) =
-        message["usage"]["iterations"].as_array().filter(|a| a.len() > 1)
-    {
-        // Index from the unfiltered position: an all-zero iteration books no
-        // Record (same rule as the top level), and the survivors must keep the
-        // slot they were logged in rather than closing the gap.
-        return iterations
+/// The top-level object is not their rollup, and not consistently either
+/// iteration's. Measured over every multi-call line on one machine: `input`,
+/// `output`, `cache_read` and `cache_creation_input_tokens` are the LAST
+/// iteration's (31/31), while the `cache_creation` split sub-object follows the
+/// FIRST (5m 31/31, 1h 19/31). So reading only the top level booked one Request
+/// of two, dropped the first call's tokens, and filed the first call's
+/// cache-write TTL under the Model that served the fallback. Those ratios are
+/// one machine's Artifact, not a contract — re-measure, do not trust this
+/// paragraph as evidence.
+///
+/// Two or more entries → `PerCall`. One entry, an EMPTY array, or no array at
+/// all → `OneMessage`, byte-for-byte the historical behaviour. That fallback is
+/// load-bearing, not defensive: 2,600 Claude messages and 385 Qoder ones carry
+/// `iterations: []` beside a non-zero token count, and a parser that trusted
+/// the array length would book every one of them as zero Requests. The
+/// single-entry case is not re-derived from the array either — it is the same
+/// number, and re-deriving it only adds a way to be wrong.
+pub(crate) fn claude_shaped_calls(message: &serde_json::Value) -> ClaudeCalls {
+    if let Some(iterations) = message["usage"]["iterations"].as_array().filter(|a| a.len() > 1) {
+        let calls: Vec<ClaudeCall> = iterations
             .iter()
             .enumerate()
             .filter_map(|(index, iteration)| {
                 Some(ClaudeCall {
                     model: iteration["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned),
-                    index: Some(index),
+                    index,
                     usage: claude_shaped_buckets(iteration)?,
                 })
             })
             .collect();
+        // An array whose every entry is all-zero reports no call, but the
+        // message was still billed at the top level — fall through to it rather
+        // than book nothing. A Record that silently disappears is worse than
+        // the floor this ticket set out to fix.
+        if !calls.is_empty() {
+            return ClaudeCalls::PerCall(calls);
+        }
     }
-    claude_shaped_usage(message)
-        .map(|usage| ClaudeCall { model: None, index: None, usage })
-        .into_iter()
-        .collect()
+    match claude_shaped_usage(message) {
+        Some(usage) => ClaudeCalls::OneMessage(usage),
+        None => ClaudeCalls::Nothing,
+    }
 }
 
 #[cfg(test)]

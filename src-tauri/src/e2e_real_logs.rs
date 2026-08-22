@@ -230,11 +230,12 @@ fn e2e_real_skills() {
 // and each call's tokens land under the Model that served them.
 //   cargo test --release e2e_real_iterations -- --ignored --nocapture
 //
-// The figures below are a measured snapshot of THIS machine's transcripts, not
-// constants of the parser. A new model fallback (or a new duplicate line of an
-// existing one) moves them, and the re-measure is the python one-liner in the
-// ticket. What must never move is the shape: one Record per call, each under its
-// own Model, and no surviving plain-key Record for a turn that had two calls.
+// Every assertion here is derived from the scan, never written down. The figures
+// move whenever a new fallback happens — the 10th turn appeared during the
+// implementation — and this file already learned that lesson once above, where a
+// hand-counted source total said 14 against a catalog of 15 and `main` had to
+// bump it by hand. The snapshot is printed so a reader can see it; what is
+// asserted is the shape that must hold at any size.
 #[test]
 #[ignore]
 fn e2e_real_iterations() {
@@ -243,110 +244,95 @@ fn e2e_real_iterations() {
     let mut conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
     scan::run_scan(&mut conn, &roots);
 
-    let iteration_rows = |sql: &str| -> Vec<(String, String, i64, i64)> {
-        let mut stmt = conn.prepare(sql).unwrap();
-        let rows = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        rows
-    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT model, COUNT(*), \
+                    SUM(input_tokens + output_tokens + cache_read_tokens \
+                        + cache_write_5m_tokens + cache_write_1h_tokens) \
+             FROM events \
+             WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
+             GROUP BY model ORDER BY model",
+        )
+        .unwrap();
+    let by_model: Vec<(String, i64, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    drop(stmt);
 
-    // Every Record a multi-call turn booked, by Model.
-    let by_model = iteration_rows(
-        "SELECT model, '', COUNT(*), \
-                SUM(input_tokens + output_tokens + cache_read_tokens \
-                    + cache_write_5m_tokens + cache_write_1h_tokens) \
-         FROM events \
-         WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
-         GROUP BY model ORDER BY model",
-    );
     println!("\n=== Claude per-iteration Records ===");
-    for (model, _, records, tokens) in &by_model {
+    for (model, records, tokens) in &by_model {
         println!("  {model:<22} {records:>3} records  {tokens:>12} tokens");
     }
 
-    let records: i64 = by_model.iter().map(|r| r.2).sum();
-    let tokens: i64 = by_model.iter().map(|r| r.3).sum();
-    let calls: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(api_calls), 0) FROM events \
-             WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let records: i64 = by_model.iter().map(|r| r.1).sum();
+    let tokens: i64 = by_model.iter().map(|r| r.2).sum();
+    let one = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    let calls = one(
+        "SELECT COALESCE(SUM(api_calls), 0) FROM events \
+         WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*'",
+    );
+    let turns = one(
+        "SELECT COUNT(DISTINCT substr(dedup_key, 1, instr(dedup_key, '#it') - 1)) FROM events \
+         WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*'",
+    );
+    println!("  ---\n  {records} records, {calls} calls, {tokens} tokens, {turns} turns");
 
-    // Shape, drift-proof: each Record is exactly one API call. Requests is a
-    // count of Records, which is what makes it exact rather than a floor.
+    // Non-vacuous: every assertion below is trivially true of an empty set, so
+    // the population has to exist first. Real transcripts hold model fallbacks;
+    // finding none means the parser stopped reading the field.
+    assert!(records > 0, "no per-iteration Records: usage.iterations is not being read");
+    assert!(tokens > 0, "per-iteration Records carry no tokens");
+
+    // Each Record is exactly one API call. Requests is the count of Records,
+    // which is what makes it exact rather than a floor.
     assert_eq!(calls, records, "every per-iteration Record is exactly one call");
 
-    // Shape, drift-proof: the plain key each multi-call turn used to book under
-    // is gone. A surviving one would double-count the turn — once as the old
-    // mixed-Model row, once as its per-iteration Records.
-    let orphans: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM events o \
-             WHERE o.source = 'claude' AND o.dedup_key NOT GLOB '*#it[0-9]*' \
-               AND EXISTS (SELECT 1 FROM events i \
-                           WHERE i.dedup_key GLOB o.dedup_key || '#it[0-9]*')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    // Requests and tokens both moved, and moved together — the DoD's point, and
+    // the reason neither is asserted alone. One Record per turn is what the old
+    // parser booked, so more Records than turns IS the Requests gain, and a turn
+    // whose Records outweigh its heaviest single call IS the token gain.
+    assert!(records > turns, "Requests did not move: still one Record per turn");
+    let thin = one(
+        "SELECT COUNT(*) FROM ( \
+           SELECT substr(dedup_key, 1, instr(dedup_key, '#it') - 1) AS turn, \
+                  SUM(input_tokens + output_tokens + cache_read_tokens \
+                      + cache_write_5m_tokens + cache_write_1h_tokens) AS total, \
+                  MAX(input_tokens + output_tokens + cache_read_tokens \
+                      + cache_write_5m_tokens + cache_write_1h_tokens) AS heaviest \
+           FROM events WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
+           GROUP BY turn HAVING total <= heaviest)",
+    );
+    assert_eq!(thin, 0, "a turn booked no more than its heaviest single call: tokens did not move");
+
+    // The plain key each multi-call turn used to book under is gone. A surviving
+    // one would double-count the turn — once as the old mixed-Model row, once as
+    // its per-iteration Records.
+    let orphans = one(
+        "SELECT COUNT(*) FROM events o \
+         WHERE o.source = 'claude' AND o.dedup_key NOT GLOB '*#it[0-9]*' \
+           AND EXISTS (SELECT 1 FROM events i \
+                       WHERE i.dedup_key GLOB o.dedup_key || '#it[0-9]*')",
+    );
     assert_eq!(orphans, 0, "a superseded plain-key Record survived the re-parse");
 
-    // Shape, drift-proof: every observed multi-call turn here is a model
-    // fallback, so its Records must NOT all share one Model — that divergence is
-    // the whole reason a summed single Record was the wrong answer.
-    let single_model_turns: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM ( \
-               SELECT substr(dedup_key, 1, instr(dedup_key, '#it') - 1) AS turn \
-               FROM events WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
-               GROUP BY turn HAVING COUNT(DISTINCT model) = 1)",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        single_model_turns, 0,
-        "every fallback turn observed here spans two Models; a same-Model \
-         multi-call turn is new and its Cost consequences need re-checking",
+    // Not asserted, deliberately: the ticket puts telling a retry apart from a
+    // genuine extra call out of scope, so a same-Model multi-call turn must not
+    // fail the build. Every turn observed so far is a fallback across two
+    // Models, and that is worth seeing if it ever stops being true, because the
+    // Cost argument for per-Model Records rests on it.
+    let single_model_turns = one(
+        "SELECT COUNT(*) FROM ( \
+           SELECT substr(dedup_key, 1, instr(dedup_key, '#it') - 1) AS turn \
+           FROM events WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
+           GROUP BY turn HAVING COUNT(DISTINCT model) = 1)",
     );
-
-    // Measured snapshot: 10 turns × 2 calls. fable-5 attempted every one; opus-4-8
-    // served 9 and opus-5 served the 10th. Before this fix those 10 turns booked
-    // 10 Records / 1,922,151 tokens — one call of two each, with fable-5's
-    // cache-write filed under the Model that served the fallback.
-    //
-    // A new fallback moves every figure below, and it does not take long: the
-    // 10th turn appeared mid-implementation. Re-measure with the ticket's script
-    // (recursively — subagent transcripts live under `subagents/` and hold real
-    // fallbacks) rather than adjusting a constant to whatever the run printed.
-    println!("  ---\n  {records} records, {calls} calls, {tokens} tokens");
-    println!("  was: 10 records / 1,922,151 tokens");
-    assert_eq!(records, 20, "10 fallback turns × 2 calls");
-    assert_eq!(tokens, 4_014_296, "each call's own figures");
-    assert_eq!(
-        by_model,
-        vec![
-            ("claude-fable-5".to_string(), String::new(), 10, 2_103_696),
-            ("claude-opus-4-8".to_string(), String::new(), 9, 1_834_089),
-            ("claude-opus-5".to_string(), String::new(), 1, 76_511),
-        ],
-        "the attempt and the fallback each book under the Model that ran it",
-    );
-
-    // The Ledger-level effect: +10 Requests and +2,092,145 tokens. Both are
-    // asserted because tokens moving without Requests moving would mean the
-    // per-call figures landed and the count did not.
-    assert_eq!(records - 10, 10, "+10 Requests");
-    assert_eq!(tokens - 1_922_151, 2_092_145, "+2,092,145 tokens");
+    if single_model_turns > 0 {
+        println!("  note: {single_model_turns} multi-call turn(s) span a single Model (a retry, not a fallback)");
+    }
 
     // The partition still holds over the Records this fix introduced.
     crate::invariants::assert_partition_exact(&conn);
     crate::invariants::assert_secondary_subset(&conn);
 }
-

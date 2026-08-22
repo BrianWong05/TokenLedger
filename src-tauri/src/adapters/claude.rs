@@ -17,6 +17,15 @@ pub fn scan_claude(conn: &mut Connection, projects_root: &Path) -> SourceScanRes
     // turn's lines into a second transcript, and whether that copy is scanned
     // before or after the original must not decide whether the stale Record
     // survives. One statement over a handful of keys.
+    //
+    // ponytail: only lines parsed in THIS scan report a superseded key, so a
+    // fork whose plain-form copy of a fallback turn first appears on a LATER
+    // scan re-inserts the plain key with nothing left to clear it, and the turn
+    // double-books. It cannot fire on today's Artifact — a fork copies its
+    // source's lines verbatim, so no cross-file copy disagrees about
+    // `iterations` — and the honest fix is a query for plain keys that have
+    // `#it` siblings, which is a correlated GLOB per row over ~100k Claude
+    // Records. Do that when a copy is observed disagreeing, not before.
     let mut superseded: Vec<String> = Vec::new();
     for path in files {
         if let Err(e) = scan_file(conn, &path, &mut result, &mut superseded) {
@@ -302,13 +311,13 @@ fn scan_file(
 /// The Usage Records one assistant line books, and the dedup_key they replace.
 ///
 /// Usually one Record, keyed exactly as it always was. When `usage.iterations`
-/// reports two or more API calls (TOKL-26) it is one Record PER CALL, each under
-/// its own Model and `#it{i}`-suffixed key — a model fallback bills two calls
-/// against two different Models, and no single row can hold both. The plain key
-/// those messages used to book is returned as superseded: it holds the fallback
-/// Model with a cache-write figure the top level took from the FIRST call, and a
-/// keep-max upsert cannot correct it, because the surviving Record's
-/// output_tokens are unchanged and a tie keeps the stored row.
+/// reports two or more API calls it is one Record PER CALL, each under its own
+/// Model and `#it{i}`-suffixed key — see `claude_shaped_calls` for what that
+/// field is and why one row cannot hold two Models.
+///
+/// The plain key those messages used to book is returned as superseded. A
+/// keep-max upsert cannot correct it: the surviving Record's output_tokens are
+/// unchanged, and a tie keeps the stored row.
 fn parse_line_events(
     v: &serde_json::Value,
     source_file: &str,
@@ -319,12 +328,7 @@ fn parse_line_events(
         return none;
     }
     let msg = &v["message"];
-
-    // <synthetic> error placeholders have all-zero usage: skip, don't count.
     let calls = super::claude_shaped_calls(msg);
-    if calls.is_empty() {
-        return none;
-    }
 
     let id = match msg["id"].as_str() {
         Some(s) if !s.is_empty() => s,
@@ -349,33 +353,41 @@ fn parse_line_events(
         .and_then(|s| s.as_str())
         .map(|s| s.to_string());
 
-    let superseded = calls.iter().any(|c| c.index.is_some()).then(|| base_key.clone());
-    let events = calls
-        .into_iter()
-        .map(|c| UsageEvent {
-            dedup_key: match c.index {
-                Some(i) => format!("{base_key}#it{i}"),
-                None => base_key.clone(),
-            },
-            source: "claude".to_string(),
-            timestamp,
-            model: Some(c.model.unwrap_or_else(|| model.clone())),
-            project: project.clone(),
-            // Each Record is exactly one API call; the count of Records is what
-            // makes Requests exact rather than a floor.
-            api_calls: 1,
-            input_tokens: c.usage.input,
-            output_tokens: c.usage.output,
-            cache_read_tokens: c.usage.cache_read,
-            cache_write_5m_tokens: c.usage.cache_write_5m,
-            cache_write_1h_tokens: c.usage.cache_write_1h,
-            source_file: source_file.to_string(),
-            session_id: session_id.clone(),
-            reasoning_tokens: None,
-            ctx: CtxTokens::default(),
-        })
-        .collect();
-    (events, superseded)
+    let event = |dedup_key: String, model: String, u: &super::ClaudeShapedUsage| UsageEvent {
+        dedup_key,
+        source: "claude".to_string(),
+        timestamp,
+        model: Some(model),
+        project: project.clone(),
+        // Each Record is exactly one API call; the count of Records is what
+        // makes Requests exact rather than a floor.
+        api_calls: 1,
+        input_tokens: u.input,
+        output_tokens: u.output,
+        cache_read_tokens: u.cache_read,
+        cache_write_5m_tokens: u.cache_write_5m,
+        cache_write_1h_tokens: u.cache_write_1h,
+        source_file: source_file.to_string(),
+        session_id: session_id.clone(),
+        reasoning_tokens: None,
+        ctx: CtxTokens::default(),
+    };
+
+    match calls {
+        // <synthetic> error placeholders have all-zero usage: skip, don't count.
+        super::ClaudeCalls::Nothing => none,
+        super::ClaudeCalls::OneMessage(usage) => (vec![event(base_key, model, &usage)], None),
+        super::ClaudeCalls::PerCall(calls) => (
+            calls
+                .iter()
+                .map(|c| {
+                    let m = c.model.clone().unwrap_or_else(|| model.clone());
+                    event(format!("{base_key}#it{}", c.index), m, &c.usage)
+                })
+                .collect(),
+            Some(base_key),
+        ),
+    }
 }
 
 // Bash command-level facets (spec 2026-07-10-bash-exec-drilldown): classify
@@ -1103,13 +1115,8 @@ mod tests {
 
     // ---- TOKL-26: usage.iterations ----------------------------------------
     //
-    // Claude Code's `message.usage` carries an `iterations` array, one entry per
-    // API call the message actually made. A model fallback logs the first
-    // attempt and the fallback as two entries under DIFFERENT models, and the
-    // top-level object is not their rollup: input/output/cache_read/5m are the
-    // LAST iteration's, while `cache_creation` carries the FIRST's. Booking one
-    // Record per message therefore lost a Request, lost the first call's tokens,
-    // and filed the first call's cache-write under the fallback's Model.
+    // What the field is and why one Record per message was wrong: see
+    // `adapters::claude_shaped_calls`.
     //
     // Fixture figures are a real production message (msg_011Cd9er…): fable-5
     // falling back to opus-4-8, with the top-level `cache_creation_input_tokens`
@@ -1126,12 +1133,19 @@ mod tests {
         )
     }
 
-    // The guard that protects 2,324 real Claude messages (and 385 Qoder ones):
+    // The guard that protects 2,600 real Claude messages (and 385 Qoder ones):
     // an EMPTY iterations array alongside a non-zero token count. Deriving the
     // call count from the array length books zero Requests for every one of
-    // them — worse than the bug being fixed. Mutation-check: make
-    // claude_shaped_calls trust `iterations.len()` unconditionally and this
-    // test must fail.
+    // them — worse than the bug being fixed.
+    //
+    // Two independent things now send an empty array to the top level: the
+    // `len() > 1` filter, and the fallback for an array that yields no call. So
+    // this test fires when BOTH are gone (the array trusted and the fallback
+    // deleted — an empty PerCall books nothing and supersedes the plain key).
+    // Trusting the length ALONE is caught by
+    // `single_iteration_keeps_todays_record_untouched`, which is the bigger
+    // guard: it stands in front of ~104,000 single-entry messages whose keys
+    // would otherwise be rewritten and whose Records superseded.
     #[test]
     fn empty_iterations_array_falls_back_to_the_top_level() {
         let line = assistant_line(&format!(r#"{TOP_HYBRID},"iterations":[]"#));
@@ -1159,10 +1173,14 @@ mod tests {
         assert!(parsed.superseded.is_empty());
     }
 
-    // The overwhelming majority (85,000+ messages): exactly one iteration. Its
+    // The overwhelming majority (~104,000 messages): exactly one iteration. Its
     // figures are the top-level figures, so the single case is NOT re-derived
     // from the array — the key keeps its historical shape and nothing is
     // superseded, or every one of those Records would be rewritten.
+    //
+    // This is the test that catches a parser trusting `iterations.len()`:
+    // mutation-check by dropping the `len() > 1` filter and it fails on the
+    // `#it0` key.
     #[test]
     fn single_iteration_keeps_todays_record_untouched() {
         let line = assistant_line(&format!(r#"{TOP_HYBRID},"iterations":[{IT_OPUS}]"#));
@@ -1211,9 +1229,9 @@ mod tests {
 
     // The plain key is what today's Ledger holds for these messages, with the
     // fallback's Model and the hybrid cache-write. Per-iteration Records replace
-    // it, so it must be superseded — a keep-max upsert cannot do it, because the
-    // surviving Record's output_tokens are unchanged and a tie keeps the stored
-    // row. Mutation-check: stop reporting the superseded key and this fails.
+    // it, so it must be superseded rather than left to the keep-max upsert (see
+    // `parse_line_events` for why a tie keeps the stored row).
+    // Mutation-check: stop reporting the superseded key and this fails.
     #[test]
     fn iteration_records_supersede_the_plain_key() {
         let line = assistant_line(&format!(r#"{TOP_HYBRID},"iterations":[{IT_FABLE},{IT_OPUS}]"#));
@@ -1250,6 +1268,25 @@ mod tests {
         assert_eq!(parsed.events.len(), 1, "the zero iteration is not a Record");
         assert_eq!(parsed.events[0].dedup_key, "claude:m:r#it1", "the index stays the iteration's own");
         assert_eq!(parsed.superseded, vec!["claude:m:r".to_string()]);
+    }
+
+    // A multi-entry array whose every entry is all-zero reports no call, while
+    // the top level still reports real usage. Booking nothing there would lose a
+    // Record the old parser kept — a silent drop, which is worse than the floor
+    // this ticket fixed. Absent is not zero. Mutation-check: make the
+    // per-iteration branch return unconditionally and this fails.
+    #[test]
+    fn an_all_zero_iterations_array_falls_back_to_the_top_level() {
+        let zero = r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"type":"message","model":"claude-fable-5"}"#;
+        let line = assistant_line(&format!(r#"{TOP_HYBRID},"iterations":[{zero},{zero}]"#));
+        let parsed = parse_file(format!("{line}\n").as_bytes(), 0, "/p/x/s.jsonl", "enc", "s", |_| None);
+        assert_eq!(parsed.events.len(), 1, "the billed message is still one Record");
+        let e = &parsed.events[0];
+        assert_eq!(e.dedup_key, "claude:m:r", "no suffix: there is no per-call figure to key");
+        assert_eq!(e.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(e.output_tokens, 1728, "top-level figures survive");
+        assert_eq!(e.cache_write_1h_tokens, 24);
+        assert!(parsed.superseded.is_empty(), "nothing was replaced, so nothing is superseded");
     }
 
     // Duplicate content-block lines repeat the whole iterations array. Each

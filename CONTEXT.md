@@ -25,9 +25,13 @@ _Avoid_: Event, row, entry
 The permanent record of every Usage Record ever ingested — the system of
 record, not a cache. Because Sources prune their logs (Claude Code deletes
 transcripts after ~30 days), a Usage Record persists in the Ledger after its
-source log is gone; scans only ever add Records, never delete them — except
-to supersede a coarser Record with Records that the Source proves carry the
-same usage, as OpenCode's per-Model split does.
+source log is gone; scans only ever add Records, never delete them — except to
+supersede a coarser Record with the finer Records the Source proves stand in its
+place. Those finer Records need not carry the same usage: OpenCode's per-Model
+split re-divides one total, while Claude's per-call split reads a signal the
+coarser Record never had, so it also corrects what that Record got wrong.
+Supersession always rests on evidence the Source supplies, never on a recount of
+what the Ledger already holds.
 _Avoid_: Cache, database, store
 
 **Scan**:
