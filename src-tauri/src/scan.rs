@@ -1536,6 +1536,11 @@ mod tests {
                 "\n",
                 r#"{"timestamp":1780287301,"method":"session/update","params":{"sessionId":"sess-override","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"GROK_PRIVATE_RESPONSE_MARKER"}},"_meta":{"totalTokens":100}}}"#,
                 "\n",
+                // The Turn's rollup: a 100-token prompt of which 60 came from
+                // cache and 10 were written to it, so every bucket the Override
+                // prices carries tokens.
+                r#"{"timestamp":1780287302,"method":"_x.ai/session/update","params":{"sessionId":"sess-override","update":{"sessionUpdate":"turn_completed","prompt_id":"p-1","stop_reason":"end_turn","usage":{"inputTokens":100,"outputTokens":20,"totalTokens":120,"cachedReadTokens":60,"cacheCreationTokens":10,"reasoningTokens":5,"modelCalls":3}},"_meta":{"eventId":"e"}}}"#,
+                "\n",
             ),
         )
         .unwrap();
@@ -1564,27 +1569,28 @@ mod tests {
         assert!(grok.error.is_none());
 
         let summary = queries::summary(&conn, &Filters::default()).unwrap();
-        assert_eq!(summary.input_tokens, 100);
-        assert_eq!(summary.output_tokens, 0);
-        assert_eq!(summary.total_tokens, 100);
-        assert_eq!(summary.requests, 1);
-        assert_eq!(summary.cost, Some(100.0));
+        assert_eq!(summary.input_tokens, 30); // 100 prompt − 60 read − 10 written
+        assert_eq!(summary.output_tokens, 20);
+        assert_eq!(summary.total_tokens, 120);
+        assert_eq!(summary.requests, 3); // the rollup's modelCalls, not one per Turn
+        // Every bucket priced by its own Override rate: 30·1 + 20·2 + 60·3 + 10·4.
+        assert_eq!(summary.cost, Some(290.0));
 
         let source_rows = queries::breakdown(&conn, "tool", &Filters::default()).unwrap();
         let grok_row = source_rows
             .iter()
             .find(|row| row.key.as_deref() == Some("grok"))
             .unwrap();
-        assert_eq!(grok_row.total_tokens, 100);
-        assert_eq!(grok_row.requests, 1);
-        assert_eq!(grok_row.cost, Some(100.0));
+        assert_eq!(grok_row.total_tokens, 120);
+        assert_eq!(grok_row.requests, 3);
+        assert_eq!(grok_row.cost, Some(290.0));
 
         let series = queries::series(&conn, &Filters::default(), "day").unwrap();
         assert_eq!(series.len(), 1);
         assert_eq!(series[0].source, "grok");
-        assert_eq!(series[0].total_tokens, 100);
-        assert_eq!(series[0].requests, 1);
-        assert_eq!(series[0].cost, 100.0);
+        assert_eq!(series[0].total_tokens, 120);
+        assert_eq!(series[0].requests, 3);
+        assert_eq!(series[0].cost, 290.0);
 
         let second = run_scan(&mut conn, &roots);
         assert_eq!(find(&second, "grok").events_inserted, 0);

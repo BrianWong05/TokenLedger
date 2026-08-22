@@ -208,13 +208,15 @@ fn build_hermes(base: &Path) {
     .unwrap();
 }
 
-// grok: sessions_root/<workspace>/<session>/updates.jsonl with a cumulative
-// context counter growing across one turn (user_message_chunk → agent chunks).
+// grok: sessions_root/<workspace>/<session>/updates.jsonl — one turn's chunks
+// (user_message_chunk → agent chunks, carrying the context counter this parser
+// ignores) closed by the turn_completed rollup that is the Usage Record.
 fn build_grok(base: &Path) {
     let updates = [
         r#"{"timestamp":100,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"x"}}}}"#,
         r#"{"timestamp":101,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"x"}},"_meta":{"totalTokens":2500,"eventId":"e"}}}"#,
         r#"{"timestamp":102,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"x"}},"_meta":{"totalTokens":4000,"eventId":"e"}}}"#,
+        r#"{"timestamp":103,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p-1","stop_reason":"end_turn","usage":{"inputTokens":64000,"outputTokens":1200,"totalTokens":65200,"cachedReadTokens":48000,"cacheCreationTokens":2000,"reasoningTokens":900,"modelCalls":7,"modelUsage":{"grok-4.5-build":{"inputTokens":64000,"outputTokens":1200}}}},"_meta":{"eventId":"e"}}}"#,
     ];
     write(
         &base.join("grok/%2FUsers%2Fdev%2Falpha/sess-1/updates.jsonl"),

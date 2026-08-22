@@ -157,11 +157,12 @@ mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 Every source logs what it wants to, not what a ledger would like. Ten of them
 distort something in a way worth knowing before you trust a figure.
 
-- **Grok Build's cost is not trustworthy.** Its logs carry a single running
-  token counter with no input/output/cache split, so every delta is booked as
-  input. Grok can therefore never contribute to the cache hit rate, and its
-  cost is computed at input rates for tokens that were really a mix. The token
-  total is sound; the money figure beside it is not.
+- **Grok Build attributes a whole session to one model.** Its logs report each
+  turn's billed usage in full — input, output, cache read and write — but name
+  the model only once per session, as the model selected now. A session where
+  you switched models books all of its turns, and all of their cost, to the
+  last one. A turn the CLI finished without writing a usage rollup is invisible
+  rather than estimated.
 - **Hermes lands on the day a session started.** It stores usage per session
   rather than per call, timestamped at the session's start — so a session opened
   Monday and worked through Wednesday books all of its tokens on Monday. That
