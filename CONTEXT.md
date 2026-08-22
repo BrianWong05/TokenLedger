@@ -243,9 +243,10 @@ _Avoid_: Conversation, run, thread
 **Request**:
 One observable unit of model work, normally one API call. The displayed
 **Requests** figure is exact for Claude, Codex, Gemini, Antigravity, pi assistant
-messages, and Hermes (via its summed `api_call_count`); each Grok Turn and each
-pi auxiliary usage block counts as one Request even when it may aggregate
-several calls, making those contributions a documented lower bound. Requests
+messages, Hermes (via its summed `api_call_count`), and Grok (whose Turn reports
+the calls it made, so a Turn is many Requests rather than one); each pi auxiliary
+usage block counts as one Request even when it may aggregate several calls,
+making that contribution a documented lower bound. Requests
 is a sum of source-observable calls or call groups, never a Ledger row count.
 _Avoid_: Call count, hits
 
@@ -292,9 +293,8 @@ exactly one bucket.
 **Input Tokens**:
 Fresh prompt tokens the model read that were not served from cache. Excludes
 cache reads — this exclusion is what makes totals and Cache Hit Rate coherent
-across Sources (Codex and Gemini report cached tokens inside input natively;
-adapters subtract to honour this rule). Grok logs carry only an
-undifferentiated running total, which is booked entirely as Input.
+across Sources (Codex, Gemini, and Grok report cached tokens inside their input
+figure natively; adapters subtract to honour this rule).
 _Avoid_: Prompt tokens
 
 **Output Tokens**:
@@ -325,8 +325,8 @@ system, and reasoning** partition the billed total exactly, while **tool calls,
 subagents, MCP, and skills** are overlapping subsets of messages, estimated from
 content size and never summing to a whole. Reasoning covers the current turn
 alone, because the API strips it from later ones; system is estimated once, at a
-Session's first Request. Only Claude, Codex, and pi report it — a Source that
-cannot attribute a category yields no figure for it, displayed as "—" and never
+Session's first Request. Only Claude, Codex, Grok, and pi report it — a Source
+that cannot attribute a category yields no figure for it, displayed as "—" and never
 as zero, and a Session resumed with its running state lost is *tainted*: it
 attributes nothing thereafter rather than attributing a guess.
 _Avoid_: Context window, breakdown, composition

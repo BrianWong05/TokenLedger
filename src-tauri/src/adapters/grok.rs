@@ -2,19 +2,28 @@
 //
 // Grok Build (xAI's CLI) writes JSON-RPC session updates under
 // `~/.grok/sessions/<urlencoded-workspace>/<session-id>/updates.jsonl`, with
-// sibling `summary.json` (cwd, model, timestamps) and `signals.json`
-// (session rollups incl. compaction totals).
+// sibling `summary.json` (cwd, model).
 //
-// Update lines expose only a cumulative context counter
-// (`params._meta.totalTokens`) — no input/output split — so each user turn's
-// positive delta is recorded as input tokens (output/cache buckets stay 0).
-// After compaction the counter rewinds; the deltas lost to that rewind are
-// reconciled from `signals.json` as one extra event per session.
+// A Turn ends on a `turn_completed` update, and that line carries the Turn's own
+// billed usage rollup in `update.usage`: inputTokens (the whole prompt),
+// outputTokens, cachedReadTokens, cacheCreationTokens, reasoningTokens, and
+// modelCalls. One such rollup is one Usage Record; ADR-0001's exclusive buckets
+// come out of it by subtraction, because cache reads and writes sit inside
+// inputTokens.
+//
+// The sibling `params._meta.totalTokens` counter is deliberately not read: it
+// measures how large the context grew, not what was billed to grow it. A Turn
+// re-sends its context once per model call, so the counter runs roughly 35x
+// below the rollup — and its rewind on compaction, which once needed a
+// signals.json reconciliation to bound, stops mattering entirely.
 //
 // Context attribution: chunk content (message text, thought text, tool-call
-// payloads) is sized transiently (est bytes/4, never stored) and each turn's
-// delta splits across messages + reasoning by those weights — system stays
-// NULL (unobservable), matching the pi convention.
+// payloads) is sized transiently (est bytes/4, never stored) and each Turn's
+// billed input splits across messages + reasoning by those weights — system
+// stays NULL (unobservable), matching the pi convention. That is the Context
+// category. The bucket breakdown's own System, which `queries` derives from a
+// Session's first Cache Write across every Source, is a different surface and
+// not this adapter's to fill or withhold.
 use std::fs;
 use std::path::Path;
 
@@ -33,10 +42,11 @@ use crate::types::{
 // Bump to force a full re-parse of every session when the parser changes (the
 // byte-offset slot carries it through `unchanged`).
 // 1: attribute each turn's delta across messages/reasoning by chunk weights.
-const PARSER_VERSION: i64 = 1;
+// 2: bill from turn_completed's usage rollup, not the context counter.
+const PARSER_VERSION: i64 = 2;
 
 const MALFORMED_ARTIFACT_WARNING: &str = "grok: malformed or unsupported Source Artifact";
-// Kinds whose lines are trusted to feed the counter and chunk weights. A kind
+// Kinds whose lines are trusted to feed the rollup and chunk weights. A kind
 // not listed here skips quietly (lines_skipped) — never a warning, so a Grok
 // Build release adding telemetry cannot red-flag the Source.
 const SUPPORTED_UPDATE_KINDS: &[&str] = &[
@@ -194,16 +204,13 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
         Some(d) => d,
         None => return,
     };
-    let signals_path = session_dir.join("signals.json");
     let summary_path = session_dir.join("summary.json");
 
-    // Tokens come from updates.jsonl + signals.json; if neither changed the
-    // session's events are already correct.
+    // Tokens come from updates.jsonl alone; summary.json carries the Model and
+    // the Project, so a change to either is a reason to re-parse.
     let updates_state = FileState { byte_offset: PARSER_VERSION, ..file_state_of(updates_path) };
-    let signals_state = file_state_of(&signals_path);
     let summary_state = file_state_of(&summary_path);
     if unchanged(conn, updates_path, &updates_state)
-        && unchanged(conn, &signals_path, &signals_state)
         && unchanged(conn, &summary_path, &summary_state)
     {
         return;
@@ -213,12 +220,15 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
         Some(meta) => meta,
         None => return,
     };
-    let mut events = match parse_updates(updates_path, &meta, result) {
+    let events = match parse_updates(updates_path, &meta, result) {
         Some(events) => events,
         None => return,
     };
-    if !append_signals_reconciliation(&signals_path, &meta, &mut events) {
-        record_grok_warning(result);
+    // Nothing parsed is not the same as nothing consumed: a live session whose
+    // Turn has not completed yet, or a log written before Grok Build carried
+    // rollups, would have the replace below delete records this parser can no
+    // longer re-derive. Leaving the file unstamped re-parses it next Scan.
+    if events.is_empty() {
         return;
     }
 
@@ -230,9 +240,6 @@ fn process_session(conn: &mut Connection, updates_path: &Path, result: &mut Sour
     }
     result.events_inserted += n;
     let _ = set_file_state(conn, &path_str, updates_state);
-    if signals_state.size > 0 || signals_state.mtime > 0 {
-        let _ = set_file_state(conn, &signals_path.to_string_lossy(), signals_state);
-    }
     if summary_state.size > 0 || summary_state.mtime > 0 {
         let _ = set_file_state(conn, &summary_path.to_string_lossy(), summary_state);
     }
@@ -242,7 +249,6 @@ struct SessionMeta {
     session_id: String,
     model: Option<String>,
     project: Option<String>,
-    fallback_ts: i64,
 }
 
 fn read_session_meta(
@@ -270,7 +276,6 @@ fn read_session_meta(
     // Never a sentinel: usage without a reliable Model stays Unattributed
     // (ADR-0008), so a missing summary or current_model_id means None.
     let mut model: Option<String> = None;
-    let mut fallback_ts = 0;
     let summary_path = session_dir.join("summary.json");
     if summary_path.exists() {
         let content = match fs::read_to_string(&summary_path) {
@@ -302,34 +307,76 @@ fn read_session_meta(
                 project = Some(cwd.to_string());
             }
         }
-        if let Some(ts) = ["updated_at", "created_at"].iter().find_map(|key| {
-            v.get(*key)
-                .and_then(Value::as_str)
-                .and_then(iso_to_epoch)
-        }) {
-            fallback_ts = ts;
+    }
+
+    Some(SessionMeta { session_id, model, project })
+}
+
+// One Turn's billed usage, in TokenLedger's four exclusive buckets. `billed` is
+// the whole prompt (Input + Cache Read + Cache Write) and so is what the Context
+// categories must partition.
+struct Usage {
+    billed: i64,
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+    // None = the rollup did not say, which is not the same as none generated.
+    reasoning: Option<i64>,
+    calls: i64,
+}
+
+// One `update.usage` object → the buckets. None means a rollup this parser
+// cannot trust, which is a malformed Artifact rather than a quiet skip: these
+// field names *are* the Usage Record now, so a rename has to be loud — and so
+// does a rollup that contradicts itself. Booking zeros is precisely how the
+// counter era under-reported this Source by 35x without a single warning, and
+// clamping a figure into range is that same silence wearing a plausible number.
+fn parse_usage(v: &Value) -> Option<Usage> {
+    if !v.is_object() {
+        return None;
+    }
+    // Absent is zero; present-but-not-a-count is a rollup we do not understand.
+    let optional = |key: &str| -> Option<i64> {
+        match v.get(key) {
+            None => Some(0),
+            Some(value) => value.as_i64().filter(|&count| count >= 0),
         }
+    };
+    // Required, because each carries a claim nothing can stand in for: the
+    // prompt total is what Context partitions, and modelCalls is what makes this
+    // Source's Requests exact rather than a floor (CONTEXT.md, Request).
+    let required = |key: &str| -> Option<i64> {
+        v.get(key)?.as_i64().filter(|&count| count >= 0)
+    };
+    let billed = required("inputTokens")?;
+    let calls = required("modelCalls")?;
+    let output = optional("outputTokens")?;
+    let cache_read = optional("cachedReadTokens")?;
+    let cache_write = optional("cacheCreationTokens")?;
+    let reasoning = match v.get("reasoningTokens") {
+        None => None,
+        Some(value) => Some(value.as_i64().filter(|&count| count >= 0)?),
+    };
+    // xAI reports cache inside the prompt total and reasoning inside output, and
+    // a rollup exists only because calls were made. One that breaks any of those
+    // has had its shape moved under us — it is not one to bend into place.
+    if cache_read.saturating_add(cache_write) > billed
+        || reasoning.is_some_and(|reasoning| reasoning > output)
+        || calls < 1
+    {
+        return None;
     }
-
-    Some(SessionMeta { session_id, model, project, fallback_ts })
-}
-
-// One in-flight user turn: the cumulative counter's value when the turn
-// started, the highest value seen while it ran, and the est-weights (bytes/4)
-// of the chunk content observed during it — sized transiently, never stored.
-struct Turn {
-    baseline: i64,
-    max_total: i64,
-    ts: i64,
-    index: usize,
-    msg: i64,
-    reas: i64,
-}
-
-impl Turn {
-    fn start(baseline: i64, ts: i64, index: usize) -> Self {
-        Turn { baseline, max_total: baseline, ts, index, msg: 0, reas: 0 }
-    }
+    Some(Usage {
+        billed,
+        // ADR-0001: Input excludes what the cache served or stored.
+        input: billed - cache_read - cache_write,
+        output,
+        cache_read,
+        cache_write,
+        reasoning,
+        calls,
+    })
 }
 
 // The (messages, reasoning) est-weight of one update's chunk content.
@@ -353,34 +400,40 @@ fn update_weights(u: &Value) -> (i64, i64) {
     }
 }
 
-// Split a turn's counter delta by the observed chunk weights (pi convention:
+// Split a Turn's billed input by the observed chunk weights (pi convention:
 // system is unobservable for grok, and a zero reasoning share stays NULL —
 // never a fabricated 0). Messages takes the remainder, so the partition over
 // the two observable categories is exact.
-fn attribute_turn(msg: i64, reas: i64, delta: i64) -> CtxTokens {
+fn attribute_turn(msg: i64, reas: i64, billed: i64) -> CtxTokens {
     let total = msg + reas;
-    if total <= 0 || delta <= 0 {
+    if total <= 0 || billed <= 0 {
         return CtxTokens::default();
     }
-    let reasoning = delta * reas / total;
+    let reasoning = billed * reas / total;
     CtxTokens {
-        messages: Some(delta - reasoning),
+        messages: Some(billed - reasoning),
         reasoning: (reasoning > 0).then_some(reasoning),
         ..Default::default()
     }
 }
 
-fn supported_update(v: &Value) -> bool {
-    matches!(
+// The update node of a line this parser trusts, or None for one to skip.
+fn supported_update(v: &Value) -> Option<&Value> {
+    if !matches!(
         v.get("method").and_then(Value::as_str),
         Some("session/update") | Some("_x.ai/session/update")
-    )
-        && v.pointer("/params/sessionId")
-            .and_then(Value::as_str)
-            .is_some_and(|id| !id.is_empty())
-        && v.pointer("/params/update/sessionUpdate")
-            .and_then(Value::as_str)
-            .is_some_and(|kind| SUPPORTED_UPDATE_KINDS.contains(&kind))
+    ) {
+        return None;
+    }
+    v.pointer("/params/sessionId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())?;
+    let update = v.pointer("/params/update")?;
+    update
+        .get("sessionUpdate")
+        .and_then(Value::as_str)
+        .filter(|kind| SUPPORTED_UPDATE_KINDS.contains(kind))?;
+    Some(update)
 }
 
 fn parse_updates(
@@ -399,23 +452,9 @@ fn parse_updates(
     };
 
     let mut events = Vec::new();
-    let mut last_total: Option<i64> = None;
-    let mut last_ts = meta.fallback_ts;
-    let mut turn: Option<Turn> = None;
-    let mut turn_index = 0usize;
-    let mut missing_timestamp = false;
-
-    let flush = |turn: Turn, events: &mut Vec<UsageEvent>, missing_timestamp: &mut bool| {
-        let delta = turn.max_total.saturating_sub(turn.baseline);
-        if delta > 0 {
-            if turn.ts > 0 {
-                let ctx = attribute_turn(turn.msg, turn.reas, delta);
-                events.push(make_event(meta, updates_path, turn.index, delta, turn.ts, ctx));
-            } else {
-                *missing_timestamp = true;
-            }
-        }
-    };
+    // Chunk weights for the Turn now running: everything seen since the last
+    // turn_completed, so a file that opens mid-Turn still weighs what it shows.
+    let (mut msg, mut reas) = (0i64, 0i64);
 
     for line in BufReader::new(file).lines() {
         let line = match line {
@@ -438,15 +477,16 @@ fn parse_updates(
         };
 
         // A kind (or method) this parser has never seen is a Grok Build release's
-        // new telemetry, not a malformed Artifact — skip the line and count it.
-        // The counter is cumulative, so the next supported line carries the same
-        // total and nothing is lost; signals.json reconciliation bounds any tail.
+        // new telemetry, not a malformed Artifact — skip the line and count it,
+        // which surfaces it as the Overview's informational notice. A renamed
+        // `turn_completed` lands here too: counted and visible, rather than a
+        // Source that silently stops growing.
         // (task_backgrounded, image_dropped, and auto_compact_* each red-flagged
         // the whole Source under the old reject-unknown policy.)
-        if !supported_update(&v) {
+        let Some(update) = supported_update(&v) else {
             result.lines_skipped += 1;
             continue;
-        }
+        };
 
         let ts = match v
             .get("timestamp")
@@ -461,179 +501,85 @@ fn parse_updates(
             }
         };
 
-        if let Some(total) = v.pointer("/params/_meta/totalTokens") {
-            if total.as_i64().is_none_or(|total| total < 0) {
-                result.lines_skipped += 1;
-                record_grok_warning(result);
-                return None;
-            }
-        }
+        let (line_msg, line_reas) = update_weights(update);
+        msg += line_msg;
+        reas += line_reas;
 
-        if v.pointer("/params/update/sessionUpdate").and_then(Value::as_str)
-            == Some("user_message_chunk")
-        {
-            if let Some(t) = turn.take() {
-                flush(t, &mut events, &mut missing_timestamp);
-            }
-            turn = Some(Turn::start(last_total.unwrap_or(0), ts, turn_index));
-            turn_index += 1;
-        }
-
-        // Chunk content weighs into the running turn; pre-turn chunks (resumed
-        // session) have no turn to belong to and stay unattributed.
-        if let (Some(t), Some(u)) = (turn.as_mut(), v.pointer("/params/update")) {
-            let (msg, reas) = update_weights(u);
-            t.msg += msg;
-            t.reas += reas;
-        }
-
-        let total = match v.pointer("/params/_meta/totalTokens").and_then(Value::as_i64) {
-            Some(t) if t >= 0 => t,
-            _ => continue,
-        };
-        // The counter rewinds on compaction/retry; treat it as monotonic and
-        // let the signals.json reconciliation recover what the rewind hides.
-        if last_total.is_some_and(|prev| total < prev) {
+        if update.get("sessionUpdate").and_then(Value::as_str) != Some("turn_completed") {
             continue;
         }
-        if turn.is_none() && last_total.is_some_and(|prev| total > prev) {
-            // Counter grew outside any observed turn (e.g. resumed session
-            // whose user message predates this file's first line).
-            turn = Some(Turn::start(last_total.unwrap_or(0), ts, turn_index));
-            turn_index += 1;
+
+        // The Turn ends here whatever it reported, so the next Turn's weights
+        // start clean even when this one booked nothing.
+        let (turn_msg, turn_reas) = (msg, reas);
+        msg = 0;
+        reas = 0;
+
+        // No rollup, so nothing billed that this can see. Usually a Turn the
+        // reader cancelled — but the two do not line up as neatly as that: the
+        // wild holds a cancelled Turn that did carry a rollup (booked below,
+        // like any other) and a completed one that carried none. Either way a
+        // zero-token observation is not a Usage Record, and there is nothing
+        // here to invent from a Turn the Source itself did not account for.
+        let Some(usage) = update.get("usage") else {
+            continue;
+        };
+        let Some(usage) = parse_usage(usage) else {
+            result.lines_skipped += 1;
+            record_grok_warning(result);
+            return None;
+        };
+        if usage.billed == 0 && usage.output == 0 {
+            continue;
         }
-        if let Some(t) = turn.as_mut() {
-            if total > t.max_total {
-                t.max_total = total;
-                t.ts = ts;
-            }
-        }
-        last_total = Some(total);
-        last_ts = ts;
+
+        // prompt_id keys the Record to the Turn itself, so a rotated or
+        // truncated log cannot shift one Record's identity onto another's. It is
+        // part of the shape this parser depends on, so a Turn that bills without
+        // one is malformed rather than keyed by its position in the file.
+        let Some(key) = update
+            .get("prompt_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            result.lines_skipped += 1;
+            record_grok_warning(result);
+            return None;
+        };
+        let ctx = attribute_turn(turn_msg, turn_reas, usage.billed);
+        events.push(make_event(meta, updates_path, key, ts, usage, ctx));
     }
 
-    if let Some(t) = turn.take() {
-        flush(t, &mut events, &mut missing_timestamp);
-    }
-
-    // No turns detected but a counter exists (very old/truncated logs):
-    // record the whole session as one event, unattributed (no turn observed
-    // means no chunk weights to split it by).
-    if events.is_empty() {
-        if let Some(total) = last_total.filter(|&t| t > 0) {
-            if last_ts > 0 {
-                events.push(make_event(meta, updates_path, 0, total, last_ts, CtxTokens::default()));
-            } else {
-                missing_timestamp = true;
-            }
-        }
-    }
-
-    if missing_timestamp {
-        record_grok_warning(result);
-        None
-    } else {
-        Some(events)
-    }
+    Some(events)
 }
-
-// Session rollup totals survive compaction; when they exceed what the update
-// deltas captured, book the difference as one extra event so long sessions
-// are not under-counted.
-fn append_signals_reconciliation(
-    signals_path: &Path,
-    meta: &SessionMeta,
-    events: &mut Vec<UsageEvent>,
-) -> bool {
-    let content = match fs::read_to_string(signals_path) {
-        Ok(c) => c,
-        Err(_) if !signals_path.exists() => return true,
-        Err(_) => {
-            return false;
-        }
-    };
-    let v: Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(_) => return false,
-    };
-
-    let has_known_field = [
-        "totalTokensBeforeCompaction",
-        "totalTokens",
-        "contextTokensUsed",
-    ]
-    .iter()
-    .any(|key| v.get(*key).is_some());
-    if !v.is_object() || !has_known_field {
-        return false;
-    }
-    for key in [
-        "totalTokensBeforeCompaction",
-        "totalTokens",
-        "contextTokensUsed",
-    ] {
-        if v.get(key)
-            .is_some_and(|value| value.as_i64().is_none_or(|value| value < 0))
-        {
-            return false;
-        }
-    }
-
-    let get = |key: &str| v.get(key).and_then(Value::as_i64).unwrap_or(0).max(0);
-    let before = get("totalTokensBeforeCompaction");
-    let total = get("totalTokens");
-    let effective = match v.get("contextTokensUsed") {
-        None => before.saturating_add(total),
-        Some(ctx) => total.max(before.saturating_add(ctx.as_i64().unwrap_or(0).max(0))),
-    };
-    if effective <= 0 {
-        return true;
-    }
-
-    let counted: i64 = events.iter().map(|e| e.input_tokens).sum();
-    let extra = effective.saturating_sub(counted);
-    if extra <= 0 {
-        return true;
-    }
-
-    // Anchor to the last update activity, not signals.json's mtime, so the
-    // delta stays on the same day across rescans of a live session.
-    let ts = events.iter().map(|e| e.timestamp).max().unwrap_or(meta.fallback_ts);
-    if ts <= 0 {
-        return false;
-    }
-    let updates_path = signals_path.with_file_name("updates.jsonl");
-    // Unattributed: the rollup delta stands for content lost to compaction,
-    // which the update chunks never showed us.
-    let mut event = make_event(meta, &updates_path, 0, extra, ts, CtxTokens::default());
-    event.dedup_key = format!("grok:{}:signals", meta.session_id);
-    events.push(event);
-    true
-}
-
 fn make_event(
     meta: &SessionMeta,
     updates_path: &Path,
-    turn_index: usize,
-    input_tokens: i64,
+    turn_key: &str,
     timestamp: i64,
+    usage: Usage,
     ctx: CtxTokens,
 ) -> UsageEvent {
     UsageEvent {
-        dedup_key: format!("grok:{}:{}", meta.session_id, turn_index),
+        dedup_key: format!("grok:{}:{}", meta.session_id, turn_key),
         source: "grok".to_string(),
         timestamp,
+        // Still summary.json's current_model_id: the rollup's own modelUsage key
+        // names the Turn's real Model (`grok-4.6-build`), which no pricing
+        // catalog carries, and an Unpriced Model would trade Cost for accuracy.
         model: meta.model.clone(),
         project: meta.project.clone(),
-        api_calls: 1, // logs expose turn boundaries only, not API calls
-        input_tokens,
-        output_tokens: 0,
-        cache_read_tokens: 0,
-        cache_write_5m_tokens: 0,
+        api_calls: usage.calls,
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        cache_read_tokens: usage.cache_read,
+        // ponytail: the rollup names no TTL, so the cheaper bucket takes the
+        // write; split it when a rollup ever distinguishes the two.
+        cache_write_5m_tokens: usage.cache_write,
         cache_write_1h_tokens: 0,
         source_file: updates_path.to_string_lossy().to_string(),
         session_id: Some(meta.session_id.clone()),
-        reasoning_tokens: None,
+        reasoning_tokens: usage.reasoning,
         ctx,
     }
 }
@@ -645,20 +591,46 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
-    // Shapes mirror real ~/.grok/sessions data (2026-07): totals live at
-    // params._meta.totalTokens, turn starts are user_message_chunk updates,
-    // top-level timestamp is epoch seconds.
-    fn update_line(ts: i64, kind: &str, total: Option<i64>) -> String {
-        update_line_text(ts, kind, total, "x")
+    // Shapes mirror real ~/.grok/sessions data (2026-08): a Turn's billed usage
+    // arrives on its own turn_completed line, the chunk lines carry the content
+    // the Context split is weighed by, `_meta.totalTokens` is the context
+    // counter this parser ignores, and the top-level timestamp is epoch seconds.
+    fn update_line(ts: i64, kind: &str) -> String {
+        update_line_text(ts, kind, "x", None)
     }
 
-    fn update_line_text(ts: i64, kind: &str, total: Option<i64>, text: &str) -> String {
-        let meta = match total {
-            Some(t) => format!(r#","_meta":{{"totalTokens":{t},"eventId":"e"}}"#),
-            None => String::new(),
-        };
+    fn update_line_text(ts: i64, kind: &str, text: &str, total: Option<i64>) -> String {
+        let total = total
+            .map(|t| format!(r#""totalTokens":{t},"#))
+            .unwrap_or_default();
         format!(
-            r#"{{"timestamp":{ts},"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}}{meta}}}}}"#
+            r#"{{"timestamp":{ts},"method":"session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"{kind}","content":{{"type":"text","text":"{text}"}}}},"_meta":{{{total}"eventId":"e"}}}}}}"#
+        )
+    }
+
+    // One completed Turn. `input` is the whole prompt: `cache_read` sits inside
+    // it, exactly as xAI reports it.
+    fn turn_completed(ts: i64, prompt: &str, input: i64, output: i64, cache_read: i64) -> String {
+        rollup(
+            ts,
+            prompt,
+            &format!(
+                r#""inputTokens":{input},"outputTokens":{output},"totalTokens":{},"cachedReadTokens":{cache_read},"cacheCreationTokens":0,"reasoningTokens":0,"modelCalls":1"#,
+                input + output
+            ),
+        )
+    }
+
+    fn rollup(ts: i64, prompt: &str, usage: &str) -> String {
+        format!(
+            r#"{{"timestamp":{ts},"method":"_x.ai/session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"turn_completed","prompt_id":"{prompt}","stop_reason":"end_turn","usage":{{{usage}}}}},"_meta":{{"eventId":"e"}}}}}}"#
+        )
+    }
+
+    // A Turn the reader interrupted: Grok Build writes the line with no usage.
+    fn cancelled_turn(ts: i64, prompt: &str) -> String {
+        format!(
+            r#"{{"timestamp":{ts},"method":"_x.ai/session/update","params":{{"sessionId":"s","update":{{"sessionUpdate":"turn_completed","prompt_id":"{prompt}","stop_reason":"cancelled"}},"_meta":{{"eventId":"e"}}}}}}"#
         )
     }
 
@@ -668,7 +640,6 @@ mod tests {
         session_id: &str,
         updates: &[String],
         summary: Option<&str>,
-        signals: Option<&str>,
     ) -> PathBuf {
         let dir = root.join(workspace).join(session_id);
         std::fs::create_dir_all(&dir).unwrap();
@@ -676,10 +647,13 @@ mod tests {
         if let Some(s) = summary {
             std::fs::write(dir.join("summary.json"), s).unwrap();
         }
-        if let Some(s) = signals {
-            std::fs::write(dir.join("signals.json"), s).unwrap();
-        }
         dir.join("updates.jsonl")
+    }
+
+    fn summary(id: &str, cwd: &str, model: &str) -> String {
+        format!(
+            r#"{{"info":{{"id":"{id}","cwd":"{cwd}"}},"current_model_id":"{model}","updated_at":"2026-08-22T12:00:00Z"}}"#
+        )
     }
 
     // The sessions half on its own: a Source with no unified log beside it.
@@ -699,48 +673,118 @@ mod tests {
     }
 
     #[test]
-    fn per_turn_deltas_become_input_events() {
+    fn each_completed_turn_books_its_rollup_in_exclusive_buckets() {
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Falpha",
             "sess-1",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_thought_chunk", Some(2500)),
-                update_line(102, "agent_message_chunk", Some(4000)),
-                update_line(200, "user_message_chunk", None),
-                update_line(201, "agent_message_chunk", Some(9000)),
+                update_line(100, "user_message_chunk"),
+                update_line(101, "agent_message_chunk"),
+                // 4000 prompt, 3000 of it served from cache, 500 generated
+                turn_completed(102, "p-1", 4000, 500, 3000),
+                update_line(200, "user_message_chunk"),
+                rollup(
+                    201,
+                    "p-2",
+                    r#""inputTokens":9000,"outputTokens":700,"totalTokens":9700,"cachedReadTokens":6000,"cacheCreationTokens":1000,"reasoningTokens":250,"modelCalls":22"#,
+                ),
             ],
-            Some(r#"{"info":{"id":"sess-1","cwd":"/Users/dev/alpha"},"current_model_id":"grok-4.5","updated_at":"2026-07-10T20:49:57Z"}"#),
-            None,
+            Some(&summary("sess-1", "/Users/dev/alpha", "grok-4.6")),
         );
 
         let (_app, conn, res) = scan(tmp.path());
         assert!(res.error.is_none());
         assert_eq!(res.events_inserted, 2);
 
-        let rows: Vec<(String, i64, i64, String, Option<String>)> = conn
-            .prepare("SELECT dedup_key, timestamp, input_tokens, model, project FROM events ORDER BY timestamp")
+        type Row = (String, i64, i64, i64, i64, i64, i64, Option<i64>, String, Option<String>);
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT dedup_key, timestamp, input_tokens, output_tokens, cache_read_tokens, \
+                 cache_write_5m_tokens, api_calls, reasoning_tokens, model, project \
+                 FROM events ORDER BY timestamp",
+            )
             .unwrap()
             .query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                Ok((
+                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?,
+                    r.get(7)?, r.get(8)?, r.get(9)?,
+                ))
             })
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
 
-        assert_eq!(rows[0].0, "grok:sess-1:0");
-        assert_eq!(rows[0].1, 102); // ts of the max-total observation
-        assert_eq!(rows[0].2, 4000); // 0 → 4000
-        assert_eq!(rows[0].3, "grok-4.5");
-        assert_eq!(rows[0].4, Some("/Users/dev/alpha".to_string()));
-        assert_eq!(rows[1].0, "grok:sess-1:1");
-        assert_eq!(rows[1].2, 5000); // 4000 → 9000
+        // Keyed by the Turn's own prompt_id, stamped when the Turn completed.
+        assert_eq!(rows[0].0, "grok:sess-1:p-1");
+        assert_eq!(rows[0].1, 102);
+        assert_eq!(rows[0].2, 1_000); // 4000 prompt − 3000 cache read (ADR-0001)
+        assert_eq!(rows[0].3, 500);
+        assert_eq!(rows[0].4, 3_000);
+        assert_eq!(rows[0].5, 0);
+        assert_eq!(rows[0].6, 1);
+        assert_eq!(rows[0].7, Some(0));
+        assert_eq!(rows[0].8, "grok-4.6");
+        assert_eq!(rows[0].9, Some("/Users/dev/alpha".to_string()));
+
+        assert_eq!(rows[1].0, "grok:sess-1:p-2");
+        assert_eq!(rows[1].2, 2_000); // 9000 − 6000 read − 1000 written
+        assert_eq!(rows[1].3, 700);
+        assert_eq!(rows[1].4, 6_000);
+        assert_eq!(rows[1].5, 1_000);
+        assert_eq!(rows[1].6, 22); // Requests are modelCalls, not one per Turn
+        assert_eq!(rows[1].7, Some(250));
+
+        // The four buckets partition the rollup with no overlap, so the Cache
+        // Hit Rate they define is the Source's own.
+        let (billed, read): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(input_tokens + cache_read_tokens + cache_write_5m_tokens), \
+                 SUM(cache_read_tokens) FROM events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(billed, 13_000); // 4000 + 9000, the two prompts
+        assert_eq!(read, 9_000);
     }
 
     #[test]
-    fn turn_delta_splits_across_messages_and_reasoning_by_chunk_weights() {
+    fn the_context_counter_is_never_billed() {
+        // The counter measures how big the context grew; the rollup measures
+        // what was billed to grow it. Only the rollup is a Usage Record — and a
+        // counter that dwarfs it (or rewinds under compaction) changes nothing.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fcounter",
+            "sess-counter",
+            &[
+                update_line(100, "user_message_chunk"),
+                update_line_text(101, "agent_message_chunk", "x", Some(400_000)),
+                // compaction rewinds the counter mid-Turn
+                update_line_text(102, "agent_message_chunk", "x", Some(13_000)),
+                turn_completed(103, "p-1", 4_000, 500, 3_000),
+            ],
+            Some(&summary("sess-counter", "/Users/dev/counter", "grok-4.6")),
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1);
+        let (input, read): (i64, i64) = conn
+            .query_row(
+                "SELECT input_tokens, cache_read_tokens FROM events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((input, read), (1_000, 3_000));
+    }
+
+    #[test]
+    fn billed_input_splits_across_messages_and_reasoning_by_chunk_weights() {
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
@@ -748,15 +792,16 @@ mod tests {
             "sess-r",
             &[
                 // weights: user 8/4=2 msg, thought 32/4=8 reas, agent 24/4=6 msg
-                update_line_text(100, "user_message_chunk", None, "uuuuuuuu"),
-                update_line_text(101, "agent_thought_chunk", Some(2500), &"t".repeat(32)),
-                update_line_text(102, "agent_message_chunk", Some(4000), &"m".repeat(24)),
+                update_line_text(100, "user_message_chunk", "uuuuuuuu", None),
+                update_line_text(101, "agent_thought_chunk", &"t".repeat(32), None),
+                update_line_text(102, "agent_message_chunk", &"m".repeat(24), None),
+                turn_completed(103, "p-1", 4000, 100, 1000),
                 // second turn: no thinking observed → reasoning stays NULL
-                update_line_text(200, "user_message_chunk", None, "uuuuuuuu"),
-                update_line_text(201, "agent_message_chunk", Some(9000), &"m".repeat(24)),
+                update_line_text(200, "user_message_chunk", "uuuuuuuu", None),
+                update_line_text(201, "agent_message_chunk", &"m".repeat(24), None),
+                turn_completed(202, "p-2", 5000, 100, 0),
             ],
-            Some(r#"{"info":{"id":"sess-r","cwd":"/Users/dev/alpha"},"current_model_id":"grok-4.5","updated_at":"2026-07-10T20:49:57Z"}"#),
-            None,
+            Some(&summary("sess-r", "/Users/dev/alpha", "grok-4.6")),
         );
 
         let (_app, conn, res) = scan(tmp.path());
@@ -770,53 +815,276 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
 
-        // Turn 1: delta 4000, weights msg 8 / reas 8 → reasoning 2000,
-        // messages take the remainder so the partition equals the delta.
+        // Turn 1: billed 4000 (cache read included — Context counts the whole
+        // prompt), weights msg 8 / reas 8 → reasoning 2000, messages the rest.
         assert_eq!(rows[0], (Some(2_000), Some(2_000), None));
-        // Turn 2: delta 5000, no thought chunks → zero share stays NULL.
+        // Turn 2: billed 5000, no thought chunks → a zero share stays NULL.
         assert_eq!(rows[1], (Some(5_000), None, None));
+
+        // The primary partition is exact against the billed buckets — the
+        // cross-Source invariant, asserted here where it is produced.
+        crate::invariants::assert_partition_exact(&conn);
     }
 
     #[test]
-    fn counter_rewind_is_ignored_and_signals_reconciles() {
+    fn a_cancelled_turn_books_nothing_and_keeps_the_next_turn_clean() {
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
-            "%2FUsers%2Fdev%2Falpha",
-            "sess-2",
+            "%2FUsers%2Fdev%2Fcancelled",
+            "sess-cancelled",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(10000)),
-                // compaction: counter rewinds, then grows below the old max
-                update_line(102, "agent_message_chunk", Some(3000)),
-                update_line(103, "agent_message_chunk", Some(8000)),
+                update_line_text(100, "user_message_chunk", &"u".repeat(400), None),
+                update_line_text(101, "agent_thought_chunk", &"t".repeat(400), None),
+                cancelled_turn(102, "p-1"),
+                // A fresh Turn: its Context must not inherit the abandoned
+                // Turn's weights, which were all over reasoning.
+                update_line_text(200, "user_message_chunk", "uuuuuuuu", None),
+                turn_completed(201, "p-2", 5000, 100, 0),
             ],
-            None,
-            // rollup says 15000 were really consumed
-            Some(r#"{"totalTokensBeforeCompaction":10000,"contextTokensUsed":5000}"#),
+            Some(&summary("sess-cancelled", "/Users/dev/cancelled", "grok-4.6")),
         );
 
         let (_app, conn, res) = scan(tmp.path());
-        assert!(res.error.is_none());
-        assert_eq!(res.events_inserted, 2); // turn + reconciliation
-
-        let (turn_tokens,): (i64,) = conn
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1);
+        let (key, msg, reas): (String, Option<i64>, Option<i64>) = conn
             .query_row(
-                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-2:0'",
+                "SELECT dedup_key, ctx_messages, ctx_reasoning FROM events",
                 [],
-                |r| Ok((r.get(0)?,)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!(turn_tokens, 10000);
+        assert_eq!(key, "grok:sess-cancelled:p-2");
+        assert_eq!((msg, reas), (Some(5_000), None));
+    }
 
-        let (extra,): (i64,) = conn
+    #[test]
+    fn a_renamed_usage_field_warns_instead_of_booking_zeros() {
+        // The counter era under-reported this Source 35x for weeks because a
+        // shape it did not understand read as zero. A rollup whose prompt total
+        // this parser cannot find is a malformed Artifact, loudly. Every other
+        // field stays valid, so only the rename can be what fires.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Frenamed",
+            "sess-renamed",
+            &[
+                update_line(100, "user_message_chunk"),
+                rollup(
+                    101,
+                    "p-1",
+                    r#""promptTokens":4000,"outputTokens":500,"cachedReadTokens":3000,"modelCalls":1"#,
+                ),
+            ],
+            Some(&summary("sess-renamed", "/Users/dev/renamed", "grok-4.6")),
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.events_inserted, 0);
+        assert!(res
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("grok") && error.contains("malformed")));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    // The rollup fields this parser refuses to guess at or bend into range.
+    // Each fixture leaves every other field valid, so only the named defect can
+    // be what fires — and each defect must fire, never clamp and carry on.
+    #[test]
+    fn a_rollup_this_parser_cannot_trust_warns_rather_than_being_repaired() {
+        let cases = [
+            // Cache cannot exceed the prompt it is said to sit inside. Clamping
+            // this would book input=0, cache_read=everything, in silence.
+            (
+                "cache read outside the prompt total",
+                r#""inputTokens":4000,"outputTokens":500,"cachedReadTokens":9000,"modelCalls":1"#,
+            ),
+            (
+                "cache read plus write outside the prompt total",
+                r#""inputTokens":4000,"outputTokens":500,"cachedReadTokens":3000,"cacheCreationTokens":2000,"modelCalls":1"#,
+            ),
+            // Reasoning is generated, so it cannot exceed what was generated.
+            (
+                "reasoning outside output",
+                r#""inputTokens":4000,"outputTokens":500,"reasoningTokens":900,"modelCalls":1"#,
+            ),
+            // Requests are exact for this Source, so a missing count is not a
+            // floor of one — it is a rollup shape this parser does not know.
+            (
+                "no modelCalls",
+                r#""inputTokens":4000,"outputTokens":500,"cachedReadTokens":3000"#,
+            ),
+            (
+                "a rollup claiming no calls made it",
+                r#""inputTokens":4000,"outputTokens":500,"modelCalls":0"#,
+            ),
+        ];
+
+        for (defect, usage) in cases {
+            let tmp = tempdir().unwrap();
+            write_session(
+                tmp.path(),
+                "%2FUsers%2Fdev%2Funtrusted",
+                "sess-untrusted",
+                &[
+                    update_line(100, "user_message_chunk"),
+                    rollup(101, "p-1", usage),
+                ],
+                Some(&summary("sess-untrusted", "/Users/dev/untrusted", "grok-4.6")),
+            );
+
+            let (_app, conn, res) = scan(tmp.path());
+            assert_eq!(res.events_inserted, 0, "{defect}: booked something");
+            assert!(
+                res.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("grok") && error.contains("malformed")),
+                "{defect}: no warning, error={:?}",
+                res.error
+            );
+            assert_eq!(
+                conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{defect}: wrote a Record anyway"
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_that_bills_without_a_prompt_id_warns_rather_than_keying_by_position() {
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fnoid",
+            "sess-noid",
+            &[
+                update_line(100, "user_message_chunk"),
+                r#"{"timestamp":101,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","stop_reason":"end_turn","usage":{"inputTokens":4000,"outputTokens":500,"modelCalls":1}},"_meta":{"eventId":"e"}}}"#.to_string(),
+            ],
+            Some(&summary("sess-noid", "/Users/dev/noid", "grok-4.6")),
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.events_inserted, 0);
+        assert!(res
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("grok") && error.contains("malformed")));
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn an_unreported_reasoning_figure_stays_null_rather_than_zero() {
+        // A rollup that omits reasoningTokens did not say none was generated,
+        // and the Ledger must not answer a question the Source left open.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fnoreas",
+            "sess-noreas",
+            &[
+                update_line(100, "user_message_chunk"),
+                rollup(101, "p-silent", r#""inputTokens":4000,"outputTokens":500,"modelCalls":1"#),
+                update_line(200, "user_message_chunk"),
+                rollup(201, "p-zero", r#""inputTokens":4000,"outputTokens":500,"reasoningTokens":0,"modelCalls":1"#),
+            ],
+            Some(&summary("sess-noreas", "/Users/dev/noreas", "grok-4.6")),
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        let reported: Vec<Option<i64>> = conn
+            .prepare("SELECT reasoning_tokens FROM events ORDER BY timestamp")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // Silent stays NULL; a reported zero is a figure the Source did give.
+        assert_eq!(reported, vec![None, Some(0)]);
+    }
+
+    #[test]
+    fn a_cancelled_turn_that_did_bill_is_booked_like_any_other() {
+        // stop_reason and the rollup do not line up: the wild holds a cancelled
+        // Turn carrying full usage. What is booked follows the rollup, never the
+        // label — the Source charged for that work.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fcancelledbill",
+            "sess-cancelled-bill",
+            &[
+                update_line(100, "user_message_chunk"),
+                r#"{"timestamp":101,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"turn_completed","prompt_id":"p-1","stop_reason":"cancelled","usage":{"inputTokens":4000,"outputTokens":500,"cachedReadTokens":3000,"modelCalls":4}},"_meta":{"eventId":"e"}}}"#.to_string(),
+            ],
+            Some(&summary("sess-cancelled-bill", "/Users/dev/cancelledbill", "grok-4.6")),
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1);
+        let (key, input, read, calls): (String, i64, i64, i64) = conn
             .query_row(
-                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-2:signals'",
+                "SELECT dedup_key, input_tokens, cache_read_tokens, api_calls FROM events",
                 [],
-                |r| Ok((r.get(0)?,)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!(extra, 5000); // 15000 rollup − 10000 counted
+        assert_eq!(key, "grok:sess-cancelled-bill:p-1");
+        assert_eq!((input, read, calls), (1_000, 3_000, 4));
+    }
+
+    #[test]
+    fn a_log_with_no_rollup_keeps_the_records_it_already_has() {
+        // The counter-era parser booked Records from `_meta.totalTokens`. This
+        // one finds no rollup in that same file — nor in a live session whose
+        // Turn has not completed yet. replace_file_events deletes the file's
+        // rows before it writes, so a parse that yields nothing must not write.
+        let tmp = tempdir().unwrap();
+        let updates = write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fcounteronly",
+            "sess-old",
+            &[
+                update_line(100, "user_message_chunk"),
+                update_line_text(101, "agent_message_chunk", "x", Some(4000)),
+            ],
+            Some(&summary("sess-old", "/Users/dev/counteronly", "grok-4.6")),
+        );
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        // What the previous parser version left in the Ledger for this file.
+        conn.execute(
+            "INSERT INTO events (dedup_key, source, timestamp, model, api_calls, \
+             input_tokens, source_file) \
+             VALUES ('grok:sess-old:0', 'grok', 100, 'grok-4.6', 1, 4000, ?1)",
+            [updates.to_string_lossy().to_string()],
+        )
+        .unwrap();
+
+        let res = scan_sessions(&mut conn, tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1,
+            "a Record this parser cannot re-derive must survive the scan"
+        );
     }
 
     #[test]
@@ -827,10 +1095,9 @@ mod tests {
             "%2FUsers%2Fdev%2Fbeta",
             "sess-3",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(500)),
+                update_line(100, "user_message_chunk"),
+                turn_completed(101, "p-1", 500, 50, 0),
             ],
-            None,
             None,
         );
 
@@ -852,10 +1119,9 @@ mod tests {
             "%2FUsers%2Fdev%2Falpha",
             "sess-4",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(1000)),
+                update_line(100, "user_message_chunk"),
+                turn_completed(101, "p-1", 1000, 100, 0),
             ],
-            None,
             None,
         );
 
@@ -871,9 +1137,9 @@ mod tests {
         // Session grows (new turn, distinct mtime via size change) → rescan
         // replaces the file's events, no duplicates.
         let mut content = std::fs::read_to_string(&updates).unwrap();
-        content.push_str(&update_line(200, "user_message_chunk", None));
+        content.push_str(&update_line(200, "user_message_chunk"));
         content.push('\n');
-        content.push_str(&update_line(201, "agent_message_chunk", Some(2500)));
+        content.push_str(&turn_completed(201, "p-2", 2500, 200, 0));
         content.push('\n');
         std::fs::write(&updates, content).unwrap();
 
@@ -903,7 +1169,6 @@ mod tests {
             "sess-malformed",
             &["not json".to_string()],
             None,
-            None,
         );
 
         let (_app, _conn, res) = scan(tmp.path());
@@ -922,10 +1187,9 @@ mod tests {
             "%2FUsers%2Fdev%2Fhistory",
             "sess-history",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(500)),
+                update_line(100, "user_message_chunk"),
+                turn_completed(101, "p-1", 500, 50, 0),
             ],
-            None,
             None,
         );
 
@@ -956,11 +1220,10 @@ mod tests {
             "%2FUsers%2Fdev%2Funsupported",
             "sess-unsupported",
             &[
-                update_line(100, "user_message_chunk", None),
+                update_line(100, "user_message_chunk"),
                 r#"{"timestamp":101,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"future_update"}}}"#.to_string(),
-                update_line(102, "agent_message_chunk", Some(4000)),
+                turn_completed(102, "p-1", 4000, 400, 0),
             ],
-            None,
             None,
         );
 
@@ -970,7 +1233,7 @@ mod tests {
         assert_eq!(res.lines_skipped, 1);
         let tokens: i64 = conn
             .query_row(
-                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-unsupported:0'",
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-unsupported:p-1'",
                 [],
                 |r| r.get(0),
             )
@@ -980,15 +1243,14 @@ mod tests {
 
     #[test]
     fn a_session_of_only_unknown_updates_is_quiet() {
-        // Nothing recognisable, but the sibling shape checks (summary/signals)
-        // still stand guard for a wholesale format change — this alone is not one.
+        // Nothing recognisable, but the summary.json shape check still stands
+        // guard for a wholesale format change — this alone is not one.
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Funsupported",
             "sess-only-unknown",
             &[r#"{"timestamp":100,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"future_update"}}}"#.to_string()],
-            None,
             None,
         );
 
@@ -1012,21 +1274,20 @@ mod tests {
     #[test]
     fn task_lifecycle_updates_do_not_reject_the_session() {
         // Background bash / monitor emits task_backgrounded then task_completed
-        // on `_x.ai/session/update` with no totalTokens. A session that also
-        // has a real turn must still book that turn — not abort as malformed.
+        // on `_x.ai/session/update` with no usage. A session that also has a
+        // real turn must still book that turn — not abort as malformed.
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Ftasks",
             "sess-tasks",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(4000)),
-                task_lifecycle_line(102, "task_backgrounded"),
-                task_lifecycle_line(103, "task_completed"),
+                update_line(100, "user_message_chunk"),
+                task_lifecycle_line(101, "task_backgrounded"),
+                task_lifecycle_line(102, "task_completed"),
+                turn_completed(103, "p-1", 4000, 400, 0),
             ],
-            Some(r#"{"info":{"id":"sess-tasks","cwd":"/Users/dev/tasks"},"current_model_id":"grok-4.6","updated_at":"2026-08-15T12:00:00Z"}"#),
-            None,
+            Some(&summary("sess-tasks", "/Users/dev/tasks", "grok-4.6")),
         );
 
         let (_app, conn, res) = scan(tmp.path());
@@ -1034,7 +1295,7 @@ mod tests {
         assert_eq!(res.events_inserted, 1);
         let tokens: i64 = conn
             .query_row(
-                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-tasks:0'",
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-tasks:p-1'",
                 [],
                 |r| r.get(0),
             )
@@ -1044,21 +1305,20 @@ mod tests {
 
     #[test]
     fn image_dropped_updates_do_not_reject_the_session() {
-        // Grok Build emits image_dropped on `_x.ai/session/update` with no
-        // totalTokens, same family as image_compressed. A session that also
-        // has a real turn must still book that turn — not abort as malformed.
+        // Grok Build emits image_dropped on `_x.ai/session/update`, same family
+        // as image_compressed. A session that also has a real turn must still
+        // book that turn — not abort as malformed.
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Fimages",
             "sess-images",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(4000)),
-                image_dropped_line(102),
+                update_line(100, "user_message_chunk"),
+                image_dropped_line(101),
+                turn_completed(102, "p-1", 4000, 400, 0),
             ],
-            Some(r#"{"info":{"id":"sess-images","cwd":"/Users/dev/images"},"current_model_id":"grok-4.6","updated_at":"2026-08-20T12:00:00Z"}"#),
-            None,
+            Some(&summary("sess-images", "/Users/dev/images", "grok-4.6")),
         );
 
         let (_app, conn, res) = scan(tmp.path());
@@ -1066,7 +1326,7 @@ mod tests {
         assert_eq!(res.events_inserted, 1);
         let tokens: i64 = conn
             .query_row(
-                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-images:0'",
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-images:p-1'",
                 [],
                 |r| r.get(0),
             )
@@ -1077,23 +1337,22 @@ mod tests {
     #[test]
     fn auto_compaction_telemetry_is_recognised_not_skipped() {
         // Grok Build's 500K-context auto-compaction writes three telemetry
-        // lines around the counter rewind. They carry no totalTokens and no
-        // chunk content, so they must pass through weightless — and, being
-        // known kinds, must not raise the "unrecognized log lines" notice.
+        // lines around the counter rewind. They carry no usage and no chunk
+        // content, so they must pass through weightless — and, being known
+        // kinds, must not raise the "unrecognized log lines" notice.
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Fcompact",
             "sess-compact",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(4000)),
+                update_line(100, "user_message_chunk"),
                 r#"{"timestamp":102,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"auto_compact_started","tokens_used":400934,"context_window":500000,"percentage":80,"reason":"Context window 80% full"},"_meta":{"eventId":"e"}}}"#.to_string(),
                 r#"{"timestamp":103,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"compaction_checkpoint","checkpoint_id":"c1","prompt_index_at_compaction":14,"schema_version":1},"_meta":{"eventId":"e"}}}"#.to_string(),
                 r#"{"timestamp":104,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"auto_compact_completed","tokens_before":400934,"tokens_after":13024,"elapsed_ms":119760,"summary_preview":null},"_meta":{"eventId":"e"}}}"#.to_string(),
+                turn_completed(105, "p-1", 4000, 400, 0),
             ],
-            Some(r#"{"info":{"id":"sess-compact","cwd":"/Users/dev/compact"},"current_model_id":"grok-4.6","updated_at":"2026-08-22T12:00:00Z"}"#),
-            None,
+            Some(&summary("sess-compact", "/Users/dev/compact", "grok-4.6")),
         );
 
         let (_app, conn, res) = scan(tmp.path());
@@ -1102,7 +1361,7 @@ mod tests {
         assert_eq!(res.events_inserted, 1);
         let tokens: i64 = conn
             .query_row(
-                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-compact:0'",
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-compact:p-1'",
                 [],
                 |r| r.get(0),
             )
@@ -1118,10 +1377,9 @@ mod tests {
             "%2FUsers%2Fdev%2Funtimestamped",
             "sess-untimestamped",
             &[
-                update_line(0, "user_message_chunk", None),
-                update_line(0, "agent_message_chunk", Some(500)),
+                update_line(0, "user_message_chunk"),
+                turn_completed(0, "p-1", 500, 50, 0),
             ],
-            None,
             None,
         );
 
@@ -1136,20 +1394,17 @@ mod tests {
     }
 
     #[test]
-    fn malformed_summary_and_signals_warn_without_deleting_history() {
+    fn malformed_summary_warns_without_deleting_history() {
         let tmp = tempdir().unwrap();
         let updates = write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Fsiblings",
             "sess-siblings",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(500)),
+                update_line(100, "user_message_chunk"),
+                turn_completed(101, "p-1", 500, 50, 0),
             ],
-            Some(
-                r#"{"info":{"id":"sess-siblings"},"current_model_id":"grok","updated_at":"2026-07-10T20:49:57Z"}"#,
-            ),
-            None,
+            Some(&summary("sess-siblings", "/Users/dev/siblings", "grok")),
         );
 
         let app = tempdir().unwrap();
@@ -1159,20 +1414,6 @@ mod tests {
         std::fs::write(updates.parent().unwrap().join("summary.json"), "not json").unwrap();
         let summary_result = scan_sessions(&mut conn, tmp.path());
         assert!(summary_result.error.is_some());
-        assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-
-        std::fs::write(
-            updates.parent().unwrap().join("summary.json"),
-            r#"{"info":{"id":"sess-siblings"},"current_model_id":"grok","updated_at":"2026-07-10T20:49:57Z"}"#,
-        )
-        .unwrap();
-        std::fs::write(updates.parent().unwrap().join("signals.json"), "not json").unwrap();
-        let signals_result = scan_sessions(&mut conn, tmp.path());
-        assert!(signals_result.error.is_some());
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
@@ -1344,10 +1585,9 @@ mod tests {
             "%2FUsers%2Fdev%2Falpha",
             "sess-log",
             &[
-                update_line(100, "user_message_chunk", None),
-                update_line(101, "agent_message_chunk", Some(4000)),
+                update_line(100, "user_message_chunk"),
+                turn_completed(101, "p-1", 4000, 400, 0),
             ],
-            None,
             None,
         );
         let log = tmp.path().join("unified.jsonl");
