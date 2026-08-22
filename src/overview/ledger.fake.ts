@@ -96,9 +96,9 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     sources: data.sourceRows ?? data.modelRows,
   });
 
-  const addOpt = (a: number | null, b: number | null): number | null =>
-    b == null ? a : (a ?? 0) + b;
-
+  // Billed/reused are real SeriesPoint fields, so a test that seeds only
+  // dayPoints still gets an honest header. Every ctx category stays null —
+  // seed `ctxTotals` to express one, exactly as context() would report it.
   const totalsFromPoints = (): CtxSourceTotals[] => {
     const by = new Map<string, CtxSourceTotals>();
     for (const p of data.dayPoints) {
@@ -109,13 +109,6 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
       };
       t.billed += p.inputTokens + p.cacheReadTokens + p.cacheWriteTokens;
       t.reused += p.cacheReadTokens;
-      t.messages = addOpt(t.messages, p.ctxMessages);
-      t.system = addOpt(t.system, p.ctxSystem);
-      t.reasoning = addOpt(t.reasoning, p.ctxReasoning);
-      t.toolcalls = addOpt(t.toolcalls, p.ctxToolcalls);
-      t.agents = addOpt(t.agents, p.ctxAgents);
-      t.mcp = addOpt(t.mcp, p.ctxMcp);
-      t.skills = addOpt(t.skills, p.ctxSkills);
       by.set(p.source, t);
     }
     return [...by.values()];

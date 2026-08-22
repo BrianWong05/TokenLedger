@@ -19,13 +19,6 @@ export function seriesPoint(over: Partial<SeriesPoint> = {}): SeriesPoint {
     cost: 0,
     requests: 0,
     convs: 0,
-    ctxMessages: null,
-    ctxSystem: null,
-    ctxReasoning: null,
-    ctxToolcalls: null,
-    ctxAgents: null,
-    ctxMcp: null,
-    ctxSkills: null,
     ...over,
   };
 }

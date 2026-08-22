@@ -5,4 +5,4 @@ export type SeriesPoint = { bucket: string, source: string, byModel: Record<stri
  * Cache-Estimated (CONTEXT.md): this bucket counted cache tokens whose
  * rate is absent. Same predicate Cost uses (`Rates::cache_gap`).
  */
-cacheEstimated: boolean, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, totalTokens: number, reasoningTokens: number | null, cost: number, requests: number, convs: number, ctxMessages: number | null, ctxSystem: number | null, ctxReasoning: number | null, ctxToolcalls: number | null, ctxAgents: number | null, ctxMcp: number | null, ctxSkills: number | null, };
+cacheEstimated: boolean, inputTokens: number, outputTokens: number, cacheReadTokens: number, cacheWriteTokens: number, totalTokens: number, reasoningTokens: number | null, cost: number, requests: number, convs: number, };

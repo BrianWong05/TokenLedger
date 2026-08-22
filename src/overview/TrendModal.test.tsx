@@ -15,7 +15,7 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import { isoOf } from './data';
-import type { Filters, ScanStatus, Summary } from '../types';
+import type { Filters, ScanStatus, SeriesPoint, Summary } from '../types';
 import { seriesPoint as pt } from './seriesPoint';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =

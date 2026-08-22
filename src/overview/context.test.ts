@@ -32,6 +32,21 @@ describe('sourceTotals', () => {
     expect(t.agents).toBeNull();
   });
 
+  it('keeps an observed zero distinct from an unattributable category', () => {
+    const t = sourceTotals(
+      ctx({
+        totals: [{
+          source: 'claude', billed: 0, reused: 0,
+          messages: 0, system: null, reasoning: null,
+          toolcalls: null, agents: null, mcp: null, skills: null,
+        }],
+      }),
+      'claude',
+    );
+    expect(t.messages).toBe(0);
+    expect(t.system).toBeNull();
+  });
+
   it('an unknown Source is billed zero with every category unattributable', () => {
     expect(sourceTotals(ctx(), 'hermes')).toEqual({
       billed: 0, reused: 0,

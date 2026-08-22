@@ -29,7 +29,6 @@ import {
   projectTableRows,
   modelBars,
   catTotals,
-  ctxTotals,
   ctxMeta,
   rangeToFilters,
   bucketFilters,
@@ -504,37 +503,6 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     const reversed = rangeToFilters('custom', '2026-07-08', '2026-07-01');
     expect(reversed).toEqual(forward);
     expect(reversed.startTs!).toBeLessThan(reversed.endTs!);
-  });
-});
-
-describe('ctxTotals', () => {
-  it('sums per-tool ctx preserving null (never 0)', () => {
-    const pts: SeriesPoint[] = [
-      pt({ source: 'claude', inputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 30,
-           ctxMessages: 250, ctxSystem: 60, ctxReasoning: 20, ctxToolcalls: 90 }),
-      pt({ source: 'claude', inputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0,
-           ctxMessages: 40, ctxSystem: 10, ctxReasoning: 0 }),
-      pt({ source: 'codex', ctxMessages: 999 }), // other tool: excluded
-    ];
-    const t = ctxTotals(pts, 'claude');
-    expect(t.billed).toBe(380); // (100+200+30) + (50+0+0)
-    expect(t.reused).toBe(200);
-    expect(t.messages).toBe(290);
-    expect(t.system).toBe(70);
-    expect(t.reasoning).toBe(20);
-    expect(t.toolcalls).toBe(90); // one null contributor does not zero it
-    expect(t.agents).toBeNull();  // nothing reported anywhere: null, not 0
-  });
-
-  it('all-null source stays all null (hermes)', () => {
-    const t = ctxTotals([pt({ source: 'hermes' })], 'hermes');
-    expect(t.messages).toBeNull();
-    expect(t.billed).toBe(330); // header still real: 100+200+30
-  });
-
-  it('keeps unavailable context distinct from an observed zero', () => {
-    expect(ctxTotals([pt({ source: 'hermes', ctxMessages: null })], 'hermes').messages).toBeNull();
-    expect(ctxTotals([pt({ source: 'claude', ctxMessages: 0 })], 'claude').messages).toBe(0);
   });
 });
 

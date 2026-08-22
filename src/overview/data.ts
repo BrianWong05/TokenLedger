@@ -926,33 +926,6 @@ export interface CtxTotals {
   skills: number | null;
 }
 
-// Null-preserving sum: a null contributor never zeroes the total, and a
-// category nobody reported stays null (renders "—", same rule as reasoning).
-function addOpt(a: number | null, b: number | null): number | null {
-  return b == null ? a : (a ?? 0) + b;
-}
-
-export function ctxTotals(pts: SeriesPoint[], tool: SourceKey): CtxTotals {
-  const t: CtxTotals = {
-    billed: 0, reused: 0,
-    messages: null, system: null, reasoning: null,
-    toolcalls: null, agents: null, mcp: null, skills: null,
-  };
-  for (const p of pts) {
-    if (p.source !== tool) continue;
-    t.billed += p.inputTokens + p.cacheReadTokens + p.cacheWriteTokens;
-    t.reused += p.cacheReadTokens;
-    t.messages = addOpt(t.messages, p.ctxMessages);
-    t.system = addOpt(t.system, p.ctxSystem);
-    t.reasoning = addOpt(t.reasoning, p.ctxReasoning);
-    t.toolcalls = addOpt(t.toolcalls, p.ctxToolcalls);
-    t.agents = addOpt(t.agents, p.ctxAgents);
-    t.mcp = addOpt(t.mcp, p.ctxMcp);
-    t.skills = addOpt(t.skills, p.ctxSkills);
-  }
-  return t;
-}
-
 const CTX_KINDS: { kind: string; key: OverviewKey }[] = [
   { kind: 'skill', key: 'overview.kind.skill' },
   { kind: 'mcp_server', key: 'overview.kind.mcpServer' },

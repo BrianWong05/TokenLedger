@@ -47,28 +47,6 @@ pub struct Summary {
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
-#[allow(dead_code)] // IPC command removed; queries tests still construct via trend().
-pub struct TrendPoint {
-    pub bucket: String,
-    #[ts(type = "number")]
-    pub input_tokens: i64,
-    #[ts(type = "number")]
-    pub output_tokens: i64,
-    #[ts(type = "number")]
-    pub cache_read_tokens: i64,
-    #[ts(type = "number")]
-    pub cache_write_tokens: i64,
-    #[ts(type = "number")]
-    pub total_tokens: i64,
-    pub cost: f64,
-    pub has_unpriced: bool,
-    #[ts(type = "number")]
-    pub unattributed_tokens: i64,
-}
-
-#[derive(Debug, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
 pub struct BreakdownRow {
     // None is reserved for a model-breakdown row whose Usage has no Model.
     // Project/tool breakdowns continue to return named keys.
@@ -156,13 +134,6 @@ struct CostContribution {
     unattributed_tokens: i64,
     unpriced: bool,
     cache_estimated: bool,
-}
-
-impl CostContribution {
-    fn or_into(&self, unpriced: &mut bool, cache_estimated: &mut bool) {
-        *unpriced |= self.unpriced;
-        *cache_estimated |= self.cache_estimated;
-    }
 }
 
 fn cost_contribution(
@@ -289,64 +260,6 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     })
 }
 
-#[cfg(test)]
-pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<TrendPoint>> {
-    let hourly = hourly_flag(bucket);
-    let rates = RateMap::load(conn)?;
-    let (where_sql, params) = build_where(f);
-    let sql = format!(
-        "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, model, \
-         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens) \
-         FROM events {where_sql} GROUP BY bucket, model ORDER BY bucket"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
-        Ok((
-            r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?,
-            r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?,
-            r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
-        ))
-    })?;
-
-    let mut idx: HashMap<String, usize> = HashMap::new();
-    let mut points: Vec<TrendPoint> = Vec::new();
-    for row in rows {
-        let (bucket, model, in_, out, cr, w5, w1) = row?;
-        let tokens = in_ + out + cr + w5 + w1;
-        let contribution = cost_contribution(
-            &rates,
-            model.as_deref(),
-            price_day(&bucket),
-            [in_, out, cr, w5, w1],
-        );
-        let i = *idx.entry(bucket.clone()).or_insert_with(|| {
-            points.push(TrendPoint {
-                bucket: bucket.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                total_tokens: 0,
-                cost: 0.0,
-                has_unpriced: false,
-                unattributed_tokens: 0,
-            });
-            points.len() - 1
-        });
-        let p = &mut points[i];
-        p.input_tokens += in_;
-        p.output_tokens += out;
-        p.cache_read_tokens += cr;
-        p.cache_write_tokens += w5 + w1;
-        p.total_tokens += tokens;
-        p.cost += contribution.cost;
-        p.has_unpriced |= contribution.unpriced;
-        p.unattributed_tokens += contribution.unattributed_tokens;
-    }
-    Ok(points)
-}
-
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
@@ -379,20 +292,6 @@ pub struct SeriesPoint {
     pub requests: i64,
     #[ts(type = "number")]
     pub convs: i64,
-    #[ts(type = "number | null")]
-    pub ctx_messages: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_system: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_reasoning: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_toolcalls: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_agents: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_mcp: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_skills: Option<i64>,
 }
 
 // Merges a nullable per-group SUM into an accumulator: only Some contributes,
@@ -421,8 +320,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     let sql = format!(
         "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, source, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens), \
-         SUM(ctx_messages), SUM(ctx_system), SUM(ctx_reasoning), SUM(ctx_toolcalls), SUM(ctx_agents), SUM(ctx_mcp), SUM(ctx_skills) \
+         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
          FROM events {where_sql} GROUP BY bucket, source, model ORDER BY bucket, source"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -432,17 +330,13 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
             r.get::<_, Option<i64>>(9)?,
-            r.get::<_, Option<i64>>(10)?, r.get::<_, Option<i64>>(11)?, r.get::<_, Option<i64>>(12)?,
-            r.get::<_, Option<i64>>(13)?, r.get::<_, Option<i64>>(14)?, r.get::<_, Option<i64>>(15)?,
-            r.get::<_, Option<i64>>(16)?,
         ))
     })?;
 
     let mut idx: HashMap<(String, String), usize> = HashMap::new();
     let mut points: Vec<SeriesPoint> = Vec::new();
     for row in rows {
-        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning,
-             cxm, cxs, cxr, cxt, cxa, cxmc, cxsk) = row?;
+        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
         let tokens = in_ + out + cr + w5 + w1;
         let contribution = cost_contribution(
             &rates,
@@ -450,7 +344,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             price_day(&bucket),
             [in_, out, cr, w5, w1],
         );
-        // Clone into the map key like trend(); avoid moving (bucket, source) before push.
+        // Clone into the map key; avoid moving (bucket, source) before push.
         let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
             points.push(SeriesPoint {
                 bucket: bucket.clone(),
@@ -468,13 +362,6 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
                 cost: 0.0,
                 requests: 0,
                 convs: 0,
-                ctx_messages: None,
-                ctx_system: None,
-                ctx_reasoning: None,
-                ctx_toolcalls: None,
-                ctx_agents: None,
-                ctx_mcp: None,
-                ctx_skills: None,
             });
             points.len() - 1
         });
@@ -483,7 +370,8 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             *p.by_model.entry(model).or_insert(0) += tokens;
         }
         p.unattributed_tokens += contribution.unattributed_tokens;
-        contribution.or_into(&mut p.has_unpriced, &mut p.cache_estimated);
+        p.has_unpriced |= contribution.unpriced;
+        p.cache_estimated |= contribution.cache_estimated;
         p.input_tokens += in_;
         p.output_tokens += out;
         p.cache_read_tokens += cr;
@@ -492,13 +380,6 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
         p.requests += calls;
         p.cost += contribution.cost;
         add_opt(&mut p.reasoning_tokens, reasoning);
-        add_opt(&mut p.ctx_messages, cxm);
-        add_opt(&mut p.ctx_system, cxs);
-        add_opt(&mut p.ctx_reasoning, cxr);
-        add_opt(&mut p.ctx_toolcalls, cxt);
-        add_opt(&mut p.ctx_agents, cxa);
-        add_opt(&mut p.ctx_mcp, cxmc);
-        add_opt(&mut p.ctx_skills, cxsk);
     }
 
     // Convs need distinct-count at (bucket, source) — a session can span
@@ -629,7 +510,8 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         );
         a.cost += contribution.cost;
         a.priced += contribution.priced_tokens;
-        contribution.or_into(&mut a.unpriced, &mut a.cache_estimated);
+        a.unpriced |= contribution.unpriced;
+        a.cache_estimated |= contribution.cache_estimated;
         a.unattributed += contribution.unattributed_tokens;
     }
     for (grp, src, _) in sessions {
@@ -1650,11 +1532,6 @@ mod tests {
 
         approx(summary(&conn, &Filters::default()).unwrap().cost.unwrap(), 0.0003);
 
-        let trend_rows = trend(&conn, &Filters::default(), "day").unwrap();
-        assert_eq!(trend_rows.len(), 2);
-        approx(trend_rows[0].cost, 0.0001);
-        approx(trend_rows[1].cost, 0.0002);
-
         let series_rows = series(&conn, &Filters::default(), "day").unwrap();
         assert_eq!(series_rows.len(), 2);
         approx(series_rows[0].cost, 0.0001);
@@ -1970,45 +1847,6 @@ mod tests {
         assert_eq!(keys(&w.sources), keys(&breakdown(&conn, "tool", &f).unwrap()));
     }
 
-    #[test]
-    fn trend_counts_unattributed_usage_without_marking_an_unpriced_model() {
-        std::env::set_var("TZ", "UTC");
-        let dir = tempdir().unwrap();
-        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
-        let mut usage = ev(
-            "pi:tool-result:1", "pi", DAY1_TS, "unused", None,
-            2, 100, 50, 20, 10, 5,
-        );
-        usage.model = None;
-        db::insert_events(&mut conn, &[usage]).unwrap();
-
-        let pts = trend(&conn, &Filters::default(), "day").unwrap();
-        assert_eq!(pts.len(), 1);
-        assert_eq!(pts[0].bucket, "2026-07-01");
-        assert_eq!(pts[0].total_tokens, 185);
-        approx(pts[0].cost, 0.0);
-        assert!(!pts[0].has_unpriced);
-        assert_eq!(pts[0].unattributed_tokens, 185);
-    }
-
-    #[test]
-    fn trend_daily_buckets_local_time() {
-        std::env::set_var("TZ", "UTC"); // pin bucketing timezone for a deterministic date string
-        let (_dir, conn) = seed();
-        let pts = trend(&conn, &Filters::default(), "day").unwrap();
-        assert_eq!(pts.len(), 2);
-        assert_eq!(pts[0].bucket, "2026-07-01");
-        assert_eq!(pts[0].total_tokens, 2250); // A + C
-        approx(pts[0].cost, 0.00755);
-        assert!(pts[0].has_unpriced);
-        assert_eq!(pts[0].unattributed_tokens, 0);
-        assert_eq!(pts[1].bucket, "2026-07-02");
-        assert_eq!(pts[1].total_tokens, 3000); // B
-        approx(pts[1].cost, 0.014);
-        assert!(!pts[1].has_unpriced);
-        assert_eq!(pts[1].unattributed_tokens, 0);
-    }
-
     // Events with v2 fields for series tests.
     fn ev_s(
         key: &str, source: &str, ts: i64, model: &str,
@@ -2154,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn series_sums_ctx_preserving_null() {
+    fn context_totals_sum_ctx_preserving_null() {
         std::env::set_var("TZ", "UTC");
         let dir = tempdir().unwrap();
         let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
@@ -2171,15 +2009,15 @@ mod tests {
         let h = ev_s("h", "hermes", DAY1_TS, "hermes-local", Some("hs"), None);
         db::insert_events(&mut conn, &[a, b, h]).unwrap();
 
-        let pts = series(&conn, &Filters::default(), "day").unwrap();
-        let c = pts.iter().find(|p| p.source == "claude").unwrap();
-        assert_eq!(c.ctx_messages, Some(1000));
-        assert_eq!(c.ctx_system, Some(90));
-        assert_eq!(c.ctx_reasoning, Some(20));
-        assert_eq!(c.ctx_toolcalls, Some(300));
-        assert_eq!(c.ctx_agents, None, "no contributing value: NULL, never 0");
-        let hm = pts.iter().find(|p| p.source == "hermes").unwrap();
-        assert_eq!(hm.ctx_messages, None);
+        let totals = context(&conn, &Filters::default()).unwrap().totals;
+        let c = totals.iter().find(|t| t.source == "claude").unwrap();
+        assert_eq!(c.messages, Some(1000));
+        assert_eq!(c.system, Some(90));
+        assert_eq!(c.reasoning, Some(20));
+        assert_eq!(c.toolcalls, Some(300));
+        assert_eq!(c.agents, None, "no contributing value: NULL, never 0");
+        let hm = totals.iter().find(|t| t.source == "hermes").unwrap();
+        assert_eq!(hm.messages, None);
     }
 
     #[test]

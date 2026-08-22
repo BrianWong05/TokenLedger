@@ -951,12 +951,12 @@ async function mountStoreWithCtxFor(
   const usageOnly = opts.alsoSeedUsageFor ?? [];
   const clock = fakeClock();
   const ledger = makeFakeLedger({
-    dayPoints: [
-      ...ctxSources.map((source) =>
-        pt({ source, ctxMessages: 8000, ctxSystem: 1200, ctxToolcalls: 900, ctxMcp: 300, ctxSkills: 150 }),
-      ),
-      ...usageOnly.map((source) => pt({ source })),
-    ],
+    dayPoints: [...ctxSources, ...usageOnly].map((source) => pt({ source })),
+    ctxTotals: ctxSources.map((source) => ({
+      source, billed: 0, reused: 0,
+      messages: 8000, system: 1200, reasoning: null,
+      toolcalls: 900, agents: null, mcp: 300, skills: 150,
+    })),
     sourceRows: [...ctxSources, ...usageOnly].map((source) => sourceRow(source)),
     // A Bash tool row rides with the exec rows below, the way a real scan
     // writes them: both come from the same `tool_use`, and the Bash leaf is
@@ -981,7 +981,12 @@ async function mountStoreWithCtxFor(
 async function mountStoreWithManySkills(count: number) {
   const clock = fakeClock();
   const ledger = makeFakeLedger({
-    dayPoints: [pt({ source: 'claude', ctxSkills: 150 })],
+    dayPoints: [pt({ source: 'claude' })],
+    ctxTotals: [{
+      source: 'claude', billed: 0, reused: 0,
+      messages: null, system: null, reasoning: null,
+      toolcalls: null, agents: null, mcp: null, skills: 150,
+    }],
     sourceRows: [sourceRow('claude')],
     ctxSkills: Array.from({ length: count }, (_, i) => ({
       source: 'claude',
@@ -1118,7 +1123,12 @@ describe('selectReportInput', () => {
   it('merges signatures that differ only by the kind column it does not carry', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({
-      dayPoints: [pt({ source: 'claude', ctxToolcalls: 900 })],
+      dayPoints: [pt({ source: 'claude' })],
+      ctxTotals: [{
+        source: 'claude', billed: 0, reused: 0,
+        messages: null, system: null, reasoning: null,
+        toolcalls: 900, agents: null, mcp: null, skills: null,
+      }],
       sourceRows: [sourceRow('claude')],
       ctxTools: [{ source: 'claude', name: 'Bash', estTokens: 300, calls: 5 }],
       ctxExec: [
