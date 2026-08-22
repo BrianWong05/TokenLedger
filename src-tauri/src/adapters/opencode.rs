@@ -453,7 +453,6 @@ fn scan_legacy_session(
     let mut message_files = Vec::new();
     collect_json_files(&messages, &mut message_files);
     message_files.sort();
-    let mut booked = false;
     for message_path in message_files {
         let content = match fs::read_to_string(&message_path) {
             Ok(content) => content,
@@ -473,19 +472,18 @@ fn scan_legacy_session(
             ParsedMessage::NotUsage => {}
             ParsedMessage::Zero | ParsedMessage::Invalid => scan.lines_skipped += 1,
             ParsedMessage::Usage(snapshot) => {
-                let message_id = legacy_message_id(&value, &message_path);
+                let message_id = legacy_message_id(&value, &message_path, &messages);
                 scan.events.push(snapshot.event(MessageBooking {
                     dedup_key: message_dedup_key(&session_id, &message_id),
                     session_id: session_id.clone(),
-                    timestamp: message_timestamp(json_message_timestamp(&value), timestamp),
+                    timestamp: message_timestamp(json_message_created_ms(&value), timestamp),
                     project: project.clone(),
                     source_file: path.to_path_buf(),
                 }));
-                booked = true;
             }
         }
     }
-    if booked {
+    if !scan.events.is_empty() {
         scan.superseded
             .extend(supersedes_session_aggregates(&session_id));
     }
@@ -523,19 +521,32 @@ fn message_dedup_key(session_id: &str, message_id: &str) -> String {
     format!("{SOURCE}:session:{session_id}:message:{message_id}")
 }
 
-/// A legacy Message's stable id: the `id` the JSON carries, falling back to
-/// the file stem OpenCode names it after.
-fn legacy_message_id(value: &Value, path: &Path) -> String {
+/// A legacy Message's stable id: the `id` the JSON carries — the
+/// Source-native identity ADR-0014 asks for, and what the real Artifact
+/// holds.
+///
+/// The fallback is the file's path relative to the Session's message
+/// directory, which is path-derived and so weaker than ADR-0014 wants: a
+/// Message file copied under a new name manufactures a Record. It is the
+/// only identity a Message with no `id` has, and OpenCode names the file
+/// after the id it omits.
+///
+/// Relative path, not the bare file stem: `collect_json_files` recurses, so
+/// two `a.json` in different subdirectories would collide on one dedup key —
+/// and the token columns are `Immutable` on conflict, so the second Request's
+/// tokens would be silently dropped rather than summed.
+fn legacy_message_id(value: &Value, path: &Path, message_root: &Path) -> String {
     value
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default()
-                .to_string()
+            path.strip_prefix(message_root)
+                .unwrap_or(path)
+                .with_extension("")
+                .to_string_lossy()
+                .into_owned()
         })
 }
 
@@ -664,16 +675,20 @@ fn session_timestamp(updated: Option<i64>, created: Option<i64>) -> Option<i64> 
         .map(normalize_epoch)
 }
 
-/// A legacy Message's own creation time. The legacy JSON carries the same
-/// `time.created` / `time.completed` pair the database mirrors; only `created`
-/// is used, matching how every other per-Request Source is stamped.
-fn json_message_timestamp(value: &Value) -> Option<i64> {
+/// A legacy Message's own creation time, in RAW milliseconds — the same shape
+/// the database's `message.time_created` column has, which is what
+/// `message_timestamp` normalizes. Named for the unit because the sibling
+/// `json_session_timestamp` returns normalized seconds instead.
+///
+/// The legacy JSON carries the same `time.created` / `time.completed` pair the
+/// database mirrors; only `created` is used, matching how every other
+/// per-Request Source is stamped.
+fn json_message_created_ms(value: &Value) -> Option<i64> {
     value
         .get("time")
         .and_then(Value::as_object)
         .and_then(|time| time.get("created"))
         .and_then(nonnegative_i64)
-        .filter(|t| *t > 0)
 }
 
 fn json_session_timestamp(value: &Value) -> Option<i64> {
@@ -1640,10 +1655,17 @@ mod tests {
             &legacy.join("message/legacy-mixed/c.json"),
             r#"{"role":"assistant","modelID":"model-b","tokens":{"input":4,"output":2,"cache":{"read":0,"write":0}}}"#,
         );
+        // Same file stem, one directory down: `collect_json_files` recurses,
+        // so a bare-stem fallback would collide with `c.json` on one dedup
+        // key and drop these tokens instead of booking them.
+        write_json(
+            &legacy.join("message/legacy-mixed/nested/c.json"),
+            r#"{"role":"assistant","modelID":"model-b","tokens":{"input":9,"output":3,"cache":{"read":0,"write":0}}}"#,
+        );
 
         let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
         let result = scan_opencode(&mut ledger, &data_root, &legacy, None);
-        assert_eq!(result.events_inserted, 3);
+        assert_eq!(result.events_inserted, 4);
         assert!(
             result.error.is_none(),
             "unexpected scan error: {:?}",
@@ -1665,7 +1687,8 @@ mod tests {
             rows,
             vec![
                 (
-                    // No `id` in the JSON — the file stem names the Record.
+                    // No `id` in the JSON — the path below the Session's
+                    // message directory names the Record.
                     "opencode:session:legacy-mixed:message:c".to_string(),
                     Some("model-b".to_string()),
                     1_780_000_600,
@@ -1686,9 +1709,17 @@ mod tests {
                     1,
                     7
                 ),
+                (
+                    "opencode:session:legacy-mixed:message:nested/c".to_string(),
+                    Some("model-b".to_string()),
+                    1_780_000_600,
+                    9,
+                    3
+                ),
             ],
             "each legacy Request lands at its own `time.created`, and only \
-             a Message with none falls back to the Session's 1_780_000_600"
+             a Message with none falls back to the Session's 1_780_000_600; \
+             two Messages sharing a file stem stay two Records"
         );
     }
 

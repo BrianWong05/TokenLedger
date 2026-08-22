@@ -233,8 +233,8 @@ platform roots, overridable with `OPENCODE_DB` and `OPENCODE_DATA_DIR`. Usage
 is booked as one Usage Record per Request, at the timestamp the Artifact stamps
 that Request with; a Request carrying none falls back to its Session's. Unknown
 or unproven Models become Unattributed Usage rather than being guessed from the
-last Model in a Session. TokenLedger never starts OpenCode, authenticates, or performs any
-remote synchronization; no conversation content is stored.
+last Model in a Session. TokenLedger never starts OpenCode, authenticates, or
+performs any remote synchronization; no conversation content is stored.
 
 ## Kilo
 
