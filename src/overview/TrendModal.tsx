@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { SeriesPoint, SourceUnreadable, Summary } from '../types';
-import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import { bucketCsv, bucketFilters, csvFilename, hourlyDayOf, modelOwner, rangeToFilters, rankedModels, stackModels, trendSlice, UNATTRIBUTED_COLOR, type Bucket, type Granularity } from './data';
 import { orderedSourceKeys, sourceMeta, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
@@ -10,11 +9,13 @@ import {
   fmtIsoDateL,
   formatSummaryCost,
   INTERVAL_LABEL_KEY,
+  markedTokenFigure,
   monthShortL,
+  NO_FLOOR,
   PER_UNIT_KEY,
   RANGE_LONG_KEY,
   SEL_HEADING_KEY,
-  unreadableReasons,
+  tokenFloor,
   useOverviewT,
 } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
@@ -204,18 +205,11 @@ export default function TrendModal({
 
   // The floor rule (ADR-0017) against the dialog's own window and against the
   // inspected bucket: a figure is marked when unreadable content could fall in
-  // it, i.e. its start precedes some Unreadable Artifact's last write. Empty
-  // string = complete; non-empty doubles as the ≥ marker's hover reason.
-  const windowUnreadableTitle = unreadableReasons(
-    unreadableSourcesIn(unreadable, rangeToFilters(range, from, to).startTs ?? null),
-    lang,
-  );
-  const selUnreadableTitle = selKey
-    ? unreadableReasons(
-        unreadableSourcesIn(unreadable, bucketFilters(selKey, per).startTs ?? null),
-        lang,
-      )
-    : '';
+  // it, i.e. its start precedes some Unreadable Artifact's last write.
+  const windowFloor = tokenFloor(unreadable, rangeToFilters(range, from, to).startTs ?? null, lang);
+  const selFloor = selKey
+    ? tokenFloor(unreadable, bucketFilters(selKey, per).startTs ?? null, lang)
+    : NO_FLOOR;
 
   // Inspector read-outs for the selected bucket.
   const selRank = selBucket ? 1 + data.filter((b) => b.total > selBucket.total).length : 0;
@@ -440,8 +434,8 @@ export default function TrendModal({
 
             <div className="tt-trend-modal-foot">
               <div className="tt-trend-modal-stats">
-                <div className="stat" title={windowUnreadableTitle || undefined}>
-                  <b>{windowUnreadableTitle && '≥ '}{fmtTok(total)}</b>
+                <div className="stat" title={windowFloor.reason || undefined}>
+                  <b>{markedTokenFigure(fmtTok(total), windowFloor)}</b>
                   <span>{t('overview.total')} · {rangeLabel}</span>
                 </div>
                 <div className="stat">
@@ -490,8 +484,8 @@ export default function TrendModal({
                   </div>
                   <span className="rank">#{selRank} / {data.length}</span>
                 </div>
-                <div className="tt-trend-insp-tok" title={selUnreadableTitle || undefined}>
-                  <span className="val">{selUnreadableTitle && '≥ '}{fmtTok(selTotal)}</span>
+                <div className="tt-trend-insp-tok" title={selFloor.reason || undefined}>
+                  <span className="val">{markedTokenFigure(fmtTok(selTotal), selFloor)}</span>
                   <span className="unit">{t('overview.tokens')}</span>
                 </div>
                 <div className={'tt-trend-insp-delta ' + (selDeltaPct >= 0 ? 'up' : 'down')}>

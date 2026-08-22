@@ -672,6 +672,25 @@ describe('Overview presentation', () => {
     expect(c.querySelector('.tt-decrypt-note')?.textContent).toContain('exported 100 Session(s)');
   });
 
+  // The ≥ floor's provenance is the persisted state, not this launch's scan —
+  // so the floor and the remedy it points at are offered from the launch
+  // paint, before the first scan settles (or after one throws).
+  it('offers Decrypt and the ≥ marker from the launch paint, pre-scan', async () => {
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'antigravity', totalTokens: 100 })],
+      summary,
+      unreadableArtifacts: [{ source: 'antigravity', artifactsUnreadable: 100, unreadableMaxMtime: null }],
+    });
+    ledger.hold('scan');
+    const { container: c } = await mountOverview({ ledger });
+
+    expect(c.querySelector('.tt-decrypt')).not.toBeNull();
+    expect(c.querySelector('.tt-b8-total .tt-b8-total-mark')).not.toBeNull();
+
+    ledger.resolveHeld('scan', 0);
+    await settle(2);
+  });
+
   // Offered only where it can act: the companion reads Antigravity and nothing
   // else, so an unreadable-free scan must not advertise it.
   it('offers no Decrypt when nothing is unreadable', async () => {

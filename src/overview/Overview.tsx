@@ -16,8 +16,7 @@ import { RangeSegments } from './RangePicker';
 import type { SourceMeta } from './meta';
 import { sourceIcon } from './icons';
 import { fmtPct, formatCompactTokenTotal } from '../lib/format';
-import { countLabel, formatSummaryCost, unreadableReasons, useOverviewT } from './localize';
-import { unreadableSourcesIn } from '../lib/tokenCompleteness';
+import { countLabel, formatSummaryCost, markedTokenFigure, tokenFloor, useOverviewT } from './localize';
 import { hotkeyHint, isHotkey } from '../lib/hotkeys';
 import { detectPlatform, type Platform } from '../lib/platform';
 import { useT } from '../lib/i18n';
@@ -113,7 +112,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
     reportInput,
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
-    summary, modelRows, canOpenCostBreakdown, headline, unreadable,
+    summary, modelRows, canOpenCostBreakdown, headline, unreadable, unreadableArtifacts,
     panels,
   } = useOverview(ports);
 
@@ -145,16 +144,13 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
     }
   };
 
-  // The ≥ reason (ADR-0017): which Sources hold Unreadable Artifacts whose
-  // content could fall in this window — visible count beside the eyebrow,
-  // per-Source detail as hover text on the marked figures.
-  const unreadableTitle = unreadableReasons(unreadable, lang);
+  // The ≥ floor (ADR-0017) as one shape, localize.tokenFloor's: the window's
+  // figures share one, each Source card gets its own — visible count beside
+  // the eyebrow, per-Source detail as hover text on the marked figures. The
+  // store already window-filtered `unreadable`, so no start is re-applied.
+  const floor = tokenFloor(unreadable, null, lang);
+  const cardFloor = (key: string) => tokenFloor(unreadable.filter((u) => u.source === key), null, lang);
   const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
-  const unreadableKeys = new Set(unreadable.map((u) => u.source));
-  const cardUnreadableTitle = (key: string) => {
-    const u = unreadable.find((s) => s.source === key);
-    return u ? unreadableReasons([u], lang) : undefined;
-  };
 
   // The ≥ marker's only remedy: hand Antigravity's encrypted Sessions to its
   // own running server (ADR-0018), then rescan so the Artifacts it wrote land.
@@ -162,7 +158,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // only for the Source the companion knows how to read.
   const [decrypting, setDecrypting] = useState(false);
   const [decryptNote, setDecryptNote] = useState<string | null>(null);
-  const canDecrypt = unreadableKeys.has('antigravity');
+  const canDecrypt = unreadable.some((u) => u.source === 'antigravity');
   const runDecrypt = async () => {
     setDecrypting(true);
     setDecryptNote(null);
@@ -297,7 +293,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
           <div className="tt-eyebrow">
             {t('overview.totalTokens')} · {rangeLabel}
             {unreadableCount > 0 && (
-              <span className="tt-b8-cost-mark" title={unreadableTitle}>
+              <span className="tt-b8-cost-mark" title={floor.reason}>
                 {' · '}{countLabel(unreadableCount, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}
               </span>
             )}
@@ -326,7 +322,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
             authoritative={headline.authoritative}
             windowKey={`${range}:${from}:${to}`}
             visible={visible}
-            incomplete={unreadableTitle || null}
+            floor={floor}
           />
           {canOpenCostBreakdown ? (
             <button
@@ -358,13 +354,14 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         <div className="tt-toolcards">
           {visibleTools.map((tl) => {
             const active = tl.key === sel;
+            const cf = cardFloor(tl.key);
             return (
               <button
                 key={tl.key}
                 className={'tt-toolcard' + (active ? ' active' : '')}
                 onClick={() => setSel(tl.key)}
                 style={active ? { borderColor: tl.color, background: tl.color + '14' } : undefined}
-                title={cardUnreadableTitle(tl.key)}
+                title={cf.reason || undefined}
               >
                 <div className="lbl">
                   <SourceIcon tool={tl} />
@@ -373,7 +370,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
                 <div className="num">
                   {/* the space is load-bearing: flex trims it visually, but it keeps
                       the two figures from reading as one number to a screen reader */}
-                  {unreadableKeys.has(tl.key) ? '≥ ' : ''}{formatCompactTokenTotal(toolTotals[tl.key], 3)} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
+                  {markedTokenFigure(formatCompactTokenTotal(toolTotals[tl.key], 3), cf)} <span className="pct">{fmtPct(toolTotals[tl.key] / grand)}</span>
                 </div>
                 {tl.nModels > 0 && (
                   <div className="sub">
@@ -448,10 +445,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         <HeatmapModal
           days={panels.heatmap.days}
           summary={heatSummary}
-          unreadableTitle={unreadableReasons(
-            unreadableSourcesIn(scanSources, heatFilters().startTs ?? null),
-            lang,
-          )}
+          floor={tokenFloor(unreadableArtifacts, heatFilters().startTs ?? null, lang)}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />
@@ -461,7 +455,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
           allPoints={allPoints}
           firstIso={firstIso}
           lastIso={lastIso}
-          unreadable={unreadableSourcesIn(scanSources, null)}
+          unreadable={unreadableArtifacts}
           initialRange={range}
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}

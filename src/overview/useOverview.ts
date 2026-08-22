@@ -148,6 +148,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     // local window (the store keeps this reference stable across ticks).
     allPoints: snap.allPoints ?? [],
     scanSources: snap.scanSources,
+    unreadableArtifacts: snap.unreadableArtifacts,
     scanError: snap.scanError,
     fetchError: snap.fetchError,
     refresh,

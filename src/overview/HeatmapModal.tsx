@@ -3,7 +3,7 @@ import type { Summary } from '../types';
 import { heatStats, type Day } from './data';
 import { orderedSourceKeys, sourceMeta } from './meta';
 import { fmtPct, fmtTok } from '../lib/format';
-import { fmtDateL, fmtWeekdayDateL, formatSummaryCost, useOverviewT } from './localize';
+import { fmtDateL, fmtWeekdayDateL, formatSummaryCost, markedTokenFigure, NO_FLOOR, useOverviewT, type TokenFloor } from './localize';
 import { useChartColors, CHART_LIGHT } from '../lib/chartColors';
 import { useSettings } from '../settings/SettingsContext';
 import Landscape3D, { INITIAL_VIEW } from './Landscape3D';
@@ -17,15 +17,15 @@ import { useDialogChrome } from './useDialogChrome';
 export default function HeatmapModal({
   days,
   summary,
-  unreadableTitle = '',
+  floor = NO_FLOOR,
   returnFocusRef,
   onClose,
 }: {
   days: Day[];
   summary: Summary | null; // year-window Summary; null while it loads
-  // Non-empty makes the year window's token total a floor (ADR-0017): the ≥
-  // reason, e.g. "Antigravity: 100 sessions unreadable".
-  unreadableTitle?: string;
+  // The year window's ≥ floor (ADR-0017), as localize.tokenFloor built it:
+  // marked prefixes the total, reason is its hover text.
+  floor?: TokenFloor;
   returnFocusRef: RefObject<HTMLElement | null>;
   onClose: () => void;
 }) {
@@ -145,9 +145,9 @@ export default function HeatmapModal({
         </header>
 
         <div className="tt-heat-modal-stats">
-          <div className="stat" title={unreadableTitle || undefined}>
+          <div className="stat" title={floor.reason || undefined}>
             <span className="lbl">{t('overview.totalTokens')}</span>
-            <span className="val">{unreadableTitle && '≥ '}{fmtTok(stats.totalTokens)}</span>
+            <span className="val">{markedTokenFigure(fmtTok(stats.totalTokens), floor)}</span>
           </div>
           <span className="sep" />
           <div className="stat" title={t('overview.notBilled')}>

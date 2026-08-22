@@ -47,6 +47,7 @@ import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import type {
   Filters,
   SourceStatus,
+  SourceUnreadable,
   SeriesPoint,
   Summary,
   BreakdownRow,
@@ -109,6 +110,12 @@ export interface OverviewSnapshot {
   ctxToolRows: CtxToolRow[];
   ctxExecRows: CtxExecRow[];
   scanSources: SourceStatus[]; // per-source scan stats (eventsInserted / linesSkipped) for the footer
+  // The persisted per-scan Unreadable Artifact state (ADR-0017) — the ≥
+  // floor's one provenance, shared with the Menu Bar Extra's panel: honest
+  // from launch (a floor shows before the first scan lands, and survives a
+  // scan that throws), refreshed with every scan verdict because a scan
+  // rewrites the table it reads.
+  unreadableArtifacts: SourceUnreadable[];
   scanError: string | null;
   scanAt: number | null; // epoch ms of the last successful scan; drives the toolbar's last-scan label
   fetchError: string | null;
@@ -156,7 +163,7 @@ type State = Omit<
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'modelRows', 'sourceRows', 'projectRows',
   'ctxResources', 'ctxBuckets', 'ctxToolRows', 'ctxSkillRows', 'ctxExecRows',
-  'scanSources', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
+  'scanSources', 'unreadableArtifacts', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading', 'provisional',
 ];
 
@@ -169,7 +176,7 @@ class Store implements OverviewStore {
     allPoints: null, hourPoints: [], summary: null,
     modelRows: [], sourceRows: [], projectRows: [],
     ctxResources: [], ctxBuckets: [], ctxToolRows: [], ctxSkillRows: [], ctxExecRows: [],
-    scanSources: [], scanError: null, scanAt: null, fetchError: null,
+    scanSources: [], unreadableArtifacts: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
   };
   private snapshot: OverviewSnapshot;
@@ -242,7 +249,9 @@ class Store implements OverviewStore {
     let firstPaint: Promise<void> | null = null;
     if (this.state.allPoints === null) {
       this.provisional = true;
-      firstPaint = this.fetchSeries().then(() => this.scheduleReload());
+      firstPaint = Promise.all([this.fetchSeries(), this.fetchUnreadable()]).then(() =>
+        this.scheduleReload(),
+      );
     }
 
     // One await for both: the scan's verdict may be a rejection, and the paint
@@ -250,12 +259,18 @@ class Store implements OverviewStore {
     // never rejects, so only the scan's slot needs inspecting.
     const [scanned] = await Promise.allSettled([this.ledger.scan(), firstPaint]);
     if (scanned.status === 'rejected') {
+      // A scan can throw AFTER committing (see `provisional` below), so a
+      // floor the throwing scan just persisted is still picked up.
+      await this.fetchUnreadable();
       this.state.scanError = String(scanned.reason);
       this.publish();
       return; // keep any paint; `provisional` stays set, so the next tick reconciles
     }
     const status = scanned.value;
     this.state.scanSources = status.sources;
+    // The scan just rewrote the persisted unreadable state — re-read it before
+    // the publish below, so an idle tick still carries a newly-found floor.
+    await this.fetchUnreadable();
     const errs = status.sources
       .filter((s) => s.error)
       .map((s) => formatSourceScanError(s.source, s.error!));
@@ -325,6 +340,28 @@ class Store implements OverviewStore {
     if (await this.fetchSeries()) {
       this.loadedIngestRev = status.ingestRev;
       this.scheduleReload();
+    }
+  }
+
+  // Re-read the ≥ floor's provenance. The reference is kept stable when the
+  // rows are unchanged — publish() dedupes snapshots by identity, so a fresh
+  // array every idle tick would re-render the whole Overview for nothing.
+  // Never clears on failure: a failed read must not retire an honest marker.
+  private async fetchUnreadable(): Promise<void> {
+    try {
+      const rows = await this.ledger.unreadableArtifacts();
+      const prev = this.state.unreadableArtifacts;
+      const unchanged =
+        rows.length === prev.length &&
+        rows.every(
+          (r, i) =>
+            r.source === prev[i].source &&
+            r.artifactsUnreadable === prev[i].artifactsUnreadable &&
+            r.unreadableMaxMtime === prev[i].unreadableMaxMtime,
+        );
+      if (!unchanged) this.state.unreadableArtifacts = rows;
+    } catch {
+      /* keep the last list */
     }
   }
 
@@ -509,6 +546,9 @@ class Store implements OverviewStore {
     // The epoch bump above is what makes `reloading` true, and every caller
     // published BEFORE calling here — so without this the new window would be
     // on screen with nothing announcing that its figures have not caught up.
+    // This trailing publish also carries anything written since the caller's:
+    // the launch path's fetchUnreadable lands its list between the two, and
+    // reaches the snapshot here.
     this.publish();
   }
 
@@ -647,8 +687,9 @@ export interface OverviewView {
   headline: { total: number; authoritative: boolean };
   canOpenCostBreakdown: boolean;
   // Sources whose Unreadable Artifacts could hold usage in this window
-  // (ADR-0017) — every token total shown for the window is a floor.
-  unreadable: SourceStatus[];
+  // (ADR-0017) — every token total shown for the window is a floor. Read from
+  // the persisted per-scan state, the same provenance the Menu Bar Extra uses.
+  unreadable: SourceUnreadable[];
 }
 
 // The 365-day heatmap grid depends only on the full series. Callers MUST
@@ -684,7 +725,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
   const ctx = ctxTotals(rpts, s.selected);
   const win = windowOf(s.range, s.from, s.to, now);
   const unreadable = unreadableSourcesIn(
-    s.scanSources,
+    s.unreadableArtifacts,
     win.fromIso ? Math.floor(parseLocalDate(win.fromIso).getTime() / 1000) : null,
   );
   const selBuckets = s.ctxBuckets.find((b) => b.source === s.selected) ?? null;

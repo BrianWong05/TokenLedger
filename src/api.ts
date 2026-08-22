@@ -28,8 +28,9 @@ export function fetchLastScan(): Promise<number> {
 }
 
 // Sources currently holding Unreadable Artifacts (ADR-0017), from the
-// persisted per-scan state — no rescan, honest from launch. The traypanel's
-// read for the ≥ floor marker.
+// persisted per-scan state — no rescan, honest from launch. The one
+// provenance every ≥ floor marker reads (the Overview's store and the
+// Menu Bar Extra's panel alike).
 export function fetchUnreadableArtifacts(): Promise<SourceUnreadable[]> {
   return invoke('unreadable_artifacts');
 }

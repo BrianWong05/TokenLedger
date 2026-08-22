@@ -8,7 +8,7 @@ import {
   type MotionValue,
 } from 'motion/react';
 import { formatCompactTokenTotal, formatExactTokenTotal } from '../lib/format';
-import { useOverviewT } from './localize';
+import { NO_FLOOR, useOverviewT, type TokenFloor } from './localize';
 
 type TokenDisplayMode = 'compact' | 'exact';
 type CounterToken =
@@ -48,9 +48,9 @@ interface TokenTotalHeadlineProps {
   // come back into view — which rolls it (#94). Defaults true for the surfaces
   // that mount the headline with nothing hiding it.
   visible?: boolean;
-  // Non-null makes the total a floor (ADR-0017): rendered as a ≥ prefix whose
-  // hover text is this string — the per-Source unreadable-session reasons.
-  incomplete?: string | null;
+  // The window's ≥ floor (ADR-0017), as localize.tokenFloor built it: marked
+  // renders the ≥ prefix, reason is its hover text.
+  floor?: TokenFloor;
 }
 
 type HeadlineStyle = CSSProperties & {
@@ -190,7 +190,7 @@ export default function TokenTotalHeadline({
   authoritative,
   windowKey,
   visible = true,
-  incomplete = null,
+  floor = NO_FLOOR,
 }: TokenTotalHeadlineProps) {
   const { t } = useOverviewT();
   const [mode, setMode] = useState<TokenDisplayMode>(loadDisplayMode);
@@ -213,7 +213,7 @@ export default function TokenTotalHeadline({
   const action = mode === 'exact' ? t('overview.showCompact') : t('overview.showExact');
   // The ≥ marker sits outside the counter but inside the width budget.
   const layoutLength =
-    (modeAnimation ? modeAnimation.to.length : restingDisplay.length) + (incomplete ? 2 : 0);
+    (modeAnimation ? modeAnimation.to.length : restingDisplay.length) + (floor.marked ? 2 : 0);
   const responsiveFontSize = `clamp(20px, ${(155 / Math.max(layoutLength, 1)).toFixed(3)}cqi, 48px)`;
   const headlineStyle: HeadlineStyle = {
     display: 'block',
@@ -312,12 +312,15 @@ export default function TokenTotalHeadline({
       className="tt-b8-total"
       onClick={toggleMode}
       title={action}
-      aria-label={`${incomplete ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${incomplete ? `${incomplete}. ` : ''}${action}`}
+      aria-label={`${floor.marked ? `${t('overview.atLeast')} ` : ''}${exact} ${t('overview.totalTokensAria')} ${floor.marked ? `${floor.reason}. ` : ''}${action}`}
       aria-busy={modeAnimation ? true : undefined}
       style={headlineStyle}
     >
-      {incomplete && (
-        <span className="tt-b8-total-mark" title={incomplete}>
+      {/* The one ≥ markedTokenFigure does not render: the counter animates
+          in its own element, so the marker needs a span of its own to carry
+          the hover reason. */}
+      {floor.marked && (
+        <span className="tt-b8-total-mark" title={floor.reason}>
           {'≥ '}
         </span>
       )}

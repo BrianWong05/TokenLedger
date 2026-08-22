@@ -15,6 +15,7 @@ import {
   isPartialCost,
   type CostCompleteness,
 } from '../lib/costCompleteness';
+import { unreadableSourcesIn, type UnreadableCounts } from '../lib/tokenCompleteness';
 import { sourceMeta, type Range8b } from './meta';
 import type { PresetKey, PresetSlot, RangePreset } from './data';
 import type { Settings } from '../types';
@@ -96,16 +97,45 @@ export function fmtIsoRangeL(from: string, to: string, lang: Lang): string {
   return `${withYear(from)} – ${withYear(to)}`;
 }
 
-// The ≥ floor marker's reason (ADR-0017): which Sources hold Unreadable
-// Artifacts whose content could fall in the marked window, e.g.
-// "Antigravity: 100 sessions unreadable". One builder for every ≥ surface.
-export function unreadableReasons(
+// The reason half of tokenFloor below: names the Sources holding Unreadable
+// Artifacts, e.g. "Antigravity: 100 sessions unreadable".
+function unreadableReasons(
   sources: { source: string; artifactsUnreadable: number }[],
   lang: Lang,
 ): string {
   return sources
     .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.artifactsUnreadable, 'overview.unreadableSessionOne', 'overview.unreadableSessionMany', lang)}`)
     .join(' · ');
+}
+
+// The ≥ token floor as ONE shape for every surface — the mirror of Cost's
+// isPartialCost + formatDisplayCost pairing. tokenCompleteness.ts owns which
+// Sources count against a window, this the floor fact and its hover reason.
+// (a null start means an unbounded window); this owns what the reader sees.
+// markedTokenFigure renders any figure against it, in whatever precision the
+// surface chose. One render site keeps the glyph in its own JSX: the animated
+// headline (TokenTotalHeadline), whose counter animates in a separate element
+// — it still reads this shape, never a private encoding.
+export interface TokenFloor {
+  marked: boolean;
+  reason: string; // '' when unmarked; otherwise the ≥ marker's hover text
+}
+
+export const NO_FLOOR: TokenFloor = { marked: false, reason: '' };
+
+export function tokenFloor(
+  sources: (UnreadableCounts & { source: string })[],
+  windowStartSec: number | null,
+  lang: Lang,
+): TokenFloor {
+  const inWindow = unreadableSourcesIn(sources, windowStartSec);
+  return inWindow.length > 0
+    ? { marked: true, reason: unreadableReasons(inWindow, lang) }
+    : NO_FLOOR;
+}
+
+export function markedTokenFigure(figure: string, floor: TokenFloor): string {
+  return floor.marked ? `≥ ${figure}` : figure;
 }
 
 // Picker shortcut -> string key, same no-computed-key discipline as RANGE_LABEL_KEY.
