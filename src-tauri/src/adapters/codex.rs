@@ -173,6 +173,7 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
     let mut prev_cached: i64 = 0;
     let mut prev_output: i64 = 0;
     let mut prev_reasoning: i64 = 0;
+    let mut prev_cache_write: i64 = 0;
     // Running composition for context attribution (est. tokens, bytes/4).
     // Toolcall content is a subset of messages (schema subset rule); shares
     // normalize over known content so the unattributable system prompt is
@@ -333,16 +334,32 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                 prev_input = cur_input;
                 prev_cached = cur_cached;
                 prev_output = cur_output;
+                // Cumulative like the rest. Absent field => this build reports no
+                // cache writes, which is not a measured zero: prev is left where it
+                // is so a field that appears mid-Session is not booked as one giant
+                // delta from 0.
+                let d_cache_write = usage
+                    .get("cache_write_input_tokens")
+                    .and_then(|x| x.as_i64())
+                    .map(|cur| {
+                        let d = (cur - prev_cache_write).max(0);
+                        prev_cache_write = cur;
+                        d
+                    })
+                    .unwrap_or(0);
 
-                // cached is a subset of input; keep them mutually exclusive.
-                let input = (d_input - d_cached).max(0);
+                // cached and written are both subsets of input (total_tokens ==
+                // input_tokens + output_tokens on every observed event); keep the
+                // three prompt buckets mutually exclusive per ADR-0001.
+                let input = (d_input - d_cached - d_cache_write).max(0);
                 let cache_read = d_cached;
+                let cache_write = d_cache_write;
                 let output = d_output;
                 // Duplicate snapshots and degenerate rows produce an all-zero delta.
                 // prev_reasoning is intentionally NOT advanced before this skip: a
                 // reasoning-only advance on a skipped line rides along with the
                 // next token-bearing event instead of being lost.
-                if input == 0 && cache_read == 0 && output == 0 {
+                if input == 0 && cache_read == 0 && cache_write == 0 && output == 0 {
                     continue;
                 }
 
@@ -367,7 +384,7 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                     .and_then(iso_to_epoch)
                     .unwrap_or(0);
 
-                let billed = input + cache_read; // codex reports no cache writes
+                let billed = input + cache_read + cache_write;
                 let total = msg_est + reas_est;
                 let ctx = if total > 0 && billed > 0 {
                     let mut ctx = ctx::Composition {
@@ -398,7 +415,9 @@ fn parse_file(content: &str, file_stem: &str, path_str: &str) -> ParsedCodexFile
                     input_tokens: input,
                     output_tokens: output,
                     cache_read_tokens: cache_read,
-                    cache_write_5m_tokens: 0,
+                    cache_write_5m_tokens: cache_write,
+                    // Codex names no TTL, so every write goes to the 5-minute
+                    // bucket; the 1-hour bucket has nothing to fill it.
                     cache_write_1h_tokens: 0,
                     source_file: path_str.to_string(),
                     session_id: Some(file_stem.to_string()),
@@ -691,6 +710,103 @@ mod tests {
             )
             .unwrap();
         assert_eq!(total, 30, "sum of reasoning deltas equals the final cumulative value");
+    }
+
+    #[test]
+    fn codex_cache_write_is_booked_to_five_minutes_and_excluded_from_input() {
+        // cache_write_input_tokens is cumulative and sits *inside* input_tokens:
+        // total_tokens == input_tokens + output_tokens on every observed event,
+        // so ADR-0001 requires Input to exclude it exactly as it excludes
+        // cached_input_tokens.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-08-20-cw.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-08-20T09:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"cache_write_input_tokens":30,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T09:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":50,"cache_write_input_tokens":45,"output_tokens":20,"total_tokens":220}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
+        assert_eq!(r.events_inserted, 2);
+
+        let rows: Vec<(i64, i64, i64, i64)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT input_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                            cache_write_1h_tokens \
+                     FROM events WHERE source='codex' ORDER BY timestamp",
+                )
+                .unwrap();
+            let it = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap();
+            it.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(rows[0], (50, 20, 30, 0), "100 - 20 cached - 30 written");
+        assert_eq!(rows[1], (55, 30, 15, 0), "deltas: 100 - 30 cached - 15 written");
+
+        // The three prompt buckets partition the final cumulative input_tokens:
+        // nothing double counted, nothing dropped. Codex names no TTL, so every
+        // write lands in the 5-minute bucket.
+        let prompt: i64 = conn
+            .query_row(
+                "SELECT SUM(input_tokens + cache_read_tokens + cache_write_5m_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(prompt, 200, "exclusive buckets sum to the reported prompt");
+    }
+
+    #[test]
+    fn codex_cache_write_only_snapshot_is_still_booked() {
+        // A snapshot whose whole advance is a cache write: Input, Cache Read and
+        // Output all net to zero. The all-zero-delta skip must not swallow it.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-08-20-cwonly.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-08-20T10:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T10:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":140,"cached_input_tokens":0,"cache_write_input_tokens":40,"output_tokens":10,"total_tokens":150}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
+        assert_eq!(r.events_inserted, 2, "the cache-write-only advance is an event");
+
+        let (input, write): (i64, i64) = conn
+            .query_row(
+                "SELECT SUM(input_tokens), SUM(cache_write_5m_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((input, write), (100, 40), "the 40 written tokens survive");
+    }
+
+    #[test]
+    fn codex_absent_cache_write_field_leaves_input_unchanged() {
+        // 9,429 real token_count events never report the field. Absent is not a
+        // measured zero: those Sessions must book exactly what they book today.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("sessions");
+        write_rollout(&root, "rollout-2026-08-20-nocw.jsonl", &[
+            r#"{"type":"event_msg","timestamp":"2026-08-20T11:00:00.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"total_tokens":110}}}}"#,
+            r#"{"type":"event_msg","timestamp":"2026-08-20T11:00:05.000Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":50,"output_tokens":20,"total_tokens":220}}}}"#,
+        ]);
+        let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
+        let r = scan_codex(&mut conn, std::slice::from_ref(&root));
+        assert_eq!(r.events_inserted, 2);
+
+        let (input, read, write): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(input_tokens), SUM(cache_read_tokens), \
+                        SUM(cache_write_5m_tokens) \
+                 FROM events WHERE source='codex'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((input, read, write), (150, 50, 0), "unchanged from before the field existed");
     }
 
     #[test]
