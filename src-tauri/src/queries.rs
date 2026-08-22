@@ -1078,7 +1078,16 @@ pub const DISPLAYED_WINDOWS_SQL: &str =
 ///
 /// This ignores the Overview's date window and Source selection entirely: the
 /// Limits page is *now*, not a range.
-pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>, LimitsError> {
+///
+/// `limit_exports` is the Companion Export Artifact directory: a live Source's
+/// current-state facts (Usage Resets) ride the card from there. An empty path
+/// means not configured — the same spelling scan::merge_limit_exports guards —
+/// and skips the read entirely.
+pub fn limits(
+    conn: &Connection,
+    evaluated_at: i64,
+    limit_exports: &std::path::Path,
+) -> Result<Vec<SourceLimits>, LimitsError> {
     // One snapshot for the whole page. Four statements answer it — the rows, the
     // Readings, their Usage, the plan — and a scan committing between them would
     // otherwise let a row be drawn from one view of the database and its estimate
@@ -1224,6 +1233,31 @@ pub fn limits(conn: &Connection, evaluated_at: i64) -> Result<Vec<SourceLimits>,
     drop(plan_stmt);
     drop(stmt);
     read.finish()?;
+
+    // Usage Resets ride the card from a live Source's Companion Export
+    // Artifact (glossary: Usage Reset): current state, not a Limit Reading,
+    // so it lives in the Artifact rather than the Ledger's tables, and is
+    // read here — after the snapshot commits, since a file was never part of
+    // the database's view — so the whole card is still assembled in one
+    // function. Driven by the cards over the catalog's `live` capability,
+    // mirroring scan::merge_limit_exports: no Source is named, the next live
+    // Source that reports resets is a catalog entry, and its same guard
+    // applies — an unconfigured dir ("") must not send relative lookups
+    // through the process CWD. An absent export or count leaves the field
+    // unknown (None), never zero.
+    if !limit_exports.as_os_str().is_empty() {
+        for card in &mut cards {
+            let live = crate::source_catalog::source(&card.source)
+                .is_some_and(|s| s.capabilities.limits.as_deref() == Some("live"));
+            if !live {
+                continue;
+            }
+            if let Some(export) = crate::limits_artifact::read(limit_exports, &card.source) {
+                card.usage_resets_available = export.usage_resets_available;
+            }
+        }
+    }
+
     Ok(cards)
 }
 
@@ -2213,6 +2247,67 @@ mod tests {
         r
     }
 
+
+    /// Usage Resets are current state from a live Source's Companion Export
+    /// Artifact (glossary: Usage Reset), assembled onto the card by the query
+    /// itself — the whole card is described in one place, reachable from this
+    /// suite without an AppHandle.
+    #[test]
+    fn usage_resets_ride_the_card_from_the_live_exports() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+        let exports = dir.path().join("limit-exports");
+        crate::limits_artifact::write(
+            &exports,
+            &crate::limits_artifact::LimitsExport {
+                source: "codex".to_string(),
+                fetched_at: EVALUATED_AT - 60,
+                usage_resets_available: Some(3),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT, &exports).unwrap();
+        assert_eq!(cards[0].usage_resets_available, Some(3));
+    }
+
+    /// Catalog-driven, so no Source is named in the assembly: a second live
+    /// Source's export fills ITS card — re-hardcoding `codex` fails this —
+    /// and an unreported count stays unknown (None), never zero.
+    #[test]
+    fn usage_resets_follow_the_catalog_not_a_hardcoded_source() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut grok = proven_reading(40.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400);
+        grok.source = "grok".to_string();
+        grok.provenance.metering_regime = Some("grok:rate_limits".to_string());
+        grok.provenance.limit_id = Some("grok:w10080".to_string());
+        let codex = proven_reading(35.0, EVALUATED_AT - 300, EVALUATED_AT + 86_400);
+        db::insert_limit_readings(&mut conn, &[grok, codex]).unwrap();
+        let exports = dir.path().join("limit-exports");
+        crate::limits_artifact::write(
+            &exports,
+            &crate::limits_artifact::LimitsExport {
+                source: "grok".to_string(),
+                fetched_at: EVALUATED_AT - 60,
+                usage_resets_available: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let cards = limits(&conn, EVALUATED_AT, &exports).unwrap();
+        let by = |key: &str| cards.iter().find(|c| c.source == key).unwrap();
+        assert_eq!(by("grok").usage_resets_available, Some(2));
+        assert_eq!(by("codex").usage_resets_available, None);
+    }
+
     #[test]
     fn every_window_carries_exactly_one_evaluation_sharing_one_instant() {
         let dir = tempdir().unwrap();
@@ -2227,7 +2322,7 @@ mod tests {
         )
         .unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         let windows = &cards[0].windows;
         assert_eq!(windows.len(), 2);
         for window in windows {
@@ -2250,7 +2345,7 @@ mod tests {
         )
         .unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         let estimate = &cards[0].windows[0].estimate;
         assert_eq!(estimate.outcome, LimitEstimateOutcome::Blocked);
         // Absent on the wire, not null: the shape a frontend narrows on.
@@ -2308,7 +2403,7 @@ mod tests {
         db::insert_events(&mut conn, &events).unwrap();
         conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         let estimate = &cards[0].windows[0].estimate;
         assert_eq!(
             estimate.explanation.candidates.len(),
@@ -2344,7 +2439,7 @@ mod tests {
         )
         .unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         let window = &cards[0].windows[0];
         // The display stays the newest overall; only the estimate anchors on
         // the identity-bearing Reading.
@@ -2375,7 +2470,7 @@ mod tests {
         )
         .unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         let rejections = &cards[0].windows[0].estimate.explanation.rejections;
         // An evidence-stage reason, not an estimator one: most of the
         // twenty-two live at that stage, and a page reporting only the
@@ -2437,7 +2532,7 @@ mod tests {
         // `account_id` sits outside db::COLS, so no insert path writes it (#171).
         conn.execute("UPDATE events SET account_id = 'acct-a'", []).unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         let estimate = &cards[0].windows[0].estimate;
         assert_eq!(estimate.outcome, LimitEstimateOutcome::Stale, "not Gathering");
         assert!(
@@ -2547,7 +2642,7 @@ mod tests {
             reading("claude", "five_hour", 300, 18.0, 1_786_350_000, 1_786_340_000, "live", Some("Team 5x")),
         ]).unwrap();
 
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         assert_eq!(cards.len(), 2, "one card per Source holding Readings");
 
         let claude = &cards[0];
@@ -2572,13 +2667,13 @@ mod tests {
     fn limits_is_empty_and_plan_free_without_readings() {
         let dir = tempdir().unwrap();
         let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
-        assert_eq!(limits(&conn, EVALUATED_AT).unwrap(), vec![]);
+        assert_eq!(limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap(), vec![]);
 
         // A Source that only ever reported a null plan still gets its card.
         db::insert_limit_readings(&mut conn, &[
             reading("codex", "w10080", 10080, 5.0, 1_786_879_486, 1_786_331_779, "logs", None),
         ]).unwrap();
-        let cards = limits(&conn, EVALUATED_AT).unwrap();
+        let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].plan, None, "an absent plan is unknown, never guessed");
     }

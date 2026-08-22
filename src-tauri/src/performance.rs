@@ -466,7 +466,7 @@ fn performance_standard_limits_estimate() {
 
     // ── 1. page open: the first read of this data in this process ──
     let started = Instant::now();
-    let cards = queries::limits(&conn, now).unwrap();
+    let cards = queries::limits(&conn, now, &std::env::temp_dir()).unwrap();
     let page_open = started.elapsed();
     let ready = ready_windows(&cards);
     let windows: usize = cards.iter().map(|c| c.windows.len()).sum();
@@ -488,10 +488,10 @@ fn performance_standard_limits_estimate() {
     // ── 2. after a scan writes Readings, and 3. on the nextEvaluationAt timer ──
     seed_readings(&mut conn, now + 3_600, 0..1);
     let started = Instant::now();
-    queries::limits(&conn, now + 3_600).unwrap();
+    queries::limits(&conn, now + 3_600, &std::env::temp_dir()).unwrap();
     let after_scan = started.elapsed();
     let started = Instant::now();
-    queries::limits(&conn, now + 7_200).unwrap();
+    queries::limits(&conn, now + 7_200, &std::env::temp_dir()).unwrap();
     let on_timer = started.elapsed();
     eprintln!(
         "PERF limits_reevaluation after_scan_ms={:.1} on_timer_ms={:.1}",
@@ -520,7 +520,7 @@ fn performance_standard_limits_estimate() {
     )
     .unwrap();
     let started = Instant::now();
-    let withheld_cards = queries::limits(&conn, now).unwrap();
+    let withheld_cards = queries::limits(&conn, now, &std::env::temp_dir()).unwrap();
     let withheld = started.elapsed();
     let mut states = std::collections::BTreeMap::new();
     for w in withheld_cards.iter().flat_map(|c| &c.windows) {
@@ -625,7 +625,7 @@ fn performance_standard_limits_estimate() {
             .query_row("SELECT COUNT(*) FROM limit_readings", [], |r| r.get(0))
             .unwrap();
         let started = Instant::now();
-        let real_cards = queries::limits(&real, now).unwrap();
+        let real_cards = queries::limits(&real, now, &std::env::temp_dir()).unwrap();
         let elapsed = started.elapsed();
         eprintln!(
             "PERF real_limits readings={readings} cards={} windows={} ready={} elapsed_ms={:.1}",

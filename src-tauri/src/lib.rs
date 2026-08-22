@@ -492,13 +492,8 @@ fn limits(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<Vec<Sourc
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .map_err(|e| e.to_string())?;
-    let mut cards = read(&state, |db| queries::limits(db, evaluated_at))?;
-    if let Some(export) = limits_artifact::read(&limit_exports_dir(&app), "codex") {
-        if let Some(card) = cards.iter_mut().find(|card| card.source == "codex") {
-            card.usage_resets_available = export.usage_resets_available;
-        }
-    }
-    Ok(cards)
+    let exports = limit_exports_dir(&app);
+    read(&state, |db| queries::limits(db, evaluated_at, &exports))
 }
 
 /// Ask a `live` Source's Companion for a fresh reading (ADR-0019). This is the
