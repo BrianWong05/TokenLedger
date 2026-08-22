@@ -42,6 +42,9 @@ const MALFORMED_ARTIFACT_WARNING: &str = "grok: malformed or unsupported Source 
 const SUPPORTED_UPDATE_KINDS: &[&str] = &[
     "agent_message_chunk",
     "agent_thought_chunk",
+    "auto_compact_completed",
+    "auto_compact_started",
+    "compaction_checkpoint",
     "current_mode_update",
     "hook_execution",
     "image_compressed",
@@ -1064,6 +1067,42 @@ mod tests {
         let tokens: i64 = conn
             .query_row(
                 "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-images:0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokens, 4000);
+    }
+
+    #[test]
+    fn auto_compaction_telemetry_is_recognised_not_skipped() {
+        // Grok Build's 500K-context auto-compaction writes three telemetry
+        // lines around the counter rewind. They carry no totalTokens and no
+        // chunk content, so they must pass through weightless — and, being
+        // known kinds, must not raise the "unrecognized log lines" notice.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Fcompact",
+            "sess-compact",
+            &[
+                update_line(100, "user_message_chunk", None),
+                update_line(101, "agent_message_chunk", Some(4000)),
+                r#"{"timestamp":102,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"auto_compact_started","tokens_used":400934,"context_window":500000,"percentage":80,"reason":"Context window 80% full"},"_meta":{"eventId":"e"}}}"#.to_string(),
+                r#"{"timestamp":103,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"compaction_checkpoint","checkpoint_id":"c1","prompt_index_at_compaction":14,"schema_version":1},"_meta":{"eventId":"e"}}}"#.to_string(),
+                r#"{"timestamp":104,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"auto_compact_completed","tokens_before":400934,"tokens_after":13024,"elapsed_ms":119760,"summary_preview":null},"_meta":{"eventId":"e"}}}"#.to_string(),
+            ],
+            Some(r#"{"info":{"id":"sess-compact","cwd":"/Users/dev/compact"},"current_model_id":"grok-4.6","updated_at":"2026-08-22T12:00:00Z"}"#),
+            None,
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.lines_skipped, 0);
+        assert_eq!(res.events_inserted, 1);
+        let tokens: i64 = conn
+            .query_row(
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-compact:0'",
                 [],
                 |r| r.get(0),
             )
