@@ -65,7 +65,7 @@
 //! before the row's second. QoderCN writes no transcripts — its rows stay
 //! NULL, the source cannot say.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -238,7 +238,9 @@ fn is_qoder_cn_path(path: &Path) -> bool {
 // 4: estimate context attribution (messages/system/reasoning) from content.
 // 5: translate aliases from Qoder's local desktop model catalog.
 // 6: count the Requests this Source reports no tokens for (TOKL-25).
-const TRANSCRIPT_PARSER_VERSION: i64 = 6;
+// 7: record when those Requests happened, so a window that cannot contain one
+//    is not marked as a floor.
+const TRANSCRIPT_PARSER_VERSION: i64 = 7;
 
 #[derive(Default)]
 struct DatabaseScan {
@@ -409,8 +411,15 @@ fn scan_file(
     // Persisted per file rather than returned per scan: an unchanged file
     // returns above without parsing, so a count carried only in this scan's
     // result would read as zero on every idle tick after the first.
-    set_unbooked_requests(conn, &source_file, SOURCE, parsed.unbooked_requests)
-        .map_err(|error| format!("{SOURCE}: unbooked {}: {error}", path.display()))?;
+    set_unbooked_requests(
+        conn,
+        &source_file,
+        SOURCE,
+        parsed.unbooked_requests,
+        parsed.unbooked_first_at,
+        parsed.unbooked_last_at,
+    )
+    .map_err(|error| format!("{SOURCE}: unbooked {}: {error}", path.display()))?;
     Ok((inserted, parsed.lines_skipped))
 }
 
@@ -418,9 +427,14 @@ struct ParsedTranscript {
     events: Vec<UsageEvent>,
     lines_skipped: u64,
     /// Distinct Requests this transcript reports no tokens for (TOKL-25) — see
-    /// `unbooked_request_id`. Not skipped lines: a skipped line is one the
-    /// parser did not understand, while these were read and understood.
+    /// `unbooked_request`. Not skipped lines: a skipped line is one the parser
+    /// did not understand, while these were read and understood.
     unbooked_requests: u64,
+    /// When the earliest and latest of them happened, epoch seconds. A figure
+    /// is only a floor for a window these could fall in, so a window that ends
+    /// before the first or starts after the last is left exact.
+    unbooked_first_at: Option<i64>,
+    unbooked_last_at: Option<i64>,
 }
 
 fn parse_file(
@@ -452,8 +466,10 @@ fn parse_file(
     // Keyed by the same dedup key a booked Record would carry, so the figure
     // counts Requests and not the content-block lines one Request's usage
     // repeats across — and so the reconcile after the loop can subtract the
-    // Requests that were booked after all.
-    let mut unbooked: HashSet<String> = HashSet::new();
+    // Requests that were booked after all. The value is the Request's own
+    // second, which is what bounds the windows this count marks; taking the
+    // earliest per key keeps a repeated line from moving it.
+    let mut unbooked: HashMap<String, i64> = HashMap::new();
     // The transcripts are Claude-Code-shaped, so the claude composition engine
     // applies verbatim: content is sized transiently (est bytes/4) into a
     // running composition per session and each usage line's billed context is
@@ -515,12 +531,15 @@ fn parse_file(
                     }
                     ev.ctx = ctx;
                     events.push(ev);
-                } else if let Some(id) = unbooked_request_id(&v) {
+                } else if let Some((id, at)) = unbooked_request(&v) {
                     // Only parse_line_event's zero-token refusal can land here:
                     // its other two refusals want an id and a timestamp, and
-                    // `unbooked_request_id` demands both before answering. A
+                    // `unbooked_request` demands both before answering. A
                     // provisional entry — the reconcile below has the last word.
-                    unbooked.insert(format!("{SOURCE}:{id}"));
+                    unbooked
+                        .entry(format!("{SOURCE}:{id}"))
+                        .and_modify(|first| *first = (*first).min(at))
+                        .or_insert(at);
                 }
                 // Attribution first, THEN book this line's own content: what a
                 // call produces is its output, not its input.
@@ -554,15 +573,19 @@ fn parse_file(
         unbooked.remove(&event.dedup_key);
     }
 
+    // Bounds taken AFTER the reconcile: a Request that turned out to be booked
+    // must not widen the window its Source is marked a floor for.
     ParsedTranscript {
         events,
         lines_skipped,
         unbooked_requests: unbooked.len() as u64,
+        unbooked_first_at: unbooked.values().copied().min(),
+        unbooked_last_at: unbooked.values().copied().max(),
     }
 }
 
-/// The `message.id` of an `assistant` line that names a Request no Usage Record
-/// can be booked for, because the Artifact reports no tokens for it: the
+/// The `message.id` and second of an `assistant` line naming a Request no
+/// Usage Record can be booked for, because the Artifact reports no tokens for it: the
 /// `usage` block is present and complete in shape, and every token bucket in it
 /// is zero. Qoder's CLI reports every Request this way — it prices them in
 /// `credits`, which are its own unit with no published rate — so the tokens are
@@ -575,7 +598,7 @@ fn parse_file(
 /// nothing is still a Request. The remaining fields are the ones
 /// `parse_line_event` needs beyond usage, so a line missing them was unbookable
 /// on its own account and is not claimed here.
-fn unbooked_request_id(v: &Value) -> Option<&str> {
+fn unbooked_request(v: &Value) -> Option<(&str, i64)> {
     let msg = v.get("message")?;
     let usage = msg.get("usage").filter(|u| u.is_object())?;
     if claude_shaped_usage(msg).is_some() {
@@ -593,12 +616,15 @@ fn unbooked_request_id(v: &Value) -> Option<&str> {
     {
         return None;
     }
-    v.get("timestamp")
+    let at = v
+        .get("timestamp")
         .and_then(|t| t.as_str())
         .and_then(crate::time::iso_to_epoch)?;
-    msg.get("id")
+    let id = msg
+        .get("id")
         .and_then(|i| i.as_str())
-        .filter(|i| !i.is_empty())
+        .filter(|i| !i.is_empty())?;
+    Some((id, at))
 }
 
 /// The token buckets `claude_shaped_usage` reads. Named here only to tell a
@@ -1848,6 +1874,12 @@ mod tests {
             vec![crate::types::SourceUnbooked {
                 source: "qoder".to_string(),
                 requests: 2,
+                // Every fixture line carries the same second, so the earliest
+                // and latest of these Requests are both it. Derived, not
+                // hardcoded: a literal epoch here says nothing to a reader and
+                // drifts silently if the fixture's timestamp is ever edited.
+                first_at: crate::time::iso_to_epoch("2026-08-07T16:53:21.465Z"),
+                last_at: crate::time::iso_to_epoch("2026-08-07T16:53:21.465Z"),
             }]
         );
 

@@ -35,6 +35,7 @@ function reportInput(over: Partial<ReportInput> = {}): ReportInput {
     toIso: '2026-08-10',
     grain: 'day',
     tokensBasis: 'exact',
+  requestsBasis: 'exact',
     displayCurrency: null,
     usdRate: null,
     summary: usageRow(),
@@ -88,6 +89,21 @@ describe('header block', () => {
   it('marks the window a floor when an Unreadable Artifact could reach it', () => {
     const head = windowReportCsv(reportInput({ tokensBasis: 'floor' })).split('\n\n')[0];
     expect(head).toContain('tokens_basis,floor');
+  });
+
+  // TOKL-25: the Requests column carries its own basis, so a spreadsheet does
+  // not SUM a floor as a total. Separate from tokens_basis because a reader
+  // deciding whether to trust the Requests column should not have to infer it
+  // from a column about tokens.
+  it('marks the Requests figures a floor independently of the tokens', () => {
+    const head = windowReportCsv(
+      reportInput({ tokensBasis: 'exact', requestsBasis: 'floor' }),
+    ).split('\n\n')[0];
+    expect(head).toContain('requests_basis,floor');
+    expect(head).toContain('tokens_basis,exact');
+
+    const exact = windowReportCsv(reportInput({ requestsBasis: 'exact' })).split('\n\n')[0];
+    expect(exact).toContain('requests_basis,exact');
   });
 });
 

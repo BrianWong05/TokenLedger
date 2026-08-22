@@ -177,6 +177,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     canOpenCostBreakdown: view.canOpenCostBreakdown,
     headline: view.headline,
     unreadable: view.unreadable,
+    unbooked: view.unbooked,
     panels: {
       heatmap: { days },
       profile,

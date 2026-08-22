@@ -106,7 +106,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
     summary, modelRows, canOpenCostBreakdown, headline, unreadable, unreadableArtifacts,
-    unbookedRequests,
+    unbooked, unbookedRequests,
     panels,
   } = useOverview(ports);
 
@@ -142,8 +142,17 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // figures share one, each Source card gets its own — visible count beside
   // the eyebrow, per-Source detail as hover text on the marked figures. The
   // store already window-filtered `unreadable`, so no start is re-applied.
-  const floor = tokenFloor(unreadable, null, lang);
-  const cardFloor = (key: string) => tokenFloor(unreadable.filter((u) => u.source === key), null, lang);
+  // Both lists arrive already window-filtered by the store, so no bounds are
+  // re-applied here (null start, null end).
+  const floor = tokenFloor(unreadable, null, lang, unbooked, null);
+  const cardFloor = (key: string) =>
+    tokenFloor(
+      unreadable.filter((u) => u.source === key),
+      null,
+      lang,
+      unbooked.filter((u) => u.source === key),
+      null,
+    );
   const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
 
   // Grok Build only: a skipped line there is a release's new telemetry kind —
@@ -466,7 +475,13 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         <HeatmapModal
           days={panels.heatmap.days}
           summary={heatSummary}
-          floor={tokenFloor(unreadableArtifacts, heatFilters().startTs ?? null, lang)}
+          floor={tokenFloor(
+            unreadableArtifacts,
+            heatFilters().startTs ?? null,
+            lang,
+            unbookedRequests,
+            heatFilters().endTs ?? null,
+          )}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />
@@ -477,6 +492,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
           firstIso={firstIso}
           lastIso={lastIso}
           unreadable={unreadableArtifacts}
+          unbooked={unbookedRequests}
           initialRange={range}
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}

@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V21 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V22 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 21;
+const CURRENT_USER_VERSION: i64 = 22;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -517,6 +517,19 @@ CREATE TABLE IF NOT EXISTS unbooked_requests (
 );
 PRAGMA user_version = 21;";
 
+// v22: when a file's unbooked Requests happened (TOKL-25). A count alone says
+// a Source has them but not when, so every window had to be marked a floor,
+// including windows that could not contain one. These bound it. Nullable
+// because a row only exists when the count is non-zero, and the qoder CLI
+// parser-version bump is what refills them — no scanned_files clear, so no
+// other Source rereads anything.
+const SCHEMA_V22_COLUMNS: [(&str, &str, &str); 2] = [
+    ("unbooked_requests", "first_at", "INTEGER"),
+    ("unbooked_requests", "last_at", "INTEGER"),
+];
+
+const SCHEMA_V22: &str = "PRAGMA user_version = 22;";
+
 /// `ALTER TABLE ... ADD COLUMN` with the `IF NOT EXISTS` SQLite has no syntax
 /// for, so a migration that carries new columns stays re-runnable.
 fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
@@ -786,6 +799,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 21 {
             conn.execute_batch(SCHEMA_V21)?;
+        }
+        if version < 22 {
+            for (table, column, decl) in SCHEMA_V22_COLUMNS {
+                add_column(conn, table, column, decl)?;
+            }
+            conn.execute_batch(SCHEMA_V22)?;
         }
         Ok(())
     };
@@ -1145,14 +1164,17 @@ pub fn set_unbooked_requests(
     path: &str,
     source: &str,
     requests: u64,
+    first_at: Option<i64>,
+    last_at: Option<i64>,
 ) -> rusqlite::Result<()> {
     if requests == 0 {
         conn.execute("DELETE FROM unbooked_requests WHERE path = ?1", [path])?;
         return Ok(());
     }
     conn.execute(
-        "INSERT OR REPLACE INTO unbooked_requests (path, source, requests) VALUES (?1, ?2, ?3)",
-        params![path, source, requests as i64],
+        "INSERT OR REPLACE INTO unbooked_requests (path, source, requests, first_at, last_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![path, source, requests as i64, first_at, last_at],
     )?;
     Ok(())
 }
@@ -1163,7 +1185,8 @@ pub fn set_unbooked_requests(
 /// before the first scan of a run.
 pub fn load_unbooked(conn: &Connection) -> Vec<crate::types::SourceUnbooked> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT source, SUM(requests) FROM unbooked_requests GROUP BY source ORDER BY source",
+        "SELECT source, SUM(requests), MIN(first_at), MAX(last_at) \
+         FROM unbooked_requests GROUP BY source ORDER BY source",
     ) else {
         return Vec::new();
     };
@@ -1171,6 +1194,8 @@ pub fn load_unbooked(conn: &Connection) -> Vec<crate::types::SourceUnbooked> {
         Ok(crate::types::SourceUnbooked {
             source: r.get(0)?,
             requests: r.get::<_, i64>(1)?.max(0) as u64,
+            first_at: r.get(2)?,
+            last_at: r.get(3)?,
         })
     })
     .map(|rows| rows.flatten().collect())

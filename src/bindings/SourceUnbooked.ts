@@ -8,4 +8,11 @@
  * absence is stated rather than silent. Read from the DB, not scan memory, so
  * an idle scan that reparsed nothing still reports them.
  */
-export type SourceUnbooked = { source: string, requests: number, };
+export type SourceUnbooked = { source: string, requests: number, 
+/**
+ * The span these Requests happened in, epoch seconds — the bound on which
+ * windows they make a floor. NULL only for a row written before the span
+ * was recorded (schema v21), which marks conservatively rather than
+ * pretending to know.
+ */
+firstAt: number | null, lastAt: number | null, };

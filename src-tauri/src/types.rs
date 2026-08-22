@@ -233,6 +233,14 @@ pub struct SourceUnbooked {
     pub source: String,
     #[ts(type = "number")]
     pub requests: u64,
+    /// The span these Requests happened in, epoch seconds — the bound on which
+    /// windows they make a floor. NULL only for a row written before the span
+    /// was recorded (schema v21), which marks conservatively rather than
+    /// pretending to know.
+    #[ts(type = "number | null")]
+    pub first_at: Option<i64>,
+    #[ts(type = "number | null")]
+    pub last_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Clone, TS)]
