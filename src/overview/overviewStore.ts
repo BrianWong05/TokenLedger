@@ -546,6 +546,9 @@ class Store implements OverviewStore {
     // The epoch bump above is what makes `reloading` true, and every caller
     // published BEFORE calling here — so without this the new window would be
     // on screen with nothing announcing that its figures have not caught up.
+    // This trailing publish also carries anything written since the caller's:
+    // the launch path's fetchUnreadable lands its list between the two, and
+    // reaches the snapshot here.
     this.publish();
   }
 
