@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { seedPricing } from './pricing.fake';
 import {
-  modelState, filterModels, chipCounts, fmtRate, fill, resolvedRates, originLabel, isRoutedRate,
+  modelState, cacheRatesAbsent, filterModels, chipCounts, fmtRate, fill, resolvedRates, originLabel, isRoutedRate,
   sortPricing, defaultDir, overallRate,
 } from './pricing.derive';
-import type { ModelPricing } from '../types';
+import type { ModelPricing, RatesPerTok } from '../types';
 
 const byName = (name: string): ModelPricing => seedPricing().find((m) => m.model === name)!;
 
@@ -15,6 +15,28 @@ describe('modelState', () => {
     expect(modelState(byName('hermes-4-70b'))).toBe('unpriced');
     // input+output priced, both cache rates null -> cache-estimated
     expect(modelState(byName('gpt-5.5-codex'))).toBe('est');
+  });
+
+  it('est is cacheRatesAbsent on a catalog-priced Model', () => {
+    const r = byName('gpt-5.5-codex').catalog!.rates;
+    expect(cacheRatesAbsent(r)).toBe(true);
+    expect(cacheRatesAbsent(byName('claude-opus-4-8').catalog!.rates)).toBe(false);
+  });
+
+  it('any missing cache rate is cacheRatesAbsent', () => {
+    const both: RatesPerTok = { input: 1e-6, output: 2e-6, cacheRead: 1e-7, cacheWrite: 1e-7 };
+    expect(cacheRatesAbsent(both)).toBe(false);
+    expect(cacheRatesAbsent({ ...both, cacheWrite: null })).toBe(true);
+    expect(cacheRatesAbsent({ ...both, cacheRead: null })).toBe(true);
+  });
+
+  it('est when input and output are priced and any cache rate is absent', () => {
+    const m = (rates: RatesPerTok): ModelPricing => ({
+      model: 'x', tool: 'claude', overrideRates: null, catalog: { origin: 'litellm', rates },
+    });
+    expect(modelState(m({ input: 1e-6, output: 2e-6, cacheRead: 1e-7, cacheWrite: null }))).toBe('est');
+    expect(modelState(m({ input: 1e-6, output: 2e-6, cacheRead: null, cacheWrite: 1e-7 }))).toBe('est');
+    expect(modelState(m({ input: 1e-6, output: 2e-6, cacheRead: 1e-7, cacheWrite: 1e-7 }))).toBe('ok');
   });
 
   it('override wins even when its cache rates are null', () => {

@@ -74,9 +74,10 @@ fn performance_standard_large_ledger() {
         SERIES_BUDGET.as_millis()
     );
 
-    // The eight serialized reads in OverviewStore.runReload(). The Tauri layer
-    // protects this same connection with one mutex, so serial execution here is
-    // the user-visible backend latency even though the frontend uses Promise.all.
+    // Priced reads this bench originally timed, plus Context as one readout.
+    // The Tauri layer protects this same connection with one mutex, so serial
+    // execution here is the user-visible backend latency even though the
+    // frontend uses Promise.all.
     let filters = Filters {
         start_ts: Some(BASE_EPOCH + 700 * DAY_SECONDS),
         end_ts: Some(BASE_EPOCH + 731 * DAY_SECONDS),
@@ -86,22 +87,19 @@ fn performance_standard_large_ledger() {
     let summary = queries::summary(&conn, &filters).unwrap();
     let models = queries::breakdown(&conn, "model", &filters).unwrap();
     let projects = queries::breakdown(&conn, "project", &filters).unwrap();
-    let resources = queries::ctx_resources(&conn, &filters).unwrap();
-    let buckets = queries::ctx_buckets(&conn, &filters).unwrap();
-    let tools = queries::ctx_tools(&conn, &filters).unwrap();
-    let skills = queries::ctx_skills(&conn, &filters).unwrap();
-    let exec = queries::ctx_exec(&conn, &filters).unwrap();
+    let ctx = queries::context(&conn, &filters).unwrap();
     let elapsed = started.elapsed();
     assert!(summary.total_tokens > 0 && !models.is_empty() && !projects.is_empty());
     eprintln!(
         "PERF range_reload events={EVENT_COUNT} result_rows={} elapsed_ms={:.1} budget_ms={}",
         models.len()
             + projects.len()
-            + resources.len()
-            + buckets.len()
-            + tools.len()
-            + skills.len()
-            + exec.len(),
+            + ctx.resources.len()
+            + ctx.buckets.len()
+            + ctx.tools.len()
+            + ctx.skills.len()
+            + ctx.exec.len()
+            + ctx.totals.len(),
         elapsed.as_secs_f64() * 1_000.0,
         RANGE_RELOAD_BUDGET.as_millis()
     );

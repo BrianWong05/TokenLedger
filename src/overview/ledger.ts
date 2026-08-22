@@ -9,12 +9,9 @@ import {
   exportAntigravity,
   fetchSeries,
   fetchSummary,
+  fetchWindow,
   fetchBreakdown,
-  fetchCtxResources,
-  fetchCtxBuckets,
-  fetchCtxTools,
-  fetchCtxSkills,
-  fetchCtxExec,
+  fetchContext,
 } from '../api';
 import type {
   Filters,
@@ -22,12 +19,9 @@ import type {
   SourceUnreadable,
   SeriesPoint,
   Summary,
+  LedgerWindow,
+  LedgerContext,
   BreakdownRow,
-  CtxResource,
-  CtxBuckets,
-  CtxToolRow,
-  CtxSkillRow,
-  CtxExecRow,
 } from '../types';
 
 export interface LedgerPort {
@@ -40,12 +34,12 @@ export interface LedgerPort {
 
   series(filters: Filters, bucket: 'day' | 'hour'): Promise<SeriesPoint[]>;
   summary(filters: Filters): Promise<Summary>;
+  // Date window of priced facts. The Overview store's range reload uses this;
+  // Cost-only callers keep summary().
+  window(filters: Filters): Promise<LedgerWindow>;
   breakdown(by: 'model' | 'project' | 'tool', filters: Filters): Promise<BreakdownRow[]>;
-  ctxResources(filters: Filters): Promise<CtxResource[]>;
-  ctxBuckets(filters: Filters): Promise<CtxBuckets[]>;
-  ctxTools(filters: Filters): Promise<CtxToolRow[]>;
-  ctxSkills(filters: Filters): Promise<CtxSkillRow[]>;
-  ctxExec(filters: Filters): Promise<CtxExecRow[]>;
+  // Date window of Context. The Overview store's range reload uses this.
+  context(filters: Filters): Promise<LedgerContext>;
   onPricesRebuilt(cb: () => void): () => void; // subscribe, returns unsubscribe
 }
 
@@ -56,12 +50,9 @@ export const tauriLedger: LedgerPort = {
   exportAntigravity,
   series: fetchSeries,
   summary: fetchSummary,
+  window: fetchWindow,
   breakdown: fetchBreakdown,
-  ctxResources: fetchCtxResources,
-  ctxBuckets: fetchCtxBuckets,
-  ctxTools: fetchCtxTools,
-  ctxSkills: fetchCtxSkills,
-  ctxExec: fetchCtxExec,
+  context: fetchContext,
   onPricesRebuilt(cb) {
     // listen() is async; the unsubscribe resolves later, so teardown
     // must await it.

@@ -11,7 +11,8 @@ import {
 } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
 import { execFacets } from './data';
-import type { BreakdownRow, SeriesPoint, ScanStatus, Settings } from '../types';
+import type { BreakdownRow, ScanStatus, Settings } from '../types';
+import { seriesPoint as pt } from './seriesPoint';
 
 // Fixed "now" = 2026-07-16; a separate virtual clock drives the debounce timers.
 function fakeClock(): ClockPort & { advance(ms: number): void } {
@@ -43,16 +44,6 @@ function fakeClock(): ClockPort & { advance(ms: number): void } {
 
 // Drain the microtask queue (canned ledger promises resolve there).
 const flush = () => new Promise((r) => setTimeout(r, 0));
-
-function pt(over: Partial<SeriesPoint>): SeriesPoint {
-  return {
-    bucket: '2026-07-16', source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-    inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
-    totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null, ...over,
-  };
-}
 
 const scanWith = (errs: [string, string | null][]): ScanStatus => ({
   scannedAt: 0,
@@ -101,7 +92,7 @@ describe('overviewStore refresh / scan', () => {
     const ledger = makeFakeLedger();
     const store = await boot(ledger, clock);
 
-    ledger.failNext('summary', 'kaboom');
+    ledger.failNext('window', 'kaboom');
     store.setRange('week');
     clock.advance(0);
     await flush();
@@ -127,7 +118,7 @@ describe('overviewStore refresh / scan', () => {
     const ledger = makeFakeLedger();
     const store = await boot(ledger, clock);
     const seriesCalls = ledger.calls.series.length;
-    const summaryCalls = ledger.calls.summary.length;
+    const windowCalls = ledger.calls.window.length;
     const before = store.getSnapshot();
 
     await store.refresh(); // ledger unchanged: default scan reports nothing inserted
@@ -135,7 +126,7 @@ describe('overviewStore refresh / scan', () => {
     await flush();
 
     expect(ledger.calls.series).toHaveLength(seriesCalls);
-    expect(ledger.calls.summary).toHaveLength(summaryCalls);
+    expect(ledger.calls.window).toHaveLength(windowCalls);
     expect(store.getSnapshot().allPoints).toBe(before.allPoints); // identity stable → no re-render churn
   });
 
@@ -198,7 +189,7 @@ describe('overviewStore refresh / scan', () => {
     const ledger = makeFakeLedger();
     const store = await boot(ledger, clock);
     const seriesCalls = ledger.calls.series.length;
-    const summaryCalls = ledger.calls.summary.length;
+    const windowCalls = ledger.calls.window.length;
 
     ledger.data.scan = {
       scannedAt: 1_780_300_030,
@@ -210,7 +201,7 @@ describe('overviewStore refresh / scan', () => {
     await flush();
 
     expect(ledger.calls.series).toHaveLength(seriesCalls);
-    expect(ledger.calls.summary).toHaveLength(summaryCalls);
+    expect(ledger.calls.window).toHaveLength(windowCalls);
   });
 
   it('scan() throw on first load sets scanError but keeps the provisional paint', async () => {
@@ -353,11 +344,11 @@ describe('overviewStore refresh / scan', () => {
   });
 
   // Boot supersedes its own first window reload: the post-scan reconcile bumps
-  // the epoch in the microtask right after the paint, so the reload's ten
-  // queries were always issued and always discarded — leaving the headline
-  // zero-shaped and the cost '…' until the SECOND fan-out landed (a third, from
-  // prices-rebuilt, could supersede that one too). The figures were already
-  // paid for; nothing may sit on a placeholder while a response is in hand.
+  // the epoch in the microtask right after the paint, so the reload's window()
+  // (plus Context reads) were always issued and always discarded — leaving the
+  // headline zero-shaped and the cost '…' until the SECOND fan-out landed (a
+  // third, from prices-rebuilt, could supersede that one too). The figures were
+  // already paid for; nothing may sit on a placeholder while a response is in hand.
   it('a superseded launch reload still paints, marked as behind', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });
@@ -366,8 +357,8 @@ describe('overviewStore refresh / scan', () => {
     const refreshing = store.refresh();
     await flush();
 
-    ledger.hold('summary');
-    clock.advance(0); // the provisional window reload fires; its Summary is held
+    ledger.hold('window');
+    clock.advance(0); // the provisional window reload fires; its window() is held
     await flush();
     expect(store.getSnapshot().summary).toBeNull();
 
@@ -377,7 +368,7 @@ describe('overviewStore refresh / scan', () => {
     expect(store.getSnapshot().summary).toBeNull();
 
     // Now it answers. Painting it is what keeps the launch off placeholders.
-    ledger.resolveHeld('summary', 0); // the provisional window Summary
+    ledger.resolveHeld('window', 0); // the provisional window()
     await flush();
     expect(store.getSnapshot().summary).not.toBeNull();
     // Honest about being pre-scan: window-scoped figures are still owed.
@@ -387,7 +378,7 @@ describe('overviewStore refresh / scan', () => {
     await refreshing;
     clock.advance(0);
     await flush();
-    ledger.resolveHeld('summary', 1); // reconcile window Summary
+    ledger.resolveHeld('window', 1); // reconcile window()
     await flush();
     expect(store.getSnapshot().reloading).toBe(false);
   });
@@ -397,7 +388,7 @@ describe('overviewStore refresh / scan', () => {
   // holds a same-window correction still — so a reel rolled on the provisional
   // figure would leave the settled one to arrive with no motion. The post-scan
   // series is what earns the flag, so the reveal waits one query pair rather
-  // than the ten-query window fan-out behind it.
+  // than the window fan-out behind it.
   it('withholds the entrance until the figure descends from a settled scan', async () => {
     const clock = fakeClock();
     // Two days, so the Total window is not a single day: a one-day window is
@@ -441,14 +432,14 @@ describe('overviewStore refresh / scan', () => {
     store.setRange('week');
     clock.advance(0);
     await flush();
-    const summaryCalls = ledger.calls.summary.length;
+    const windowCalls = ledger.calls.window.length;
 
     ledger.resolveHeld('scan', 0);
     await refreshing;
     clock.advance(0);
     await flush();
-    // A cache replay would add no summary call; the reconcile must refetch.
-    expect(ledger.calls.summary.length).toBeGreaterThan(summaryCalls);
+    // A cache replay would add no window() call; the reconcile must refetch.
+    expect(ledger.calls.window.length).toBeGreaterThan(windowCalls);
   });
 });
 
@@ -458,7 +449,7 @@ describe('overviewStore reload orchestration', () => {
     const ledger = makeFakeLedger();
     const store = await boot(ledger, clock);
 
-    ledger.hold('summary');
+    ledger.hold('window');
     const summaryA = { ...ledger.data.summary, totalTokens: 111 };
     const summaryB = { ...ledger.data.summary, totalTokens: 222 };
 
@@ -468,11 +459,11 @@ describe('overviewStore reload orchestration', () => {
     store.setRange('month'); // range B supersedes A
     clock.advance(0);
     await flush();
-    expect(ledger.held('summary')).toHaveLength(2);
+    expect(ledger.held('window')).toHaveLength(2);
 
-    ledger.resolveHeld('summary', 1, summaryB); // B (current)
+    ledger.resolveHeld('window', 1, ledger.windowPayload(summaryB)); // B (current)
     await flush();
-    ledger.resolveHeld('summary', 0, summaryA); // A (stale) — must be ignored
+    ledger.resolveHeld('window', 0, ledger.windowPayload(summaryA)); // A (stale) — must be ignored
     await flush();
 
     expect(store.getSnapshot().summary).toBe(summaryB);
@@ -485,32 +476,32 @@ describe('overviewStore reload orchestration', () => {
 
     // Custom range: reload waits for 250ms.
     store.setRange('custom');
-    let n = ledger.calls.summary.length;
+    let n = ledger.calls.window.length;
     clock.advance(249);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n); // not yet
+    expect(ledger.calls.window.length).toBe(n); // not yet
     clock.advance(1);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
 
     // setCustomRange while custom also debounces at 250ms.
-    n = ledger.calls.summary.length;
+    n = ledger.calls.window.length;
     store.setCustomRange('2026-01-01', '2026-06-30');
     clock.advance(249);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n);
+    expect(ledger.calls.window.length).toBe(n);
     clock.advance(1);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
 
     // Pending custom debounce, then a preset: the custom timer is cleared, so
     // only the preset cycle runs.
-    n = ledger.calls.summary.length;
+    n = ledger.calls.window.length;
     store.setRange('custom'); // schedules @250
     store.setRange('week'); // clears it, schedules @0
     clock.advance(300);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
   });
 
   it('prices-rebuilt re-runs the reload; disposing stops it', async () => {
@@ -519,22 +510,22 @@ describe('overviewStore reload orchestration', () => {
     const store = await boot(ledger, clock);
     const dispose = store.start();
 
-    const n = ledger.calls.summary.length;
+    const n = ledger.calls.window.length;
     ledger.emitPricesRebuilt();
     clock.advance(0);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
     // Reload used the current (total) filters — no date bounds.
-    const summaryCalls = ledger.calls.summary;
-    const lastFilters = summaryCalls[summaryCalls.length - 1][0] as { startTs?: number };
+    const windowCalls = ledger.calls.window;
+    const lastFilters = windowCalls[windowCalls.length - 1][0] as { startTs?: number };
     expect(lastFilters.startTs).toBeUndefined();
 
     dispose();
-    const m = ledger.calls.summary.length;
+    const m = ledger.calls.window.length;
     ledger.emitPricesRebuilt();
     clock.advance(0);
     await flush();
-    expect(ledger.calls.summary.length).toBe(m);
+    expect(ledger.calls.window.length).toBe(m);
   });
 
   it('returning to an already-loaded window reuses the cached reload: no refetch, identical references', async () => {
@@ -547,17 +538,17 @@ describe('overviewStore reload orchestration', () => {
     await flush();
     const weekSummary = store.getSnapshot().summary;
     const weekModels = store.getSnapshot().modelRows;
-    const n = ledger.calls.summary.length;
+    const n = ledger.calls.window.length;
 
     store.setRange('month');
     clock.advance(0);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
 
     store.setRange('week');
     clock.advance(0);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1); // served from cache
+    expect(ledger.calls.window.length).toBe(n + 1); // served from cache
     expect(store.getSnapshot().summary).toBe(weekSummary); // same reference → memoized panels skip
     expect(store.getSnapshot().modelRows).toBe(weekModels);
     expect(store.getSnapshot().reloading).toBe(false); // the cached landing cleared the flag
@@ -580,12 +571,12 @@ describe('overviewStore reload orchestration', () => {
     await store.refresh(); // reloads the current (week) window fresh
     clock.advance(0);
     await flush();
-    const n = ledger.calls.summary.length;
+    const n = ledger.calls.window.length;
 
     store.setRange('total'); // was cached pre-ingest; must refetch
     clock.advance(0);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
   });
 
   // eventsInserted === 0 does not mean unchanged: keep-max adapters upgrade
@@ -604,12 +595,12 @@ describe('overviewStore reload orchestration', () => {
     await store.refresh(); // default scan: nothing inserted → idle-gated
     clock.advance(0);
     await flush();
-    const n = ledger.calls.summary.length;
+    const n = ledger.calls.window.length;
 
     store.setRange('total'); // must refetch, not replay the cached total
     clock.advance(0);
     await flush();
-    expect(ledger.calls.summary.length).toBe(n + 1);
+    expect(ledger.calls.window.length).toBe(n + 1);
   });
 
   it('Day range fetches the hourly series; leaving Day clears hourPoints', async () => {
@@ -712,7 +703,7 @@ describe('overviewStore reload orchestration', () => {
     const store = await boot(ledger, clock);
     expect(store.getSnapshot().reloading).toBe(false);
 
-    ledger.hold('summary');
+    ledger.hold('window');
     store.setRange('week');
     // The window has already moved, before any figure describing it exists.
     expect(store.getSnapshot().range).toBe('week');
@@ -722,7 +713,7 @@ describe('overviewStore reload orchestration', () => {
     await flush();
     expect(store.getSnapshot().reloading).toBe(true);
 
-    ledger.resolveHeld('summary', 0);
+    ledger.resolveHeld('window', 0);
     await flush();
     expect(store.getSnapshot().reloading).toBe(false);
   });
@@ -735,7 +726,7 @@ describe('overviewStore reload orchestration', () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})] });
     const store = await boot(ledger, clock);
 
-    ledger.failNext('summary', 'boom');
+    ledger.failNext('window', 'boom');
     store.setRange('week');
     expect(store.getSnapshot().reloading).toBe(true);
 
@@ -907,7 +898,7 @@ describe('overviewStore profile', () => {
     await boot(ledger, clock);
 
     const fixedStart = Math.floor(new Date(2026, 5, 17).getTime() / 1000); // 30 days back
-    expect(ledger.calls.summary.filter((c) => (c[0] as { startTs?: number }).startTs === fixedStart))
+    expect(ledger.calls.window.filter((c) => (c[0] as { startTs?: number }).startTs === fixedStart))
       .toHaveLength(0);
   });
 });
@@ -937,13 +928,13 @@ function sourceRow(key: string, over: Partial<BreakdownRow> = {}): BreakdownRow 
   };
 }
 
-// A booted store over two priced days of Claude usage, with a window Summary
+// A booted store over two priced days of Claude usage, with a Summary from window()
 // worth more than zero so a Cost assertion can tell "carried" from "empty".
 async function mountStoreWithUsage() {
   const clock = fakeClock();
   const ledger = makeFakeLedger({
     dayPoints: [pt({ bucket: '2026-07-15', cost: 1.25 }), pt({ bucket: '2026-07-16', cost: 0.5 })],
-    toolRows: [sourceRow('claude')],
+    sourceRows: [sourceRow('claude')],
     summary: { ...makeFakeLedger().data.summary, totalTokens: 76, requests: 2, convs: 2, cost: 1.75 },
   });
   return { store: await boot(ledger, clock), ledger };
@@ -960,13 +951,13 @@ async function mountStoreWithCtxFor(
   const usageOnly = opts.alsoSeedUsageFor ?? [];
   const clock = fakeClock();
   const ledger = makeFakeLedger({
-    dayPoints: [
-      ...ctxSources.map((source) =>
-        pt({ source, ctxMessages: 8000, ctxSystem: 1200, ctxToolcalls: 900, ctxMcp: 300, ctxSkills: 150 }),
-      ),
-      ...usageOnly.map((source) => pt({ source })),
-    ],
-    toolRows: [...ctxSources, ...usageOnly].map((source) => sourceRow(source)),
+    dayPoints: [...ctxSources, ...usageOnly].map((source) => pt({ source })),
+    ctxTotals: ctxSources.map((source) => ({
+      source, billed: 0, reused: 0,
+      messages: 8000, system: 1200, reasoning: null,
+      toolcalls: 900, agents: null, mcp: 300, skills: 150,
+    })),
+    sourceRows: [...ctxSources, ...usageOnly].map((source) => sourceRow(source)),
     // A Bash tool row rides with the exec rows below, the way a real scan
     // writes them: both come from the same `tool_use`, and the Bash leaf is
     // what the exec rows are allocated against.
@@ -990,8 +981,13 @@ async function mountStoreWithCtxFor(
 async function mountStoreWithManySkills(count: number) {
   const clock = fakeClock();
   const ledger = makeFakeLedger({
-    dayPoints: [pt({ source: 'claude', ctxSkills: 150 })],
-    toolRows: [sourceRow('claude')],
+    dayPoints: [pt({ source: 'claude' })],
+    ctxTotals: [{
+      source: 'claude', billed: 0, reused: 0,
+      messages: null, system: null, reasoning: null,
+      toolcalls: null, agents: null, mcp: null, skills: 150,
+    }],
+    sourceRows: [sourceRow('claude')],
     ctxSkills: Array.from({ length: count }, (_, i) => ({
       source: 'claude',
       name: `skill-${String(i).padStart(2, '0')}`,
@@ -1012,7 +1008,7 @@ async function mountStoreWithUnpricedDay() {
       pt({ bucket: unpricedDay, cost: 0, hasUnpriced: true }),
       pt({ bucket: '2026-07-16', cost: 2.5 }),
     ],
-    toolRows: [sourceRow('claude')],
+    sourceRows: [sourceRow('claude')],
   });
   return { store: await boot(ledger, clock), ledger, unpricedDay };
 }
@@ -1023,7 +1019,7 @@ async function mountStoreOnHourlyDay() {
   const ledger = makeFakeLedger({
     dayPoints: [pt({ bucket: '2026-07-15' }), pt({ bucket: '2026-07-16' })],
     hourPoints: [pt({ bucket: '2026-07-16 14:00' }), pt({ bucket: '2026-07-16 09:00' })],
-    toolRows: [sourceRow('claude')],
+    sourceRows: [sourceRow('claude')],
   });
   const store = await boot(ledger, clock);
   store.setRange('day');
@@ -1038,7 +1034,7 @@ async function mountStoreOnCustomWindow() {
   const clock = fakeClock();
   const ledger = makeFakeLedger({
     dayPoints: [pt({ bucket: '2026-07-10' }), pt({ bucket: '2026-07-13' }), pt({ bucket: '2026-07-16' })],
-    toolRows: [sourceRow('claude')],
+    sourceRows: [sourceRow('claude')],
   });
   const store = await boot(ledger, clock);
   store.setRange('custom');
@@ -1053,7 +1049,7 @@ async function mountStoreOverManyMonths() {
   const clock = fakeClock();
   const ledger = makeFakeLedger({
     dayPoints: [pt({ bucket: '2026-01-05' }), pt({ bucket: '2026-07-16' })],
-    toolRows: [sourceRow('claude')],
+    sourceRows: [sourceRow('claude')],
   });
   return { store: await boot(ledger, clock), ledger };
 }
@@ -1064,7 +1060,7 @@ async function mountStoreWithUnreadableArtifact() {
   const clock = fakeClock();
   const ledger = makeFakeLedger({
     dayPoints: [pt({})],
-    toolRows: [sourceRow('claude')],
+    sourceRows: [sourceRow('claude')],
     scan: {
       scannedAt: 0,
       ingestRev: 0,
@@ -1080,7 +1076,7 @@ async function mountStoreWithUnreadableArtifact() {
 describe('selectReportInput', () => {
   it('loads per-Source usage rows with the rest of the window', async () => {
     const { store, ledger } = await mountStoreWithUsage();
-    expect(ledger.calls.breakdown.map(([by]) => by)).toContain('tool');
+    expect(ledger.calls.window.length).toBeGreaterThan(0);
     expect(store.getSnapshot().sourceRows.length).toBeGreaterThan(0);
   });
 
@@ -1127,8 +1123,13 @@ describe('selectReportInput', () => {
   it('merges signatures that differ only by the kind column it does not carry', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({
-      dayPoints: [pt({ source: 'claude', ctxToolcalls: 900 })],
-      toolRows: [sourceRow('claude')],
+      dayPoints: [pt({ source: 'claude' })],
+      ctxTotals: [{
+        source: 'claude', billed: 0, reused: 0,
+        messages: null, system: null, reasoning: null,
+        toolcalls: 900, agents: null, mcp: null, skills: null,
+      }],
+      sourceRows: [sourceRow('claude')],
       ctxTools: [{ source: 'claude', name: 'Bash', estTokens: 300, calls: 5 }],
       ctxExec: [
         { source: 'claude', kind: 'build', exe: 'npm', cmd: 'npm run', estTokens: 60, calls: 2 },
@@ -1181,14 +1182,11 @@ describe('selectReportInput', () => {
     expect(input.time.find((r) => r.key === '2026-07-16')?.cost).toBe(2.5);
   });
 
-  // SeriesPoint carries no cache-estimated flag, so a time row cannot know and
-  // says so with null, which the file writes as an empty cell. A Source row
-  // reads BreakdownRow, which does carry it, and keeps the boolean.
-  it('leaves a time row\'s cache_estimated unknown while a Source row states it', async () => {
+  it('carries cacheEstimated on time rows from the series', async () => {
     const { store } = await mountStoreWithUsage();
     const s = store.getSnapshot();
     const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
-    expect(input.time.every((r) => r.cacheEstimated === null)).toBe(true);
+    expect(input.time.every((r) => r.cacheEstimated === false)).toBe(true);
     expect(input.sources.map((r) => r.cacheEstimated)).toEqual([false]);
   });
 
@@ -1223,7 +1221,7 @@ describe('selectReportInput', () => {
     const ledger = makeFakeLedger({
       dayPoints: [pt({ bucket: '2026-07-13' }), pt({ bucket: '2026-07-16' })],
       hourPoints: [pt({ bucket: '2026-07-16 09:00' })],
-      toolRows: [sourceRow('claude')],
+      sourceRows: [sourceRow('claude')],
     });
     const store = await boot(ledger, clock);
     store.setRange('day');
@@ -1373,12 +1371,12 @@ describe('overviewStore across local midnight', () => {
   // capture the call count and read past it, rather than truncating the fake's
   // record of what it was asked.
   const windowsSince = (ledger: ReturnType<typeof makeFakeLedger>, from: number) =>
-    ledger.calls.summary.slice(from).map((c) => (c[0] as { startTs?: number }).startTs);
+    ledger.calls.window.slice(from).map((c) => (c[0] as { startTs?: number }).startTs);
 
   it('re-reads the new day on an idle tick after midnight', async () => {
     const { ledger, clock, store } = await dayStoreAt(BEFORE);
     expect(windowsSince(ledger, 0)).toContain(AUG16);
-    const issued = ledger.calls.summary.length;
+    const issued = ledger.calls.window.length;
 
     vi.setSystemTime(AFTER);
     await store.refresh(); // scan reports nothing inserted: a genuinely idle tick
@@ -1445,7 +1443,7 @@ describe('overviewStore across local midnight', () => {
 
   it('still skips the reload on an idle tick inside the same day', async () => {
     const { ledger, clock, store } = await dayStoreAt(BEFORE);
-    const issued = ledger.calls.summary.length;
+    const issued = ledger.calls.window.length;
 
     vi.setSystemTime(new Date(2026, 7, 16, 23, 55, 0));
     await store.refresh();

@@ -37,7 +37,7 @@ interface TokenTotalHeadlineProps {
   // holds still (#12 story 9), so rolling that figure would leave the settled
   // one to arrive with no motion at all. The zero-shaped placeholder therefore
   // stands until this turns true — which is why the store reads it off the
-  // post-scan SERIES and not the window Summary ten queries behind it.
+  // post-scan SERIES and not the window() reload behind it.
   authoritative: boolean;
   // Identifies the window the total describes (range + bounds). A change here is
   // what earns a roll: the same window reporting a new figure is a background

@@ -15,7 +15,8 @@ import { makeFakePricing } from '../pricing/pricing.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { SettingsProvider } from '../settings/SettingsContext';
 import type { Platform } from '../lib/platform';
-import type { BreakdownRow, SeriesPoint, Summary, ScanStatus } from '../types';
+import type { BreakdownRow, Summary, ScanStatus } from '../types';
+import { seriesPoint as pt } from './seriesPoint';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -33,17 +34,6 @@ beforeEach(() => {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
 });
-
-function pt(over: Partial<SeriesPoint>): SeriesPoint {
-  return {
-    bucket: '2026-07-16', source: 'claude', byModel: {},
-    unattributedTokens: 0, hasUnpriced: false,
-    inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
-    totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null, ...over,
-  };
-}
 
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
@@ -215,7 +205,7 @@ describe('Overview presentation', () => {
       ledger.emitPricesRebuilt();
       await vi.advanceTimersByTimeAsync(1);
     });
-    ledger.hold('summary');
+    ledger.hold('window');
     await act(async () => {
       totalTab.click();
       await vi.advanceTimersByTimeAsync(1);
@@ -987,25 +977,26 @@ describe('Export', () => {
   // selector's token fields are non-nullable, so an absent Summary becomes 0 —
   // a figure meaning "unknown". Only the caller can refuse, and it does.
   //
-  // Every summary held here is a window Summary: the series load no longer
-  // fetches one of its own (the Profile's Session count went with its tiles,
-  // TOKL-6). The series therefore lands unblocked and ends `loading`, and this
-  // scan reports no inserted events, so the post-scan reconcile is skipped as
-  // idle — leaving exactly one window Summary owed, the one Export waits on.
+  // Every window() held here is the date-window read: the series load no
+  // longer fetches a Summary of its own (the Profile's Session count went with
+  // its tiles, TOKL-6). The series therefore lands unblocked and ends
+  // `loading`, and this scan reports no inserted events, so the post-scan
+  // reconcile is skipped as idle — leaving exactly one window() owed, the
+  // one Export waits on.
   it('withholds Export until the window\'s Summary has landed', async () => {
     const ledger = makeFakeLedger({ dayPoints: [pt({})], summary });
-    ledger.hold('summary');
+    ledger.hold('window');
     const { container } = await mountOverview({ ledger });
     const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
 
     expect(container.querySelector('.tt')?.classList.contains('tt-loading')).toBe(false);
     expect(exportBtn().disabled).toBe(true); // the window's Summary is still pending
 
-    // Pin the launch fan-out: one Summary for an idle launch. A second
+    // Pin the launch fan-out: one window() for an idle launch. A second
     // appearing here means boot grew another fetch pass; this line is where
     // that regression fails.
-    expect(ledger.held('summary').length).toBe(1);
-    ledger.resolveHeld('summary', 0);
+    expect(ledger.held('window').length).toBe(1);
+    ledger.resolveHeld('window', 0);
     await settle();
     expect(exportBtn().disabled).toBe(false);
   });
@@ -1041,7 +1032,7 @@ describe('Export', () => {
     const exportBtn = () => container.querySelector<HTMLButtonElement>('.tt-export')!;
     expect(exportBtn().disabled).toBe(false);
 
-    ledger.hold('summary');
+    ledger.hold('window');
     await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.tt-toolbar .tt-seg button'))
       .find((b) => b.textContent === 'Week')!);
     expect(exportBtn().disabled).toBe(true);
@@ -1050,7 +1041,7 @@ describe('Export', () => {
     await click(exportBtn());
     expect(exporter.calls).toHaveLength(0);
 
-    ledger.resolveHeld('summary', ledger.held('summary').length - 1);
+    ledger.resolveHeld('window', ledger.held('window').length - 1);
     await settle();
     expect(exportBtn().disabled).toBe(false);
   });

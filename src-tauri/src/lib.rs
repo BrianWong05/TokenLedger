@@ -68,8 +68,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
-    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, SeriesPoint,
-    SourceLimits, Summary, TrendPoint,
+    BreakdownRow, Filters, LedgerContext, LedgerWindow, SeriesPoint, SourceLimits, Summary,
 };
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
@@ -425,13 +424,11 @@ fn summary(state: State<'_, AppState>, filters: Filters) -> Result<Summary, Stri
     read(&state, |db| queries::summary(db, &filters))
 }
 
+/// One date window of priced facts: Summary plus Model, Project, and Source
+/// breakdowns, under one read transaction. Cost-only callers keep `summary`.
 #[tauri::command(async)]
-fn trend(
-    state: State<'_, AppState>,
-    filters: Filters,
-    bucket: String,
-) -> Result<Vec<TrendPoint>, String> {
-    read(&state, |db| queries::trend(db, &filters, &bucket))
+fn window(state: State<'_, AppState>, filters: Filters) -> Result<LedgerWindow, String> {
+    read(&state, |db| queries::window(db, &filters))
 }
 
 #[tauri::command(async)]
@@ -452,32 +449,10 @@ fn breakdown(
     read(&state, |db| queries::breakdown(db, &by, &filters))
 }
 
+/// One date window of Context. Overview range reloads use this.
 #[tauri::command(async)]
-fn ctx_resources(
-    state: State<'_, AppState>,
-    filters: Filters,
-) -> Result<Vec<CtxResource>, String> {
-    read(&state, |db| queries::ctx_resources(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_buckets(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxBuckets>, String> {
-    read(&state, |db| queries::ctx_buckets(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_tools(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxToolRow>, String> {
-    read(&state, |db| queries::ctx_tools(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_skills(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxSkillRow>, String> {
-    read(&state, |db| queries::ctx_skills(db, &filters))
-}
-
-#[tauri::command(async)]
-fn ctx_exec(state: State<'_, AppState>, filters: Filters) -> Result<Vec<CtxExecRow>, String> {
-    read(&state, |db| queries::ctx_exec(db, &filters))
+fn context(state: State<'_, AppState>, filters: Filters) -> Result<LedgerContext, String> {
+    read(&state, |db| queries::context(db, &filters))
 }
 
 /// The current state of every Limit the Ledger holds Readings for. Takes no
@@ -743,10 +718,8 @@ pub fn run() {
                 // The Companions' output directory is the app's own, not
                 // something to find under home — so it is filled in here, where
                 // the data dir is already resolved.
-                roots: SourceRoots {
-                    limit_exports: data_dir.join("limits"),
-                    ..SourceRoots::default_roots()
-                },
+                roots: SourceRoots::default_roots()
+                    .with_limit_exports(data_dir.join("limits")),
                 scan_lock: Mutex::new(()),
                 price_lookups: Mutex::new(Default::default()),
                 last_scan: AtomicI64::new(0),
@@ -860,14 +833,10 @@ pub fn run() {
             unreadable_artifacts,
             export_antigravity,
             summary,
-            trend,
+            window,
             series,
             breakdown,
-            ctx_resources,
-            ctx_buckets,
-            ctx_tools,
-            ctx_skills,
-            ctx_exec,
+            context,
             limits,
             check_live_limits,
             model_pricing,
@@ -1322,33 +1291,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
         let read_conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
-        let roots = SourceRoots {
-            claude: dir.path().join("claude"),
-            codex_sessions: vec![dir.path().join("codex")],
-            copilot_db: dir.path().join("copilot/session-store.db"),
-            gemini_tmp: dir.path().join("gemini"),
-            gemini_projects_json: dir.path().join("projects.json"),
-            hermes_db: dir.path().join("state.db"),
-            grok_sessions: dir.path().join("grok"),
-            grok_logs: dir.path().join("grok-logs"),
-            antigravity_conversations: dir.path().join("antigravity"),
-            antigravity_ide_conversations: dir.path().join("antigravity-ide"),
-            antigravity_cli_conversations: dir.path().join("antigravity-cli"),
-            goose_sessions: vec![dir.path().join("goose")],
-            pi_sessions: vec![dir.path().join("pi")],
-            omp_sessions: vec![dir.path().join("omp")],
-            opencode_data: dir.path().join("opencode"),
-            opencode_legacy: dir.path().join("opencode/storage"),
-            opencode_db: None,
-            kilo_db: dir.path().join("kilo.db"),
-            zed_databases: vec![dir.path().join("zed/threads/threads.db")],
-            cline: vec![dir.path().join("cline")],
-            workbuddy: dir.path().join("workbuddy"),
-            codebuddy: dir.path().join("codebuddy"),
-            qoder_databases: vec![dir.path().join("qoder.db")],
-            qoder_cli_projects: vec![dir.path().join("qoder-cli")],
-            limit_exports: dir.path().join("limits"),
-        };
+        let roots = SourceRoots::at(dir.path()).with_limit_exports(dir.path().join("limits"));
         let state = AppState {
             db: Mutex::new(conn),
             read_db: Mutex::new(read_conn),

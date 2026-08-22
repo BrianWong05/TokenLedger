@@ -13,16 +13,25 @@ export function resolvedRates(m: ModelPricing): RatesPerTok | null {
   return m.overrideRates ?? m.catalog?.rates ?? null;
 }
 
+// Cache-Estimated (CONTEXT.md): a Model priced for input+output whose Cache
+// rates are absent. The wire maps a stored 0.0 to null
+// (`Rates::rate_absent` / `to_per_tok`). Any missing bucket is enough —
+// Cost's cache_gap uses the same per-bucket predicate, then also requires
+// counted tokens in that bucket.
+export function cacheRatesAbsent(r: RatesPerTok): boolean {
+  return r.cacheRead == null || r.cacheWrite == null;
+}
+
 // One mutually-exclusive state per Model (drives badge, action, chip, tint):
 //   unpriced  — no Override and no catalog rate
 //   override  — an Override is present
-//   est       — catalog-priced for input+output but both cache rates are null
+//   est       — catalog-priced for input+output but any cache rate is absent
 //   ok        — everything else
 export function modelState(m: ModelPricing): PriceState {
   if (!m.overrideRates && !m.catalog) return 'unpriced';
   if (m.overrideRates) return 'override';
   const r = m.catalog!.rates;
-  if (r.input != null && r.output != null && r.cacheRead == null && r.cacheWrite == null) return 'est';
+  if (r.input != null && r.output != null && cacheRatesAbsent(r)) return 'est';
   return 'ok';
 }
 

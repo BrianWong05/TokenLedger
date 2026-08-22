@@ -47,27 +47,6 @@ pub struct Summary {
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
-pub struct TrendPoint {
-    pub bucket: String,
-    #[ts(type = "number")]
-    pub input_tokens: i64,
-    #[ts(type = "number")]
-    pub output_tokens: i64,
-    #[ts(type = "number")]
-    pub cache_read_tokens: i64,
-    #[ts(type = "number")]
-    pub cache_write_tokens: i64,
-    #[ts(type = "number")]
-    pub total_tokens: i64,
-    pub cost: f64,
-    pub has_unpriced: bool,
-    #[ts(type = "number")]
-    pub unattributed_tokens: i64,
-}
-
-#[derive(Debug, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export, export_to = "../../src/bindings/")]
 pub struct BreakdownRow {
     // None is reserved for a model-breakdown row whose Usage has no Model.
     // Project/tool breakdowns continue to return named keys.
@@ -281,63 +260,6 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     })
 }
 
-pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<TrendPoint>> {
-    let hourly = hourly_flag(bucket);
-    let rates = RateMap::load(conn)?;
-    let (where_sql, params) = build_where(f);
-    let sql = format!(
-        "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, model, \
-         SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens) \
-         FROM events {where_sql} GROUP BY bucket, model ORDER BY bucket"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
-        Ok((
-            r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?,
-            r.get::<_, i64>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?,
-            r.get::<_, i64>(5)?, r.get::<_, i64>(6)?,
-        ))
-    })?;
-
-    let mut idx: HashMap<String, usize> = HashMap::new();
-    let mut points: Vec<TrendPoint> = Vec::new();
-    for row in rows {
-        let (bucket, model, in_, out, cr, w5, w1) = row?;
-        let tokens = in_ + out + cr + w5 + w1;
-        let contribution = cost_contribution(
-            &rates,
-            model.as_deref(),
-            price_day(&bucket),
-            [in_, out, cr, w5, w1],
-        );
-        let i = *idx.entry(bucket.clone()).or_insert_with(|| {
-            points.push(TrendPoint {
-                bucket: bucket.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cache_read_tokens: 0,
-                cache_write_tokens: 0,
-                total_tokens: 0,
-                cost: 0.0,
-                has_unpriced: false,
-                unattributed_tokens: 0,
-            });
-            points.len() - 1
-        });
-        let p = &mut points[i];
-        p.input_tokens += in_;
-        p.output_tokens += out;
-        p.cache_read_tokens += cr;
-        p.cache_write_tokens += w5 + w1;
-        p.total_tokens += tokens;
-        p.cost += contribution.cost;
-        p.has_unpriced |= contribution.unpriced;
-        p.unattributed_tokens += contribution.unattributed_tokens;
-    }
-    Ok(points)
-}
-
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
@@ -350,6 +272,9 @@ pub struct SeriesPoint {
     #[ts(type = "number")]
     pub unattributed_tokens: i64,
     pub has_unpriced: bool,
+    /// Cache-Estimated (CONTEXT.md): this bucket counted cache tokens whose
+    /// rate is absent. Same predicate Cost uses (`Rates::cache_gap`).
+    pub cache_estimated: bool,
     #[ts(type = "number")]
     pub input_tokens: i64,
     #[ts(type = "number")]
@@ -367,20 +292,6 @@ pub struct SeriesPoint {
     pub requests: i64,
     #[ts(type = "number")]
     pub convs: i64,
-    #[ts(type = "number | null")]
-    pub ctx_messages: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_system: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_reasoning: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_toolcalls: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_agents: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_mcp: Option<i64>,
-    #[ts(type = "number | null")]
-    pub ctx_skills: Option<i64>,
 }
 
 // Merges a nullable per-group SUM into an accumulator: only Some contributes,
@@ -409,8 +320,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
     let sql = format!(
         "SELECT tokenledger_local_bucket(timestamp, {hourly}) AS bucket, source, model, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens), \
-         SUM(ctx_messages), SUM(ctx_system), SUM(ctx_reasoning), SUM(ctx_toolcalls), SUM(ctx_agents), SUM(ctx_mcp), SUM(ctx_skills) \
+         SUM(cache_write_5m_tokens), SUM(cache_write_1h_tokens), SUM(api_calls), SUM(reasoning_tokens) \
          FROM events {where_sql} GROUP BY bucket, source, model ORDER BY bucket, source"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -420,17 +330,13 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             r.get::<_, i64>(3)?, r.get::<_, i64>(4)?, r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?, r.get::<_, i64>(7)?, r.get::<_, i64>(8)?,
             r.get::<_, Option<i64>>(9)?,
-            r.get::<_, Option<i64>>(10)?, r.get::<_, Option<i64>>(11)?, r.get::<_, Option<i64>>(12)?,
-            r.get::<_, Option<i64>>(13)?, r.get::<_, Option<i64>>(14)?, r.get::<_, Option<i64>>(15)?,
-            r.get::<_, Option<i64>>(16)?,
         ))
     })?;
 
     let mut idx: HashMap<(String, String), usize> = HashMap::new();
     let mut points: Vec<SeriesPoint> = Vec::new();
     for row in rows {
-        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning,
-             cxm, cxs, cxr, cxt, cxa, cxmc, cxsk) = row?;
+        let (bucket, source, model, in_, out, cr, w5, w1, calls, reasoning) = row?;
         let tokens = in_ + out + cr + w5 + w1;
         let contribution = cost_contribution(
             &rates,
@@ -438,7 +344,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             price_day(&bucket),
             [in_, out, cr, w5, w1],
         );
-        // Clone into the map key like trend(); avoid moving (bucket, source) before push.
+        // Clone into the map key; avoid moving (bucket, source) before push.
         let i = *idx.entry((bucket.clone(), source.clone())).or_insert_with(|| {
             points.push(SeriesPoint {
                 bucket: bucket.clone(),
@@ -446,6 +352,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
                 by_model: HashMap::new(),
                 unattributed_tokens: 0,
                 has_unpriced: false,
+                cache_estimated: false,
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -455,13 +362,6 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
                 cost: 0.0,
                 requests: 0,
                 convs: 0,
-                ctx_messages: None,
-                ctx_system: None,
-                ctx_reasoning: None,
-                ctx_toolcalls: None,
-                ctx_agents: None,
-                ctx_mcp: None,
-                ctx_skills: None,
             });
             points.len() - 1
         });
@@ -471,6 +371,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
         }
         p.unattributed_tokens += contribution.unattributed_tokens;
         p.has_unpriced |= contribution.unpriced;
+        p.cache_estimated |= contribution.cache_estimated;
         p.input_tokens += in_;
         p.output_tokens += out;
         p.cache_read_tokens += cr;
@@ -479,13 +380,6 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
         p.requests += calls;
         p.cost += contribution.cost;
         add_opt(&mut p.reasoning_tokens, reasoning);
-        add_opt(&mut p.ctx_messages, cxm);
-        add_opt(&mut p.ctx_system, cxs);
-        add_opt(&mut p.ctx_reasoning, cxr);
-        add_opt(&mut p.ctx_toolcalls, cxt);
-        add_opt(&mut p.ctx_agents, cxa);
-        add_opt(&mut p.ctx_mcp, cxmc);
-        add_opt(&mut p.ctx_skills, cxsk);
     }
 
     // Convs need distinct-count at (bucket, source) — a session can span
@@ -616,8 +510,8 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         );
         a.cost += contribution.cost;
         a.priced += contribution.priced_tokens;
-        a.cache_estimated |= contribution.cache_estimated;
         a.unpriced |= contribution.unpriced;
+        a.cache_estimated |= contribution.cache_estimated;
         a.unattributed += contribution.unattributed_tokens;
     }
     for (grp, src, _) in sessions {
@@ -646,6 +540,34 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         })
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));
+    Ok(out)
+}
+
+/// One date window of the Ledger's priced facts: Summary plus the three
+/// breakdowns. Source selection is a presentation filter, not a query filter.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LedgerWindow {
+    pub summary: Summary,
+    pub models: Vec<BreakdownRow>,
+    pub projects: Vec<BreakdownRow>,
+    /// Breakdown by Source (`breakdown(..., "tool")`).
+    pub sources: Vec<BreakdownRow>,
+}
+
+/// The four priced reads as one snapshot, so a Scan cannot commit between
+/// Summary and a breakdown — the same reason `limits` holds an unchecked
+/// transaction.
+pub fn window(conn: &Connection, f: &Filters) -> rusqlite::Result<LedgerWindow> {
+    let read = conn.unchecked_transaction()?;
+    let out = LedgerWindow {
+        summary: summary(conn, f)?,
+        models: breakdown(conn, "model", f)?,
+        projects: breakdown(conn, "project", f)?,
+        sources: breakdown(conn, "tool", f)?,
+    };
+    read.finish()?;
     Ok(out)
 }
 
@@ -689,7 +611,7 @@ fn day_where(f: &Filters) -> (String, Vec<Value>) {
 
 // Distinct resource names (skills / MCP servers / agents / memory files) seen
 // in range, per source — the Context Breakdown meta line and skill drill-down.
-pub fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResource>> {
+pub(crate) fn ctx_resources(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxResource>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT DISTINCT source, kind, name FROM ctx_resources {where_sql} \
@@ -724,7 +646,7 @@ pub struct CtxBuckets {
 // which cache-write was its first; range/tool/model/project filters apply
 // OUTSIDE the window. A first-cw event outside the range means in-range
 // writes count as history — conservative, never inflates System.
-pub fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBuckets>> {
+pub(crate) fn ctx_buckets(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxBuckets>> {
     // A Hermes Usage Record is Session-granularity — one Record stands for a
     // whole Session of calls — so "first cache-write per session = System
     // prompt" cannot apply to it; its writes count as history, not System.
@@ -804,7 +726,7 @@ pub struct CtxToolRow {
 }
 
 // Per-tool weights in range. Ignores model/project.
-pub fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxToolRow>> {
+pub(crate) fn ctx_tools(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxToolRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, name, SUM(est_tokens), SUM(calls) FROM ctx_tools {where_sql} \
@@ -833,7 +755,7 @@ pub struct CtxSkillRow {
 
 // Per-skill weights in range, heaviest first. Ignores model/project, like
 // ctx_tools — these are context composition, not billed usage.
-pub fn ctx_skills(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSkillRow>> {
+pub(crate) fn ctx_skills(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSkillRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, name, SUM(est_tokens), SUM(uses) FROM ctx_skills_usage {where_sql} \
@@ -864,7 +786,7 @@ pub struct CtxExecRow {
 // `source` groups by producer but is claude-only by design: codex logs shell
 // commands as JSON arrays inside function_call payloads (no shell string for
 // exec_class), and the Overview renders exec facets only under the Bash node.
-pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
+pub(crate) fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecRow>> {
     let (where_sql, params) = day_where(f);
     let sql = format!(
         "SELECT source, kind, exe, cmd, SUM(est_tokens), SUM(calls) FROM ctx_exec {where_sql} \
@@ -878,6 +800,94 @@ pub fn ctx_exec(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxExecR
         })
     })?;
     rows.collect()
+}
+
+/// Per-Source billed Context for a window. `messages`/`system`/`reasoning` and
+/// the estimated categories are NULL when the Source cannot attribute them —
+/// the same "—" vs zero rule the card uses, so series is not a second home.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct CtxSourceTotals {
+    pub source: String,
+    #[ts(type = "number")]
+    pub billed: i64,
+    #[ts(type = "number")]
+    pub reused: i64,
+    #[ts(type = "number | null")]
+    pub messages: Option<i64>,
+    #[ts(type = "number | null")]
+    pub system: Option<i64>,
+    #[ts(type = "number | null")]
+    pub reasoning: Option<i64>,
+    #[ts(type = "number | null")]
+    pub toolcalls: Option<i64>,
+    #[ts(type = "number | null")]
+    pub agents: Option<i64>,
+    #[ts(type = "number | null")]
+    pub mcp: Option<i64>,
+    #[ts(type = "number | null")]
+    pub skills: Option<i64>,
+}
+
+fn ctx_source_totals(conn: &Connection, f: &Filters) -> rusqlite::Result<Vec<CtxSourceTotals>> {
+    let (where_sql, params) = build_where(f);
+    let sql = format!(
+        "SELECT source, \
+         SUM(input_tokens) + SUM(cache_read_tokens) + SUM(cache_write_5m_tokens) + SUM(cache_write_1h_tokens), \
+         SUM(cache_read_tokens), \
+         SUM(ctx_messages), SUM(ctx_system), SUM(ctx_reasoning), \
+         SUM(ctx_toolcalls), SUM(ctx_agents), SUM(ctx_mcp), SUM(ctx_skills) \
+         FROM events {where_sql} GROUP BY source ORDER BY source"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |r| {
+        Ok(CtxSourceTotals {
+            source: r.get(0)?,
+            billed: r.get(1)?,
+            reused: r.get(2)?,
+            messages: r.get(3)?,
+            system: r.get(4)?,
+            reasoning: r.get(5)?,
+            toolcalls: r.get(6)?,
+            agents: r.get(7)?,
+            mcp: r.get(8)?,
+            skills: r.get(9)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// One date window of the Ledger's Context. Source selection is a
+/// presentation filter, not a query filter — the report stacks every
+/// reporting Source.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LedgerContext {
+    pub resources: Vec<CtxResource>,
+    pub buckets: Vec<CtxBuckets>,
+    pub tools: Vec<CtxToolRow>,
+    pub skills: Vec<CtxSkillRow>,
+    pub exec: Vec<CtxExecRow>,
+    pub totals: Vec<CtxSourceTotals>,
+}
+
+/// Context for a date window as one snapshot, so a Scan cannot commit between
+/// the exact buckets, the weight tables, and the billed totals — the same
+/// reason `window` holds an unchecked transaction.
+pub fn context(conn: &Connection, f: &Filters) -> rusqlite::Result<LedgerContext> {
+    let read = conn.unchecked_transaction()?;
+    let out = LedgerContext {
+        resources: ctx_resources(conn, f)?,
+        buckets: ctx_buckets(conn, f)?,
+        tools: ctx_tools(conn, f)?,
+        skills: ctx_skills(conn, f)?,
+        exec: ctx_exec(conn, f)?,
+        totals: ctx_source_totals(conn, f)?,
+    };
+    read.finish()?;
+    Ok(out)
 }
 
 #[derive(Debug, Serialize, TS, PartialEq)]
@@ -1522,11 +1532,6 @@ mod tests {
 
         approx(summary(&conn, &Filters::default()).unwrap().cost.unwrap(), 0.0003);
 
-        let trend_rows = trend(&conn, &Filters::default(), "day").unwrap();
-        assert_eq!(trend_rows.len(), 2);
-        approx(trend_rows[0].cost, 0.0001);
-        approx(trend_rows[1].cost, 0.0002);
-
         let series_rows = series(&conn, &Filters::default(), "day").unwrap();
         assert_eq!(series_rows.len(), 2);
         approx(series_rows[0].cost, 0.0001);
@@ -1744,6 +1749,8 @@ mod tests {
         assert_eq!(s.cache_estimated_models, vec!["half-priced".to_string()]);
         assert!(!s.has_unpriced);
         assert!(s.cost.is_some());
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert!(pts.iter().any(|p| p.cache_estimated), "series rides the same flag");
     }
 
     #[test]
@@ -1759,6 +1766,8 @@ mod tests {
         db::insert_events(&mut conn, &[ev("a", "codex", DAY1_TS, "half-priced", None, 1, 100, 50, 0, 0, 0)]).unwrap();
         let s = summary(&conn, &Filters::default()).unwrap();
         assert!(s.cache_estimated_models.is_empty());
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert!(pts.iter().all(|p| !p.cache_estimated));
     }
 
     #[test]
@@ -1820,42 +1829,22 @@ mod tests {
     }
 
     #[test]
-    fn trend_counts_unattributed_usage_without_marking_an_unpriced_model() {
-        std::env::set_var("TZ", "UTC");
-        let dir = tempdir().unwrap();
-        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
-        let mut usage = ev(
-            "pi:tool-result:1", "pi", DAY1_TS, "unused", None,
-            2, 100, 50, 20, 10, 5,
-        );
-        usage.model = None;
-        db::insert_events(&mut conn, &[usage]).unwrap();
-
-        let pts = trend(&conn, &Filters::default(), "day").unwrap();
-        assert_eq!(pts.len(), 1);
-        assert_eq!(pts[0].bucket, "2026-07-01");
-        assert_eq!(pts[0].total_tokens, 185);
-        approx(pts[0].cost, 0.0);
-        assert!(!pts[0].has_unpriced);
-        assert_eq!(pts[0].unattributed_tokens, 185);
-    }
-
-    #[test]
-    fn trend_daily_buckets_local_time() {
-        std::env::set_var("TZ", "UTC"); // pin bucketing timezone for a deterministic date string
+    fn window_matches_the_four_priced_reads() {
         let (_dir, conn) = seed();
-        let pts = trend(&conn, &Filters::default(), "day").unwrap();
-        assert_eq!(pts.len(), 2);
-        assert_eq!(pts[0].bucket, "2026-07-01");
-        assert_eq!(pts[0].total_tokens, 2250); // A + C
-        approx(pts[0].cost, 0.00755);
-        assert!(pts[0].has_unpriced);
-        assert_eq!(pts[0].unattributed_tokens, 0);
-        assert_eq!(pts[1].bucket, "2026-07-02");
-        assert_eq!(pts[1].total_tokens, 3000); // B
-        approx(pts[1].cost, 0.014);
-        assert!(!pts[1].has_unpriced);
-        assert_eq!(pts[1].unattributed_tokens, 0);
+        let f = Filters::default();
+        let w = window(&conn, &f).unwrap();
+        let s = summary(&conn, &f).unwrap();
+        assert_eq!(w.summary.total_tokens, s.total_tokens);
+        assert_eq!(w.summary.cost, s.cost);
+        assert_eq!(w.summary.has_unpriced, s.has_unpriced);
+        assert_eq!(w.summary.unattributed_tokens, s.unattributed_tokens);
+        assert_eq!(w.summary.convs, s.convs);
+        let keys = |rows: &[BreakdownRow]| {
+            rows.iter().map(|r| (r.key.clone(), r.source.clone(), r.total_tokens, r.cost)).collect::<Vec<_>>()
+        };
+        assert_eq!(keys(&w.models), keys(&breakdown(&conn, "model", &f).unwrap()));
+        assert_eq!(keys(&w.projects), keys(&breakdown(&conn, "project", &f).unwrap()));
+        assert_eq!(keys(&w.sources), keys(&breakdown(&conn, "tool", &f).unwrap()));
     }
 
     // Events with v2 fields for series tests.
@@ -2003,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn series_sums_ctx_preserving_null() {
+    fn context_totals_sum_ctx_preserving_null() {
         std::env::set_var("TZ", "UTC");
         let dir = tempdir().unwrap();
         let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
@@ -2020,15 +2009,15 @@ mod tests {
         let h = ev_s("h", "hermes", DAY1_TS, "hermes-local", Some("hs"), None);
         db::insert_events(&mut conn, &[a, b, h]).unwrap();
 
-        let pts = series(&conn, &Filters::default(), "day").unwrap();
-        let c = pts.iter().find(|p| p.source == "claude").unwrap();
-        assert_eq!(c.ctx_messages, Some(1000));
-        assert_eq!(c.ctx_system, Some(90));
-        assert_eq!(c.ctx_reasoning, Some(20));
-        assert_eq!(c.ctx_toolcalls, Some(300));
-        assert_eq!(c.ctx_agents, None, "no contributing value: NULL, never 0");
-        let hm = pts.iter().find(|p| p.source == "hermes").unwrap();
-        assert_eq!(hm.ctx_messages, None);
+        let totals = context(&conn, &Filters::default()).unwrap().totals;
+        let c = totals.iter().find(|t| t.source == "claude").unwrap();
+        assert_eq!(c.messages, Some(1000));
+        assert_eq!(c.system, Some(90));
+        assert_eq!(c.reasoning, Some(20));
+        assert_eq!(c.toolcalls, Some(300));
+        assert_eq!(c.agents, None, "no contributing value: NULL, never 0");
+        let hm = totals.iter().find(|t| t.source == "hermes").unwrap();
+        assert_eq!(hm.messages, None);
     }
 
     #[test]
@@ -2192,6 +2181,32 @@ mod tests {
 
         let f2 = Filters { tools: vec!["codex".to_string()], ..Filters::default() };
         assert!(ctx_exec(&conn, &f2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn context_totals_keep_unattributable_distinct_from_zero() {
+        std::env::set_var("TZ", "UTC");
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        let mut claude = ev("a", "claude", DAY1_TS, "m", None, 1, 100, 50, 20, 0, 0);
+        claude.ctx.messages = Some(1000);
+        claude.ctx.system = Some(90);
+        claude.ctx.toolcalls = Some(300);
+        let hermes = ev("h", "hermes", DAY1_TS, "hermes-local", None, 1, 300, 100, 0, 0, 0);
+        db::insert_events(&mut conn, &[claude, hermes]).unwrap();
+
+        let c = context(&conn, &Filters::default()).unwrap();
+        let cl = c.totals.iter().find(|t| t.source == "claude").unwrap();
+        assert_eq!(cl.billed, 120);
+        assert_eq!(cl.reused, 20);
+        assert_eq!(cl.messages, Some(1000));
+        assert_eq!(cl.system, Some(90));
+        assert_eq!(cl.toolcalls, Some(300));
+        assert_eq!(cl.agents, None, "a Source that cannot attribute a category yields no figure");
+        let hm = c.totals.iter().find(|t| t.source == "hermes").unwrap();
+        assert_eq!(hm.billed, 300);
+        assert_eq!(hm.messages, None);
+        assert_eq!(hm.toolcalls, None);
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { panelModel, periodWindows, seriesBucket, type PanelExtras } from './panelModel';
 import { DEFAULT_SETTINGS } from '../settings/settings';
 import { SOURCE_ICONS } from '../overview/icons';
-import type { BreakdownRow, SeriesPoint, Summary } from '../types';
+import type { BreakdownRow, Summary } from '../types';
+import { seriesPoint } from '../overview/seriesPoint';
 
 function sum(
   totalTokens: number,
@@ -43,14 +44,8 @@ function mrow(
 }
 
 // One (bucket, Source) point, the shape `series` returns.
-function spt(bucket: string, cost: number, totalTokens = 1_000, hasUnpriced = false): SeriesPoint {
-  return {
-    bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced,
-    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-    totalTokens, reasoningTokens: null, cost, requests: 0, convs: 0,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null,
-  };
+function spt(bucket: string, cost: number, totalTokens = 1_000, hasUnpriced = false) {
+  return seriesPoint({ bucket, cost, totalTokens, hasUnpriced });
 }
 
 const NOW = new Date(2026, 5, 15, 10, 30, 0); // June 15, 10:30 local

@@ -8,6 +8,9 @@ import type {
   SourceUnreadable,
   SeriesPoint,
   Summary,
+  LedgerWindow,
+  LedgerContext,
+  CtxSourceTotals,
   BreakdownRow,
   CtxResource,
   CtxBuckets,
@@ -31,13 +34,14 @@ interface Data {
   modelRows: BreakdownRow[];
   // Source rows (breakdown('tool')); falls back to modelRows so the callers
   // that only care about one list stay a one-field seed.
-  toolRows?: BreakdownRow[];
+  sourceRows?: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResource[];
   ctxBuckets: CtxBuckets[];
   ctxTools: CtxToolRow[];
   ctxSkills: CtxSkillRow[];
   ctxExec: CtxExecRow[];
+  ctxTotals?: CtxSourceTotals[];
   // What the export companion reports back; seeded per test.
   exportReport?: string;
   // The persisted per-scan Unreadable Artifact state. Defaults to deriving
@@ -55,6 +59,9 @@ export interface FakeLedger extends LedgerPort {
   held(method: string): Deferred[];
   resolveHeld(method: string, index: number, value?: unknown): void;
   emitPricesRebuilt(): void;
+  // The canned window() payload, optionally with a Summary override so a
+  // held reload can land two different windows.
+  windowPayload(summary?: Summary): LedgerWindow;
 }
 
 const EMPTY_SUMMARY: Summary = {
@@ -74,13 +81,47 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
-    scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], breakdown: [],
-    ctxResources: [], ctxBuckets: [], ctxTools: [], ctxSkills: [], ctxExec: [],
+    scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], window: [], breakdown: [],
+    context: [],
   };
   const fails = new Map<string, unknown>();
   const holds = new Set<string>();
   const heldMap: Record<string, Deferred[]> = {};
   const priceCbs = new Set<() => void>();
+
+  const windowPayload = (summary?: Summary): LedgerWindow => ({
+    summary: summary ?? data.summary,
+    models: data.modelRows,
+    projects: data.projectRows,
+    sources: data.sourceRows ?? data.modelRows,
+  });
+
+  // Billed/reused are real SeriesPoint fields, so a test that seeds only
+  // dayPoints still gets an honest header. Every ctx category stays null —
+  // seed `ctxTotals` to express one, exactly as context() would report it.
+  const totalsFromPoints = (): CtxSourceTotals[] => {
+    const by = new Map<string, CtxSourceTotals>();
+    for (const p of data.dayPoints) {
+      const t = by.get(p.source) ?? {
+        source: p.source, billed: 0, reused: 0,
+        messages: null, system: null, reasoning: null,
+        toolcalls: null, agents: null, mcp: null, skills: null,
+      };
+      t.billed += p.inputTokens + p.cacheReadTokens + p.cacheWriteTokens;
+      t.reused += p.cacheReadTokens;
+      by.set(p.source, t);
+    }
+    return [...by.values()];
+  };
+
+  const contextOf = (): LedgerContext => ({
+    resources: data.ctxResources,
+    buckets: data.ctxBuckets,
+    tools: data.ctxTools,
+    skills: data.ctxSkills,
+    exec: data.ctxExec,
+    totals: data.ctxTotals ?? totalsFromPoints(),
+  });
 
   const cannedFor = (method: string, args: unknown[]): unknown => {
     switch (method) {
@@ -90,15 +131,13 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
       case 'exportAntigravity': return data.exportReport ?? 'exported 0 Session(s), 0 generation(s)';
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
+      case 'window': return windowPayload();
       case 'breakdown':
         if (args[0] === 'project') return data.projectRows;
-        if (args[0] === 'tool') return data.toolRows ?? data.modelRows;
+        if (args[0] === 'tool') return data.sourceRows ?? data.modelRows;
         return data.modelRows;
-      case 'ctxResources': return data.ctxResources;
-      case 'ctxBuckets': return data.ctxBuckets;
-      case 'ctxTools': return data.ctxTools;
-      case 'ctxSkills': return data.ctxSkills;
-      default: return data.ctxExec;
+      case 'context': return contextOf();
+      default: throw new Error(`unknown ledger method ${method}`);
     }
   };
 
@@ -127,15 +166,11 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     series: (filters: Filters, bucket: 'day' | 'hour') =>
       respond('series', [filters, bucket]) as Promise<SeriesPoint[]>,
     summary: (filters: Filters) => respond('summary', [filters]) as Promise<Summary>,
+    window: (filters: Filters) => respond('window', [filters]) as Promise<LedgerWindow>,
+    windowPayload,
+    context: (filters: Filters) => respond('context', [filters]) as Promise<LedgerContext>,
     breakdown: (by: 'model' | 'project' | 'tool', filters: Filters) =>
       respond('breakdown', [by, filters]) as Promise<BreakdownRow[]>,
-    ctxResources: (filters: Filters) =>
-      respond('ctxResources', [filters]) as Promise<CtxResource[]>,
-    ctxBuckets: (filters: Filters) =>
-      respond('ctxBuckets', [filters]) as Promise<CtxBuckets[]>,
-    ctxTools: (filters: Filters) => respond('ctxTools', [filters]) as Promise<CtxToolRow[]>,
-    ctxSkills: (filters: Filters) => respond('ctxSkills', [filters]) as Promise<CtxSkillRow[]>,
-    ctxExec: (filters: Filters) => respond('ctxExec', [filters]) as Promise<CtxExecRow[]>,
     onPricesRebuilt: (cb: () => void) => {
       priceCbs.add(cb);
       return () => priceCbs.delete(cb);

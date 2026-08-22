@@ -1513,7 +1513,7 @@ mod tests {
     #[test]
     #[ignore]
     fn pi_real_log_parity() {
-        let roots = crate::scan::SourceRoots::default_roots().pi_sessions;
+        let roots = crate::scan::SourceRoots::default_roots().pi_session_roots();
         let dir = tempfile::tempdir().unwrap();
         let mut conn = open_db(&dir.path().join("ledger.db")).unwrap();
         let result = scan_pi(&mut conn, &roots);

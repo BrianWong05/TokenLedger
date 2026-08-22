@@ -4,13 +4,10 @@ import type {
   SourceLimits,
   SourceUnreadable,
   Summary,
+  LedgerWindow,
+  LedgerContext,
   SeriesPoint,
   BreakdownRow,
-  CtxResource,
-  CtxBuckets,
-  CtxToolRow,
-  CtxSkillRow,
-  CtxExecRow,
   Filters,
   ModelPricing,
   RatesPerTok,
@@ -47,6 +44,12 @@ export function fetchSummary(filters: Filters): Promise<Summary> {
   return invoke('summary', { filters });
 }
 
+// One date window of priced facts: Summary plus Model, Project, and Source
+// breakdowns. Cost-only callers keep fetchSummary.
+export function fetchWindow(filters: Filters): Promise<LedgerWindow> {
+  return invoke('window', { filters });
+}
+
 export function fetchSeries(
   filters: Filters,
   bucket: 'day' | 'hour',
@@ -61,24 +64,9 @@ export function fetchBreakdown(
   return invoke('breakdown', { by, filters });
 }
 
-export function fetchCtxResources(filters: Filters): Promise<CtxResource[]> {
-  return invoke('ctx_resources', { filters });
-}
-
-export function fetchCtxBuckets(filters: Filters): Promise<CtxBuckets[]> {
-  return invoke('ctx_buckets', { filters });
-}
-
-export function fetchCtxTools(filters: Filters): Promise<CtxToolRow[]> {
-  return invoke('ctx_tools', { filters });
-}
-
-export function fetchCtxSkills(filters: Filters): Promise<CtxSkillRow[]> {
-  return invoke('ctx_skills', { filters });
-}
-
-export function fetchCtxExec(filters: Filters): Promise<CtxExecRow[]> {
-  return invoke('ctx_exec', { filters });
+// One date window of Context. Overview range reloads use this.
+export function fetchContext(filters: Filters): Promise<LedgerContext> {
+  return invoke('context', { filters });
 }
 
 // ---- Limits ----

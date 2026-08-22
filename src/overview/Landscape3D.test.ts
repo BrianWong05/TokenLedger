@@ -10,21 +10,15 @@ import {
   INITIAL_VIEW,
 } from './Landscape3D';
 import { seriesToDays } from './data';
-import type { SeriesPoint } from '../types';
+import { seriesPoint } from './seriesPoint';
 
 // The free-spin geometry at the pure seam: which walls face the camera at a
 // given angle, and that the fixed camera's bounds hold at every angle. These
 // re-derive the scene's centering independently of the component on purpose —
 // the duplication triangulates the projection contract.
 
-function pt(bucket: string, totalTokens: number): SeriesPoint {
-  return {
-    bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-    totalTokens, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null,
-  };
+function pt(bucket: string, totalTokens: number) {
+  return seriesPoint({ bucket, totalTokens, requests: 1, convs: 1 });
 }
 
 const TODAY = new Date(2026, 6, 10);
