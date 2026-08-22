@@ -36,6 +36,9 @@ use crate::types::{
 const PARSER_VERSION: i64 = 1;
 
 const MALFORMED_ARTIFACT_WARNING: &str = "grok: malformed or unsupported Source Artifact";
+// Kinds whose lines are trusted to feed the counter and chunk weights. A kind
+// not listed here skips quietly (lines_skipped) — never a warning, so a Grok
+// Build release adding telemetry cannot red-flag the Source.
 const SUPPORTED_UPDATE_KINDS: &[&str] = &[
     "agent_message_chunk",
     "agent_thought_chunk",
@@ -431,10 +434,15 @@ fn parse_updates(
             }
         };
 
+        // A kind (or method) this parser has never seen is a Grok Build release's
+        // new telemetry, not a malformed Artifact — skip the line and count it.
+        // The counter is cumulative, so the next supported line carries the same
+        // total and nothing is lost; signals.json reconciliation bounds any tail.
+        // (task_backgrounded, image_dropped, and auto_compact_* each red-flagged
+        // the whole Source under the old reject-unknown policy.)
         if !supported_update(&v) {
             result.lines_skipped += 1;
-            record_grok_warning(result);
-            return None;
+            continue;
         }
 
         let ts = match v
@@ -935,12 +943,47 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_update_shape_reports_a_grok_specific_warning() {
+    fn unknown_update_kinds_are_skipped_without_rejecting_the_session() {
+        // A new Grok Build release's update kind (auto_compact_* was the third
+        // such incident) is skipped and counted — the session's real turns must
+        // still book, and no warning fires.
         let tmp = tempdir().unwrap();
         write_session(
             tmp.path(),
             "%2FUsers%2Fdev%2Funsupported",
             "sess-unsupported",
+            &[
+                update_line(100, "user_message_chunk", None),
+                r#"{"timestamp":101,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"future_update"}}}"#.to_string(),
+                update_line(102, "agent_message_chunk", Some(4000)),
+            ],
+            None,
+            None,
+        );
+
+        let (_app, conn, res) = scan(tmp.path());
+        assert_eq!(res.error, None, "{:?}", res.error);
+        assert_eq!(res.events_inserted, 1);
+        assert_eq!(res.lines_skipped, 1);
+        let tokens: i64 = conn
+            .query_row(
+                "SELECT input_tokens FROM events WHERE dedup_key = 'grok:sess-unsupported:0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tokens, 4000);
+    }
+
+    #[test]
+    fn a_session_of_only_unknown_updates_is_quiet() {
+        // Nothing recognisable, but the sibling shape checks (summary/signals)
+        // still stand guard for a wholesale format change — this alone is not one.
+        let tmp = tempdir().unwrap();
+        write_session(
+            tmp.path(),
+            "%2FUsers%2Fdev%2Funsupported",
+            "sess-only-unknown",
             &[r#"{"timestamp":100,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"future_update"}}}"#.to_string()],
             None,
             None,
@@ -948,10 +991,7 @@ mod tests {
 
         let (_app, _conn, res) = scan(tmp.path());
         assert_eq!(res.events_inserted, 0);
-        assert!(res
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("grok") && error.contains("unsupported")));
+        assert_eq!(res.error, None);
     }
 
     fn task_lifecycle_line(ts: i64, kind: &str) -> String {

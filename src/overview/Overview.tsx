@@ -13,7 +13,7 @@ import AggTrend from './AggTrend';
 import TrendModal from './TrendModal';
 import SmallMultiples from './SmallMultiples';
 import { RangeSegments } from './RangePicker';
-import type { SourceMeta } from './meta';
+import { sourceMeta, type SourceMeta } from './meta';
 import { sourceIcon } from './icons';
 import { fmtPct, formatCompactTokenTotal } from '../lib/format';
 import { countLabel, formatSummaryCost, markedTokenFigure, tokenFloor, useOverviewT } from './localize';
@@ -144,6 +144,12 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   const floor = tokenFloor(unreadable, null, lang);
   const cardFloor = (key: string) => tokenFloor(unreadable.filter((u) => u.source === key), null, lang);
   const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
+
+  // Grok Build only: a skipped line there is a release's new telemetry kind —
+  // worth a heads-up, never trouble (real malformation still lands in
+  // scanError). Other Sources skip lines by design (pi dedup), so their counts
+  // stay footer-only.
+  const grokSkipped = scanSources.find((s) => s.source === 'grok' && !s.error)?.linesSkipped ?? 0;
 
   // The ≥ marker's only remedy: hand Antigravity's encrypted Sessions to its
   // own running server (ADR-0018), then rescan so the Artifacts it wrote land.
@@ -277,6 +283,12 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
       {(scanError || fetchError || exportError) && (
         <div className="tt-error">
           {[scanError, fetchError, exportError].filter(Boolean).join(' · ')}
+        </div>
+      )}
+
+      {grokSkipped > 0 && (
+        <div className="tt-notice">
+          {sourceMeta('grok').source}: {countLabel(grokSkipped, 'overview.scanNoticeOne', 'overview.scanNoticeMany', lang)}
         </div>
       )}
 

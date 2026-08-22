@@ -163,6 +163,10 @@ export const overview = {
     'overview.scanSkipped': 'skipped',
     'overview.scanUnreadable': 'unreadable',
 
+    // Grok Build new-telemetry heads-up: informational, never a Source in trouble
+    'overview.scanNoticeOne': 'unrecognized log line skipped',
+    'overview.scanNoticeMany': 'unrecognized log lines skipped',
+
     // Unreadable Artifacts (ADR-0017): the ≥ reason and its aria reading
     'overview.unreadableSessionOne': 'session unreadable',
     'overview.unreadableSessionMany': 'sessions unreadable',
@@ -345,6 +349,9 @@ export const overview = {
     'overview.scanIn': '匯入',
     'overview.scanSkipped': '略過',
     'overview.scanUnreadable': '無法讀取',
+
+    'overview.scanNoticeOne': '行無法識別的記錄已略過',
+    'overview.scanNoticeMany': '行無法識別的記錄已略過',
 
     'overview.unreadableSessionOne': '個工作階段無法讀取',
     'overview.unreadableSessionMany': '個工作階段無法讀取',
