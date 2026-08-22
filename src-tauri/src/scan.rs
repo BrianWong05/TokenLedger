@@ -732,7 +732,7 @@ mod tests {
         let unchanged = run_scan(&mut conn, &roots);
         assert_eq!(find(&unchanged, "claude").limit_readings, 0);
 
-        let cards = queries::limits(&conn, 1_900_000_000).unwrap();
+        let cards = queries::limits(&conn, 1_900_000_000, std::path::Path::new("")).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].source, "claude");
         assert_eq!(cards[0].plan.as_deref(), Some("Team 5x"));

@@ -2042,7 +2042,7 @@ mod tests {
                 Some("plus".to_string()),
             ),
         );
-        let cards = crate::queries::limits(&conn, 1_900_000_000).unwrap();
+        let cards = crate::queries::limits(&conn, 1_900_000_000, std::path::Path::new("")).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].windows[0].used_pct, 40.0);
         assert_eq!(cards[0].plan.as_deref(), Some("plus"));

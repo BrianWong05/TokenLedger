@@ -476,5 +476,7 @@ _Avoid_: Token quota, token allowance, exact token count, confidence score
 A vendor-granted, expiring entitlement that a person can redeem to restore
 eligible Codex Limits before their windows reset normally. Its available count
 is current state, not a Limit Reading or history; an unreported count is unknown,
-never zero.
+never zero. Codex is the one Source reporting them today, but the concept is
+not Codex's: any live Source's Companion may report a count, and the card
+shows what its Export Artifact proves.
 _Avoid_: Manual reset, reset credit, reset
