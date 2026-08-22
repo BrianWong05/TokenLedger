@@ -15,7 +15,7 @@ export function resolvedRates(m: ModelPricing): RatesPerTok | null {
 
 // Cache-Estimated (CONTEXT.md): a Model priced for input+output whose Cache
 // rates are absent. The wire maps a stored 0.0 to null
-// (`Rates::cache_rate_absent` / `to_per_tok`). Any missing bucket is enough —
+// (`Rates::rate_absent` / `to_per_tok`). Any missing bucket is enough —
 // Cost's cache_gap uses the same per-bucket predicate, then also requires
 // counted tokens in that bucket.
 export function cacheRatesAbsent(r: RatesPerTok): boolean {

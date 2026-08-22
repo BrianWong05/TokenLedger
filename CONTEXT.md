@@ -409,8 +409,17 @@ _Avoid_: Partial total, incomplete cost
 **Cache-Estimated**:
 The state of a Model that is priced for input and output but whose Cache tokens
 have no rate, so its Cost is real yet excludes those counted-but-unpriced cache
-tokens. A weaker gap than Unpriced: it is flagged per-Model (a cost marker) but,
-unlike an Unpriced Model, does not turn the view's total into a "≥" Partial Cost.
+tokens. Read per bucket, not all-or-nothing: a Model that prices cache reads but
+not cache writes is Cache-Estimated, because the write tokens it counted are
+still missing from the figure. A weaker gap than Unpriced: it is flagged
+per-Model (a cost marker) but, unlike an Unpriced Model, does not turn the
+view's total into a "≥" Partial Cost.
+
+Known limit: a rate stored as 0.0 is read as absent, so a Model a publisher
+genuinely gives away is reported Cache-Estimated rather than free. This is the
+one place the "a genuinely free Model and an unknown price never look alike"
+rule above is not yet honoured; separating the two needs nullable price columns
+end to end (`Rates::rate_absent`).
 _Avoid_: Cache-free, partial price
 
 ### Limits

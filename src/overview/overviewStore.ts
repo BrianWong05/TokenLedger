@@ -862,7 +862,7 @@ export function selectReportInput(
   // Source with usage but no Context capability yields no rows rather than a
   // row of zeros.
   for (const key of Object.keys(view.toolTotals).sort()) {
-    const card = sourceContext(s.context, key);
+    const card = sourceContext(s.context, key, settings.language);
     for (const category of CTX_EXACT) {
       const v = card.totals[category];
       if (v !== null) ctxCategories.push({ source: key, category, estTokens: v, basis: 'exact' });

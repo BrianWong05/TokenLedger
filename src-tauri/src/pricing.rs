@@ -128,16 +128,16 @@ impl Rates {
             + w1 as f64 * self.cache_write_1h
     }
 
-    /// A stored cache rate of 0.0 means the rate is missing, not free.
-    /// Pricing's `to_per_tok` maps the same 0.0 to None. This is the
-    /// per-rate predicate Cost's `cache_gap` and Pricing's `est` chip share;
-    /// Cost then also requires counted tokens in that bucket.
+    /// A stored rate of 0.0 means the rate is missing, not free. Every rate
+    /// goes through here — `to_per_tok` maps input and output the same way —
+    /// and it is the per-rate predicate Cost's `cache_gap` and Pricing's `est`
+    /// chip share; Cost then also requires counted tokens in that bucket.
     /// ponytail: BOTH catalogs quote genuine $0 — OpenRouter's ":free" models,
     /// and LiteLLM entries where the publisher gives a Model away. OpenRouter's
     /// are dropped (see openrouter_cost); LiteLLM's are kept, so ~120 of its
     /// entries store 0.0 meaning "free" and are indistinguishable from "no
     /// rate". Telling the two apart needs nullable price columns end to end.
-    pub fn cache_rate_absent(rate: f64) -> bool {
+    pub fn rate_absent(rate: f64) -> bool {
         rate == 0.0
     }
 
@@ -145,19 +145,19 @@ impl Rates {
     /// rate is absent, so the figure omits them. Per bucket, because a Model
     /// can price reads and not writes.
     pub fn cache_gap(&self, cache_read: i64, w5: i64, w1: i64) -> bool {
-        (cache_read > 0 && Self::cache_rate_absent(self.cache_read))
-            || (w5 > 0 && Self::cache_rate_absent(self.cache_write_5m))
-            || (w1 > 0 && Self::cache_rate_absent(self.cache_write_1h))
+        (cache_read > 0 && Self::rate_absent(self.cache_read))
+            || (w5 > 0 && Self::rate_absent(self.cache_write_5m))
+            || (w1 > 0 && Self::rate_absent(self.cache_write_1h))
     }
 
-    /// Project onto the frontend's per-token shape. A missing cache rate
-    /// (`cache_rate_absent`) maps to None so Pricing can ask per-bucket
+    /// Project onto the frontend's per-token shape. A missing rate
+    /// (`rate_absent`) maps to None so Pricing can ask per-bucket
     /// absence. Cost's `cache_gap` uses this same predicate, then also
     /// requires counted tokens.
     /// The single cache_write is the 5m/base rate (1h mirrors it at write time).
     fn to_per_tok(self) -> RatesPerTok {
         fn opt(v: f64) -> Option<f64> {
-            (!Rates::cache_rate_absent(v)).then_some(v)
+            (!Rates::rate_absent(v)).then_some(v)
         }
         RatesPerTok {
             input: opt(self.input),
@@ -187,7 +187,7 @@ fn cost(entry: &serde_json::Value, key: &str) -> Option<f64> {
 /// One OpenRouter price field. They arrive as decimal STRINGS. Only a strictly
 /// positive rate is a rate; everything else maps to None:
 /// - `"0"` — its ":free" models. Absent rates are stored as 0.0 here, so keeping
-///   these would be indistinguishable from "no rate" anyway (see cache_rate_absent).
+///   these would be indistinguishable from "no rate" anyway (see rate_absent).
 /// - `"-1"` — its router pseudo-models (`openrouter/auto`, `openrouter/fusion`)
 ///   use -1 to mean "priced by whatever this routes to". Storing it would make
 ///   Cost go NEGATIVE.
@@ -2027,7 +2027,7 @@ mod tests {
         // against CONTEXT.md's Unpriced rule ("a genuinely free Model and an
         // unknown price never look alike") — storing $0 would break that rule too,
         // since an absent rate is already stored as 0.0, and telling them apart
-        // needs nullable price columns end to end (see Rates::cache_rate_absent).
+        // needs nullable price columns end to end (see Rates::rate_absent).
         assert_eq!(rm.resolve_catalog("poolside/laguna-s:free"), None);
         // A router placeholder priced at "-1" must never become a negative rate.
         assert_eq!(rm.resolve_catalog("openrouter/auto"), None);
@@ -2056,8 +2056,8 @@ mod tests {
             cache_write_5m: 0.0,
             cache_write_1h: 0.0,
         };
-        assert!(Rates::cache_rate_absent(0.0));
-        assert!(!Rates::cache_rate_absent(1e-7));
+        assert!(Rates::rate_absent(0.0));
+        assert!(!Rates::rate_absent(1e-7));
         let tok = missing.to_per_tok();
         assert!(tok.cache_read.is_none() && tok.cache_write.is_none());
         assert!(missing.cache_gap(10, 0, 0));
