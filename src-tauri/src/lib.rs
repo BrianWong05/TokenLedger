@@ -385,6 +385,15 @@ fn unreadable_artifacts(state: State<'_, AppState>) -> Vec<types::SourceUnreadab
     read(&state, |db| Ok::<_, rusqlite::Error>(db::load_unreadable(db))).unwrap_or_default()
 }
 
+/// Requests the scan read but could not book, per Source — the persisted
+/// per-file counts summed (TOKL-25). Read like `unreadable_artifacts` rather
+/// than off the scan result, because a file the scan skipped as unchanged is
+/// never parsed and so reports nothing of its own.
+#[tauri::command(async)]
+fn unbooked_requests(state: State<'_, AppState>) -> Vec<types::SourceUnbooked> {
+    read(&state, |db| Ok::<_, rusqlite::Error>(db::load_unbooked(db))).unwrap_or_default()
+}
+
 /// Decrypt Antigravity's `.pb` Sessions by running the `antigravity-export`
 /// companion (ADR-0018), then report what it managed. This is the only place
 /// the app reaches a Source, and it stays honest about the boundary three ways:
@@ -831,6 +840,7 @@ pub fn run() {
             scan,
             last_scan,
             unreadable_artifacts,
+            unbooked_requests,
             export_antigravity,
             summary,
             window,

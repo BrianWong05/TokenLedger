@@ -16,6 +16,7 @@ export type { LimitWindow } from './bindings/LimitWindow';
 export type { SourceLimits } from './bindings/SourceLimits';
 export type { SourceStatus } from './bindings/SourceStatus';
 export type { SourceUnreadable } from './bindings/SourceUnreadable';
+export type { SourceUnbooked } from './bindings/SourceUnbooked';
 export type { ScanStatus } from './bindings/ScanStatus';
 
 // ---- App-shell contract (hand-written to match the parallel backend wave) ----

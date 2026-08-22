@@ -297,6 +297,57 @@ describe('Overview presentation', () => {
     expect(c.querySelector('.tt-error')).toBeNull();
   });
 
+  it('states the Requests a Source reports no tokens for, and marks no figure', async () => {
+    // TOKL-25: Qoder's CLI prices Requests in credits and reports every token
+    // bucket as zero, so no Usage Record can be booked for them. The count is
+    // stated as a notice, not a warning — nothing can be done about it — and
+    // it qualifies no figure here, because the Overview shows tokens.
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'qoder', totalTokens: 88_788_593 })],
+      summary: { ...summary, totalTokens: 88_788_593 },
+      unbookedRequests: [{ source: 'qoder', requests: 551 }],
+      scan: {
+        scannedAt: 1_782_907_202,
+        ingestRev: 0,
+        sources: [
+          { source: 'qoder', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        ],
+      },
+    });
+
+    const notices = c.querySelectorAll('.tt-notice');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toBe('Qoder: 551 Requests report no tokens — not booked');
+    // Informational: not the red banner, and no ≥ on the token total the
+    // dropped Requests are absent from.
+    expect(c.querySelector('.tt-error')).toBeNull();
+    expect(c.textContent).not.toContain('≥');
+    // The scan footer carries the same count, from the persisted state rather
+    // than this scan's result — an idle scan reparsed nothing and inserted
+    // nothing, and still says it.
+    expect(c.querySelector('.tt-scan-foot')?.textContent).toContain('551 unbooked');
+  });
+
+  it('says nothing about unbooked Requests when no Source has any', async () => {
+    // The mutation the assertion above is worth nothing without: the notice
+    // must depend on the count, not merely on Qoder being present.
+    const { container: c } = await mount({
+      dayPoints: [pt({ source: 'qoder', totalTokens: 88_788_593 })],
+      summary: { ...summary, totalTokens: 88_788_593 },
+      unbookedRequests: [],
+      scan: {
+        scannedAt: 1_782_907_202,
+        ingestRev: 0,
+        sources: [
+          { source: 'qoder', eventsInserted: 0, linesSkipped: 0, limitReadings: 0, artifactsUnreadable: 0, unreadableMaxMtime: null, error: null },
+        ],
+      },
+    });
+
+    expect(c.querySelector('.tt-notice')).toBeNull();
+    expect(c.querySelector('.tt-scan-foot')?.textContent).not.toContain('unbooked');
+  });
+
   it('keeps the red banner and no notice when the Grok scan itself failed', async () => {
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'grok', totalTokens: 100 })],

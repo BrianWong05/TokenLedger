@@ -43,6 +43,7 @@ import type {
   Filters,
   SourceStatus,
   SourceUnreadable,
+  SourceUnbooked,
   SeriesPoint,
   Summary,
   LedgerWindow,
@@ -105,6 +106,11 @@ export interface OverviewSnapshot {
   // scan that throws), refreshed with every scan verdict because a scan
   // rewrites the table it reads.
   unreadableArtifacts: SourceUnreadable[];
+  // Requests the scan read but could not book, per Source (TOKL-25) — Qoder's
+  // CLI prices them in credits and reports no tokens, so no Usage Record can
+  // exist for them. Persisted like the state above, and window-independent:
+  // these carry no timestamp, so no range hides or reveals them.
+  unbookedRequests: SourceUnbooked[];
   scanError: string | null;
   scanAt: number | null; // epoch ms of the last successful scan; drives the toolbar's last-scan label
   fetchError: string | null;
@@ -152,7 +158,7 @@ type State = Omit<
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'modelRows', 'sourceRows', 'projectRows',
   'context',
-  'scanSources', 'unreadableArtifacts', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
+  'scanSources', 'unreadableArtifacts', 'unbookedRequests', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading', 'provisional',
 ];
 
@@ -165,7 +171,7 @@ class Store implements OverviewStore {
     allPoints: null, hourPoints: [], summary: null,
     modelRows: [], sourceRows: [], projectRows: [],
     context: { resources: [], buckets: [], tools: [], skills: [], exec: [], totals: [] },
-    scanSources: [], unreadableArtifacts: [], scanError: null, scanAt: null, fetchError: null,
+    scanSources: [], unreadableArtifacts: [], unbookedRequests: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
   };
   private snapshot: OverviewSnapshot;
@@ -251,6 +257,7 @@ class Store implements OverviewStore {
       // A scan can throw AFTER committing (see `provisional` below), so a
       // floor the throwing scan just persisted is still picked up.
       await this.fetchUnreadable();
+      await this.fetchUnbooked();
       this.state.scanError = String(scanned.reason);
       this.publish();
       return; // keep any paint; `provisional` stays set, so the next tick reconciles
@@ -260,6 +267,7 @@ class Store implements OverviewStore {
     // The scan just rewrote the persisted unreadable state — re-read it before
     // the publish below, so an idle tick still carries a newly-found floor.
     await this.fetchUnreadable();
+    await this.fetchUnbooked();
     const errs = status.sources
       .filter((s) => s.error)
       .map((s) => formatSourceScanError(s.source, s.error!));
@@ -349,6 +357,21 @@ class Store implements OverviewStore {
             r.unreadableMaxMtime === prev[i].unreadableMaxMtime,
         );
       if (!unchanged) this.state.unreadableArtifacts = rows;
+    } catch {
+      /* keep the last list */
+    }
+  }
+
+  // Re-read the unbooked-Request counts, on fetchUnreadable's rules exactly:
+  // a stable reference when nothing changed, and never cleared on failure.
+  private async fetchUnbooked(): Promise<void> {
+    try {
+      const rows = await this.ledger.unbookedRequests();
+      const prev = this.state.unbookedRequests;
+      const unchanged =
+        rows.length === prev.length &&
+        rows.every((r, i) => r.source === prev[i].source && r.requests === prev[i].requests);
+      if (!unchanged) this.state.unbookedRequests = rows;
     } catch {
       /* keep the last list */
     }

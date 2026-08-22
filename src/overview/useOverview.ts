@@ -149,6 +149,7 @@ export function useOverview(ports?: { ledger?: LedgerPort; clock?: ClockPort }) 
     allPoints: snap.allPoints ?? [],
     scanSources: snap.scanSources,
     unreadableArtifacts: snap.unreadableArtifacts,
+    unbookedRequests: snap.unbookedRequests,
     scanError: snap.scanError,
     fetchError: snap.fetchError,
     refresh,

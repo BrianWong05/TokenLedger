@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V20 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V21 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 20;
+const CURRENT_USER_VERSION: i64 = 21;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -500,6 +500,23 @@ const SCHEMA_V20: &str = "\
 DELETE FROM scanned_files;
 PRAGMA user_version = 20;";
 
+// v21: Requests a Source read and understood but could not book, per Session
+// file (TOKL-25). Qoder's CLI surface prices every Request in credits and
+// reports every token bucket as zero, so the zero-token rule drops all of
+// them — correctly, the tokens are not in the Artifact — and the loss was
+// silent. Keyed by path, not by Source, because an unchanged file skips
+// parsing entirely: a per-Source total overwritten by every scan would fall
+// to zero on the first idle tick, while per-file counts a scan sums back up
+// stay honest without re-reading anything. Metadata only, never content
+// (ADR-0011); rows leave with their file (clear_file_state).
+const SCHEMA_V21: &str = "\
+CREATE TABLE IF NOT EXISTS unbooked_requests (
+  path TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  requests INTEGER NOT NULL
+);
+PRAGMA user_version = 21;";
+
 /// `ALTER TABLE ... ADD COLUMN` with the `IF NOT EXISTS` SQLite has no syntax
 /// for, so a migration that carries new columns stays re-runnable.
 fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
@@ -766,6 +783,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         }
         if version < 20 {
             conn.execute_batch(SCHEMA_V20)?;
+        }
+        if version < 21 {
+            conn.execute_batch(SCHEMA_V21)?;
         }
         Ok(())
     };
@@ -1108,7 +1128,53 @@ pub fn set_file_state(conn: &Connection, path: &str, state: FileState) -> rusqli
 
 pub fn clear_file_state(conn: &Connection, path: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM scanned_files WHERE path = ?1", [path])?;
+    // The unbooked-Request count is a fact about this file's content, so it
+    // leaves when the file's scan state does: a path pruned off disk must not
+    // keep claiming Requests nothing scans any more, and a file about to be
+    // reparsed from byte 0 recounts from scratch.
+    conn.execute("DELETE FROM unbooked_requests WHERE path = ?1", [path])?;
     Ok(())
+}
+
+/// Record how many Requests one Session file holds that the scan read and
+/// understood but could not book, because its Source reported no tokens for
+/// them (TOKL-25). A zero count stores no row, so `load_unbooked` needs no
+/// filter and a file that stops holding such Requests stops being counted.
+pub fn set_unbooked_requests(
+    conn: &Connection,
+    path: &str,
+    source: &str,
+    requests: u64,
+) -> rusqlite::Result<()> {
+    if requests == 0 {
+        conn.execute("DELETE FROM unbooked_requests WHERE path = ?1", [path])?;
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO unbooked_requests (path, source, requests) VALUES (?1, ?2, ?3)",
+        params![path, source, requests as i64],
+    )?;
+    Ok(())
+}
+
+/// Sources currently holding Requests no Usage Record could be booked for —
+/// the persisted per-file counts summed back up, so the answer is honest on
+/// every scan including an idle one that reparsed nothing, and from launch
+/// before the first scan of a run.
+pub fn load_unbooked(conn: &Connection) -> Vec<crate::types::SourceUnbooked> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT source, SUM(requests) FROM unbooked_requests GROUP BY source ORDER BY source",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map([], |r| {
+        Ok(crate::types::SourceUnbooked {
+            source: r.get(0)?,
+            requests: r.get::<_, i64>(1)?.max(0) as u64,
+        })
+    })
+    .map(|rows| rows.flatten().collect())
+    .unwrap_or_default()
 }
 
 /// Drops scan state for paths that have left disk. The Ledger is permanent, so
@@ -1532,7 +1598,7 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, CURRENT_USER_VERSION);
-        for table in ["events", "scanned_files", "prices", "price_overrides", "model_price_history", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "limit_readings"] {
+        for table in ["events", "scanned_files", "prices", "price_overrides", "model_price_history", "ctx_tools", "ctx_exec", "settings", "pi_tool_owner", "unreadable_artifacts", "unbooked_requests", "limit_readings"] {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
