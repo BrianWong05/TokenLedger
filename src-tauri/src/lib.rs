@@ -718,10 +718,8 @@ pub fn run() {
                 // The Companions' output directory is the app's own, not
                 // something to find under home — so it is filled in here, where
                 // the data dir is already resolved.
-                roots: SourceRoots {
-                    limit_exports: data_dir.join("limits"),
-                    ..SourceRoots::default_roots()
-                },
+                roots: SourceRoots::default_roots()
+                    .with_limit_exports(data_dir.join("limits")),
                 scan_lock: Mutex::new(()),
                 price_lookups: Mutex::new(Default::default()),
                 last_scan: AtomicI64::new(0),
@@ -1293,33 +1291,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
         let read_conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
-        let roots = SourceRoots {
-            claude: dir.path().join("claude"),
-            codex_sessions: vec![dir.path().join("codex")],
-            copilot_db: dir.path().join("copilot/session-store.db"),
-            gemini_tmp: dir.path().join("gemini"),
-            gemini_projects_json: dir.path().join("projects.json"),
-            hermes_db: dir.path().join("state.db"),
-            grok_sessions: dir.path().join("grok"),
-            grok_logs: dir.path().join("grok-logs"),
-            antigravity_conversations: dir.path().join("antigravity"),
-            antigravity_ide_conversations: dir.path().join("antigravity-ide"),
-            antigravity_cli_conversations: dir.path().join("antigravity-cli"),
-            goose_sessions: vec![dir.path().join("goose")],
-            pi_sessions: vec![dir.path().join("pi")],
-            omp_sessions: vec![dir.path().join("omp")],
-            opencode_data: dir.path().join("opencode"),
-            opencode_legacy: dir.path().join("opencode/storage"),
-            opencode_db: None,
-            kilo_db: dir.path().join("kilo.db"),
-            zed_databases: vec![dir.path().join("zed/threads/threads.db")],
-            cline: vec![dir.path().join("cline")],
-            workbuddy: dir.path().join("workbuddy"),
-            codebuddy: dir.path().join("codebuddy"),
-            qoder_databases: vec![dir.path().join("qoder.db")],
-            qoder_cli_projects: vec![dir.path().join("qoder-cli")],
-            limit_exports: dir.path().join("limits"),
-        };
+        let roots = SourceRoots::at(dir.path()).with_limit_exports(dir.path().join("limits"));
         let state = AppState {
             db: Mutex::new(conn),
             read_db: Mutex::new(read_conn),

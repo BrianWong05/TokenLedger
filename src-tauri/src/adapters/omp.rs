@@ -33,14 +33,7 @@ mod tests {
         write(
             root,
             "sessions/session-omp.jsonl",
-            concat!(
-                r#"{"type":"session","version":3,"id":"session-omp","timestamp":"2026-07-01T12:00:00.000Z","cwd":"/Users/dev/projects/alpha"}"#,
-                "\n",
-                r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T12:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1782907201000}}"#,
-                "\n",
-                r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T12:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"provider":"anthropic","model":"claude-3-5-sonnet","usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5},"stopReason":"stop","timestamp":1782907202000}}"#,
-                "\n",
-            ),
+            include_str!("fixtures/omp/basic-session.jsonl"),
         );
         let mut conn = open_db(&root.join("ledger.db")).unwrap();
         let result = scan_omp(&mut conn, &[root.join("sessions")]);

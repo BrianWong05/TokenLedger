@@ -92,75 +92,45 @@ impl Selection {
 }
 
 fn roots_for(source: &str, artifact: &Path, missing: &Path) -> SourceRoots {
-    let missing = missing.to_path_buf();
-    let mut roots = SourceRoots {
-        claude: missing.clone(),
-        codex_sessions: vec![missing.clone()],
-        copilot_db: missing.clone(),
-        gemini_tmp: missing.clone(),
-        gemini_projects_json: missing.clone(),
-        hermes_db: missing.clone(),
-        grok_sessions: missing.clone(),
-        grok_logs: missing.clone(),
-        antigravity_conversations: missing.clone(),
-        antigravity_ide_conversations: missing.clone(),
-        antigravity_cli_conversations: missing.clone(),
-        goose_sessions: vec![missing.clone()],
-        pi_sessions: vec![missing.clone()],
-        omp_sessions: vec![missing.clone()],
-        opencode_data: missing.clone(),
-        opencode_legacy: missing.clone(),
-        opencode_db: None,
-        kilo_db: missing.clone(),
-        zed_databases: vec![missing.clone()],
-        cline: vec![missing.clone()],
-        workbuddy: missing.clone(),
-        codebuddy: missing.clone(),
-        qoder_databases: vec![missing.clone()],
-        qoder_cli_projects: vec![missing.clone()],
-        limit_exports: missing.clone(),
-    };
-
+    let roots = SourceRoots::at(missing).with_limit_exports(missing.to_path_buf());
+    let artifact = artifact.to_path_buf();
     match source {
-        "claude" => roots.claude = artifact.to_path_buf(),
-        "codex" => roots.codex_sessions = vec![artifact.to_path_buf()],
-        "copilot" => roots.copilot_db = artifact.to_path_buf(),
-        "gemini" => {
-            roots.gemini_tmp = artifact.to_path_buf();
-            roots.gemini_projects_json = sibling_projects_json(artifact, &missing);
-        }
-        "hermes" => roots.hermes_db = artifact.to_path_buf(),
-        "grok" => roots.grok_sessions = artifact.to_path_buf(),
-        "antigravity" => roots.antigravity_conversations = artifact.to_path_buf(),
-        "goose" => roots.goose_sessions = vec![artifact.to_path_buf()],
-        "pi" => roots.pi_sessions = vec![artifact.to_path_buf()],
-        "omp" => roots.omp_sessions = vec![artifact.to_path_buf()],
+        "gemini" => roots
+            .with_artifact("gemini", "tmp", artifact.clone())
+            .with_artifact("gemini", "projects", sibling_projects_json(&artifact, missing)),
         "opencode" => {
             if artifact.is_file() || artifact.extension().and_then(|ext| ext.to_str()) == Some("db")
             {
-                roots.opencode_db = Some(artifact.to_path_buf());
+                roots.with_artifact("opencode", "db", artifact)
             } else if artifact.file_name().and_then(|name| name.to_str()) == Some("storage") {
-                roots.opencode_legacy = artifact.to_path_buf();
+                roots.with_artifact("opencode", "legacy-storage", artifact)
             } else {
-                roots.opencode_data = artifact.to_path_buf();
-                roots.opencode_legacy = artifact.join("storage");
+                let legacy = source_catalog::artifact("opencode", "legacy-storage")
+                    .and_then(|descriptor| descriptor.suffix.clone())
+                    .unwrap_or_else(|| panic!("source catalog must define opencode.legacy-storage suffix"));
+                roots
+                    .with_artifact("opencode", "data", artifact.clone())
+                    .with_artifact("opencode", "legacy-storage", artifact.join(legacy))
             }
         }
-        "kilo" => roots.kilo_db = artifact.to_path_buf(),
-        "zed" => roots.zed_databases = vec![artifact.to_path_buf()],
-        "cline" => roots.cline = vec![artifact.to_path_buf()],
-        "workbuddy" => roots.workbuddy = artifact.to_path_buf(),
-        "codebuddy" => roots.codebuddy = artifact.to_path_buf(),
-        "qoder" => {
-            if artifact.is_dir() {
-                roots.qoder_cli_projects = vec![artifact.to_path_buf()];
-            } else {
-                roots.qoder_databases = vec![artifact.to_path_buf()];
-            }
-        }
-        _ => {}
+        // Three conversation roots must stay distinct; a planted path is the
+        // conversations Artifact, not the IDE or CLI trees.
+        "antigravity" => roots.with_artifact("antigravity", "conversations", artifact),
+        "grok" => roots.with_artifact("grok", "sessions", artifact),
+        "qoder" => overlay_qoder(roots, artifact),
+        _ => roots.with_source_path(source, artifact),
     }
+}
 
+fn overlay_qoder(mut roots: SourceRoots, artifact: PathBuf) -> SourceRoots {
+    let want_dir = artifact.is_dir();
+    if let Some(definition) = source_catalog::source("qoder") {
+        for descriptor in &definition.artifacts {
+            if (descriptor.kind == "directory") == want_dir {
+                roots = roots.with_artifact("qoder", &descriptor.id, artifact.clone());
+            }
+        }
+    }
     roots
 }
 
@@ -483,9 +453,7 @@ mod tests {
 
         let roots = roots_for("pi", &artifact, missing);
 
-        assert_eq!(roots.pi_sessions, vec![artifact]);
-        assert_eq!(roots.claude, missing);
-        assert_eq!(roots.codex_sessions, vec![missing]);
+        assert_eq!(crate::scan::pi_session_roots(&roots), vec![artifact]);
     }
 
     #[test]
@@ -495,8 +463,7 @@ mod tests {
 
         let roots = roots_for("goose", &artifact, missing);
 
-        assert_eq!(roots.goose_sessions, vec![artifact]);
-        assert_eq!(roots.pi_sessions, vec![missing]);
+        assert_eq!(crate::scan::goose_session_roots(&roots, std::env::consts::OS), vec![artifact]);
     }
 
     #[test]
@@ -505,15 +472,11 @@ mod tests {
         let storage = PathBuf::from("/private/opencode/storage");
         let missing = Path::new("/private/missing");
 
-        let modern = roots_for("opencode", &database, missing);
-        assert_eq!(modern.opencode_db, Some(database));
-        assert_eq!(modern.opencode_data, missing);
-        assert_eq!(modern.opencode_legacy, missing);
+        let modern = crate::scan::opencode_roots(&roots_for("opencode", &database, missing));
+        assert_eq!(modern.2, Some(database));
 
-        let legacy = roots_for("opencode", &storage, missing);
-        assert_eq!(legacy.opencode_db, None);
-        assert_eq!(legacy.opencode_data, missing);
-        assert_eq!(legacy.opencode_legacy, storage);
+        let legacy = crate::scan::opencode_roots(&roots_for("opencode", &storage, missing));
+        assert_eq!(legacy.1, storage);
     }
 
     #[test]
@@ -523,9 +486,7 @@ mod tests {
 
         let roots = roots_for("kilo", &artifact, missing);
 
-        assert_eq!(roots.kilo_db, artifact);
-        assert_eq!(roots.opencode_db, None);
-        assert_eq!(roots.cline, vec![missing]);
+        assert_eq!(crate::scan::kilo_db_root(&roots, std::env::consts::OS), artifact);
     }
 
     #[test]
@@ -535,9 +496,7 @@ mod tests {
 
         let roots = roots_for("zed", &artifact, missing);
 
-        assert_eq!(roots.zed_databases, vec![artifact]);
-        assert_eq!(roots.kilo_db, missing);
-        assert_eq!(roots.cline, vec![missing]);
+        assert_eq!(crate::scan::zed_database_roots(&roots, std::env::consts::OS), vec![artifact]);
     }
 
     #[test]
@@ -547,8 +506,7 @@ mod tests {
 
         let roots = roots_for("cline", &artifact, missing);
 
-        assert_eq!(roots.cline, vec![artifact]);
-        assert_eq!(roots.pi_sessions, vec![missing]);
+        assert_eq!(crate::scan::cline_roots(&roots, std::env::consts::OS), vec![artifact]);
     }
 
     #[test]

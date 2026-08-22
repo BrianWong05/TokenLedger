@@ -687,14 +687,7 @@ fn build_qoder(base: &Path) {
 fn build_omp(base: &Path) {
     write(
         &base.join("omp/session-omp.jsonl"),
-        concat!(
-            r#"{"type":"session","version":3,"id":"session-omp","timestamp":"2026-07-01T12:00:00.000Z","cwd":"/Users/dev/projects/alpha"}"#,
-            "\n",
-            r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-07-01T12:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello"}],"timestamp":1782907201000}}"#,
-            "\n",
-            r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-07-01T12:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"provider":"anthropic","model":"claude-3-5-sonnet","usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5},"stopReason":"stop","timestamp":1782907202000}}"#,
-            "\n",
-        ),
+        include_str!("adapters/fixtures/omp/basic-session.jsonl"),
     );
 }
 
@@ -721,34 +714,31 @@ fn hermetic_seventeen_source_partition_invariants() {
     build_qoder(base);
     build_omp(base);
 
-    let roots = SourceRoots {
-        claude: base.join("claude"),
-        codex_sessions: vec![base.join("codex")],
-        copilot_db: base.join("copilot/session-store.db"),
-        gemini_tmp: base.join("gemini/tmp"),
-        gemini_projects_json: base.join("gemini/projects.json"),
-        hermes_db: base.join("hermes/state.db"),
-        grok_sessions: base.join("grok"),
-        grok_logs: base.join("grok-logs"),
-        antigravity_conversations: base.join("antigravity"),
-        antigravity_ide_conversations: base.join("antigravity-ide"),
-        // No CLI fixture: a missing root is scanned quietly (zero events, no error).
-        antigravity_cli_conversations: base.join("antigravity-cli"),
-        goose_sessions: vec![base.join("goose")],
-        pi_sessions: vec![base.join("pi")],
-        omp_sessions: vec![base.join("omp")],
-        opencode_data: base.join("opencode"),
-        opencode_legacy: base.join("opencode/storage"),
-        opencode_db: None,
-        kilo_db: base.join("kilo/kilo.db"),
-        zed_databases: vec![base.join("zed/threads/threads.db")],
-        cline: vec![base.join("cline")],
-        workbuddy: base.join("workbuddy"),
-        codebuddy: base.join("codebuddy"),
-        qoder_databases: vec![base.join("qoder/local.db"), base.join("qoder-edition/local.db")],
-        qoder_cli_projects: vec![base.join("qoder-cli/projects")],
-        limit_exports: base.join("limits"),
-    };
+    let roots = SourceRoots::at(base)
+        .with_artifact("claude", "projects", base.join("claude"))
+        .with_artifact("codex", "sessions", base.join("codex"))
+        .with_artifact("copilot", "session-store", base.join("copilot/session-store.db"))
+        .with_artifact("gemini", "tmp", base.join("gemini/tmp"))
+        .with_artifact("gemini", "projects", base.join("gemini/projects.json"))
+        .with_artifact("hermes", "state", base.join("hermes/state.db"))
+        .with_artifact("grok", "sessions", base.join("grok"))
+        .with_artifact("grok", "logs", base.join("grok-logs"))
+        .with_artifact("antigravity", "conversations", base.join("antigravity"))
+        .with_artifact("antigravity", "ide-conversations", base.join("antigravity-ide"))
+        .with_artifact("goose", "sessions", base.join("goose"))
+        .with_artifact("pi", "sessions", base.join("pi"))
+        .with_artifact("omp", "sessions", base.join("omp"))
+        .with_artifact("opencode", "data", base.join("opencode"))
+        .with_artifact("opencode", "legacy-storage", base.join("opencode/storage"))
+        .with_artifact("kilo", "db", base.join("kilo/kilo.db"))
+        .with_source_path("zed", base.join("zed/threads/threads.db"))
+        .with_artifact("cline", "cli-default-data", base.join("cline"))
+        .with_artifact("workbuddy", "projects", base.join("workbuddy"))
+        .with_artifact("codebuddy", "projects", base.join("codebuddy"))
+        .with_artifact("qoder", "qoder-cli-projects", base.join("qoder-cli/projects"))
+        .with_artifact("qoder", "db-cn-linux", base.join("qoder/local.db"))
+        .with_artifact("qoder", "db-qoder-linux", base.join("qoder-edition/local.db"))
+        .with_limit_exports(base.join("limits"));
 
     let ledger_path = base.join("ledger.db");
     let mut conn = open_db(&ledger_path).unwrap();
@@ -756,7 +746,7 @@ fn hermetic_seventeen_source_partition_invariants() {
 
     // --- Non-vacuity guards: the invariants below must have real data to bite. ---
 
-    // Every one of the seventeen Sources ingested events and reported no error.
+    // Every one of the seventeen Sources ingested Usage Records and reported no error.
     for src in [
         "claude",
         "codex",
@@ -797,7 +787,7 @@ fn hermetic_seventeen_source_partition_invariants() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(claude_attr > 0, "claude produced no attributed events");
+    assert!(claude_attr > 0, "claude produced no attributed Usage Records");
 
     // A claude event lands nonzero system AND reasoning — the harder ctx paths
     // (system estimate + proxied-thinking reasoning share) actually fired.
@@ -810,7 +800,7 @@ fn hermetic_seventeen_source_partition_invariants() {
         .unwrap();
     assert!(
         claude_nz > 0,
-        "expected a claude event with nonzero system AND reasoning"
+        "expected a claude Usage Record with nonzero system AND reasoning"
     );
 
     // Claude drill-down tables populated (Bash tool_use + its result).
@@ -833,9 +823,10 @@ fn hermetic_seventeen_source_partition_invariants() {
 
     // Every Source with billed tokens surfaces in ctx_buckets (all seventeen here).
     let buckets = crate::queries::ctx_buckets(&conn, &crate::queries::Filters::default()).unwrap();
-    assert!(
-        buckets.len() >= 16,
-        "expected >=16 sources in ctx_buckets, got {}",
+    assert_eq!(
+        buckets.len(),
+        17,
+        "expected 17 sources in ctx_buckets, got {}",
         buckets.len()
     );
 
@@ -849,7 +840,7 @@ fn hermetic_seventeen_source_partition_invariants() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(pi_attr > 0, "pi produced no attributed events");
+    assert!(pi_attr > 0, "pi produced no attributed Usage Records");
     let pi_tools: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM ctx_tools WHERE source='pi'",
@@ -898,8 +889,9 @@ fn hermetic_seventeen_source_partition_invariants() {
         "second-scan totals drifted"
     );
 
-    std::fs::remove_file(&roots.copilot_db).unwrap();
-    Connection::open(&roots.copilot_db)
+    let copilot_db = base.join("copilot/session-store.db");
+    std::fs::remove_file(&copilot_db).unwrap();
+    Connection::open(&copilot_db)
         .unwrap()
         .execute_batch(
             "CREATE TABLE schema_version (version INTEGER NOT NULL);
@@ -918,7 +910,7 @@ fn hermetic_seventeen_source_partition_invariants() {
         .is_some_and(|error| error.contains("unsupported schema version 7")));
     assert_eq!(totals_before, source_totals(&conn));
 
-    std::fs::remove_file(&roots.copilot_db).unwrap();
+    std::fs::remove_file(&copilot_db).unwrap();
     let disappeared = run_scan(&mut conn, &roots);
     let copilot = disappeared
         .sources
