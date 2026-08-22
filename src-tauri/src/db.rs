@@ -1052,14 +1052,13 @@ pub fn replace_file_events(
 /// came back empty (TOKL-23): a file that has produced Requests before and now
 /// produces none is a Source that moved its Artifact, which is worth saying out
 /// loud — silence is what let Gemini read as idle for 3.7 months.
-pub fn file_has_events(conn: &Connection, source_file: &str) -> bool {
+pub fn file_has_events(conn: &Connection, source_file: &str) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM events WHERE source_file = ?1)",
         [source_file],
         |row| row.get::<_, i64>(0),
     )
     .map(|n| n == 1)
-    .unwrap_or(false)
 }
 
 pub fn get_file_state(conn: &Connection, path: &str) -> rusqlite::Result<Option<FileState>> {

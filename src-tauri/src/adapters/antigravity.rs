@@ -250,6 +250,12 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
 /// billed nothing" is an answer, and real installs do hold such Sessions, so
 /// treating empty as failure would pin the ≥ on them for good.
 ///
+/// Unlike `gemini.rs`, this path stays quiet: there, an Artifact that booked
+/// Requests and now books none is worth a warning (TOKL-23), because nothing
+/// else distinguishes a moved format from an idle Source. Here an export that
+/// names no generations is an ordinary, documented case, so warning on it
+/// would cry wolf on every Scan of a Session that really did bill nothing.
+///
 /// Since TOKL-28 such an export still stands in, but is no longer *stamped*:
 /// nothing on the wire separates a Session that billed nothing from one whose
 /// counts were renamed away, so both are re-read on every Scan. The cost is a

@@ -1,5 +1,5 @@
 use super::unchanged;
-use crate::db::{replace_file_events, set_file_state};
+use crate::db::{file_has_events, replace_file_events, set_file_state};
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
@@ -142,7 +142,7 @@ fn process_file(
             return;
         }
     };
-    let session = match parse_session(path, &content) {
+    let session = match parse_session(path, &content, result) {
         Some(s) => s,
         None => {
             result.lines_skipped += 1;
@@ -226,7 +226,10 @@ fn process_file(
         // moving its Artifact underneath us. Keeping the Records is the right
         // call, but doing it silently is how this Source read as idle for
         // 3.7 months (TOKL-23) — say so.
-        if crate::db::file_has_events(conn, &path_str) {
+        // Unreadable is not "no Records": if the Ledger cannot answer, warn
+        // anyway rather than let a failed query buy the silence this whole
+        // ticket is about.
+        if file_has_events(conn, &path_str).unwrap_or(true) {
             record_gemini_warning(result, MOVED_ARTIFACT_WARNING);
         }
         return;
@@ -244,10 +247,23 @@ fn process_file(
 /// Both Artifact shapes reduce to the same thing: a `sessionId` and the
 /// records under it. Only the framing moved on 2026-05-03 (TOKL-23) — the
 /// per-record fields, the token maths and the dedup key are unchanged.
-fn parse_session(path: &Path, content: &str) -> Option<SessionFile> {
+fn parse_session(
+    path: &Path,
+    content: &str,
+    result: &mut SourceScanResult,
+) -> Option<SessionFile> {
     if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
         return serde_json::from_str(content).ok();
     }
+
+    // One rule governs the classification below: a line carrying counts is
+    // usage, and usage never leaves quietly. Every path that declines to book
+    // a line holding `tokens` says so, because a Request that vanishes without
+    // a word is the failure this Source spent 3.7 months demonstrating.
+    let skip = |result: &mut SourceScanResult| {
+        result.lines_skipped += 1;
+        record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
+    };
 
     let mut session_id = None;
     let mut messages = Vec::new();
@@ -257,20 +273,33 @@ fn parse_session(path: &Path, content: &str) -> Option<SessionFile> {
             continue;
         }
         let Ok(parsed) = serde_json::from_str::<JsonlLine>(line) else {
-            // A line this reader cannot shape is not a Request. The file's
-            // other lines still are, so skip it rather than losing the Session.
+            // A line this reader cannot shape may still have been a Request.
+            // The file's other lines are readable, so keep the Session.
+            skip(result);
             continue;
         };
-        // The header names the Session; a `$set` patch has neither id nor
-        // sessionId and carries no usage.
-        if let Some(id) = parsed.session_id {
-            session_id.get_or_insert(id);
-            continue;
+        // The header names the Session and carries no counts. A line holding
+        // counts is a Request whatever else it holds, so it can never take
+        // this branch — were the Source to start stamping records with their
+        // `sessionId`, every one of them would otherwise be read as a header
+        // and dropped.
+        if parsed.tokens.is_none() {
+            if let Some(id) = parsed.session_id {
+                session_id.get_or_insert(id);
+                continue;
+            }
         }
-        // A `$set` patch has no id, and the dedup key cannot be formed without
-        // one. A record whose timestamp is missing or unreadable is a different
-        // matter: it falls through to the warn below rather than vanishing.
-        let Some(id) = parsed.id else { continue };
+        // The dedup key cannot be formed without an id. A `$set` patch has
+        // neither id nor counts and is simply not a Request; a line with counts
+        // and no id is usage this reader cannot identify, which is a warning.
+        let Some(id) = parsed.id else {
+            if parsed.tokens.is_some() {
+                skip(result);
+            }
+            continue;
+        };
+        // A missing or unreadable timestamp is left to the stamp check in the
+        // caller, which already warns.
         messages.push(Message {
             id,
             timestamp: parsed.timestamp.unwrap_or_default(),
@@ -883,6 +912,43 @@ mod tests {
             "expected the moved-Artifact warning, got {:?}",
             r.error
         );
+        // Unstamped, so the next Scan retries rather than settling for nothing.
+        let state = crate::db::get_file_state(&conn, &session.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.size, SESSION_JSONL.len() as i64);
+    }
+
+    // Classification must never cost a Request. This Source already moved its
+    // Artifact once (TOKL-23); were it to stamp each record with the Session it
+    // belongs to, a reader that treats any `sessionId` as the header would drop
+    // every record in the file and report an idle Source — the same silence,
+    // reached a different way. Counts decide: a line carrying them is usage.
+    #[test]
+    fn a_usage_line_is_not_mistaken_for_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        write(
+            &tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"),
+            concat!(
+                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "\n",
+                r#"{"sessionId":"sess-jsonl","id":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":600,"output":20,"cached":100,"thoughts":5,"tool":0,"total":625}}"#, "\n",
+            ),
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 1, "a record that names its Session is still a Request");
+        let (input, sid): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT input_tokens, session_id FROM events \
+                 WHERE dedup_key = 'gemini:sess-jsonl:g1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, 500); // 600 - 100 cached
+        assert_eq!(sid, Some("sess-jsonl".to_string()));
     }
 
     // A Usage Record is identified by `gemini:{sessionId}:{id}`, so a line with
@@ -896,12 +962,9 @@ mod tests {
         write(
             &tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"),
             concat!(
-                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "
-",
-                r#"{"messageId":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":999,"output":9,"cached":0,"thoughts":0,"tool":0,"total":1008}}"#, "
-",
-                r#"{"messageId":"g2","timestamp":"2026-05-03T08:02:00.000Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":777,"output":7,"cached":0,"thoughts":0,"tool":0,"total":784}}"#, "
-",
+                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "\n",
+                r#"{"messageId":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":999,"output":9,"cached":0,"thoughts":0,"tool":0,"total":1008}}"#, "\n",
+                r#"{"messageId":"g2","timestamp":"2026-05-03T08:02:00.000Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":777,"output":7,"cached":0,"thoughts":0,"tool":0,"total":784}}"#, "\n",
             ),
         );
 
@@ -913,6 +976,15 @@ mod tests {
                 .unwrap(),
             0,
             "an unidentifiable line must not book under an empty identity"
+        );
+        // Declining to book it is only half the answer. Usage this reader
+        // cannot identify is exactly the silent-idle failure TOKL-23 exists to
+        // end, one field over, so both lines are counted and the Scan says so.
+        assert_eq!(r.lines_skipped, 2, "both unidentifiable Requests are counted");
+        assert!(
+            r.error.as_deref().is_some_and(|e| e.contains(MALFORMED_ARTIFACT_WARNING)),
+            "usage that cannot be identified must not pass in silence: {:?}",
+            r.error
         );
     }
 
@@ -926,10 +998,8 @@ mod tests {
         write(
             &tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"),
             concat!(
-                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "
-",
-                r#"{"id":"g1","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":100,"output":10,"cached":0,"thoughts":0,"tool":0,"total":110}}"#, "
-",
+                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "\n",
+                r#"{"id":"g1","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":100,"output":10,"cached":0,"thoughts":0,"tool":0,"total":110}}"#, "\n",
             ),
         );
 
@@ -955,10 +1025,8 @@ mod tests {
         write(
             &nested,
             concat!(
-                r#"{"sessionId":"ldsu1h","projectHash":"alpha","kind":"subagent"}"#, "
-",
-                r#"{"id":"c1","timestamp":"2026-05-03T08:01:40.000Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":900,"output":10,"cached":100,"thoughts":5,"tool":0,"total":915}}"#, "
-",
+                r#"{"sessionId":"ldsu1h","projectHash":"alpha","kind":"subagent"}"#, "\n",
+                r#"{"id":"c1","timestamp":"2026-05-03T08:01:40.000Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":900,"output":10,"cached":100,"thoughts":5,"tool":0,"total":915}}"#, "\n",
             ),
         );
 
