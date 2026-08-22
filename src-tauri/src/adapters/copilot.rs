@@ -1,9 +1,8 @@
 //! GitHub Copilot CLI usage from its native metadata-only SQLite ledger.
 
 use std::path::Path;
-use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 use super::{file_state_of, unchanged, upsert_events_count};
 use crate::db::set_file_state;
@@ -23,11 +22,16 @@ pub fn scan_copilot(conn: &mut Connection, database: &Path) -> SourceScanResult 
         return SourceScanResult::default();
     }
 
-    let ro = match Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let ro = match super::open_sqlite_artifact("copilot", database) {
         Ok(connection) => connection,
-        Err(error) => return failed(format!("open failed: {error}")),
+        // The reader's refusal is already Source-named, so it skips failed()'s prefix.
+        Err(error) => {
+            return SourceScanResult {
+                error: Some(error),
+                ..Default::default()
+            }
+        }
     };
-    let _ = ro.busy_timeout(Duration::from_secs(5));
     let version = ro.query_row("SELECT version FROM schema_version LIMIT 1", [], |row| {
         row.get::<_, i64>(0)
     });

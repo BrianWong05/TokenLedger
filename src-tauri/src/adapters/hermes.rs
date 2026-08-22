@@ -1,9 +1,8 @@
 // TokenLedger — Hermes adapter.
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 use super::{file_state_of, unchanged};
 use crate::db::{set_file_state, upsert_events};
@@ -41,23 +40,16 @@ fn scan_hermes_database(conn: &mut Connection, hermes_db: &Path) -> SourceScanRe
         return SourceScanResult::default();
     }
 
-    // Open the Hermes ledger read-only so we never lock out its live writer.
-    // A plain path (not a `file:` URI) keeps Windows verbatim temp paths, which
-    // can carry a `\\?\` prefix, working in both production and tests.
-    let ro = match Connection::open_with_flags(
-        hermes_db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) {
+    let ro = match super::open_sqlite_artifact("hermes", hermes_db) {
         Ok(c) => c,
         Err(e) => {
             // Lock/open failure: keep prior events, report staleness.
             return SourceScanResult {
-                error: Some(format!("hermes: open failed: {e}")),
+                error: Some(e),
                 ..Default::default()
             };
         }
     };
-    let _ = ro.busy_timeout(Duration::from_millis(5000));
 
     let mut stmt = match ro.prepare(
         "SELECT id, model, started_at, \

@@ -40,7 +40,7 @@ use std::path::Path;
 use super::{absolute_project, file_state_of, find_jsonl, normalize_epoch, unchanged};
 use crate::db::{insert_events_keep_max_output, set_file_state, upsert_source_session};
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 // Bump to force a full re-parse of every WorkBuddy/CodeBuddy Session when the
 // parser changes (the byte-offset slot carries it through `unchanged`).
@@ -144,15 +144,7 @@ fn record_pruned_session_metadata(
     if !db_path.is_file() {
         return Ok(());
     }
-    let ro = match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
-        Ok(ro) => ro,
-        Err(error) => {
-            return Err(format!(
-                "workbuddy: metadata open {}: {error}",
-                db_path.display()
-            ))
-        }
-    };
+    let ro = super::open_sqlite_artifact("workbuddy", &db_path)?;
     let mut stmt = match ro.prepare(
         "SELECT id, cwd, model, title, created_at, updated_at \
          FROM sessions WHERE deleted_at IS NULL",

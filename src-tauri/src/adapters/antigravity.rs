@@ -31,9 +31,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 use super::{file_state_of, unchanged};
 use crate::db::{replace_file_events, set_file_state};
@@ -186,19 +185,13 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
     }
 
     let path_str = db_path.to_string_lossy().to_string();
-    // A plain path (not a `file:` URI) keeps Windows verbatim temp paths, which
-    // can carry a `\\?\` prefix, working in both production and tests.
-    let ro = match Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) {
+    let ro = match super::open_sqlite_artifact("antigravity", db_path) {
         Ok(c) => c,
         Err(e) => {
-            result.error = Some(format!("antigravity: open failed: {e}"));
+            result.error = Some(e);
             return;
         }
     };
-    let _ = ro.busy_timeout(Duration::from_millis(5000));
 
     let session_id = db_path
         .file_stem()
@@ -432,6 +425,7 @@ fn proto_timestamp_secs(ts: &[u8]) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::db::open_db;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     // --- protobuf encoding helpers (tests only) ---

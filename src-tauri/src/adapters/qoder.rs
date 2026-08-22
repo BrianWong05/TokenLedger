@@ -55,13 +55,13 @@
 //! before the row's second. QoderCN writes no transcripts — its rows stay
 //! NULL, the source cannot say.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde_json::Value;
 
 use crate::adapters::{
@@ -662,10 +662,10 @@ fn scan_database(
     model_aliases: &ModelAliases,
 ) -> Result<DatabaseScan, String> {
     let source_file = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let database = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("{SOURCE}: database open failed: {error}"))?;
-    let _ = database.busy_timeout(std::time::Duration::from_millis(5000));
-    ensure_schema(&database)?;
+    let database = super::open_sqlite_artifact(SOURCE, path)?;
+    for (table, columns) in SUPPORTED_SCHEMA {
+        super::require_columns(SOURCE, &database, table, columns)?;
+    }
     let qoder_cn = is_qoder_cn_path(path);
 
     let mut scan = DatabaseScan::default();
@@ -868,23 +868,6 @@ fn parse_model(model_info: &str) -> Option<String> {
     v.get("model_key")
         .and_then(Value::as_str)
         .map(str::to_owned)
-}
-
-fn ensure_schema(database: &Connection) -> Result<(), String> {
-    for (table, columns) in SUPPORTED_SCHEMA {
-        let mut statement = database
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|error| format!("{SOURCE}: schema inspection failed: {error}"))?;
-        let found = statement
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(|error| format!("{SOURCE}: schema inspection failed: {error}"))?
-            .collect::<rusqlite::Result<HashSet<_>>>()
-            .map_err(|error| format!("{SOURCE}: schema inspection failed: {error}"))?;
-        if !columns.iter().all(|column| found.contains(*column)) {
-            return Err(format!("{SOURCE}: unsupported database schema"));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
