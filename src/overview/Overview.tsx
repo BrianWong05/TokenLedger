@@ -22,6 +22,7 @@ import { detectPlatform, type Platform } from '../lib/platform';
 import { useT } from '../lib/i18n';
 import { useSettings } from '../settings/SettingsContext';
 import { useOverview } from './useOverview';
+import { useLatest } from './useLatest';
 import { tauriLedger, type LedgerPort } from './ledger';
 import { tauriExport, type ExportPort } from './export';
 import { reportFilename, windowReportCsv } from './reportCsv';
@@ -30,7 +31,7 @@ import { heatFilters } from './data';
 import { tauriPricing, type PricingPort } from '../pricing/pricing';
 import type { SettingsPort } from '../settings/settings';
 import OverrideEditor from '../pricing/OverrideEditor';
-import type { ModelPricing, Summary } from '../types';
+import type { ModelPricing } from '../types';
 
 // "App · Overview", rebuilt to the dashboard-v2 design and wired to the real
 // Ledger through useOverview(): one unbounded daily series powers
@@ -67,24 +68,16 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // The enlarge's Cost describes exactly its trailing-365-day window, so it
   // gets its own Summary fetched per open (the page Summary is range-scoped
   // and would mis-mark Partial Cost). null renders as a placeholder; a failed
-  // fetch just leaves it. The epoch guards a quick close→reopen: only the
-  // latest open's response may land, so a stale fetch can't replace the
-  // placeholder or outlive a newer answer.
+  // fetch just leaves it; useLatest supersedes a quick close→reopen, so a
+  // stale open's response can't replace the placeholder or outlive a newer
+  // answer.
   const ledger = ports?.ledger ?? tauriLedger;
   const exporter = ports?.export ?? tauriExport;
-  const [heatSummary, setHeatSummary] = useState<Summary | null>(null);
-  const heatFetchEpoch = useRef(0);
-  const openHeatModal = useCallback(() => {
-    setHeatSummary(null);
-    setHeatModalOpen(true);
-    const epoch = ++heatFetchEpoch.current;
-    ledger.summary(heatFilters()).then(
-      (s) => {
-        if (heatFetchEpoch.current === epoch) setHeatSummary(s);
-      },
-      () => {},
-    );
-  }, [ledger]);
+  const heatSummary = useLatest(
+    heatModalOpen ? () => ledger.summary(heatFilters()) : null,
+    [heatModalOpen, ledger],
+  );
+  const openHeatModal = useCallback(() => setHeatModalOpen(true), []);
 
   // Model-selection entry point into the shared Override editor: fetch a fresh
   // ModelPricing list on open (the Overview may show a Model absent from a stale

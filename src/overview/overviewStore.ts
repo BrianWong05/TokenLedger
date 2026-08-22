@@ -37,6 +37,7 @@ import {
   mcpBars,
   execSignatures,
   type McpBar,
+  effectiveBounds,
 } from './data';
 import type { ReportCtxCategory, ReportInput, ReportUsageRow } from './reportCsv';
 import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, type SourceMeta } from './meta';
@@ -396,15 +397,15 @@ class Store implements OverviewStore {
     const s = this.state;
     if (from === s.customFrom && to === s.customTo) return;
     const d = this.derive(this.clock.now()); // allPoints unchanged → firstIso/lastIso stable
-    const prevFrom = s.customFrom || d.firstIso;
-    const prevTo = s.customTo || d.lastIso;
+    const prev = effectiveBounds(s.customFrom, s.customTo, d.firstIso, d.lastIso);
     s.customFrom = from;
     s.customTo = to;
     this.correctSelection();
     this.publish();
     // Reload only when the effective window bounds moved (matches the cf/ct
     // effect deps: raw '' → firstIso can change nothing).
-    if ((from || d.firstIso) !== prevFrom || (to || d.lastIso) !== prevTo) {
+    const next = effectiveBounds(from, to, d.firstIso, d.lastIso);
+    if (next.from !== prev.from || next.to !== prev.to) {
       this.scheduleReload();
     }
   }
@@ -443,7 +444,7 @@ class Store implements OverviewStore {
       ? s.allPoints.reduce((a, p) => (p.bucket < a ? p.bucket : a), s.allPoints[0].bucket)
       : isoOf(now);
     const lastIso = isoOf(now);
-    return { firstIso, lastIso, from: s.customFrom || firstIso, to: s.customTo || lastIso };
+    return { firstIso, lastIso, ...effectiveBounds(s.customFrom, s.customTo, firstIso, lastIso) };
   }
 
   private buildSnapshot(now: Date): OverviewSnapshot {
