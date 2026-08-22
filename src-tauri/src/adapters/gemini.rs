@@ -194,6 +194,14 @@ fn process_file(
         });
     }
 
+    // Nothing parsed is not the same as nothing consumed: a Session whose usage
+    // field has moved still reads as valid JSON, and the replace below would
+    // delete Records this parser can no longer re-derive. Leaving the file
+    // unstamped re-parses it next Scan.
+    if events.is_empty() {
+        return;
+    }
+
     let n = events.len() as u64;
     if replace_file_events(conn, &path_str, &events).is_err() {
         result.error = Some(format!("failed to write events for {}", path_str));
@@ -600,5 +608,55 @@ mod tests {
                 .unwrap(),
             100
         );
+    }
+
+    // TOKL-28: a Session whose usage field moved parses to zero events, and the
+    // replace below would delete the Records it already booked. Stale Records
+    // are recoverable by a re-Scan once the parser is fixed; deleted ones are
+    // not recoverable at all.
+    #[test]
+    fn renamed_token_field_keeps_booked_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let tmp_root = base.join("tmp");
+        let projects_json = base.join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
+        let session = tmp_root.join("alpha/chats/session-1.json");
+        write(&session, SESSION_ALPHA);
+        let path_str = session.to_string_lossy().to_string();
+
+        let mut conn = crate::db::open_db(&base.join("t.db")).unwrap();
+        assert_eq!(scan_gemini(&mut conn, &tmp_root, &projects_json).events_inserted, 2);
+
+        // Gemini renames `tokens` -> `usage`. Still valid JSON, still the shape
+        // serde accepts: every message simply reports no tokens.
+        let moved = SESSION_ALPHA.replace("\"tokens\":", "\"usage\":");
+        assert_ne!(moved.len(), SESSION_ALPHA.len(), "size must differ, or unchanged() skips the file and this test proves nothing");
+        write(&session, &moved);
+
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "the empty parse must not delete Records this parser can no longer re-derive"
+        );
+
+        // Unstamped: the state still describes the pre-rename file, so the next
+        // Scan re-reads it instead of treating the empty read as settled.
+        let state = crate::db::get_file_state(&conn, &path_str).unwrap().unwrap();
+        assert_eq!(state.size, SESSION_ALPHA.len() as i64);
+        assert_ne!(state.size, moved.len() as i64, "empty parse must not be marked scanned");
+
+        // ...and the retry is real: the stored state still describes the
+        // pre-rename file, so the next Scan re-reads this Artifact and
+        // re-derives its Records. Stale is recoverable; deleted is not.
+        // (Restored with a trailing newline because the state left behind is
+        // the *original* size and mtime — writing the original bytes back
+        // inside the same mtime second would look unchanged, which for a file
+        // whose Records are already correct is the right answer.)
+        write(&session, &format!("{SESSION_ALPHA}\n"));
+        assert_eq!(scan_gemini(&mut conn, &tmp_root, &projects_json).events_inserted, 2);
     }
 }

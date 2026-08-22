@@ -1024,6 +1024,13 @@ pub fn upsert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
     Ok(())
 }
 
+/// Deletes the file's Records, then inserts the given ones. An empty slice
+/// therefore *clears* the file — deliberately, because `codex.rs`'s
+/// `parser_repair` path needs exactly that. Every other caller guards
+/// `events.is_empty()` at the call site instead (TOKL-28): an Artifact whose
+/// usage field has moved parses to nothing, and clearing it there would delete
+/// Records the parser can no longer re-derive. Do not "fix" this centrally —
+/// refusing an empty slice here would break the repair path.
 pub fn replace_file_events(
     conn: &mut Connection,
     source_file: &str,
