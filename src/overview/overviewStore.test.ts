@@ -321,6 +321,71 @@ describe('overviewStore refresh / scan', () => {
     expect(selectView(store.getSnapshot(), NOW).unreadable.map((u) => u.source)).toEqual(['antigravity']);
   });
 
+  // Same provenance rule for the unbooked-Request count: persisted, so it is
+  // on screen with the first paint rather than waiting for the launch scan to
+  // resolve. Dropping fetchUnbooked from the firstPaint fan-out fails this.
+  it('states unbooked Requests on the first paint, before the scan lands', async () => {
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'qoder', totalTokens: 500 })],
+      unbookedRequests: [{ source: 'qoder', requests: 628, firstAt: null, lastAt: null }],
+    });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock: fakeClock() });
+    const refreshing = store.refresh();
+    await flush();
+
+    expect(store.getSnapshot().unbookedRequests).toEqual([
+      { source: 'qoder', requests: 628, firstAt: null, lastAt: null },
+    ]);
+
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+  });
+
+  // The two gaps a mutation run found: nothing tested that the report's bases
+  // are DERIVED from the completeness state (the CSV test hands them in), and
+  // nothing tested that the unbooked span is filtered against the window (the
+  // earlier fixture used null bounds, so filtering was a no-op either way).
+  it('derives both report bases from the unbooked state, filtered by the window', async () => {
+    // NOW is 2026-07-16 and the range is the unbounded Total window, so a
+    // Request inside it floors both figures.
+    const inWindow = Math.floor(new Date(2026, 6, 1).getTime() / 1000);
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'qoder', totalTokens: 500 })],
+      unbookedRequests: [{ source: 'qoder', requests: 628, firstAt: inWindow, lastAt: inWindow }],
+    });
+    const store = createOverviewStore({ ledger, clock: fakeClock() });
+    await store.refresh();
+
+    const snap = store.getSnapshot();
+    const view = selectView(snap, NOW);
+    expect(view.unbooked.map((u) => u.source)).toEqual(['qoder']);
+    const input = selectReportInput(snap, view, SETTINGS, NOW);
+    expect(input.tokensBasis).toBe('floor');
+    expect(input.requestsBasis).toBe('floor');
+  });
+
+  it('leaves both bases exact when the unbooked Requests fall outside the window', async () => {
+    // A Day window on NOW; the Requests are from a year earlier, so the span
+    // rules them out. Dropping the window filter makes this fail.
+    const longAgo = Math.floor(new Date(2025, 0, 5).getTime() / 1000);
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'qoder', totalTokens: 500 })],
+      unbookedRequests: [{ source: 'qoder', requests: 628, firstAt: longAgo, lastAt: longAgo }],
+    });
+    const store = createOverviewStore({ ledger, clock: fakeClock() });
+    await store.refresh();
+    store.setRange('day');
+    await flush();
+
+    const snap = store.getSnapshot();
+    const view = selectView(snap, NOW);
+    expect(view.unbooked).toEqual([]);
+    const input = selectReportInput(snap, view, SETTINGS, NOW);
+    expect(input.tokensBasis).toBe('exact');
+    expect(input.requestsBasis).toBe('exact');
+  });
+
   it('reconciles the provisional paint after the scan even when it reports idle', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });

@@ -42,6 +42,16 @@
 //!    request, where merging is correct. `~/.qoder-cli` carries no token
 //!    usage today; a missing root is scanned quietly (ADR-0015).
 //!
+//!    The CLI prices a Request in `credits` and reports every token bucket as
+//!    zero, so `claude_shaped_usage` refuses it and no Usage Record is booked
+//!    — correctly, a Usage Record requires a non-zero token count, and the
+//!    tokens are not in the Artifact to read. That silently lost every CLI
+//!    Request (TOKL-25), so each transcript's dropped Requests are now counted
+//!    into `unbooked_requests` and stated. Requests only: no Record is
+//!    invented, no token total moves, and `credits` are never priced — Qoder
+//!    publishes no credit-to-currency rate, so a Cost from them would be made
+//!    up.
+//!
 //!    Being Claude-Code-shaped, CLI transcripts also log thinking text, so
 //!    the claude composition engine attributes each Record's billed context
 //!    across messages/system/reasoning. Content is sized transiently
@@ -68,7 +78,7 @@ use crate::adapters::{
     absolute_project, claude_ctx, claude_shaped_usage, file_state_of, find_jsonl, normalize_epoch,
     rollup_worktree, unchanged, upsert_events_count,
 };
-use crate::db::{insert_events_keep_max_output, set_file_state};
+use crate::db::{insert_events_keep_max_output, set_file_state, set_unbooked_requests};
 use crate::types::{CtxTokens, FileState, SourceScanResult, UsageEvent};
 
 const SOURCE: &str = "qoder";
@@ -227,7 +237,10 @@ fn is_qoder_cn_path(path: &Path) -> bool {
 // 3: re-parse so the keep-max Latest policy rewrites already-booked models.
 // 4: estimate context attribution (messages/system/reasoning) from content.
 // 5: translate aliases from Qoder's local desktop model catalog.
-const TRANSCRIPT_PARSER_VERSION: i64 = 5;
+// 6: count the Requests this Source reports no tokens for (TOKL-25).
+// 7: record when those Requests happened, so a window that cannot contain one
+//    is not marked as a floor.
+const TRANSCRIPT_PARSER_VERSION: i64 = 7;
 
 #[derive(Default)]
 struct DatabaseScan {
@@ -395,12 +408,33 @@ fn scan_file(
         .map_err(|error| format!("{SOURCE}: insert {}: {error}", path.display()))?;
     set_file_state(conn, &source_file, state)
         .map_err(|error| format!("{SOURCE}: metadata {}: {error}", path.display()))?;
+    // Persisted per file rather than returned per scan: an unchanged file
+    // returns above without parsing, so a count carried only in this scan's
+    // result would read as zero on every idle tick after the first.
+    set_unbooked_requests(
+        conn,
+        &source_file,
+        SOURCE,
+        parsed.unbooked_requests,
+        parsed.unbooked_first_at,
+        parsed.unbooked_last_at,
+    )
+    .map_err(|error| format!("{SOURCE}: unbooked {}: {error}", path.display()))?;
     Ok((inserted, parsed.lines_skipped))
 }
 
 struct ParsedTranscript {
     events: Vec<UsageEvent>,
     lines_skipped: u64,
+    /// Distinct Requests this transcript reports no tokens for (TOKL-25) — see
+    /// `unbooked_request`. Not skipped lines: a skipped line is one the parser
+    /// did not understand, while these were read and understood.
+    unbooked_requests: u64,
+    /// When the earliest and latest of them happened, epoch seconds. A figure
+    /// is only a floor for a window these could fall in, so a window that ends
+    /// before the first or starts after the last is left exact.
+    unbooked_first_at: Option<i64>,
+    unbooked_last_at: Option<i64>,
 }
 
 fn parse_file(
@@ -429,6 +463,13 @@ fn parse_file(
 
     let mut events = Vec::new();
     let mut lines_skipped: u64 = 0;
+    // Keyed by the same dedup key a booked Record would carry, so the figure
+    // counts Requests and not the content-block lines one Request's usage
+    // repeats across — and so the reconcile after the loop can subtract the
+    // Requests that were booked after all. The value is the Request's own
+    // second, which is what bounds the windows this count marks; taking the
+    // earliest per key keeps a repeated line from moving it.
+    let mut unbooked: HashMap<String, i64> = HashMap::new();
     // The transcripts are Claude-Code-shaped, so the claude composition engine
     // applies verbatim: content is sized transiently (est bytes/4) into a
     // running composition per session and each usage line's billed context is
@@ -490,6 +531,15 @@ fn parse_file(
                     }
                     ev.ctx = ctx;
                     events.push(ev);
+                } else if let Some((id, at)) = unbooked_request(&v) {
+                    // Only parse_line_event's zero-token refusal can land here:
+                    // its other two refusals want an id and a timestamp, and
+                    // `unbooked_request` demands both before answering. A
+                    // provisional entry — the reconcile below has the last word.
+                    unbooked
+                        .entry(format!("{SOURCE}:{id}"))
+                        .and_modify(|first| *first = (*first).min(at))
+                        .or_insert(at);
                 }
                 // Attribution first, THEN book this line's own content: what a
                 // call produces is its output, not its input.
@@ -505,11 +555,86 @@ fn parse_file(
         }
     }
 
+    // One Request's usage repeats across its content-block lines and need not
+    // agree line to line: a zero on one and real figures on another is exactly
+    // what `insert_events_keep_max_output` exists to reconcile. Such a Request
+    // WAS booked, so counting it as unbooked would report it in the Ledger and
+    // as missing from it at once. Whatever booked wins.
+    //
+    // Scoped to this transcript, because the count is stored per file. One
+    // Request split across two transcripts — zero in one, figures in the other
+    // — would still be double-reported. Qoder does not write that shape: no
+    // `message.id` appears in two transcripts on a real install, transcript
+    // basenames are unique under the CLI roots, and the transcripts that mirror
+    // IDE Sessions (ADR-0014) carry none of these Requests at all. Reconciling
+    // across files would mean persisting the ids rather than a count, which
+    // ADR-0011 would make a much larger question than the figure is worth.
+    for event in &events {
+        unbooked.remove(&event.dedup_key);
+    }
+
+    // Bounds taken AFTER the reconcile: a Request that turned out to be booked
+    // must not widen the window its Source is marked a floor for.
     ParsedTranscript {
         events,
         lines_skipped,
+        unbooked_requests: unbooked.len() as u64,
+        unbooked_first_at: unbooked.values().copied().min(),
+        unbooked_last_at: unbooked.values().copied().max(),
     }
 }
+
+/// The `message.id` and second of an `assistant` line naming a Request no
+/// Usage Record can be booked for, because the Artifact reports no tokens for it: the
+/// `usage` block is present and complete in shape, and every token bucket in it
+/// is zero. Qoder's CLI reports every Request this way — it prices them in
+/// `credits`, which are its own unit with no published rate — so the tokens are
+/// genuinely absent rather than badly read, and `claude_shaped_usage` refusing
+/// them is correct (TOKL-25).
+///
+/// The zero test is that shared rule's own, never a restatement of it, so the
+/// two cannot disagree about what "no tokens" means. `credits` is deliberately
+/// not consulted: the count is of Requests, and a Request the Source priced at
+/// nothing is still a Request. The remaining fields are the ones
+/// `parse_line_event` needs beyond usage, so a line missing them was unbookable
+/// on its own account and is not claimed here.
+fn unbooked_request(v: &Value) -> Option<(&str, i64)> {
+    let msg = v.get("message")?;
+    let usage = msg.get("usage").filter(|u| u.is_object())?;
+    if claude_shaped_usage(msg).is_some() {
+        return None;
+    }
+    // `claude_shaped_usage` coerces an unreadable field to 0 (`as_i64().
+    // unwrap_or(0)`), so a float, a string, or an empty block reaches the
+    // all-zero test looking like a reported zero. That is ADR-0015's malformed
+    // instance of a supported shape, not a Source reporting nothing, and
+    // claiming it here would put a figure behind "reports no tokens" that the
+    // Artifact never said. Demand one token field the scan can actually read.
+    if !TOKEN_FIELDS
+        .iter()
+        .any(|field| usage.get(field).is_some_and(Value::is_i64))
+    {
+        return None;
+    }
+    let at = v
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .and_then(crate::time::iso_to_epoch)?;
+    let id = msg
+        .get("id")
+        .and_then(|i| i.as_str())
+        .filter(|i| !i.is_empty())?;
+    Some((id, at))
+}
+
+/// The token buckets `claude_shaped_usage` reads. Named here only to tell a
+/// reported zero from a shape the scan cannot read (see `unbooked_request_id`).
+const TOKEN_FIELDS: [&str; 4] = [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
 
 fn parse_line_event(
     v: &Value,
@@ -1683,5 +1808,315 @@ mod tests {
         assert!(!durable
             .windows("QODER_CLI_PRIVATE_PROMPT_MARKER".len())
             .any(|w| w == b"QODER_CLI_PRIVATE_PROMPT_MARKER"));
+    }
+
+    /// Production's real shape (TOKL-25): the `usage` block is complete and
+    /// every token bucket in it is zero, while `credits` is not. Nothing but
+    /// `credits` distinguishes it from a Request that cost nothing, which is
+    /// why the count must not read `credits` at all.
+    fn cli_credits_only_line(id: &str, credits: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","uuid":"u-{id}","timestamp":"2026-08-07T16:53:21.465Z","message":{{"id":"{id}","model":"qmodel_38max","role":"assistant","usage":{{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"cache_creation":{{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}},"credits":{credits},"original_credits":2.5809,"billable":true}}}},"cwd":"/Users/dev/projects/alpha","sessionId":"qcli-zero"}}"#,
+        )
+    }
+
+    #[test]
+    fn cli_requests_with_no_tokens_are_counted_never_booked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-zero.jsonl",
+            &format!(
+                "{}\n{}\n{}\n{}\n",
+                cli_credits_only_line("chatcmpl-z1", "1.29045"),
+                // One Request's usage repeats across its content-block lines,
+                // so the count is of Requests: this second line of chatcmpl-z1
+                // must not be counted twice.
+                cli_credits_only_line("chatcmpl-z1", "1.29045"),
+                cli_credits_only_line("chatcmpl-z2", "0"),
+                // A token-bearing Request in the same file still books.
+                cli_assistant_line("chatcmpl-z3", "qcli-zero", 100, 0, 5),
+            ),
+        );
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert!(result.error.is_none());
+
+        // Only the token-bearing Request became a Usage Record. A zero-token
+        // Request books nothing, and `credits` buy it no Record either: a
+        // Usage Record requires a non-zero token count by definition.
+        assert_eq!(result.events_inserted, 1);
+        let booked: Vec<String> = ledger
+            .prepare("SELECT dedup_key FROM events ORDER BY dedup_key")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(booked, vec!["qoder:chatcmpl-z3".to_string()]);
+        let tokens: i64 = ledger
+            .query_row(
+                "SELECT SUM(input_tokens + output_tokens + cache_read_tokens \
+                          + cache_write_5m_tokens + cache_write_1h_tokens) FROM events",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // 100 input + 5 output + the fixture's 4/3 cache-write split.
+        assert_eq!(tokens, 112); // the zero-token Requests moved no total
+
+        // Two distinct Requests counted, from three zero-token lines — and
+        // chatcmpl-z2's credits are 0, so the figure cannot be counting
+        // credit-bearing lines.
+        assert_eq!(
+            crate::db::load_unbooked(&ledger),
+            vec![crate::types::SourceUnbooked {
+                source: "qoder".to_string(),
+                requests: 2,
+                // Every fixture line carries the same second, so the earliest
+                // and latest of these Requests are both it. Derived, not
+                // hardcoded: a literal epoch here says nothing to a reader and
+                // drifts silently if the fixture's timestamp is ever edited.
+                first_at: crate::time::iso_to_epoch("2026-08-07T16:53:21.465Z"),
+                last_at: crate::time::iso_to_epoch("2026-08-07T16:53:21.465Z"),
+            }]
+        );
+
+        // Durable across an idle rescan: the file is unchanged, so it is never
+        // reparsed, and a count carried in the scan result alone would vanish.
+        let again = scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(again.events_inserted, 0);
+        assert_eq!(crate::db::load_unbooked(&ledger)[0].requests, 2);
+    }
+
+    #[test]
+    fn cli_request_booked_from_a_later_line_is_not_also_counted_unbooked() {
+        // One Request's usage repeats across its content-block lines and need
+        // not agree line to line — a zero on one and real figures on another is
+        // what insert_events_keep_max_output exists for. Such a Request is in
+        // the Ledger, so it must not also be reported as missing from it.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-mix.jsonl",
+            &format!(
+                "{}\n{}\n",
+                cli_credits_only_line("chatcmpl-mix", "1.5"),
+                cli_assistant_line("chatcmpl-mix", "qcli-zero", 100, 0, 5),
+            ),
+        );
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(result.events_inserted, 1);
+        assert!(
+            crate::db::load_unbooked(&ledger).is_empty(),
+            "a booked Request must not also be counted as unbooked"
+        );
+
+        // Order must not matter: the zero-token line arriving last is the same
+        // Request, and the reconcile runs over the whole file either way.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let root2 = tmp2.path().join("projects");
+        write(
+            &root2,
+            "-Users-dev-projects-alpha/qcli-mix.jsonl",
+            &format!(
+                "{}\n{}\n",
+                cli_assistant_line("chatcmpl-mix", "qcli-zero", 100, 0, 5),
+                cli_credits_only_line("chatcmpl-mix", "1.5"),
+            ),
+        );
+        let mut l2 = crate::db::open_db(&tmp2.path().join("ledger.db")).unwrap();
+        scan_qoder(&mut l2, &[], std::slice::from_ref(&root2));
+        assert!(crate::db::load_unbooked(&l2).is_empty());
+    }
+
+    #[test]
+    fn cli_unreadable_token_shape_is_not_claimed_as_reporting_no_tokens() {
+        // claude_shaped_usage coerces an unreadable field to 0, so a float, a
+        // string, or an empty usage block all reach its all-zero test looking
+        // like a reported zero. They are ADR-0015 malformed shapes: no Record,
+        // but the notice must not claim the Source reported nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-bad.jsonl",
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-08-07T16:53:21.465Z","message":{"id":"c-float","model":"qmodel_38max","usage":{"input_tokens":1200.0,"output_tokens":0.0}}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-08-07T16:53:22.465Z","message":{"id":"c-str","model":"qmodel_38max","usage":{"input_tokens":"1200","output_tokens":"0"}}}"#,
+                "\n",
+                r#"{"type":"assistant","timestamp":"2026-08-07T16:53:23.465Z","message":{"id":"c-empty","model":"qmodel_38max","usage":{}}}"#,
+                "\n",
+            ),
+        );
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let result = scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(result.events_inserted, 0); // no Record either way
+        assert!(crate::db::load_unbooked(&ledger).is_empty());
+
+        // The discriminator is readability, not the value: one readable zero
+        // field is a reported zero and IS counted.
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-ok.jsonl",
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-08-07T16:53:24.465Z","message":{"id":"c-zero","model":"qmodel_38max","usage":{"input_tokens":0,"output_tokens":"nonsense"}}}"#,
+                "\n",
+            ),
+        );
+        scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(crate::db::load_unbooked(&ledger)[0].requests, 1);
+    }
+
+    #[test]
+    fn unbooked_cli_requests_leave_the_ide_database_path_untouched() {
+        // The ticket's own verification: the IDE database path's Records must be
+        // provably unaffected. Both families scanned together, from one
+        // scan_qoder call, because that is how production reaches them.
+        let tmp = tempfile::tempdir().unwrap();
+        let database = tmp
+            .path()
+            .join("Qoder/SharedClientCache/cache/db/local.db");
+        create_database(&database);
+        {
+            let db = Connection::open(&database).unwrap();
+            insert_message(&db, "row-1", Some("ide-sess"), "assistant",
+                Some(r#"{"prompt_tokens":1000,"completion_tokens":200,"cached_tokens":400}"#),
+                Some(r#"{"model_key":"qmodel_38max"}"#), 1_782_907_202_000);
+            insert_message(&db, "row-2", Some("ide-sess"), "assistant",
+                Some(r#"{"prompt_tokens":500,"completion_tokens":50,"cached_tokens":0}"#),
+                Some(r#"{"model_key":"qmodel_38max"}"#), 1_782_907_203_000);
+        }
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-zero.jsonl",
+            &format!(
+                "{}\n{}\n",
+                cli_credits_only_line("chatcmpl-z1", "1.29045"),
+                cli_credits_only_line("chatcmpl-z2", "2.5"),
+            ),
+        );
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        let dbs = [database.clone()];
+        let result = scan_qoder(&mut ledger, &dbs, std::slice::from_ref(&root));
+        assert!(result.error.is_none());
+
+        // Both IDE rows booked; neither CLI Request did.
+        assert_eq!(result.events_inserted, 2);
+        let ide: Vec<String> = ledger
+            .prepare("SELECT dedup_key FROM events ORDER BY dedup_key")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(ide, vec!["qoder:row-1".to_string(), "qoder:row-2".to_string()]);
+
+        // Input excludes the cache read (ADR-0001): (1000-400) + (500-0) = 1100
+        // input, 250 output, 400 cache read.
+        let totals: (i64, i64, i64) = ledger
+            .query_row(
+                "SELECT SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens) FROM events",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(totals, (1100, 250, 400));
+
+        // The CLI count is CLI-only: it names neither IDE row, and the IDE
+        // path contributed nothing to it.
+        assert_eq!(crate::db::load_unbooked(&ledger)[0].requests, 2);
+        let rows: Vec<String> = ledger
+            .prepare("SELECT path FROM unbooked_requests")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].ends_with("qcli-zero.jsonl"), "{rows:?}");
+    }
+
+    #[test]
+    fn cli_unbooked_count_ignores_credits_entirely() {
+        // The mutation the guard above is worth nothing without: zero every
+        // `credits` too, so the only thing left to count is the Requests.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-zero.jsonl",
+            &format!(
+                "{}\n{}\n",
+                cli_credits_only_line("chatcmpl-z1", "0"),
+                cli_credits_only_line("chatcmpl-z2", "0"),
+            ),
+        );
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(crate::db::load_unbooked(&ledger)[0].requests, 2);
+    }
+
+    #[test]
+    fn cli_unbooked_count_leaves_with_its_file() {
+        // A count is a fact about a file's content: it must fall when the
+        // Requests do, or a deleted transcript keeps claiming Requests forever.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        let rel = "-Users-dev-projects-alpha/qcli-zero.jsonl";
+        write(&root, rel, &format!("{}\n", cli_credits_only_line("chatcmpl-z1", "1.5")));
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(crate::db::load_unbooked(&ledger)[0].requests, 1);
+
+        // Rewritten with a token-bearing Request instead: the file changed, so
+        // it reparses and the stale count goes rather than lingering.
+        write(
+            &root,
+            rel,
+            &format!("{}\n", cli_assistant_line("chatcmpl-z9", "qcli-zero", 10, 0, 2)),
+        );
+        scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert!(crate::db::load_unbooked(&ledger).is_empty());
+
+        // And the row leaves with the file itself (prune_missing_files).
+        write(&root, rel, &format!("{}\n", cli_credits_only_line("chatcmpl-za", "1.5")));
+        scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert_eq!(crate::db::load_unbooked(&ledger)[0].requests, 1);
+        fs::remove_file(root.join(rel)).unwrap();
+        crate::db::prune_missing_files(&ledger).unwrap();
+        assert!(crate::db::load_unbooked(&ledger).is_empty());
+    }
+
+    #[test]
+    fn cli_unbooked_count_needs_a_request_to_name() {
+        // Lines the parser could not have booked anyway are not claimed as
+        // token-less Requests: without an id there is no Request to count, and
+        // without a timestamp the Record was unbookable on its own account.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        write(
+            &root,
+            "-Users-dev-projects-alpha/qcli-zero.jsonl",
+            concat!(
+                r#"{"type":"assistant","timestamp":"2026-08-07T16:53:21.465Z","message":{"model":"qmodel_38max","usage":{"input_tokens":0,"output_tokens":0,"credits":1.5}},"sessionId":"z"}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"id":"chatcmpl-noclock","model":"qmodel_38max","usage":{"input_tokens":0,"output_tokens":0,"credits":1.5}},"sessionId":"z"}"#,
+                "\n",
+                // No usage block at all: a content-only line, not a Request the
+                // Source reported nothing for.
+                r#"{"type":"assistant","timestamp":"2026-08-07T16:53:22.465Z","message":{"id":"chatcmpl-nousage","model":"qmodel_38max","content":[{"type":"text","text":"hi"}]},"sessionId":"z"}"#,
+                "\n",
+            ),
+        );
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        scan_qoder(&mut ledger, &[], std::slice::from_ref(&root));
+        assert!(crate::db::load_unbooked(&ledger).is_empty());
     }
 }

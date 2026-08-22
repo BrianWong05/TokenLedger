@@ -38,11 +38,12 @@ import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, t
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
 import { parseLocalDate } from '../lib/dateRange';
-import { unreadableSourcesIn } from '../lib/tokenCompleteness';
+import { unreadableSourcesIn, unbookedSourcesIn } from '../lib/tokenCompleteness';
 import type {
   Filters,
   SourceStatus,
   SourceUnreadable,
+  SourceUnbooked,
   SeriesPoint,
   Summary,
   LedgerWindow,
@@ -105,6 +106,11 @@ export interface OverviewSnapshot {
   // scan that throws), refreshed with every scan verdict because a scan
   // rewrites the table it reads.
   unreadableArtifacts: SourceUnreadable[];
+  // Requests the scan read but could not book, per Source (TOKL-25) — Qoder's
+  // CLI prices them in credits and reports no tokens, so no Usage Record can
+  // exist for them. Persisted like the state above, and window-independent:
+  // these carry no timestamp, so no range hides or reveals them.
+  unbookedRequests: SourceUnbooked[];
   scanError: string | null;
   scanAt: number | null; // epoch ms of the last successful scan; drives the toolbar's last-scan label
   fetchError: string | null;
@@ -152,7 +158,7 @@ type State = Omit<
 const SNAP_KEYS: (keyof OverviewSnapshot)[] = [
   'allPoints', 'hourPoints', 'summary', 'modelRows', 'sourceRows', 'projectRows',
   'context',
-  'scanSources', 'unreadableArtifacts', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
+  'scanSources', 'unreadableArtifacts', 'unbookedRequests', 'scanError', 'scanAt', 'fetchError', 'range', 'customFrom', 'customTo', 'selected',
   'firstIso', 'lastIso', 'from', 'to', 'loading', 'reloading', 'provisional',
 ];
 
@@ -165,7 +171,7 @@ class Store implements OverviewStore {
     allPoints: null, hourPoints: [], summary: null,
     modelRows: [], sourceRows: [], projectRows: [],
     context: { resources: [], buckets: [], tools: [], skills: [], exec: [], totals: [] },
-    scanSources: [], unreadableArtifacts: [], scanError: null, scanAt: null, fetchError: null,
+    scanSources: [], unreadableArtifacts: [], unbookedRequests: [], scanError: null, scanAt: null, fetchError: null,
     range: 'total', customFrom: '', customTo: '', selected: SOURCES[0].key,
   };
   private snapshot: OverviewSnapshot;
@@ -238,9 +244,13 @@ class Store implements OverviewStore {
     let firstPaint: Promise<void> | null = null;
     if (this.state.allPoints === null) {
       this.provisional = true;
-      firstPaint = Promise.all([this.fetchSeries(), this.fetchUnreadable()]).then(() =>
-        this.scheduleReload(),
-      );
+      firstPaint = Promise.all([
+        this.fetchSeries(),
+        this.fetchUnreadable(),
+        // Persisted like the floor's provenance, so it is honest here too: the
+        // notice belongs on the first paint, not only after the launch scan.
+        this.fetchUnbooked(),
+      ]).then(() => this.scheduleReload());
     }
 
     // One await for both: the scan's verdict may be a rejection, and the paint
@@ -251,6 +261,7 @@ class Store implements OverviewStore {
       // A scan can throw AFTER committing (see `provisional` below), so a
       // floor the throwing scan just persisted is still picked up.
       await this.fetchUnreadable();
+      await this.fetchUnbooked();
       this.state.scanError = String(scanned.reason);
       this.publish();
       return; // keep any paint; `provisional` stays set, so the next tick reconciles
@@ -260,6 +271,7 @@ class Store implements OverviewStore {
     // The scan just rewrote the persisted unreadable state — re-read it before
     // the publish below, so an idle tick still carries a newly-found floor.
     await this.fetchUnreadable();
+    await this.fetchUnbooked();
     const errs = status.sources
       .filter((s) => s.error)
       .map((s) => formatSourceScanError(s.source, s.error!));
@@ -349,6 +361,21 @@ class Store implements OverviewStore {
             r.unreadableMaxMtime === prev[i].unreadableMaxMtime,
         );
       if (!unchanged) this.state.unreadableArtifacts = rows;
+    } catch {
+      /* keep the last list */
+    }
+  }
+
+  // Re-read the unbooked-Request counts, on fetchUnreadable's rules exactly:
+  // a stable reference when nothing changed, and never cleared on failure.
+  private async fetchUnbooked(): Promise<void> {
+    try {
+      const rows = await this.ledger.unbookedRequests();
+      const prev = this.state.unbookedRequests;
+      const unchanged =
+        rows.length === prev.length &&
+        rows.every((r, i) => r.source === prev[i].source && r.requests === prev[i].requests);
+      if (!unchanged) this.state.unbookedRequests = rows;
     } catch {
       /* keep the last list */
     }
@@ -664,6 +691,10 @@ export interface OverviewView {
   // (ADR-0017) — every token total shown for the window is a floor. Read from
   // the persisted per-scan state, the same provenance the Menu Bar Extra uses.
   unreadable: SourceUnreadable[];
+  // Sources holding Unbooked Requests this window could contain (TOKL-25) —
+  // the other cause of the same ≥ floor, and the one that bounds the Requests
+  // figure as well as the token totals.
+  unbooked: SourceUnbooked[];
 }
 
 // The 365-day heatmap grid depends only on the full series. Callers MUST
@@ -698,9 +729,16 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
   const toolTotals = toolTotalsOfPoints(rpts);
   const card = sourceContext(s.context, s.selected, lang);
   const win = windowOf(s.range, s.from, s.to, now);
-  const unreadable = unreadableSourcesIn(
-    s.unreadableArtifacts,
-    win.fromIso ? Math.floor(parseLocalDate(win.fromIso).getTime() / 1000) : null,
+  const winStartSec = win.fromIso ? Math.floor(parseLocalDate(win.fromIso).getTime() / 1000) : null;
+  const unreadable = unreadableSourcesIn(s.unreadableArtifacts, winStartSec);
+  // An Unbooked Request has its own second, so unlike an Unreadable Artifact it
+  // can be ruled OUT of a window that ends before it: `toIso` is inclusive of
+  // its day, so the bound is that day's end. A preset window runs to now and
+  // has no toIso, which is unbounded above.
+  const unbooked = unbookedSourcesIn(
+    s.unbookedRequests,
+    winStartSec,
+    win.toIso ? Math.floor(parseLocalDate(win.toIso).getTime() / 1000) + 86_400 - 1 : null,
   );
   return {
     rpts,
@@ -742,6 +780,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
     unreadable,
+    unbooked,
   };
 }
 
@@ -895,7 +934,13 @@ export function selectReportInput(
     fromIso,
     toIso,
     grain,
-    tokensBasis: view.unreadable.length > 0 ? 'floor' : 'exact',
+    // Both causes bound the tokens; only these two lists decide it, so the CSV
+    // and the screen cannot disagree about which window was exact.
+    tokensBasis: view.unreadable.length > 0 || view.unbooked.length > 0 ? 'floor' : 'exact',
+    // The Requests figure is bounded by the same two: an unreadable Session
+    // hides the Requests inside it, and an Unbooked Request is one the Source
+    // made that no Usage Record could count.
+    requestsBasis: view.unreadable.length > 0 || view.unbooked.length > 0 ? 'floor' : 'exact',
     // USD needs no conversion note; anything else does, and the figures below
     // stay USD either way (CONTEXT.md Display Currency).
     displayCurrency: settings.currency === 'USD' ? null : settings.currency,

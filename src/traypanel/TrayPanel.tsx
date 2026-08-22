@@ -269,14 +269,16 @@ export default function TrayPanel({
           ledger.series(current, seriesBucket(periodRef.current)),
           ledger.lastScan(),
           ledger.unreadableArtifacts(),
+          ledger.unbookedRequests(),
         ]),
       ]),
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
-      const [t, y, rows, s, models, series, scannedAt, sources] = fetched[0].value;
+      const [t, y, rows, s, models, series, scannedAt, sources, unbooked] = fetched[0].value;
       const lang = s.language === 'zh-Hant' ? 'zh-Hant' : 'en';
-      setTokensFloor(tokenFloor(sources, w.start, lang));
+      // Today runs to now, so the window has no end to rule anything out.
+      setTokensFloor(tokenFloor(sources, w.start, lang, unbooked, null));
       setModel(
         panelModel(t, y, rows, s, lang, {
           period: periodRef.current,
@@ -725,7 +727,12 @@ export default function TrayPanel({
             <div className="tp-tile-k">cache hit</div>
           </div>
           <div className="tp-tile">
-            <div className="tp-tile-v">{model.requestsText}</div>
+            {/* The same floor the tokens carry: an unreadable Session hides
+                the Requests in it, and an Unbooked Request is one the Source
+                made that no Usage Record could count (TOKL-25). */}
+            <div className="tp-tile-v" title={tokensFloor.reason || undefined}>
+              {markedTokenFigure(model.requestsText, tokensFloor)}
+            </div>
             <div className="tp-tile-k">requests</div>
           </div>
         </div>

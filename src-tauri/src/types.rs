@@ -220,6 +220,29 @@ pub struct SourceUnreadable {
     pub unreadable_max_mtime: Option<i64>,
 }
 
+/// One Source's persisted count of Requests the scan read and understood but
+/// could not book, because the Source reported no tokens for them (TOKL-25).
+/// A Usage Record requires a non-zero token count by definition, so these
+/// Requests are correctly absent from the Ledger; the count exists so their
+/// absence is stated rather than silent. Read from the DB, not scan memory, so
+/// an idle scan that reparsed nothing still reports them.
+#[derive(Debug, Serialize, Clone, PartialEq, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct SourceUnbooked {
+    pub source: String,
+    #[ts(type = "number")]
+    pub requests: u64,
+    /// The span these Requests happened in, epoch seconds — the bound on which
+    /// windows they make a floor. NULL only for a row written before the span
+    /// was recorded (schema v21), which marks conservatively rather than
+    /// pretending to know.
+    #[ts(type = "number | null")]
+    pub first_at: Option<i64>,
+    #[ts(type = "number | null")]
+    pub last_at: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Clone, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]

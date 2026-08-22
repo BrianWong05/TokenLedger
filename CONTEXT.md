@@ -255,6 +255,22 @@ Requests is a sum of source-observable calls or call groups, never a Ledger row
 count.
 _Avoid_: Call count, hits
 
+**Unbooked Request**:
+A Request the scan read and understood but booked no Usage Record for, because
+its Source reported no tokens for it — a Usage Record requires a non-zero token
+count, so none can exist. Qoder's CLI surface is the case it was named for: it
+prices every Request in `credits`, its own unit with no published rate, and
+reports every token bucket as zero, so the figures are absent from the Artifact
+rather than badly read. Counted per Session file and stated, never warned, on
+the same reasoning as an Unreadable Artifact — a warning requests an action, and
+there is none to take. Unlike one, the Artifact here is read in full; only the
+tokens are missing. The count qualifies no figure: it is of Requests, so it
+never moves a token total, and no Cost is derived from whatever unit the Source
+priced it in. A shape the scan cannot read is a malformed instance of a
+supported shape (a warning, ADR-0015), not a Source reporting nothing, and is
+never counted here.
+_Avoid_: Dropped request, lost request, zero-token record, skipped request
+
 **Project**:
 The working directory a Usage Record was produced in, identified by its
 absolute path so the same directory groups together across Sources. A git

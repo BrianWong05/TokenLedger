@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import cases from '../readout-cases.json';
 import { formatCompactTokenTotal } from './format';
 import { formatCost } from './currency';
-import { unreadableSourcesIn } from './tokenCompleteness';
+import { unreadableSourcesIn, unbookedSourcesIn } from './tokenCompleteness';
 import { isPartialCost } from './costCompleteness';
 import { CURRENCIES } from '../settings/SettingsPage';
 import type { Lang } from './i18n';
@@ -31,6 +31,16 @@ describe('readout cases — the panel rendering matches the shared table', () =>
     'floor: $artifactsUnreadable unreadable, mtime $unreadableMaxMtime, start $windowStart → $floor',
     ({ artifactsUnreadable, unreadableMaxMtime, windowStart, floor }) => {
       const marked = unreadableSourcesIn([{ artifactsUnreadable, unreadableMaxMtime }], windowStart);
+      expect(marked.length > 0).toBe(floor);
+    },
+  );
+
+  // TOKL-25's cause, pinned the same way: an Unbooked Request has a real span,
+  // so both window edges matter here where the unreadable rule has only a start.
+  it.each(cases.unbookedFloors)(
+    'unbooked floor: $requests requests in [$firstAt, $lastAt], window [$windowStart, $windowEnd] → $floor',
+    ({ requests, firstAt, lastAt, windowStart, windowEnd, floor }) => {
+      const marked = unbookedSourcesIn([{ requests, firstAt, lastAt }], windowStart, windowEnd);
       expect(marked.length > 0).toBe(floor);
     },
   );

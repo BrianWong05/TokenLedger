@@ -6,6 +6,7 @@ import type {
   Filters,
   ScanStatus,
   SourceUnreadable,
+  SourceUnbooked,
   SeriesPoint,
   Summary,
   LedgerWindow,
@@ -49,6 +50,9 @@ interface Data {
   // DIVERGING from this launch's scan verdict — the case the ≥ floor's
   // one-provenance rule exists for.
   unreadableArtifacts?: SourceUnreadable[];
+  // Sources holding Requests no Usage Record could be booked for (TOKL-25).
+  // Defaults to none: only Qoder's CLI surface reports Requests this way.
+  unbookedRequests?: SourceUnbooked[];
 }
 
 export interface FakeLedger extends LedgerPort {
@@ -81,7 +85,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
-    scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], window: [], breakdown: [],
+    scan: [], lastScan: [], unreadableArtifacts: [], unbookedRequests: [], exportAntigravity: [], series: [], summary: [], window: [], breakdown: [],
     context: [],
   };
   const fails = new Map<string, unknown>();
@@ -128,6 +132,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
       case 'scan': return data.scan;
       case 'lastScan': return data.lastScan;
       case 'unreadableArtifacts': return data.unreadableArtifacts ?? data.scan.sources.filter((s) => s.artifactsUnreadable > 0);
+      case 'unbookedRequests': return data.unbookedRequests ?? [];
       case 'exportAntigravity': return data.exportReport ?? 'exported 0 Session(s), 0 generation(s)';
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
@@ -162,6 +167,7 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     scan: () => respond('scan', []) as Promise<ScanStatus>,
     lastScan: () => respond('lastScan', []) as Promise<number>,
     unreadableArtifacts: () => respond('unreadableArtifacts', []) as Promise<SourceUnreadable[]>,
+    unbookedRequests: () => respond('unbookedRequests', []) as Promise<SourceUnbooked[]>,
     exportAntigravity: () => respond('exportAntigravity', []) as Promise<string>,
     series: (filters: Filters, bucket: 'day' | 'hour') =>
       respond('series', [filters, bucket]) as Promise<SeriesPoint[]>,

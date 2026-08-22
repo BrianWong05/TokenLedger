@@ -3,6 +3,7 @@ import type {
   ScanStatus,
   SourceLimits,
   SourceUnreadable,
+  SourceUnbooked,
   Summary,
   LedgerWindow,
   LedgerContext,
@@ -30,6 +31,14 @@ export function fetchLastScan(): Promise<number> {
 // Menu Bar Extra's panel alike).
 export function fetchUnreadableArtifacts(): Promise<SourceUnreadable[]> {
   return invoke('unreadable_artifacts');
+}
+
+// Sources holding Requests the scan read but could not book, because the
+// Source reported no tokens for them (TOKL-25). Persisted per Session file
+// and summed, so an idle scan that reparsed nothing still reports them —
+// a scan-delta count would read zero on every tick after the first.
+export function fetchUnbookedRequests(): Promise<SourceUnbooked[]> {
+  return invoke('unbooked_requests');
 }
 
 // Decrypt Antigravity's `.pb` Sessions by running the export companion

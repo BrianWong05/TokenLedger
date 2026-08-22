@@ -45,6 +45,10 @@ export interface ReportInput {
   toIso: string;
   grain: Granularity;
   tokensBasis: 'exact' | 'floor';
+  // The Requests figures carry their own basis: an Unreadable Artifact hides
+  // whole Sessions and an Unbooked Request is one no Usage Record could count,
+  // so a spreadsheet must not read the column as a total (TOKL-25).
+  requestsBasis: 'exact' | 'floor';
   // null when Cost already renders in USD; the figures below stay USD either way.
   displayCurrency: string | null;
   usdRate: number | null;
@@ -151,6 +155,7 @@ export function windowReportCsv(input: ReportInput): string {
     `window,${input.fromIso},${input.toIso}`,
     `window_grain,${input.grain}`,
     `tokens_basis,${input.tokensBasis}`,
+    `requests_basis,${input.requestsBasis}`,
     'currency,USD',
   ];
   if (input.displayCurrency !== null && input.usdRate !== null) {

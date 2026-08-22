@@ -6,6 +6,7 @@ import {
   scan,
   fetchLastScan,
   fetchUnreadableArtifacts,
+  fetchUnbookedRequests,
   exportAntigravity,
   fetchSeries,
   fetchSummary,
@@ -17,6 +18,7 @@ import type {
   Filters,
   ScanStatus,
   SourceUnreadable,
+  SourceUnbooked,
   SeriesPoint,
   Summary,
   LedgerWindow,
@@ -28,6 +30,7 @@ export interface LedgerPort {
   scan(): Promise<ScanStatus>;
   lastScan(): Promise<number>; // epoch seconds, 0 before the first Scan
   unreadableArtifacts(): Promise<SourceUnreadable[]>; // persisted state, no rescan
+  unbookedRequests(): Promise<SourceUnbooked[]>; // persisted state, no rescan
   // Runs the export companion (ADR-0018). Not part of any Scan: the caller
   // is a person pressing a button, and the answer is its report.
   exportAntigravity(): Promise<string>;
@@ -47,6 +50,7 @@ export const tauriLedger: LedgerPort = {
   scan,
   lastScan: fetchLastScan,
   unreadableArtifacts: fetchUnreadableArtifacts,
+  unbookedRequests: fetchUnbookedRequests,
   exportAntigravity,
   series: fetchSeries,
   summary: fetchSummary,

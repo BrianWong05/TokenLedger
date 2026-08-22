@@ -106,6 +106,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
     summary, modelRows, canOpenCostBreakdown, headline, unreadable, unreadableArtifacts,
+    unbooked, unbookedRequests,
     panels,
   } = useOverview(ports);
 
@@ -141,8 +142,17 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // figures share one, each Source card gets its own — visible count beside
   // the eyebrow, per-Source detail as hover text on the marked figures. The
   // store already window-filtered `unreadable`, so no start is re-applied.
-  const floor = tokenFloor(unreadable, null, lang);
-  const cardFloor = (key: string) => tokenFloor(unreadable.filter((u) => u.source === key), null, lang);
+  // Both lists arrive already window-filtered by the store, so no bounds are
+  // re-applied here (null start, null end).
+  const floor = tokenFloor(unreadable, null, lang, unbooked, null);
+  const cardFloor = (key: string) =>
+    tokenFloor(
+      unreadable.filter((u) => u.source === key),
+      null,
+      lang,
+      unbooked.filter((u) => u.source === key),
+      null,
+    );
   const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
 
   // Grok Build only: a skipped line there is a release's new telemetry kind —
@@ -150,6 +160,14 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // scanError). Other Sources skip lines by design (pi dedup), so their counts
   // stay footer-only.
   const grokSkipped = scanSources.find((s) => s.source === 'grok' && !s.error)?.linesSkipped ?? 0;
+
+  // Requests a Source reports no tokens for (TOKL-25): read and understood,
+  // but a Usage Record requires a non-zero token count, so none was booked.
+  // Stated rather than warned — nobody can make a Source log figures it never
+  // had — and it qualifies no figure on this page: the count is of Requests,
+  // and the Overview shows tokens. Read off the persisted per-file counts, not
+  // this scan's result, so an idle tick that reparsed nothing still says it.
+  const unbookedFor = (key: string) => unbookedRequests.find((u) => u.source === key)?.requests ?? 0;
 
   // The ≥ marker's only remedy: hand Antigravity's encrypted Sessions to its
   // own running server (ADR-0018), then rescan so the Artifacts it wrote land.
@@ -292,6 +310,12 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         </div>
       )}
 
+      {unbookedRequests.map((u) => (
+        <div key={u.source} className="tt-notice">
+          {sourceMeta(u.source).source}: {countLabel(u.requests, 'overview.unbookedNoticeOne', 'overview.unbookedNoticeMany', lang)}
+        </div>
+      ))}
+
       {/* HERO: totals + proportion bar + per-source cards */}
       <div className="tt-hero">
         <div className="tt-hero-head">
@@ -431,6 +455,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
               <span>
                 {s.source}: {s.eventsInserted} {t('overview.scanIn')} / {s.linesSkipped} {t('overview.scanSkipped')}
                 {s.artifactsUnreadable > 0 && ` / ${s.artifactsUnreadable} ${t('overview.scanUnreadable')}`}
+                {unbookedFor(s.source) > 0 && ` / ${unbookedFor(s.source)} ${t('overview.scanUnbooked')}`}
               </span>
             </Fragment>
           ))}
@@ -450,7 +475,13 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         <HeatmapModal
           days={panels.heatmap.days}
           summary={heatSummary}
-          floor={tokenFloor(unreadableArtifacts, heatFilters().startTs ?? null, lang)}
+          floor={tokenFloor(
+            unreadableArtifacts,
+            heatFilters().startTs ?? null,
+            lang,
+            unbookedRequests,
+            heatFilters().endTs ?? null,
+          )}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />
@@ -461,6 +492,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
           firstIso={firstIso}
           lastIso={lastIso}
           unreadable={unreadableArtifacts}
+          unbooked={unbookedRequests}
           initialRange={range}
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}
