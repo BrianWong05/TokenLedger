@@ -312,6 +312,18 @@ pub(crate) struct ClaudeShapedUsage {
     pub cache_write_1h: i64,
 }
 
+/// One API call made inside a single Claude-shaped assistant `message`.
+pub(crate) struct ClaudeCall {
+    /// The iteration's own Model, when it reported one. None means the figures
+    /// came from the top level, where the message's `model` is already right.
+    pub model: Option<String>,
+    /// The call's position in `usage.iterations`, or None when the top-level
+    /// figures were used. Some(i) is what earns a dedup-key suffix, so the
+    /// single/empty/absent cases keep the historical key untouched.
+    pub index: Option<usize>,
+    pub usage: ClaudeShapedUsage,
+}
+
 /// Token figures from a Claude-Code-shaped assistant `message` object.
 /// `input_tokens` is fresh input (cache reads and writes are separate fields);
 /// `cache_creation_input_tokens` splits into the ephemeral 5m/1h buckets when
@@ -321,7 +333,12 @@ pub(crate) struct ClaudeShapedUsage {
 /// Source whose writer emits this exact shape (ADR-0016 ethos: identical
 /// shapes share one parsing rule).
 pub(crate) fn claude_shaped_usage(message: &serde_json::Value) -> Option<ClaudeShapedUsage> {
-    let usage = &message["usage"];
+    claude_shaped_buckets(&message["usage"])
+}
+
+/// The bucket math for one `usage`-shaped object — the top-level one, or a
+/// single `iterations` entry, which carry the identical field set.
+fn claude_shaped_buckets(usage: &serde_json::Value) -> Option<ClaudeShapedUsage> {
     let input = usage["input_tokens"].as_i64().unwrap_or(0);
     let output = usage["output_tokens"].as_i64().unwrap_or(0);
     let cache_read = usage["cache_read_input_tokens"].as_i64().unwrap_or(0);
@@ -348,6 +365,49 @@ pub(crate) fn claude_shaped_usage(message: &serde_json::Value) -> Option<ClaudeS
         cache_write_5m,
         cache_write_1h,
     })
+}
+
+/// One entry per API call the message actually made (TOKL-26).
+///
+/// `usage.iterations` lists each call inside one assistant message. A model
+/// fallback logs the first attempt and the fallback as separate entries under
+/// DIFFERENT Models, and the top-level object is NOT their rollup: input,
+/// output, cache_read and the 5m split are the LAST iteration's, while
+/// `cache_creation` carries the FIRST's. Reading only the top level therefore
+/// booked one Request of two, dropped the first call's tokens, and filed the
+/// first call's cache-write under the fallback's Model.
+///
+/// Two or more entries → one call per entry, each with its own Model and its own
+/// figures. One entry, an EMPTY array, or no array at all → a single call from
+/// the top-level figures, byte-for-byte the historical behaviour. That fallback
+/// is load-bearing, not defensive: 2,324 Claude messages and 385 Qoder ones
+/// carry `iterations: []` beside a non-zero token count, and a parser that
+/// trusted the array length would book every one of them as zero Requests.
+/// The single-entry case is not re-derived from the array either — it is the
+/// same number, and re-deriving it only adds a way to be wrong.
+pub(crate) fn claude_shaped_calls(message: &serde_json::Value) -> Vec<ClaudeCall> {
+    if let Some(iterations) =
+        message["usage"]["iterations"].as_array().filter(|a| a.len() > 1)
+    {
+        // Index from the unfiltered position: an all-zero iteration books no
+        // Record (same rule as the top level), and the survivors must keep the
+        // slot they were logged in rather than closing the gap.
+        return iterations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, iteration)| {
+                Some(ClaudeCall {
+                    model: iteration["model"].as_str().filter(|m| !m.is_empty()).map(str::to_owned),
+                    index: Some(index),
+                    usage: claude_shaped_buckets(iteration)?,
+                })
+            })
+            .collect();
+    }
+    claude_shaped_usage(message)
+        .map(|usage| ClaudeCall { model: None, index: None, usage })
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]

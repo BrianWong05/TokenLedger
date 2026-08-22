@@ -8,10 +8,10 @@ use std::sync::LazyLock;
 /// The user_version an opened database ends at — the last SCHEMA_Vn applied.
 /// Each SCHEMA_Vn keeps its own literal `PRAGMA user_version = n`, because a
 /// migration stamps the version it introduces forever; this is only what the
-/// tests assert a fully-migrated database reaches, so adding SCHEMA_V19 means
+/// tests assert a fully-migrated database reaches, so adding SCHEMA_V20 means
 /// bumping one line here instead of every migration test.
 #[cfg(test)]
-const CURRENT_USER_VERSION: i64 = 19;
+const CURRENT_USER_VERSION: i64 = 20;
 
 // No BEGIN/COMMIT here: migrate() runs the batches inside its own
 // BEGIN IMMEDIATE transaction.
@@ -487,6 +487,21 @@ const SCHEMA_V19_COLUMNS: [(&str, &str, &str); 1] = [(
 
 const SCHEMA_V19: &str = "PRAGMA user_version = 19;";
 
+// v20: TOKL-26. Claude's `usage.iterations` books one Usage Record per API call,
+// so a model fallback stops reporting one call of two and each call's tokens land
+// under the Model that actually served it. Clearing scanned_files is the
+// established backfill pattern (V2-V5, V12, V14): the next scan re-parses every
+// log once, and the per-iteration Records supersede the plain-key rows they
+// replace. Re-runnable, so an intermediate dev build cannot consume it — the
+// parse is a pure function of the Artifact, the supersession is keyed by
+// dedup_key, and a second pass rewrites the same rows with the same values.
+// Every Source re-parses, not just Claude: byte_offset is per file, and a
+// Source-scoped clear would need a path predicate that the table has no column
+// for. Claude is ~1.4 GB of the re-read, which is the cost of the backfill.
+const SCHEMA_V20: &str = "\
+DELETE FROM scanned_files;
+PRAGMA user_version = 20;";
+
 /// `ALTER TABLE ... ADD COLUMN` with the `IF NOT EXISTS` SQLite has no syntax
 /// for, so a migration that carries new columns stays re-runnable.
 fn add_column(conn: &Connection, table: &str, column: &str, decl: &str) -> rusqlite::Result<()> {
@@ -750,6 +765,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                 add_column(conn, table, column, decl)?;
             }
             conn.execute_batch(SCHEMA_V19)?;
+        }
+        if version < 20 {
+            conn.execute_batch(SCHEMA_V20)?;
         }
         Ok(())
     };
@@ -1708,6 +1726,81 @@ mod tests {
         );
     }
 
+    // TOKL-26: the re-parse that lets Claude's per-iteration Records replace the
+    // one-Record-per-message rows. The Ledger survives (Records are never
+    // deleted by a migration); only scan state goes, so the next scan re-reads
+    // every Artifact once and supersedes what it needs to.
+    #[test]
+    fn v19_db_migrates_to_v20_clearing_scan_state_and_keeping_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        // A genuine v19 database: every batch up to V19 and nothing after.
+        {
+            let conn = Connection::open(&path).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+            ] {
+                conn.execute_batch(batch).unwrap();
+            }
+            for (table, column, decl) in SCHEMA_V18_COLUMNS {
+                add_column(&conn, table, column, decl).unwrap();
+            }
+            conn.execute_batch(SCHEMA_V18).unwrap();
+            for (table, column, decl) in SCHEMA_V19_COLUMNS {
+                add_column(&conn, table, column, decl).unwrap();
+            }
+            conn.execute_batch(SCHEMA_V19).unwrap();
+            // The row a fallback message booked under the old parser, and the
+            // scan state that would otherwise stop it ever being re-read.
+            conn.execute(
+                "INSERT INTO events (dedup_key, source, timestamp, model, project, api_calls, \
+                 input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, \
+                 cache_write_1h_tokens, source_file) \
+                 VALUES ('claude:m:r','claude',1,'claude-opus-4-8',NULL,1,2,1728,180874,0,24,'s.jsonl')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) \
+                 VALUES ('s.jsonl',4096,1,4096)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let conn = open_db(&path).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, CURRENT_USER_VERSION);
+
+        // Scan state cleared: a fully-consumed transcript is re-read from byte 0,
+        // which is the only way the stale Record is ever revisited.
+        let files: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(files, 0, "the migration must force a re-parse");
+
+        // The migration itself deletes no Usage Record — supersession is the
+        // parser's job, on evidence, one dedup_key at a time.
+        let kept: i64 = conn
+            .query_row("SELECT output_tokens FROM events WHERE dedup_key='claude:m:r'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, 1728, "a migration never deletes from the Ledger");
+
+        // Re-runnable: an intermediate dev build may apply it twice.
+        conn.execute_batch("PRAGMA user_version = 19").unwrap();
+        drop(conn);
+        let conn = open_db(&path).unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap(),
+            1,
+            "a second pass must not disturb the Ledger",
+        );
+    }
+
     #[test]
     fn v13_db_migrates_to_v14_creating_limit_readings_and_clearing_scan_state() {
         let dir = tempfile::tempdir().unwrap();
@@ -2082,10 +2175,13 @@ mod tests {
 
         // Scan state is untouched: re-parsing today's Artifacts could not prove
         // an old interval's account or completeness anyway (spec hard rule).
-        let files: i64 = conn
-            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(files, 1);
+        // Asserted on the batch itself, not on a count after open_db: sibling
+        // migrations DO clear scan state, and the ladder to current now crosses
+        // v20, which clears it by design to re-read Claude's usage.iterations.
+        assert!(
+            !SCHEMA_V18.contains("scanned_files"),
+            "the evidence-provenance migration must not clear scan state",
+        );
 
         // Estimates are derived, never materialised (ADR-0024) — and the one
         // index the Usage-membership query needs is the only one added.
@@ -2178,10 +2274,12 @@ mod tests {
         assert_eq!(settled.menu_bar_refresh_sec, 60);
 
         // Cadence is user config: it re-reads nothing, so nothing is re-parsed.
-        let files: i64 = conn
-            .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(files, 1, "a cadence column must not force a re-scan");
+        // Asserted on the batch, not on a count after open_db: the ladder to
+        // current crosses v20, which clears scan state by design.
+        assert!(
+            !SCHEMA_V19.contains("scanned_files"),
+            "a cadence column must not force a re-scan",
+        );
 
         // Running the migration again is safe — an intermediate dev build may —
         // and a second pass must leave the reader's chosen cadence alone rather

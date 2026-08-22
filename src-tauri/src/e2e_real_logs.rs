@@ -224,3 +224,129 @@ fn e2e_real_skills() {
     // had to preserve.
     crate::invariants::assert_secondary_subset(&conn);
 }
+
+// TOKL-26 against the real transcripts: Claude's `usage.iterations` books one
+// Usage Record per API call, so a model fallback stops reporting one call of two
+// and each call's tokens land under the Model that served them.
+//   cargo test --release e2e_real_iterations -- --ignored --nocapture
+//
+// The figures below are a measured snapshot of THIS machine's transcripts, not
+// constants of the parser. A new model fallback (or a new duplicate line of an
+// existing one) moves them, and the re-measure is the python one-liner in the
+// ticket. What must never move is the shape: one Record per call, each under its
+// own Model, and no surviving plain-key Record for a turn that had two calls.
+#[test]
+#[ignore]
+fn e2e_real_iterations() {
+    let roots = scan::SourceRoots::default_roots();
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = db::open_db(&dir.path().join("tokenledger.db")).unwrap();
+    scan::run_scan(&mut conn, &roots);
+
+    let iteration_rows = |sql: &str| -> Vec<(String, String, i64, i64)> {
+        let mut stmt = conn.prepare(sql).unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        rows
+    };
+
+    // Every Record a multi-call turn booked, by Model.
+    let by_model = iteration_rows(
+        "SELECT model, '', COUNT(*), \
+                SUM(input_tokens + output_tokens + cache_read_tokens \
+                    + cache_write_5m_tokens + cache_write_1h_tokens) \
+         FROM events \
+         WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
+         GROUP BY model ORDER BY model",
+    );
+    println!("\n=== Claude per-iteration Records ===");
+    for (model, _, records, tokens) in &by_model {
+        println!("  {model:<22} {records:>3} records  {tokens:>12} tokens");
+    }
+
+    let records: i64 = by_model.iter().map(|r| r.2).sum();
+    let tokens: i64 = by_model.iter().map(|r| r.3).sum();
+    let calls: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(api_calls), 0) FROM events \
+             WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+
+    // Shape, drift-proof: each Record is exactly one API call. Requests is a
+    // count of Records, which is what makes it exact rather than a floor.
+    assert_eq!(calls, records, "every per-iteration Record is exactly one call");
+
+    // Shape, drift-proof: the plain key each multi-call turn used to book under
+    // is gone. A surviving one would double-count the turn — once as the old
+    // mixed-Model row, once as its per-iteration Records.
+    let orphans: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events o \
+             WHERE o.source = 'claude' AND o.dedup_key NOT GLOB '*#it[0-9]*' \
+               AND EXISTS (SELECT 1 FROM events i \
+                           WHERE i.dedup_key GLOB o.dedup_key || '#it[0-9]*')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(orphans, 0, "a superseded plain-key Record survived the re-parse");
+
+    // Shape, drift-proof: every observed multi-call turn here is a model
+    // fallback, so its Records must NOT all share one Model — that divergence is
+    // the whole reason a summed single Record was the wrong answer.
+    let single_model_turns: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ( \
+               SELECT substr(dedup_key, 1, instr(dedup_key, '#it') - 1) AS turn \
+               FROM events WHERE source = 'claude' AND dedup_key GLOB '*#it[0-9]*' \
+               GROUP BY turn HAVING COUNT(DISTINCT model) = 1)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        single_model_turns, 0,
+        "every fallback turn observed here spans two Models; a same-Model \
+         multi-call turn is new and its Cost consequences need re-checking",
+    );
+
+    // Measured snapshot: 10 turns × 2 calls. fable-5 attempted every one; opus-4-8
+    // served 9 and opus-5 served the 10th. Before this fix those 10 turns booked
+    // 10 Records / 1,922,151 tokens — one call of two each, with fable-5's
+    // cache-write filed under the Model that served the fallback.
+    //
+    // A new fallback moves every figure below, and it does not take long: the
+    // 10th turn appeared mid-implementation. Re-measure with the ticket's script
+    // (recursively — subagent transcripts live under `subagents/` and hold real
+    // fallbacks) rather than adjusting a constant to whatever the run printed.
+    println!("  ---\n  {records} records, {calls} calls, {tokens} tokens");
+    println!("  was: 10 records / 1,922,151 tokens");
+    assert_eq!(records, 20, "10 fallback turns × 2 calls");
+    assert_eq!(tokens, 4_014_296, "each call's own figures");
+    assert_eq!(
+        by_model,
+        vec![
+            ("claude-fable-5".to_string(), String::new(), 10, 2_103_696),
+            ("claude-opus-4-8".to_string(), String::new(), 9, 1_834_089),
+            ("claude-opus-5".to_string(), String::new(), 1, 76_511),
+        ],
+        "the attempt and the fallback each book under the Model that ran it",
+    );
+
+    // The Ledger-level effect: +10 Requests and +2,092,145 tokens. Both are
+    // asserted because tokens moving without Requests moving would mean the
+    // per-call figures landed and the count did not.
+    assert_eq!(records - 10, 10, "+10 Requests");
+    assert_eq!(tokens - 1_922_151, 2_092_145, "+2,092,145 tokens");
+
+    // The partition still holds over the Records this fix introduced.
+    crate::invariants::assert_partition_exact(&conn);
+    crate::invariants::assert_secondary_subset(&conn);
+}
+

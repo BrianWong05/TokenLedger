@@ -524,6 +524,10 @@ fn parse_line_event(
     }
     let msg = &v["message"];
 
+    // Top-level figures only, deliberately: Qoder emits `iterations` but leaves
+    // it empty on all 385 assistant messages here, so there is nothing per-call
+    // to read. If it ever starts populating the array, this books one Request of
+    // N the way Claude did before TOKL-26 — switch to claude_shaped_calls then.
     let usage = claude_shaped_usage(msg)?;
 
     let id = msg.get("id").and_then(|i| i.as_str()).filter(|i| !i.is_empty())?;
