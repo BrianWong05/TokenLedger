@@ -18,14 +18,21 @@ pub fn scan_claude(conn: &mut Connection, projects_root: &Path) -> SourceScanRes
     // before or after the original must not decide whether the stale Record
     // survives. One statement over a handful of keys.
     //
+    // Within one file, line order cannot matter: parse_file retains out the
+    // plain-key Records for every superseded turn in the file, whether the
+    // plain-form lines come before the array line or after it. Across files in
+    // one scan, the clear below runs after every insert. So the only exposure
+    // is ACROSS scans.
+    //
     // ponytail: only lines parsed in THIS scan report a superseded key, so a
     // fork whose plain-form copy of a fallback turn first appears on a LATER
     // scan re-inserts the plain key with nothing left to clear it, and the turn
-    // double-books. It cannot fire on today's Artifact — a fork copies its
-    // source's lines verbatim, so no cross-file copy disagrees about
-    // `iterations` — and the honest fix is a query for plain keys that have
-    // `#it` siblings, which is a correlated GLOB per row over ~100k Claude
-    // Records. Do that when a copy is observed disagreeing, not before.
+    // double-books. It cannot fire on today's Artifact — 2,173 turns already
+    // span more than one file, none of them a multi-call turn, and a fork copies
+    // its source's lines verbatim, so no cross-file copy disagrees about
+    // `iterations`. The honest fix is a query for plain keys that have `#it`
+    // siblings, which is a correlated GLOB per row over ~100k Claude Records.
+    // Do that when a copy is observed disagreeing, not before.
     let mut superseded: Vec<String> = Vec::new();
     for path in files {
         if let Err(e) = scan_file(conn, &path, &mut result, &mut superseded) {
@@ -312,7 +319,7 @@ fn scan_file(
 ///
 /// Usually one Record, keyed exactly as it always was. When `usage.iterations`
 /// reports two or more API calls it is one Record PER CALL, each under its own
-/// Model and `#it{i}`-suffixed key — see `claude_shaped_calls` for what that
+/// Model and `#it{i}`-suffixed key — see `claude_shaped_records` for what that
 /// field is and why one row cannot hold two Models.
 ///
 /// The plain key those messages used to book is returned as superseded. A
@@ -328,7 +335,6 @@ fn parse_line_events(
         return none;
     }
     let msg = &v["message"];
-    let calls = super::claude_shaped_calls(msg);
 
     let id = match msg["id"].as_str() {
         Some(s) if !s.is_empty() => s,
@@ -359,8 +365,9 @@ fn parse_line_events(
         timestamp,
         model: Some(model),
         project: project.clone(),
-        // Each Record is exactly one API call; the count of Records is what
-        // makes Requests exact rather than a floor.
+        // One call per Record, so Requests still sums api_calls (CONTEXT.md is
+        // explicit that it is never a Ledger row count) — what changed is that
+        // a fallback message now contributes a Record per call instead of one.
         api_calls: 1,
         input_tokens: u.input,
         output_tokens: u.output,
@@ -373,11 +380,11 @@ fn parse_line_events(
         ctx: CtxTokens::default(),
     };
 
-    match calls {
+    match super::claude_shaped_records(msg) {
         // <synthetic> error placeholders have all-zero usage: skip, don't count.
-        super::ClaudeCalls::Nothing => none,
-        super::ClaudeCalls::OneMessage(usage) => (vec![event(base_key, model, &usage)], None),
-        super::ClaudeCalls::PerCall(calls) => (
+        super::ClaudeRecords::NoRecord => none,
+        super::ClaudeRecords::OneRecord(usage) => (vec![event(base_key, model, &usage)], None),
+        super::ClaudeRecords::RecordPerCall(calls) => (
             calls
                 .iter()
                 .map(|c| {
@@ -1116,7 +1123,7 @@ mod tests {
     // ---- TOKL-26: usage.iterations ----------------------------------------
     //
     // What the field is and why one Record per message was wrong: see
-    // `adapters::claude_shaped_calls`.
+    // `adapters::claude_shaped_records`.
     //
     // Fixture figures are a real production message (msg_011Cd9er…): fable-5
     // falling back to opus-4-8, with the top-level `cache_creation_input_tokens`
@@ -1260,6 +1267,11 @@ mod tests {
     // An all-zero iteration is not a Usage Record, the same rule the top-level
     // figures follow (a <synthetic> placeholder books nothing). The surviving
     // iteration still books, and the plain key is still superseded.
+    //
+    // Not production's mix, and not pretending to be: this shape occurs 0 times
+    // in ~105,000 real lines. It is here to pin the rule, because the all-zero
+    // path is where a silent drop actually hid (see the sibling test for a
+    // wholly-zero array), not because a reader should expect to meet it.
     #[test]
     fn an_all_zero_iteration_books_no_record() {
         let zero = r#"{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"type":"message","model":"claude-fable-5"}"#;

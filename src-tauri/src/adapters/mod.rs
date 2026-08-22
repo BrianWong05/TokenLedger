@@ -327,14 +327,14 @@ pub(crate) struct ClaudeCall {
 /// What one Claude-shaped assistant `message` books. The distinction is
 /// all-or-nothing per message, so it lives in the type rather than in an
 /// Option every caller has to re-test.
-pub(crate) enum ClaudeCalls {
-    /// No Usage Record: an all-zero observation is not one.
-    Nothing,
+pub(crate) enum ClaudeRecords {
+    /// An all-zero observation is not a Usage Record.
+    NoRecord,
     /// One Record from the top-level figures, keyed as it always was.
-    OneMessage(ClaudeShapedUsage),
+    OneRecord(ClaudeShapedUsage),
     /// One Record per API call, each under its own Model and a suffixed key.
     /// Never empty.
-    PerCall(Vec<ClaudeCall>),
+    RecordPerCall(Vec<ClaudeCall>),
 }
 
 /// Token figures from a Claude-Code-shaped assistant `message` object.
@@ -380,32 +380,28 @@ fn claude_shaped_buckets(usage: &serde_json::Value) -> Option<ClaudeShapedUsage>
     })
 }
 
-/// What a Claude-shaped assistant `message` books, one entry per API call it
+/// What a Claude-shaped assistant `message` books, one Record per API call it
 /// actually made (TOKL-26). The canonical description of `usage.iterations`;
 /// other sites cite this one rather than restating it.
 ///
 /// `usage.iterations` lists each call inside one assistant message, and it is a
 /// model-fallback log: the first attempt and the fallback appear as separate
-/// entries under DIFFERENT Models, so no single Usage Record can hold both.
+/// entries under DIFFERENT Models, so no single Usage Record can hold both. The
+/// top-level object is not their rollup, and not consistently either
+/// iteration's — most buckets follow the last iteration, the `cache_creation`
+/// split follows the first. Reading only the top level therefore booked one
+/// Request of two, dropped the first call's tokens, and filed the first call's
+/// cache-write TTL under the Model that served the fallback. TOKL-26 holds the
+/// measurements; re-measure the Artifact rather than trusting a comment.
 ///
-/// The top-level object is not their rollup, and not consistently either
-/// iteration's. Measured over every multi-call line on one machine: `input`,
-/// `output`, `cache_read` and `cache_creation_input_tokens` are the LAST
-/// iteration's (31/31), while the `cache_creation` split sub-object follows the
-/// FIRST (5m 31/31, 1h 19/31). So reading only the top level booked one Request
-/// of two, dropped the first call's tokens, and filed the first call's
-/// cache-write TTL under the Model that served the fallback. Those ratios are
-/// one machine's Artifact, not a contract — re-measure, do not trust this
-/// paragraph as evidence.
-///
-/// Two or more entries → `PerCall`. One entry, an EMPTY array, or no array at
-/// all → `OneMessage`, byte-for-byte the historical behaviour. That fallback is
-/// load-bearing, not defensive: 2,600 Claude messages and 385 Qoder ones carry
-/// `iterations: []` beside a non-zero token count, and a parser that trusted
-/// the array length would book every one of them as zero Requests. The
+/// Two or more entries → `RecordPerCall`. One entry, an EMPTY array, or no
+/// array at all → `OneRecord`, byte-for-byte the historical behaviour. That
+/// fallback is load-bearing, not defensive: 2,600 Claude messages and 385 Qoder
+/// ones carry `iterations: []` beside a non-zero token count, and a parser that
+/// trusted the array length would book every one of them as zero Requests. The
 /// single-entry case is not re-derived from the array either — it is the same
 /// number, and re-deriving it only adds a way to be wrong.
-pub(crate) fn claude_shaped_calls(message: &serde_json::Value) -> ClaudeCalls {
+pub(crate) fn claude_shaped_records(message: &serde_json::Value) -> ClaudeRecords {
     if let Some(iterations) = message["usage"]["iterations"].as_array().filter(|a| a.len() > 1) {
         let calls: Vec<ClaudeCall> = iterations
             .iter()
@@ -423,12 +419,12 @@ pub(crate) fn claude_shaped_calls(message: &serde_json::Value) -> ClaudeCalls {
         // than book nothing. A Record that silently disappears is worse than
         // the floor this ticket set out to fix.
         if !calls.is_empty() {
-            return ClaudeCalls::PerCall(calls);
+            return ClaudeRecords::RecordPerCall(calls);
         }
     }
     match claude_shaped_usage(message) {
-        Some(usage) => ClaudeCalls::OneMessage(usage),
-        None => ClaudeCalls::Nothing,
+        Some(usage) => ClaudeRecords::OneRecord(usage),
+        None => ClaudeRecords::NoRecord,
     }
 }
 

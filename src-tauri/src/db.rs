@@ -487,12 +487,10 @@ const SCHEMA_V19_COLUMNS: [(&str, &str, &str); 1] = [(
 
 const SCHEMA_V19: &str = "PRAGMA user_version = 19;";
 
-// v20: TOKL-26. Claude's `usage.iterations` books one Usage Record per API call,
-// so a model fallback stops reporting one call of two and each call's tokens land
-// under the Model that actually served it. Clearing scanned_files is the
-// established backfill pattern (V2-V5, V12, V14): the next scan re-parses every
-// log once, and the per-iteration Records supersede the plain-key rows they
-// replace. Re-runnable, so an intermediate dev build cannot consume it — the
+// v20: TOKL-26 — see `adapters::claude_shaped_records` for what changed and why.
+// Clearing scanned_files is the established backfill pattern (V2-V5, V12, V14):
+// the next scan re-parses every log once, and the per-call Records supersede the
+// plain-key rows they replace. Re-runnable, so an intermediate dev build cannot consume it — the
 // parse is a pure function of the Artifact, the supersession is keyed by
 // dedup_key, and a second pass rewrites the same rows with the same values.
 // Every Source re-parses, not just Claude: byte_offset is per file, and a
@@ -973,9 +971,14 @@ pub fn insert_events(conn: &mut Connection, events: &[UsageEvent]) -> rusqlite::
 
 /// Like insert_events, but first deletes every row whose dedup_key matches one
 /// of the `superseded` GLOB patterns, in the same transaction. A Source uses
-/// this when its Artifact proves that coarser Records were replaced by the
-/// Records being inserted and carry the same usage — the only deletion the
-/// Ledger's add-only rule permits (see CONTEXT.md, Ledger).
+/// this when its Artifact proves that finer Records stand in a coarser one's
+/// place — the only deletion the Ledger's add-only rule permits (see
+/// CONTEXT.md, Ledger). The finer Records need not carry the same usage:
+/// OpenCode's per-Model split re-divides one total, while Claude's per-call
+/// split reads a signal the coarser Record never had and so also corrects it.
+/// `events` may be empty, and is when the replacements are written separately —
+/// Claude inserts its per-call Records through the keep-max path and calls this
+/// only to retire the keys they replace.
 pub fn insert_events_superseding(
     conn: &mut Connection,
     superseded: &[String],
@@ -2173,15 +2176,35 @@ mod tests {
             .unwrap();
         assert_eq!(account, None, "a legacy Usage Record has no account identity");
 
-        // Scan state is untouched: re-parsing today's Artifacts could not prove
-        // an old interval's account or completeness anyway (spec hard rule).
-        // Asserted on the batch itself, not on a count after open_db: sibling
-        // migrations DO clear scan state, and the ladder to current now crosses
-        // v20, which clears it by design to re-read Claude's usage.iterations.
-        assert!(
-            !SCHEMA_V18.contains("scanned_files"),
-            "the evidence-provenance migration must not clear scan state",
-        );
+        // Scan state is untouched by THIS migration: re-parsing today's Artifacts
+        // could not prove an old interval's account or completeness anyway (spec
+        // hard rule). Asserted by running v18 alone against a v17 database and
+        // watching the row, not by a count after open_db — the ladder to current
+        // crosses v20, which clears scan state by design — and not by a
+        // substring search of the batch, which a different spelling walks past.
+        {
+            let solo = Connection::open(dir.path().join("v18-alone.db")).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+            ] {
+                solo.execute_batch(batch).unwrap();
+            }
+            solo.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+            for (table, column, decl) in SCHEMA_V18_COLUMNS {
+                add_column(&solo, table, column, decl).unwrap();
+            }
+            solo.execute_batch(SCHEMA_V18).unwrap();
+            let kept: i64 = solo
+                .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(kept, 1, "the evidence-provenance migration must not clear scan state");
+        }
 
         // Estimates are derived, never materialised (ADR-0024) — and the one
         // index the Usage-membership query needs is the only one added.
@@ -2274,12 +2297,36 @@ mod tests {
         assert_eq!(settled.menu_bar_refresh_sec, 60);
 
         // Cadence is user config: it re-reads nothing, so nothing is re-parsed.
-        // Asserted on the batch, not on a count after open_db: the ladder to
-        // current crosses v20, which clears scan state by design.
-        assert!(
-            !SCHEMA_V19.contains("scanned_files"),
-            "a cadence column must not force a re-scan",
-        );
+        // Asserted by running v19 alone against the v18 database above and
+        // watching the row — the ladder to current crosses v20, which clears
+        // scan state by design, so an end-state count cannot say this.
+        {
+            let solo = Connection::open(dir.path().join("v19-alone.db")).unwrap();
+            for batch in [
+                SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+                SCHEMA_V8, SCHEMA_V9, SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+                SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+            ] {
+                solo.execute_batch(batch).unwrap();
+            }
+            for (table, column, decl) in SCHEMA_V18_COLUMNS {
+                add_column(&solo, table, column, decl).unwrap();
+            }
+            solo.execute_batch(SCHEMA_V18).unwrap();
+            solo.execute(
+                "INSERT INTO scanned_files (path, size, mtime, byte_offset) VALUES ('f',1,1,1)",
+                [],
+            )
+            .unwrap();
+            for (table, column, decl) in SCHEMA_V19_COLUMNS {
+                add_column(&solo, table, column, decl).unwrap();
+            }
+            solo.execute_batch(SCHEMA_V19).unwrap();
+            let kept: i64 = solo
+                .query_row("SELECT COUNT(*) FROM scanned_files", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(kept, 1, "a cadence column must not force a re-scan");
+        }
 
         // Running the migration again is safe — an intermediate dev build may —
         // and a second pass must leave the reader's chosen cadence alone rather

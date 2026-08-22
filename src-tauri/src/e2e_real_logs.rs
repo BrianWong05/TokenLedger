@@ -230,12 +230,13 @@ fn e2e_real_skills() {
 // and each call's tokens land under the Model that served them.
 //   cargo test --release e2e_real_iterations -- --ignored --nocapture
 //
-// Every assertion here is derived from the scan, never written down. The figures
-// move whenever a new fallback happens — the 10th turn appeared during the
-// implementation — and this file already learned that lesson once above, where a
-// hand-counted source total said 14 against a catalog of 15 and `main` had to
-// bump it by hand. The snapshot is printed so a reader can see it; what is
-// asserted is the shape that must hold at any size.
+// Every expectation here is derived, never written down: a literal would drift
+// (see the source-count comment above for what that costs), and the figures move
+// whenever a new fallback happens — the 10th turn appeared mid-implementation.
+// But asserting only shape is not enough either, because a parser that stamped
+// every call with the top-level rollup would keep the counts, the turns and the
+// partition all correct while getting every figure wrong. So the per-call
+// figures are checked against the Artifact itself.
 #[test]
 #[ignore]
 fn e2e_real_iterations() {
@@ -259,7 +260,6 @@ fn e2e_real_iterations() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
-    drop(stmt);
 
     println!("\n=== Claude per-iteration Records ===");
     for (model, records, tokens) in &by_model {
@@ -285,14 +285,16 @@ fn e2e_real_iterations() {
     assert!(records > 0, "no per-iteration Records: usage.iterations is not being read");
     assert!(tokens > 0, "per-iteration Records carry no tokens");
 
-    // Each Record is exactly one API call. Requests is the count of Records,
-    // which is what makes it exact rather than a floor.
+    // Each Record is exactly one API call, so Requests — which sums api_calls,
+    // and per CONTEXT.md is never a Ledger row count — is exact rather than a
+    // floor for a fallback message.
     assert_eq!(calls, records, "every per-iteration Record is exactly one call");
 
-    // Requests and tokens both moved, and moved together — the DoD's point, and
-    // the reason neither is asserted alone. One Record per turn is what the old
-    // parser booked, so more Records than turns IS the Requests gain, and a turn
-    // whose Records outweigh its heaviest single call IS the token gain.
+    // Requests moved: one Record per turn is what the old parser booked. The
+    // `thin` check below is strictly stronger and implies this one — every
+    // Record carries non-zero tokens by construction, so a turn outweighing its
+    // heaviest call means it holds two of them. This weaker assertion is kept
+    // only because it fires first and names the regression directly.
     assert!(records > turns, "Requests did not move: still one Record per turn");
     let thin = one(
         "SELECT COUNT(*) FROM ( \
@@ -330,6 +332,74 @@ fn e2e_real_iterations() {
     );
     if single_model_turns > 0 {
         println!("  note: {single_model_turns} multi-call turn(s) span a single Model (a retry, not a fallback)");
+    }
+
+    // The figures themselves, against the Artifact rather than a constant. Only
+    // two fields are re-read — the per-call `output_tokens` and `model` — which
+    // is enough to catch the two regressions the shape checks cannot see: a
+    // Record stamped with the top-level rollup instead of its own iteration's
+    // (the top level equals the LAST iteration, so slot 0 mismatches), and a
+    // Model taken from the message instead of the call that ran it. Deliberately
+    // NOT a second implementation of the bucket split: that would only restate
+    // the parser and drift away from it.
+    let mut want: std::collections::HashMap<String, (String, i64)> = std::collections::HashMap::new();
+    let mut stack = vec![dirs::home_dir().unwrap().join(".claude/projects")];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|x| x != "jsonl") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            for line in text.lines() {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                if v["type"].as_str() != Some("assistant") {
+                    continue;
+                }
+                let msg = &v["message"];
+                let Some(id) = msg["id"].as_str().filter(|i| !i.is_empty()) else { continue };
+                let Some(iterations) =
+                    msg["usage"]["iterations"].as_array().filter(|a| a.len() > 1)
+                else {
+                    continue;
+                };
+                let base = match v["requestId"].as_str() {
+                    Some(r) => format!("claude:{id}:{r}"),
+                    None => format!("claude:{id}"),
+                };
+                for (i, it) in iterations.iter().enumerate() {
+                    let out = it["output_tokens"].as_i64().unwrap_or(0);
+                    let model = it["model"].as_str().unwrap_or_default().to_string();
+                    // Duplicate content-block lines repeat the array; the Ledger
+                    // keeps the greatest output per slot, so expect that too.
+                    want
+                        .entry(format!("{base}#it{i}"))
+                        .and_modify(|w| {
+                            if out > w.1 {
+                                *w = (model.clone(), out)
+                            }
+                        })
+                        .or_insert((model, out));
+                }
+            }
+        }
+    }
+    assert_eq!(want.len() as i64, records, "the Artifact and the Ledger disagree on how many per-call Records exist");
+    for (key, (model, out)) in &want {
+        let got: (String, i64) = conn
+            .query_row(
+                "SELECT model, output_tokens FROM events WHERE dedup_key = ?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap_or_else(|e| panic!("{key} is in the Artifact but not the Ledger: {e}"));
+        assert_eq!(&got.0, model, "{key} booked the wrong Model");
+        assert_eq!(got.1, *out, "{key} booked the wrong output_tokens");
     }
 
     // The partition still holds over the Records this fix introduced.

@@ -524,10 +524,13 @@ fn parse_line_event(
     }
     let msg = &v["message"];
 
-    // Top-level figures only, deliberately: Qoder emits `iterations` but leaves
-    // it empty on all 385 assistant messages here, so there is nothing per-call
-    // to read. If it ever starts populating the array, this books one Request of
-    // N the way Claude did before TOKL-26 — switch to claude_shaped_calls then.
+    // ponytail: top-level figures only, where Claude reads per-call ones. Qoder
+    // emits `iterations` but leaves it empty on all 385 assistant messages here,
+    // so there is nothing per-call to read and ADR-0016's one-rule-per-shape
+    // ethos has nothing to share yet. If Qoder starts populating the array this
+    // books one Request of N, exactly the bug TOKL-26 fixed for Claude — the
+    // upgrade is `claude_shaped_records`, and it also needs Qoder's own
+    // supersession story for the plain keys it will replace.
     let usage = claude_shaped_usage(msg)?;
 
     let id = msg.get("id").and_then(|i| i.as_str()).filter(|i| !i.is_empty())?;

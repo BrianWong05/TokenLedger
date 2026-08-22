@@ -247,13 +247,13 @@ _Avoid_: Conversation, run, thread
 **Request**:
 One observable unit of model work, normally one API call. The displayed
 **Requests** figure is exact for Claude (whose `usage.iterations` reports every
-call a single message made, so a model fallback is two Requests under the two
-Models that ran them, not one), Codex, Gemini, Antigravity, pi assistant
-messages, Hermes (via its summed `api_call_count`), and Grok (whose Turn reports
-the calls it made, so a Turn is many Requests rather than one); each pi auxiliary
-usage block counts as one Request even when it may aggregate several calls,
-making that contribution a documented lower bound. Requests
-is a sum of source-observable calls or call groups, never a Ledger row count.
+call a single message made, so a message that fell back between Models counts one
+Request per call, each under the Model that ran it), Codex, Gemini, Antigravity,
+pi assistant messages, Hermes (via its summed `api_call_count`), and Grok (whose
+Turn reports the calls it made, so a Turn is many Requests rather than one); each
+pi auxiliary usage block counts as one Request even when it may aggregate several
+calls, making that contribution a documented lower bound. Requests is a sum of
+source-observable calls or call groups, never a Ledger row count.
 _Avoid_: Call count, hits
 
 **Project**:
