@@ -321,6 +321,25 @@ describe('overviewStore refresh / scan', () => {
     expect(selectView(store.getSnapshot(), NOW).unreadable.map((u) => u.source)).toEqual(['antigravity']);
   });
 
+  // Same provenance rule for the unbooked-Request count: persisted, so it is
+  // on screen with the first paint rather than waiting for the launch scan to
+  // resolve. Dropping fetchUnbooked from the firstPaint fan-out fails this.
+  it('states unbooked Requests on the first paint, before the scan lands', async () => {
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'qoder', totalTokens: 500 })],
+      unbookedRequests: [{ source: 'qoder', requests: 628 }],
+    });
+    ledger.hold('scan');
+    const store = createOverviewStore({ ledger, clock: fakeClock() });
+    const refreshing = store.refresh();
+    await flush();
+
+    expect(store.getSnapshot().unbookedRequests).toEqual([{ source: 'qoder', requests: 628 }]);
+
+    ledger.resolveHeld('scan', 0);
+    await refreshing;
+  });
+
   it('reconciles the provisional paint after the scan even when it reports idle', async () => {
     const clock = fakeClock();
     const ledger = makeFakeLedger({ dayPoints: [pt({ totalTokens: 500 })] });

@@ -244,9 +244,13 @@ class Store implements OverviewStore {
     let firstPaint: Promise<void> | null = null;
     if (this.state.allPoints === null) {
       this.provisional = true;
-      firstPaint = Promise.all([this.fetchSeries(), this.fetchUnreadable()]).then(() =>
-        this.scheduleReload(),
-      );
+      firstPaint = Promise.all([
+        this.fetchSeries(),
+        this.fetchUnreadable(),
+        // Persisted like the floor's provenance, so it is honest here too: the
+        // notice belongs on the first paint, not only after the launch scan.
+        this.fetchUnbooked(),
+      ]).then(() => this.scheduleReload());
     }
 
     // One await for both: the scan's verdict may be a rejection, and the paint
