@@ -11,7 +11,8 @@ import {
 } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
 import { execFacets } from './data';
-import type { BreakdownRow, SeriesPoint, ScanStatus, Settings } from '../types';
+import type { BreakdownRow, ScanStatus, Settings } from '../types';
+import { seriesPoint as pt } from './seriesPoint';
 
 // Fixed "now" = 2026-07-16; a separate virtual clock drives the debounce timers.
 function fakeClock(): ClockPort & { advance(ms: number): void } {
@@ -43,16 +44,6 @@ function fakeClock(): ClockPort & { advance(ms: number): void } {
 
 // Drain the microtask queue (canned ledger promises resolve there).
 const flush = () => new Promise((r) => setTimeout(r, 0));
-
-function pt(over: Partial<SeriesPoint>): SeriesPoint {
-  return {
-    bucket: '2026-07-16', source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-    inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
-    totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null, ...over,
-  };
-}
 
 const scanWith = (errs: [string, string | null][]): ScanStatus => ({
   scannedAt: 0,
@@ -1181,14 +1172,11 @@ describe('selectReportInput', () => {
     expect(input.time.find((r) => r.key === '2026-07-16')?.cost).toBe(2.5);
   });
 
-  // SeriesPoint carries no cache-estimated flag, so a time row cannot know and
-  // says so with null, which the file writes as an empty cell. A Source row
-  // reads BreakdownRow, which does carry it, and keeps the boolean.
-  it('leaves a time row\'s cache_estimated unknown while a Source row states it', async () => {
+  it('carries cacheEstimated on time rows from the series', async () => {
     const { store } = await mountStoreWithUsage();
     const s = store.getSnapshot();
     const input = selectReportInput(s, selectView(s, NOW), SETTINGS, NOW);
-    expect(input.time.every((r) => r.cacheEstimated === null)).toBe(true);
+    expect(input.time.every((r) => r.cacheEstimated === false)).toBe(true);
     expect(input.sources.map((r) => r.cacheEstimated)).toEqual([false]);
   });
 

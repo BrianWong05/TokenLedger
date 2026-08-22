@@ -804,7 +804,8 @@ function reportRow(row: BreakdownRow, withSource: boolean): ReportUsageRow {
 // this design rests on — a bucket with unpriced usage and no cost resolves to
 // null. The lean is deliberate: a bucket genuinely worth $0 that also holds an
 // Unpriced Model reads unavailable, erring toward admitting ignorance rather
-// than writing a 0 that means "unknown".
+// than writing a 0 that means "unknown". Cache-Estimated rides the series the
+// same way hasUnpriced does.
 function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
   const byBucket = new Map<string, ReportUsageRow>();
   for (const p of pts) {
@@ -812,11 +813,7 @@ function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
       key: p.bucket,
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
       totalTokens: 0, requests: 0, sessions: 0, cost: 0,
-      // SeriesPoint carries no cache-estimated flag, so this block cannot know
-      // whether a bucket's cache figures were logged or reconstructed. null
-      // writes an empty cell, which is how the file says "unknown" — a `false`
-      // here would read as a definite claim beneath a summary row saying true.
-      hasUnpriced: false, unattributedTokens: 0, cacheEstimated: null,
+      hasUnpriced: false, unattributedTokens: 0, cacheEstimated: false,
     };
     row.inputTokens += p.inputTokens;
     row.outputTokens += p.outputTokens;
@@ -827,6 +824,7 @@ function reportTimeRows(pts: SeriesPoint[]): ReportUsageRow[] {
     row.sessions += p.convs;
     row.cost = (row.cost ?? 0) + p.cost;
     row.hasUnpriced ||= p.hasUnpriced;
+    row.cacheEstimated ||= p.cacheEstimated;
     row.unattributedTokens += p.unattributedTokens;
     byBucket.set(p.bucket, row);
   }

@@ -11,6 +11,7 @@ import { makeFakeSettings } from '../settings/settings.fake';
 import { makeFakeEstimate } from '../limits/limits.fake';
 import { LIVE_ENABLED_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from '../limits/limits';
 import type { BreakdownRow, SourceLimits, Summary } from '../types';
+import { seriesPoint } from '../overview/seriesPoint';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -62,13 +63,7 @@ const day = (back: number) => {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
-const point = (bucket: string, cost: number) => ({
-  bucket, source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-  inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
-  totalTokens: 1_000, reasoningTokens: null, cost, requests: 0, convs: 0,
-  ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-  ctxAgents: null, ctxMcp: null, ctxSkills: null,
-});
+const point = (bucket: string, cost: number) => seriesPoint({ bucket, cost, totalTokens: 1_000 });
 
 // A silent limits port: tests that are not about the strips pass one so the
 // default port's IPC read never lands in `invoked`, and the limits tests seed

@@ -6,20 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { useOverview } from './useOverview';
 import { systemClock } from './overviewStore';
 import { makeFakeLedger } from './ledger.fake';
-import type { SeriesPoint, Summary } from '../types';
+import type { Summary } from '../types';
+import { seriesPoint as pt } from './seriesPoint';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
-
-function pt(over: Partial<SeriesPoint>): SeriesPoint {
-  return {
-    bucket: '2026-07-16', source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-    inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
-    totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null, ...over,
-  };
-}
 
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,

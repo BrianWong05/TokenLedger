@@ -158,6 +158,13 @@ struct CostContribution {
     cache_estimated: bool,
 }
 
+impl CostContribution {
+    fn or_into(&self, unpriced: &mut bool, cache_estimated: &mut bool) {
+        *unpriced |= self.unpriced;
+        *cache_estimated |= self.cache_estimated;
+    }
+}
+
 fn cost_contribution(
     rates: &RateMap,
     model: Option<&str>,
@@ -352,6 +359,9 @@ pub struct SeriesPoint {
     #[ts(type = "number")]
     pub unattributed_tokens: i64,
     pub has_unpriced: bool,
+    /// Cache-Estimated (CONTEXT.md): this bucket counted cache tokens whose
+    /// rate is absent. Same predicate Cost uses (`Rates::cache_gap`).
+    pub cache_estimated: bool,
     #[ts(type = "number")]
     pub input_tokens: i64,
     #[ts(type = "number")]
@@ -448,6 +458,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
                 by_model: HashMap::new(),
                 unattributed_tokens: 0,
                 has_unpriced: false,
+                cache_estimated: false,
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_tokens: 0,
@@ -472,7 +483,7 @@ pub fn series(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<
             *p.by_model.entry(model).or_insert(0) += tokens;
         }
         p.unattributed_tokens += contribution.unattributed_tokens;
-        p.has_unpriced |= contribution.unpriced;
+        contribution.or_into(&mut p.has_unpriced, &mut p.cache_estimated);
         p.input_tokens += in_;
         p.output_tokens += out;
         p.cache_read_tokens += cr;
@@ -618,8 +629,7 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         );
         a.cost += contribution.cost;
         a.priced += contribution.priced_tokens;
-        a.cache_estimated |= contribution.cache_estimated;
-        a.unpriced |= contribution.unpriced;
+        contribution.or_into(&mut a.unpriced, &mut a.cache_estimated);
         a.unattributed += contribution.unattributed_tokens;
     }
     for (grp, src, _) in sessions {
@@ -1774,6 +1784,8 @@ mod tests {
         assert_eq!(s.cache_estimated_models, vec!["half-priced".to_string()]);
         assert!(!s.has_unpriced);
         assert!(s.cost.is_some());
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert!(pts.iter().any(|p| p.cache_estimated), "series rides the same flag");
     }
 
     #[test]
@@ -1789,6 +1801,8 @@ mod tests {
         db::insert_events(&mut conn, &[ev("a", "codex", DAY1_TS, "half-priced", None, 1, 100, 50, 0, 0, 0)]).unwrap();
         let s = summary(&conn, &Filters::default()).unwrap();
         assert!(s.cache_estimated_models.is_empty());
+        let pts = series(&conn, &Filters::default(), "day").unwrap();
+        assert!(pts.iter().all(|p| !p.cache_estimated));
     }
 
     #[test]

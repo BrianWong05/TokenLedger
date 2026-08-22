@@ -140,7 +140,7 @@ describe('summary block', () => {
     expect(row).toContain(',0.0000,');
   });
 
-  it('marks a window whose cache figures were reconstructed rather than logged', () => {
+  it('flags a Cache-Estimated window as exact Cost and lists the Models', () => {
     const csv = windowReportCsv(
       reportInput({
         summary: usageRow({ cacheEstimated: true }),
@@ -274,22 +274,16 @@ describe('usage blocks', () => {
     expect(row).not.toContain(',0.000000,');
   });
 
-  // Same rule one column over. SeriesPoint carries no cache-estimated flag, so
-  // the time block cannot know; the caller passes null and the cell goes empty.
-  // A `false` there would be a definite claim sitting beneath a summary row
-  // saying true — an unknown written as a value, the one thing this file must
-  // never do. Every other block knows, and still writes the boolean.
-  it('leaves cache_estimated empty where the block cannot know, and writes it where it can', () => {
+  it('writes cache_estimated on time rows the same way as Source rows', () => {
     const csv = windowReportCsv(
       reportInput({
-        time: [usageRow({ key: '2026-07-12', cacheEstimated: null })],
-        sources: [usageRow({ key: 'claude', cacheEstimated: false })],
+        time: [usageRow({ key: '2026-07-12', cacheEstimated: false })],
+        sources: [usageRow({ key: 'claude', cacheEstimated: true })],
       }),
     );
-    // cache_estimated is the last column of a usage row.
     const lastCell = (row: string) => row.slice(row.lastIndexOf(',') + 1);
-    expect(lastCell(block(csv, 'day')[1])).toBe('');
-    expect(lastCell(block(csv, 'source')[1])).toBe('false');
+    expect(lastCell(block(csv, 'day')[1])).toBe('false');
+    expect(lastCell(block(csv, 'source')[1])).toBe('true');
   });
 });
 

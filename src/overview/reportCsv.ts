@@ -23,11 +23,7 @@ export interface ReportUsageRow {
   cost: number | null;
   hasUnpriced: boolean;
   unattributedTokens: number;
-  // null is "this block cannot know" — the time block reads SeriesPoint, which
-  // carries no such flag — and writes an empty cell. Every other block passes a
-  // real boolean. Writing `false` there would claim knowledge the row does not
-  // have, the inverse of the rule this file exists to hold.
-  cacheEstimated: boolean | null;
+  cacheEstimated: boolean;
 }
 
 export interface ReportCtxCategory {
@@ -103,7 +99,7 @@ const USAGE_COLUMNS: UsageColumn[] = [
   { name: 'cost_usd', cell: (r) => (r.cost === null ? '' : r.cost.toFixed(6)) },
   { name: 'cost_basis', cell: costBasis },
   { name: 'unattributed_tokens', cell: (r) => String(r.unattributedTokens) },
-  { name: 'cache_estimated', cell: (r) => (r.cacheEstimated === null ? '' : String(r.cacheEstimated)) },
+  { name: 'cache_estimated', cell: (r) => String(r.cacheEstimated) },
 ];
 
 // Sessions are the one figure here that does not add up across rows: they are

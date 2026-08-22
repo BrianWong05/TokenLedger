@@ -8,7 +8,8 @@ import type { Platform } from './lib/platform';
 import { systemClock } from './overview/overviewStore';
 import { makeFakeLedger } from './overview/ledger.fake';
 import { makeFakeSettings } from './settings/settings.fake';
-import type { Settings, SeriesPoint, Summary } from './types';
+import type { Settings, Summary } from './types';
+import { seriesPoint as pt } from './overview/seriesPoint';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -26,16 +27,6 @@ beforeEach(() => {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
 });
-
-function pt(over: Partial<SeriesPoint>): SeriesPoint {
-  return {
-    bucket: '2026-07-16', source: 'claude', byModel: {}, unattributedTokens: 0, hasUnpriced: false,
-    inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,
-    totalTokens: 38, reasoningTokens: null, cost: 0, requests: 1, convs: 1,
-    ctxMessages: null, ctxSystem: null, ctxReasoning: null, ctxToolcalls: null,
-    ctxAgents: null, ctxMcp: null, ctxSkills: null, ...over,
-  };
-}
 
 const summary: Summary = {
   inputTokens: 10, outputTokens: 5, cacheReadTokens: 20, cacheWriteTokens: 3,

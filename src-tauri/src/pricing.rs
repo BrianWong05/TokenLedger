@@ -128,29 +128,36 @@ impl Rates {
             + w1 as f64 * self.cache_write_1h
     }
 
-    /// Cache tokens were used but their rate is missing → the model is
-    /// Cache-Estimated (CONTEXT.md).
-    /// ponytail: prices store an absent cache rate as 0.0, so "no rate" == 0.0
-    /// here. BOTH catalogs quote genuine $0 — OpenRouter's ":free" models, and
-    /// LiteLLM entries where the publisher gives a Model away (zai/glm-4.7-flash).
-    /// OpenRouter's are dropped (see openrouter_cost); LiteLLM's are kept, so ~120
-    /// of its entries store 0.0 meaning "free" and are indistinguishable from "no
-    /// rate". Telling the two apart needs nullable price columns end to end; add
-    /// them if a free Model ever needs a real $0 Cost rather than reading as
-    /// rate-less.
-    pub fn cache_gap(&self, cache_read: i64, w5: i64, w1: i64) -> bool {
-        (cache_read > 0 && self.cache_read == 0.0)
-            || (w5 > 0 && self.cache_write_5m == 0.0)
-            || (w1 > 0 && self.cache_write_1h == 0.0)
+    /// A stored cache rate of 0.0 means the rate is missing, not free.
+    /// Pricing's `to_per_tok` maps the same 0.0 to None. This is the
+    /// per-rate predicate Cost's `cache_gap` and Pricing's `est` chip share;
+    /// Cost then also requires counted tokens in that bucket.
+    /// ponytail: BOTH catalogs quote genuine $0 — OpenRouter's ":free" models,
+    /// and LiteLLM entries where the publisher gives a Model away. OpenRouter's
+    /// are dropped (see openrouter_cost); LiteLLM's are kept, so ~120 of its
+    /// entries store 0.0 meaning "free" and are indistinguishable from "no
+    /// rate". Telling the two apart needs nullable price columns end to end.
+    pub fn cache_rate_absent(rate: f64) -> bool {
+        rate == 0.0
     }
 
-    /// Project onto the frontend's per-token shape. A 0.0 rate maps to None so
-    /// the Pricing tab can render "no rate" (the Cache-Estimated signal) — same
-    /// "absent == 0.0" convention prices already store under (see cache_gap).
+    /// Cache-Estimated (CONTEXT.md) for a Cost: counted cache tokens whose
+    /// rate is absent, so the figure omits them. Per bucket, because a Model
+    /// can price reads and not writes.
+    pub fn cache_gap(&self, cache_read: i64, w5: i64, w1: i64) -> bool {
+        (cache_read > 0 && Self::cache_rate_absent(self.cache_read))
+            || (w5 > 0 && Self::cache_rate_absent(self.cache_write_5m))
+            || (w1 > 0 && Self::cache_rate_absent(self.cache_write_1h))
+    }
+
+    /// Project onto the frontend's per-token shape. A missing cache rate
+    /// (`cache_rate_absent`) maps to None so Pricing can ask per-bucket
+    /// absence. Cost's `cache_gap` uses this same predicate, then also
+    /// requires counted tokens.
     /// The single cache_write is the 5m/base rate (1h mirrors it at write time).
     fn to_per_tok(self) -> RatesPerTok {
         fn opt(v: f64) -> Option<f64> {
-            (v != 0.0).then_some(v)
+            (!Rates::cache_rate_absent(v)).then_some(v)
         }
         RatesPerTok {
             input: opt(self.input),
@@ -180,7 +187,7 @@ fn cost(entry: &serde_json::Value, key: &str) -> Option<f64> {
 /// One OpenRouter price field. They arrive as decimal STRINGS. Only a strictly
 /// positive rate is a rate; everything else maps to None:
 /// - `"0"` — its ":free" models. Absent rates are stored as 0.0 here, so keeping
-///   these would be indistinguishable from "no rate" anyway (see cache_gap).
+///   these would be indistinguishable from "no rate" anyway (see cache_rate_absent).
 /// - `"-1"` — its router pseudo-models (`openrouter/auto`, `openrouter/fusion`)
 ///   use -1 to mean "priced by whatever this routes to". Storing it would make
 ///   Cost go NEGATIVE.
@@ -2020,7 +2027,7 @@ mod tests {
         // against CONTEXT.md's Unpriced rule ("a genuinely free Model and an
         // unknown price never look alike") — storing $0 would break that rule too,
         // since an absent rate is already stored as 0.0, and telling them apart
-        // needs nullable price columns end to end (see Rates::cache_gap).
+        // needs nullable price columns end to end (see Rates::cache_rate_absent).
         assert_eq!(rm.resolve_catalog("poolside/laguna-s:free"), None);
         // A router placeholder priced at "-1" must never become a negative rate.
         assert_eq!(rm.resolve_catalog("openrouter/auto"), None);
@@ -2038,6 +2045,27 @@ mod tests {
         assert_eq!(origin, "litellm");
         assert_eq!(r.input, 1.4e-06);
         assert_eq!(rm.resolve_catalog("claude-opus-5"), None);
+    }
+
+    #[test]
+    fn cost_and_pricing_share_the_absent_cache_rate() {
+        let missing = Rates {
+            input: 1e-6,
+            output: 2e-6,
+            cache_read: 0.0,
+            cache_write_5m: 0.0,
+            cache_write_1h: 0.0,
+        };
+        assert!(Rates::cache_rate_absent(0.0));
+        assert!(!Rates::cache_rate_absent(1e-7));
+        let tok = missing.to_per_tok();
+        assert!(tok.cache_read.is_none() && tok.cache_write.is_none());
+        assert!(missing.cache_gap(10, 0, 0));
+        assert!(!missing.cache_gap(0, 0, 0), "no counted cache tokens, Cost is complete");
+        let priced_reads = Rates { cache_read: 1e-7, ..missing };
+        assert!(priced_reads.to_per_tok().cache_read.is_some());
+        assert!(!priced_reads.cache_gap(10, 0, 0));
+        assert!(priced_reads.cache_gap(0, 10, 0), "write tokens still unpriced");
     }
 
     #[test]

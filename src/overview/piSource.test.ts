@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { SeriesPoint } from '../types';
 import { bucketsFromPoints, seriesToDays, smallMultiples, toolTotalsOfPoints } from './data';
+import { seriesPoint } from './seriesPoint';
 
-const piPoint: SeriesPoint = {
+const piPoint = seriesPoint({
   bucket: '2026-07-10',
   source: 'pi',
   byModel: { 'pi-response-model': 239 },
-  unattributedTokens: 0,
-  hasUnpriced: false,
   inputTokens: 135,
   outputTokens: 62,
   cacheReadTokens: 23,
@@ -17,14 +15,7 @@ const piPoint: SeriesPoint = {
   cost: 0.000805,
   requests: 3,
   convs: 1,
-  ctxMessages: null,
-  ctxSystem: null,
-  ctxReasoning: null,
-  ctxToolcalls: null,
-  ctxAgents: null,
-  ctxMcp: null,
-  ctxSkills: null,
-};
+});
 
 describe('pi Source derivation', () => {
   it('carries pi through Overview totals, Trend, and Activity as the eighth Source', () => {

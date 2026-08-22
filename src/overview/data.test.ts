@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SeriesPoint, BreakdownRow, CtxResource, CtxToolRow, CtxSkillRow, CtxExecRow } from '../types';
+import { seriesPoint } from './seriesPoint';
 import type { Bucket, PresetSlot, PresetSlots } from './data';
 import { emptyBySource } from './meta';
 import {
@@ -45,30 +46,18 @@ import {
 } from './data';
 
 function pt(over: Partial<SeriesPoint>): SeriesPoint {
-  return {
+  return seriesPoint({
     bucket: '2026-07-09',
-    source: 'claude',
-    byModel: {},
-    unattributedTokens: 0,
-    hasUnpriced: false,
     inputTokens: 100,
     outputTokens: 50,
     cacheReadTokens: 200,
     cacheWriteTokens: 30,
     totalTokens: 380,
-    reasoningTokens: null,
     cost: 0.5,
     requests: 2,
     convs: 1,
-    ctxMessages: null,
-    ctxSystem: null,
-    ctxReasoning: null,
-    ctxToolcalls: null,
-    ctxAgents: null,
-    ctxMcp: null,
-    ctxSkills: null,
     ...over,
-  };
+  });
 }
 
 const TODAY = new Date(2026, 6, 10); // 2026-07-10 local
