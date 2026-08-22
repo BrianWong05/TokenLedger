@@ -228,6 +228,14 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
         }
     }
 
+    // Nothing decoded is not the same as nothing consumed: a descriptor change
+    // moves `usage` out from under the field numbers above, and the replace
+    // below would delete Records this parser can no longer re-derive. Leaving
+    // the db unstamped re-parses it next Scan.
+    if events.is_empty() {
+        return;
+    }
+
     let n = events.len() as u64;
     if replace_file_events(conn, &path_str, &events).is_err() {
         result.error = Some(format!("failed to write events for {path_str}"));
@@ -241,6 +249,19 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
 /// schema we know. An export naming no generations still counts: "this Session
 /// billed nothing" is an answer, and real installs do hold such Sessions, so
 /// treating empty as failure would pin the ≥ on them for good.
+///
+/// Unlike `gemini.rs`, this path stays quiet: there, an Artifact that booked
+/// Requests and now books none is worth a warning (TOKL-23), because nothing
+/// else distinguishes a moved format from an idle Source. Here an export that
+/// names no generations is an ordinary, documented case, so warning on it
+/// would cry wolf on every Scan of a Session that really did bill nothing.
+///
+/// Since TOKL-28 such an export still stands in, but is no longer *stamped*:
+/// nothing on the wire separates a Session that billed nothing from one whose
+/// counts were renamed away, so both are re-read on every Scan. The cost is a
+/// small JSON re-parse per Scan, and a `lines_skipped` that recurs instead of
+/// firing once; the alternative is deleting Records this parser can no longer
+/// re-derive.
 fn process_export(conn: &mut Connection, path: &Path, result: &mut SourceScanResult) -> bool {
     let state = FileState { byte_offset: PARSER_VERSION, ..file_state_of(path) };
     if unchanged(conn, path, &state) {
@@ -319,6 +340,16 @@ fn process_export(conn: &mut Connection, path: &Path, result: &mut SourceScanRes
             reasoning_tokens: Some(generation.thinking),
             ctx: Default::default(),
         });
+    }
+
+    // Every count here is #[serde(default)], so a renamed field reads as zero
+    // rather than failing the schema gate above — indistinguishable from a
+    // Session that billed nothing, except that the replace below would delete
+    // Records this parser can no longer re-derive. Still `true`: refusing to
+    // write is not failing to read, and returning false would re-pin the ">="
+    // on an export that is perfectly readable.
+    if events.is_empty() {
+        return true;
     }
 
     let n = events.len() as u64;
@@ -884,6 +915,20 @@ mod tests {
         assert!(res.error.is_none(), "{:?}", res.error);
         assert_eq!(res.events_inserted, 0);
         assert_eq!(res.artifacts_unreadable, 0);
+
+        // Since TOKL-28 an empty parse is left unstamped — nothing separates
+        // this Session from one whose counts were renamed away — so it is
+        // re-read on every Scan and must keep standing in each time.
+        let export_path = convs.path().join(export_artifact::file_name("quiet"));
+        assert!(
+            crate::db::get_file_state(&conn, &export_path.to_string_lossy())
+                .unwrap()
+                .is_none(),
+            "an empty parse must not be marked scanned"
+        );
+        let again = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(again.events_inserted, 0);
+        assert_eq!(again.artifacts_unreadable, 0, "still stands in on the re-Scan");
     }
 
     // Antigravity keeps the same Session under several app data dirs, all of
@@ -1046,5 +1091,106 @@ mod tests {
         let res = scan_antigravity(&mut conn, &[Path::new("/nonexistent/conversations")]);
         assert_eq!(res.events_inserted, 0);
         assert!(res.error.is_none());
+    }
+
+    /// `usage` under a field number the reader does not look at — the protobuf
+    /// form of a rename, and what a descriptor change really looks like on the
+    /// wire. Everything else about the generation is unchanged.
+    fn gen_blob_usage_moved(model: &str, ts_secs: i64, input: u64, response: u64) -> Vec<u8> {
+        let mut usage = Vec::new();
+        usage.extend(f_varint(2, input));
+        usage.extend(f_varint(10, response));
+
+        let mut chat_model = Vec::new();
+        chat_model.extend(f_len(6, &usage)); // was #4
+        chat_model.extend(f_len(9, &f_len(4, &f_varint(1, ts_secs as u64))));
+        chat_model.extend(f_len(19, model.as_bytes()));
+
+        f_len(1, &chat_model)
+    }
+
+    // TOKL-28, the `.db` path: a conversation whose usage moved decodes to zero
+    // generations. The Records it already booked must survive, and the db must
+    // stay unstamped so the next Scan retries it.
+    #[test]
+    fn moved_usage_field_keeps_booked_db_records() {
+        let convs = tempdir().unwrap();
+        let db_path = convs.path().join("s.db");
+        let booked_gen = gen_blob("gemini-3-flash-a", 1780300000, 1132, 500, 20000, 300, 150, "r1");
+        build_db(&db_path, &[booked_gen], None);
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        assert_eq!(scan_antigravity(&mut conn, &[convs.path()]).events_inserted, 1);
+        let booked = file_state_of(&db_path);
+
+        std::fs::remove_file(&db_path).unwrap();
+        build_db(&db_path, &[gen_blob_usage_moved("gemini-3-flash-a", 1780300000, 500, 150)], None);
+        let moved = file_state_of(&db_path);
+        assert!(
+            moved.size != booked.size || moved.mtime != booked.mtime,
+            "db must look changed, or unchanged() skips it and this test proves nothing"
+        );
+
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(res.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)).unwrap(),
+            1,
+            "the empty decode must not delete Records this parser can no longer re-derive"
+        );
+
+        let state = crate::db::get_file_state(&conn, &db_path.to_string_lossy()).unwrap().unwrap();
+        assert_eq!(state.size, booked.size, "empty decode must not be marked scanned");
+    }
+
+    // TOKL-28, the export path. Every field on GenerationExport is
+    // #[serde(default)], so a renamed count reads as zero rather than failing
+    // the schema gate — it sails through as a Session that billed nothing.
+    #[test]
+    fn renamed_export_counts_keep_booked_records_and_still_stand_in() {
+        let convs = tempdir().unwrap();
+        std::fs::write(convs.path().join("exported.pb"), b"\x99encrypted").unwrap();
+        let booked = r#"{"schema":1,"conversation_id":"exported","model":"gemini-3-flash-a",
+                "project":"/Users/dev/app","generations":[
+                  {"response_id":"r1","ts":1780300000,"input":500,"output":450,
+                   "cache_read":20000,"cache_write":7,"thinking":300}]}"#;
+        write_export(convs.path(), "exported", booked);
+
+        let app = tempdir().unwrap();
+        let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
+        let first = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(first.events_inserted, 1);
+        assert_eq!(first.artifacts_unreadable, 0);
+        let export_path = convs.path().join(export_artifact::file_name("exported"));
+        let stamped = file_state_of(&export_path);
+
+        // The companion renames its count fields; the reader defaults them to 0.
+        let renamed = booked
+            .replace("\"input\":", "\"input_tokens\":")
+            .replace("\"output\":", "\"output_tokens\":")
+            .replace("\"cache_read\":", "\"cache_read_tokens\":")
+            .replace("\"cache_write\":", "\"cache_write_tokens\":");
+        assert_ne!(renamed.len(), booked.len(), "size must differ, or unchanged() skips the file");
+        write_export(convs.path(), "exported", &renamed);
+
+        let res = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(res.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)).unwrap(),
+            1,
+            "the empty parse must not delete Records this parser can no longer re-derive"
+        );
+        // The export still stands in for its `.pb`: refusing to book from it is
+        // not the same as failing to read it, and treating it as a failure would
+        // re-pin the >= marker on this Session.
+        assert_eq!(
+            res.artifacts_unreadable, 0,
+            "guarding the write must not un-stand-in the export"
+        );
+
+        let state =
+            crate::db::get_file_state(&conn, &export_path.to_string_lossy()).unwrap().unwrap();
+        assert_eq!(state.size, stamped.size, "empty parse must not be marked scanned");
     }
 }

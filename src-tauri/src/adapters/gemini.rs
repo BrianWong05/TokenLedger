@@ -1,5 +1,5 @@
 use super::unchanged;
-use crate::db::{replace_file_events, set_file_state};
+use crate::db::{file_has_events, replace_file_events, set_file_state};
 use crate::time::iso_to_epoch;
 use crate::types::{FileState, SourceScanResult, UsageEvent};
 use rusqlite::Connection;
@@ -10,6 +10,8 @@ use std::io::ErrorKind;
 use std::path::Path;
 
 const MALFORMED_ARTIFACT_WARNING: &str = "gemini: malformed or unsupported chat Artifact";
+const MOVED_ARTIFACT_WARNING: &str =
+    "gemini: a chat Artifact that had booked Requests now parses to none";
 
 #[derive(Deserialize)]
 struct SessionFile {
@@ -22,6 +24,21 @@ struct SessionFile {
 struct Message {
     id: String,
     timestamp: String,
+    model: Option<String>,
+    tokens: Option<Tokens>,
+}
+
+/// One line of the current `.jsonl` Artifact. The five line kinds — header,
+/// `$set` patch, and `gemini`/`user`/`info` records — differ only by which
+/// fields are present, so everything is optional and the caller classifies:
+/// a `sessionId` marks the header, an `id` + `timestamp` marks a record, and
+/// a `$set` patch has neither.
+#[derive(Deserialize)]
+struct JsonlLine {
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+    id: Option<String>,
+    timestamp: Option<String>,
     model: Option<String>,
     tokens: Option<Tokens>,
 }
@@ -42,13 +59,7 @@ pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path)
     let mut identities = HashSet::new();
 
     if tmp_root.is_file() {
-        let project_dir = tmp_root
-            .parent()
-            .and_then(Path::parent)
-            .and_then(Path::file_name)
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        let project = resolve_project(project_dir, &reverse);
+        let project = resolve_project(project_dir_of(tmp_root), &reverse);
         process_file(conn, tmp_root, &project, &mut result, &mut identities);
         return result;
     }
@@ -74,11 +85,23 @@ pub fn scan_gemini(conn: &mut Connection, tmp_root: &Path, projects_json: &Path)
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            // Subagent Sessions sit one level in, under `chats/<uuid>/`, and
+            // are named for their own id rather than `session-`.
+            if path.is_dir() {
+                let Ok(nested) = fs::read_dir(&path) else { continue };
+                for child in nested.flatten() {
+                    let child = child.path();
+                    if child.is_file() && is_chat_artifact(&child) {
+                        process_file(conn, &child, &project, &mut result, &mut identities);
+                    }
+                }
+                continue;
+            }
             let name = match path.file_name().and_then(|n| n.to_str()) {
                 Some(n) => n.to_string(),
                 None => continue,
             };
-            if name.starts_with("session-") && name.ends_with(".json") {
+            if name.starts_with("session-") && is_chat_artifact(&path) {
                 process_file(conn, &path, &project, &mut result, &mut identities);
             }
         }
@@ -119,9 +142,9 @@ fn process_file(
             return;
         }
     };
-    let session: SessionFile = match serde_json::from_str(&content) {
-        Ok(s) => s,
-        Err(_) => {
+    let session = match parse_session(path, &content, result) {
+        Some(s) => s,
+        None => {
             result.lines_skipped += 1;
             record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
             return;
@@ -194,6 +217,24 @@ fn process_file(
         });
     }
 
+    // Nothing parsed is not the same as nothing consumed: a Session whose usage
+    // field has moved still reads as valid JSON, and the replace below would
+    // delete Records this parser can no longer re-derive. Leaving the file
+    // unstamped re-parses it next Scan.
+    if events.is_empty() {
+        // A file that booked Requests before and books none now is the Source
+        // moving its Artifact underneath us. Keeping the Records is the right
+        // call, but doing it silently is how this Source read as idle for
+        // 3.7 months (TOKL-23) — say so.
+        // Unreadable is not "no Records": if the Ledger cannot answer, warn
+        // anyway rather than let a failed query buy the silence this whole
+        // ticket is about.
+        if file_has_events(conn, &path_str).unwrap_or(true) {
+            record_gemini_warning(result, MOVED_ARTIFACT_WARNING);
+        }
+        return;
+    }
+
     let n = events.len() as u64;
     if replace_file_events(conn, &path_str, &events).is_err() {
         result.error = Some(format!("failed to write events for {}", path_str));
@@ -201,6 +242,90 @@ fn process_file(
     }
     result.events_inserted += n;
     let _ = set_file_state(conn, &path_str, FileState { size, mtime, byte_offset: 0 });
+}
+
+/// Both Artifact shapes reduce to the same thing: a `sessionId` and the
+/// records under it. Only the framing moved on 2026-05-03 (TOKL-23) — the
+/// per-record fields, the token maths and the dedup key are unchanged.
+fn parse_session(
+    path: &Path,
+    content: &str,
+    result: &mut SourceScanResult,
+) -> Option<SessionFile> {
+    if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        return serde_json::from_str(content).ok();
+    }
+
+    // One rule governs the classification below: a line carrying counts is
+    // usage, and usage never leaves quietly. Every path that declines to book
+    // a line holding `tokens` says so, because a Request that vanishes without
+    // a word is the failure this Source spent 3.7 months demonstrating.
+    let skip = |result: &mut SourceScanResult| {
+        result.lines_skipped += 1;
+        record_gemini_warning(result, MALFORMED_ARTIFACT_WARNING);
+    };
+
+    let mut session_id = None;
+    let mut messages = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(parsed) = serde_json::from_str::<JsonlLine>(line) else {
+            // A line this reader cannot shape may still have been a Request.
+            // The file's other lines are readable, so keep the Session.
+            skip(result);
+            continue;
+        };
+        // The header names the Session and carries no counts. A line holding
+        // counts is a Request whatever else it holds, so it can never take
+        // this branch — were the Source to start stamping records with their
+        // `sessionId`, every one of them would otherwise be read as a header
+        // and dropped.
+        if parsed.tokens.is_none() {
+            if let Some(id) = parsed.session_id {
+                session_id.get_or_insert(id);
+                continue;
+            }
+        }
+        // The dedup key cannot be formed without an id. A `$set` patch has
+        // neither id nor counts and is simply not a Request; a line with counts
+        // and no id is usage this reader cannot identify, which is a warning.
+        let Some(id) = parsed.id else {
+            if parsed.tokens.is_some() {
+                skip(result);
+            }
+            continue;
+        };
+        // A missing or unreadable timestamp is left to the stamp check in the
+        // caller, which already warns.
+        messages.push(Message {
+            id,
+            timestamp: parsed.timestamp.unwrap_or_default(),
+            model: parsed.model,
+            tokens: parsed.tokens,
+        });
+    }
+    Some(SessionFile { session_id: session_id?, messages })
+}
+
+/// The Project directory is the parent of `chats/`, however deep the Artifact
+/// sits under it — a nested subagent Session is one level further down than a
+/// top-level one, so counting parents gets it wrong.
+fn project_dir_of(path: &Path) -> &str {
+    path.ancestors()
+        .find(|a| a.file_name().is_some_and(|n| n == "chats"))
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+}
+
+/// A chat Artifact in either shape. The `session-` prefix is only meaningful
+/// for a top-level Session: a nested subagent file is named for its own id.
+fn is_chat_artifact(path: &Path) -> bool {
+    matches!(path.extension().and_then(|e| e.to_str()), Some("json" | "jsonl"))
 }
 
 fn record_gemini_warning(result: &mut SourceScanResult, warning: &str) {
@@ -599,6 +724,379 @@ mod tests {
             conn.query_row("SELECT input_tokens FROM events", [], |row| row.get::<_, i64>(0))
                 .unwrap(),
             100
+        );
+    }
+
+    // TOKL-28: a Session whose usage field moved parses to zero events, and the
+    // replace below would delete the Records it already booked. Stale Records
+    // are recoverable by a re-Scan once the parser is fixed; deleted ones are
+    // not recoverable at all.
+    #[test]
+    fn renamed_token_field_keeps_booked_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let tmp_root = base.join("tmp");
+        let projects_json = base.join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
+        let session = tmp_root.join("alpha/chats/session-1.json");
+        write(&session, SESSION_ALPHA);
+        let path_str = session.to_string_lossy().to_string();
+
+        let mut conn = crate::db::open_db(&base.join("t.db")).unwrap();
+        assert_eq!(scan_gemini(&mut conn, &tmp_root, &projects_json).events_inserted, 2);
+
+        // Gemini renames `tokens` -> `usage`. Still valid JSON, still the shape
+        // serde accepts: every message simply reports no tokens.
+        let moved = SESSION_ALPHA.replace("\"tokens\":", "\"usage\":");
+        assert_ne!(
+            moved.len(),
+            SESSION_ALPHA.len(),
+            "size must differ, or unchanged() skips the file and this test proves nothing"
+        );
+        write(&session, &moved);
+
+        let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(result.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "the empty parse must not delete Records this parser can no longer re-derive"
+        );
+        // ...and it says so. Keeping the Records silently is how this Source
+        // read as idle for 3.7 months.
+        assert!(
+            result.error.as_deref().is_some_and(|e| e.contains(MOVED_ARTIFACT_WARNING)),
+            "a previously-productive Artifact that now parses to nothing must warn: {:?}",
+            result.error
+        );
+
+        // Unstamped: the state still describes the pre-rename file, so the next
+        // Scan re-reads it instead of treating the empty read as settled. This
+        // is the whole proof that the retry is real — `unchanged()` keys on
+        // size and mtime, and the stored pair no longer matches the file.
+        let state = crate::db::get_file_state(&conn, &path_str).unwrap().unwrap();
+        assert_eq!(state.size, SESSION_ALPHA.len() as i64);
+        assert_ne!(state.size, moved.len() as i64, "empty parse must not be marked scanned");
+    }
+
+    // The current chat Artifact (2026-05-03 onward): one JSON object per line.
+    // Line 0 is the session header; `$set` lines patch metadata; `user`/`info`
+    // lines carry no tokens. Shape taken from real files under ~/.gemini/tmp.
+    const SESSION_JSONL: &str = concat!(
+        r#"{"sessionId":"sess-jsonl","projectHash":"alpha","startTime":"2026-05-03T08:00:00.000Z","lastUpdated":"2026-05-03T08:05:00.000Z","kind":"session"}"#, "\n",
+        r#"{"id":"u1","timestamp":"2026-05-03T08:00:30.000Z","type":"user","content":"hi"}"#, "\n",
+        r#"{"id":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","content":"","tokens":{"input":16870,"output":40,"cached":0,"thoughts":196,"tool":0,"total":17106}}"#, "\n",
+        r#"{"$set":{"lastUpdated":"2026-05-03T08:01:35.000Z"}}"#, "\n",
+        r#"{"id":"g2","timestamp":"2026-05-03T08:02:00.000Z","type":"gemini","model":"gemini-3.1-pro-preview","content":"","tokens":{"input":20000,"output":50,"cached":4000,"thoughts":10,"tool":0,"total":20060}}"#, "\n",
+        r#"{"id":"i1","timestamp":"2026-05-03T08:03:00.000Z","type":"info","content":"Request cancelled."}"#, "\n",
+    );
+
+    fn jsonl_fixture(base: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let tmp_root = base.join("tmp");
+        let projects_json = base.join("projects.json");
+        std::fs::write(&projects_json, r#"{"projects":{"/Users/dev/projects/alpha":"alpha"}}"#)
+            .unwrap();
+        (tmp_root, projects_json)
+    }
+
+    // TOKL-23: Gemini CLI moved the chat Artifact to one JSON object per line
+    // and renamed the extension, so the Scan stopped opening the file at all.
+    #[test]
+    fn a_jsonl_session_books_its_usage_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        write(&tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"), SESSION_JSONL);
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert!(r.error.is_none(), "{:?}", r.error);
+        assert_eq!(r.events_inserted, 2, "header, $set, user and info lines are not Requests");
+
+        // sessionId comes off the header line, so the dedup key shape is unchanged.
+        let (input, output, cread, model, project, sid, reasoning): (
+            i64, i64, i64, String, String, Option<String>, Option<i64>,
+        ) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens, cache_read_tokens, model, project, \
+                        session_id, reasoning_tokens \
+                 FROM events WHERE dedup_key = 'gemini:sess-jsonl:g1'",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(input, 16870); // no cache read to exclude
+        assert_eq!(output, 236); // 40 + 196 thoughts
+        assert_eq!(cread, 0);
+        assert_eq!(model, "gemini-3.1-pro-preview");
+        assert_eq!(project, "/Users/dev/projects/alpha");
+        assert_eq!(sid, Some("sess-jsonl".to_string()));
+        assert_eq!(reasoning, Some(196));
+
+        let (i2, o2, c2): (i64, i64, i64) = conn
+            .query_row(
+                "SELECT input_tokens, output_tokens, cache_read_tokens \
+                 FROM events WHERE dedup_key = 'gemini:sess-jsonl:g2'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(i2, 16000); // 20000 - 4000 cached, per ADR-0001
+        assert_eq!(o2, 60);
+        assert_eq!(c2, 4000);
+    }
+
+    // A `.jsonl` is append-only: Gemini writes the record when the model
+    // answers, then writes it again with `toolCalls` filled in. Same id, same
+    // timestamp, same tokens — one Request, and the second copy must not book.
+    // Every tool-using Request on this machine appears exactly twice this way.
+    #[test]
+    fn a_record_reappended_with_tool_calls_books_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        let replayed = format!(
+            "{SESSION_JSONL}{}\n",
+            r#"{"id":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","content":"","toolCalls":[{"name":"read_file","result":"ok"}],"tokens":{"input":16870,"output":40,"cached":0,"thoughts":196,"tool":0,"total":17106}}"#
+        );
+        write(&tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"), &replayed);
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 2, "the re-appended record is the same Request");
+
+        let (rows, tokens): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), \
+                 COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0) \
+                 FROM events WHERE dedup_key = 'gemini:sess-jsonl:g1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(tokens, 16870 + 236, "billing the replay would double this Request");
+    }
+
+    // The same fault in the shape Gemini actually writes today: the counts move
+    // out from under `tokens`, every line still parses, and the Session books
+    // nothing. Its Records must survive, and the Scan must say so.
+    #[test]
+    fn a_jsonl_session_whose_counts_moved_keeps_its_records_and_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        let session = tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl");
+        write(&session, SESSION_JSONL);
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        assert_eq!(scan_gemini(&mut conn, &tmp_root, &projects_json).events_inserted, 2);
+
+        let moved = SESSION_JSONL.replace(r#""tokens":"#, r#""usage":"#);
+        assert_ne!(moved.len(), SESSION_JSONL.len(), "size must differ, or unchanged() skips it");
+        write(&session, &moved);
+
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "a renamed count must not delete the Requests already booked"
+        );
+        assert!(
+            r.error.as_deref().is_some_and(|e| e.contains(MOVED_ARTIFACT_WARNING)),
+            "expected the moved-Artifact warning, got {:?}",
+            r.error
+        );
+        // Unstamped, so the next Scan retries rather than settling for nothing.
+        let state = crate::db::get_file_state(&conn, &session.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.size, SESSION_JSONL.len() as i64);
+    }
+
+    // Classification must never cost a Request. This Source already moved its
+    // Artifact once (TOKL-23); were it to stamp each record with the Session it
+    // belongs to, a reader that treats any `sessionId` as the header would drop
+    // every record in the file and report an idle Source — the same silence,
+    // reached a different way. Counts decide: a line carrying them is usage.
+    #[test]
+    fn a_usage_line_is_not_mistaken_for_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        write(
+            &tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"),
+            concat!(
+                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "\n",
+                r#"{"sessionId":"sess-jsonl","id":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":600,"output":20,"cached":100,"thoughts":5,"tool":0,"total":625}}"#, "\n",
+            ),
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 1, "a record that names its Session is still a Request");
+        let (input, sid): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT input_tokens, session_id FROM events \
+                 WHERE dedup_key = 'gemini:sess-jsonl:g1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(input, 500); // 600 - 100 cached
+        assert_eq!(sid, Some("sess-jsonl".to_string()));
+    }
+
+    // A Usage Record is identified by `gemini:{sessionId}:{id}`, so a line with
+    // no id is not a Request whatever else it carries. This Source rewrites its
+    // Artifact (TOKL-23); were it to rename `id`, every usage line would share
+    // the empty identity and collapse into one phantom Record under it.
+    #[test]
+    fn a_usage_line_without_an_id_is_not_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        write(
+            &tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"),
+            concat!(
+                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "\n",
+                r#"{"messageId":"g1","timestamp":"2026-05-03T08:01:34.117Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":999,"output":9,"cached":0,"thoughts":0,"tool":0,"total":1008}}"#, "\n",
+                r#"{"messageId":"g2","timestamp":"2026-05-03T08:02:00.000Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":777,"output":7,"cached":0,"thoughts":0,"tool":0,"total":784}}"#, "\n",
+            ),
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 0);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "an unidentifiable line must not book under an empty identity"
+        );
+        // Declining to book it is only half the answer. Usage this reader
+        // cannot identify is exactly the silent-idle failure TOKL-23 exists to
+        // end, one field over, so both lines are counted and the Scan says so.
+        assert_eq!(r.lines_skipped, 2, "both unidentifiable Requests are counted");
+        assert!(
+            r.error.as_deref().is_some_and(|e| e.contains(MALFORMED_ARTIFACT_WARNING)),
+            "usage that cannot be identified must not pass in silence: {:?}",
+            r.error
+        );
+    }
+
+    // A usage line the Scan cannot stamp is skipped loudly, not dropped: the
+    // record reaches the timestamp check rather than being filtered out for
+    // want of a field the dedup key never needed.
+    #[test]
+    fn a_jsonl_record_with_an_unreadable_timestamp_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        write(
+            &tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl"),
+            concat!(
+                r#"{"sessionId":"sess-jsonl","projectHash":"alpha","kind":"session"}"#, "\n",
+                r#"{"id":"g1","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":100,"output":10,"cached":0,"thoughts":0,"tool":0,"total":110}}"#, "\n",
+            ),
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 0);
+        assert_eq!(r.lines_skipped, 1, "the record is skipped, not silently discarded");
+        assert!(
+            r.error.as_deref().is_some_and(|e| e.contains(MALFORMED_ARTIFACT_WARNING)),
+            "expected a warning, got {:?}",
+            r.error
+        );
+    }
+
+    // Scanning one Artifact directly (`tmp_root.is_file()`) must resolve the
+    // Project the same way. A nested subagent file sits one level deeper than a
+    // top-level Session, so counting parents lands on `chats` instead.
+    #[test]
+    fn a_single_nested_file_resolves_its_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        let nested = tmp_root.join("alpha/chats/abcd-1111/ldsu1h.jsonl");
+        write(
+            &nested,
+            concat!(
+                r#"{"sessionId":"ldsu1h","projectHash":"alpha","kind":"subagent"}"#, "\n",
+                r#"{"id":"c1","timestamp":"2026-05-03T08:01:40.000Z","type":"gemini","model":"gemini-3.1-pro-preview","tokens":{"input":900,"output":10,"cached":100,"thoughts":5,"tool":0,"total":915}}"#, "\n",
+            ),
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &nested, &projects_json);
+        assert_eq!(r.events_inserted, 1);
+        let project: String = conn
+            .query_row(
+                "SELECT project FROM events WHERE dedup_key = 'gemini:ldsu1h:c1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            project, "/Users/dev/projects/alpha",
+            "the Project is the parent of `chats`, however deep the Artifact sits"
+        );
+    }
+
+    // Subagent Sessions live one directory in, under `chats/<uuid>/`, and carry
+    // no `session-` prefix. Their ids do not overlap the parent's, so they are
+    // additional Requests — but only if the Scan walks into the directory.
+    #[test]
+    fn a_nested_subagent_session_books_beside_its_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        let chats = tmp_root.join("alpha/chats");
+        write(&chats.join("session-2026-05-03T08-00-abcd.jsonl"), SESSION_JSONL);
+        write(
+            &chats.join("abcd-1111/ldsu1h.jsonl"),
+            concat!(
+                r#"{"sessionId":"ldsu1h","projectHash":"alpha","startTime":"2026-05-03T08:01:00.000Z","kind":"subagent"}"#, "\n",
+                r#"{"id":"c1","timestamp":"2026-05-03T08:01:40.000Z","type":"gemini","model":"gemini-3.1-pro-preview","content":"","tokens":{"input":900,"output":10,"cached":100,"thoughts":5,"tool":0,"total":915}}"#, "\n",
+            ),
+        );
+        // The older whole-file shape also appears nested, tagged `subagent`.
+        write(
+            &chats.join("abcd-1111/e8fuq2.json"),
+            r#"{"sessionId":"e8fuq2","kind":"subagent","projectHash":"alpha","messages":[
+                 {"id":"c2","timestamp":"2026-05-03T08:02:10.000Z","type":"gemini",
+                  "model":"gemini-3.1-pro-preview",
+                  "tokens":{"input":500,"output":8,"cached":0,"thoughts":2,
+                             "tool":0,"total":510}}]}"#,
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert!(r.error.is_none(), "{:?}", r.error);
+        assert_eq!(r.events_inserted, 4, "2 parent + 1 nested jsonl + 1 nested json");
+
+        // The child's own sessionId is its identity, so it cannot collide with
+        // the parent's Records, and it inherits the parent's Project.
+        let (sid, project): (Option<String>, String) = conn
+            .query_row(
+                "SELECT session_id, project FROM events WHERE dedup_key = 'gemini:ldsu1h:c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(sid, Some("ldsu1h".to_string()));
+        assert_eq!(project, "/Users/dev/projects/alpha");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM events WHERE dedup_key = 'gemini:e8fuq2:c2'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the nested whole-file shape is missed today too"
         );
     }
 }
