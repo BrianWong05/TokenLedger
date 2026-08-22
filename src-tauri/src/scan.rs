@@ -2107,7 +2107,7 @@ mod tests {
     }
 
     #[test]
-    fn run_scan_ingests_opencode_current_and_legacy_sessions_at_session_granularity() {
+    fn run_scan_ingests_opencode_current_and_legacy_requests_at_their_own_times() {
         std::env::set_var("TZ", "UTC");
         let tmp = tempfile::tempdir().unwrap();
         let base = tmp.path();
@@ -2177,7 +2177,7 @@ mod tests {
         let mut conn = open_db(&base.join("ledger.db")).unwrap();
         let first = run_scan(&mut conn, &roots);
         let opencode = find(&first, "opencode");
-        assert_eq!(opencode.events_inserted, 2);
+        assert_eq!(opencode.events_inserted, 3);
         assert!(
             opencode.error.is_none(),
             "unexpected error: {:?}",
@@ -2190,17 +2190,28 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-            2,
-            "one Usage Record per OpenCode Session"
+            3,
+            "one Usage Record per OpenCode Request"
         );
         assert_eq!(
-            conn.query_row(
-                "SELECT timestamp FROM events WHERE session_id = 'opencode-s1'",
-                [],
-                |row| row.get::<_, i64>(0),
+            conn.prepare(
+                "SELECT session_id, timestamp FROM events
+                 WHERE source = 'opencode' ORDER BY dedup_key",
             )
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap(),
-            1_780_000_100
+            vec![
+                // The Session's own timestamp is 1_780_000_100 and belongs to
+                // no Request; a Record landing there is the pre-TOKL-24 bug.
+                ("legacy-s1".to_string(), 1_780_000_200),
+                ("opencode-s1".to_string(), 1_780_000_000),
+                ("opencode-s1".to_string(), 1_780_000_001),
+            ],
+            "each Request books at its own time; the legacy Message carries \
+             none of its own and falls back to its Session's"
         );
 
         let second = run_scan(&mut conn, &roots);
@@ -2212,7 +2223,7 @@ mod tests {
                 |row| row.get::<_, i64>(0)
             )
             .unwrap(),
-            2
+            3
         );
     }
 

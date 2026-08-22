@@ -154,7 +154,7 @@ mode — `~/Library/Application Support/com.brianwong.tokenledger/` on macOS,
 
 ## Where the numbers bend
 
-Every source logs what it wants to, not what a ledger would like. Ten of them
+Every source logs what it wants to, not what a ledger would like. Nine of them
 distort something in a way worth knowing before you trust a figure.
 
 - **Grok Build attributes a whole session to one model.** Its logs report each
@@ -181,10 +181,10 @@ distort something in a way worth knowing before you trust a figure.
   Goose's cache-write bucket has no TTL, so TokenLedger books it as 5-minute
   Cache write; Goose's logged Cost is ignored and repriced from TokenLedger's
   rates.
-- **OpenCode, Kilo, and Zed book at Session granularity.** Their supported
-  Artifacts prove Session totals but not a trustworthy timestamp for every
-  Request, so each usage-bearing Session becomes one Usage Record at the
-  Session's updated timestamp. Trend and Activity are honest about that coarse
+- **Kilo and Zed book at Session granularity.** Their supported Artifacts
+  prove Session totals but not a trustworthy timestamp for every Request, so
+  each usage-bearing Session becomes one Usage Record at the Session's updated
+  timestamp. Trend and Activity are honest about that coarse
   timing rather than inventing per-Request points; see the `docs/source-evidence/`
   records for the exact supported shapes.
 - **WorkBuddy and CodeBuddy share one parser with two cache conventions.** Their
@@ -229,13 +229,12 @@ stored, and TokenLedger never starts, controls, or authenticates Cline.
 
 TokenLedger reads OpenCode's local SQLite database (`opencode.db` and
 `opencode-<channel>.db` variants) and legacy JSON storage under the supported
-platform roots, overridable with `OPENCODE_DB` and `OPENCODE_DATA_DIR`. The
-database's Session totals are booked as one Usage Record per usage-bearing
-Session at the Session's updated timestamp, because the supported Artifact does
-not prove a trustworthy per-Request timestamp. Unknown or unproven Models
-become Unattributed Usage rather than being guessed from the last Model in a
-Session. TokenLedger never starts OpenCode, authenticates, or performs any
-remote synchronization; no conversation content is stored.
+platform roots, overridable with `OPENCODE_DB` and `OPENCODE_DATA_DIR`. Usage
+is booked as one Usage Record per Request, at the timestamp the Artifact stamps
+that Request with; a Request carrying none falls back to its Session's. Unknown
+or unproven Models become Unattributed Usage rather than being guessed from the
+last Model in a Session. TokenLedger never starts OpenCode, authenticates, or
+performs any remote synchronization; no conversation content is stored.
 
 ## Kilo
 

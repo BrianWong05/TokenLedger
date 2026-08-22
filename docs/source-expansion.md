@@ -86,8 +86,8 @@ Oh My Pi Source rather than becoming another pi root.
 
 This ordering is a preference, not a reason to wait: whichever candidate first
 crosses the private-artifact gate may be implemented first. Each new Source
-lands independently. OpenCode, Kilo, and Zed use Session-level Usage Records
-at the Session's updated timestamp when their supported Artifact exposes no
+lands independently. Kilo and Zed use Session-level Usage Records at the
+Session's updated timestamp when their supported Artifact exposes no
 trustworthy finer timing.
 
 ## Ready after a private Artifact
