@@ -47,6 +47,7 @@ pub struct Summary {
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
+#[allow(dead_code)] // IPC command removed; queries tests still construct via trend().
 pub struct TrendPoint {
     pub bucket: String,
     #[ts(type = "number")]
@@ -281,6 +282,7 @@ pub fn summary(conn: &Connection, f: &Filters) -> rusqlite::Result<Summary> {
     })
 }
 
+#[cfg(test)]
 pub fn trend(conn: &Connection, f: &Filters, bucket: &str) -> rusqlite::Result<Vec<TrendPoint>> {
     let hourly = hourly_flag(bucket);
     let rates = RateMap::load(conn)?;
@@ -646,6 +648,34 @@ pub fn breakdown(conn: &Connection, by: &str, f: &Filters) -> rusqlite::Result<V
         })
         .collect();
     out.sort_by(|x, y| y.total_tokens.cmp(&x.total_tokens));
+    Ok(out)
+}
+
+/// One date window of the Ledger's priced facts: Summary plus the three
+/// breakdowns. Source selection is a presentation filter, not a query filter.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct LedgerWindow {
+    pub summary: Summary,
+    pub models: Vec<BreakdownRow>,
+    pub projects: Vec<BreakdownRow>,
+    /// Breakdown by Source (`breakdown(..., "tool")`).
+    pub sources: Vec<BreakdownRow>,
+}
+
+/// The four priced reads as one snapshot, so a Scan cannot commit between
+/// Summary and a breakdown — the same reason `limits` holds an unchecked
+/// transaction.
+pub fn window(conn: &Connection, f: &Filters) -> rusqlite::Result<LedgerWindow> {
+    let read = conn.unchecked_transaction()?;
+    let out = LedgerWindow {
+        summary: summary(conn, f)?,
+        models: breakdown(conn, "model", f)?,
+        projects: breakdown(conn, "project", f)?,
+        sources: breakdown(conn, "tool", f)?,
+    };
+    read.finish()?;
     Ok(out)
 }
 
@@ -1817,6 +1847,25 @@ mod tests {
         assert_eq!(rows[0].total_tokens, 4850);
         assert_eq!(rows[1].key.as_deref(), Some("unknown"));
         assert_eq!(rows[1].total_tokens, 400);
+    }
+
+    #[test]
+    fn window_matches_the_four_priced_reads() {
+        let (_dir, conn) = seed();
+        let f = Filters::default();
+        let w = window(&conn, &f).unwrap();
+        let s = summary(&conn, &f).unwrap();
+        assert_eq!(w.summary.total_tokens, s.total_tokens);
+        assert_eq!(w.summary.cost, s.cost);
+        assert_eq!(w.summary.has_unpriced, s.has_unpriced);
+        assert_eq!(w.summary.unattributed_tokens, s.unattributed_tokens);
+        assert_eq!(w.summary.convs, s.convs);
+        let keys = |rows: &[BreakdownRow]| {
+            rows.iter().map(|r| (r.key.clone(), r.source.clone(), r.total_tokens, r.cost)).collect::<Vec<_>>()
+        };
+        assert_eq!(keys(&w.models), keys(&breakdown(&conn, "model", &f).unwrap()));
+        assert_eq!(keys(&w.projects), keys(&breakdown(&conn, "project", &f).unwrap()));
+        assert_eq!(keys(&w.sources), keys(&breakdown(&conn, "tool", &f).unwrap()));
     }
 
     #[test]

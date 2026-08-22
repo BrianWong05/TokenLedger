@@ -43,7 +43,7 @@ const summary: Summary = {
   unattributedTokens: 0, unpricedModels: [], cacheEstimatedModels: [], cacheHitRate: 0, convs: 0,
 };
 
-const toolRows: BreakdownRow[] = [
+const sourceRows: BreakdownRow[] = [
   { key: 'claude', source: null, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0,
     cacheWriteTokens: 0, totalTokens: 1_800_000, requests: 0, cost: 6.12,
     reasoningTokens: null, convs: 0, cacheEstimated: false, hasUnpriced: false,
@@ -114,7 +114,7 @@ afterEach(() => {
 
 describe('TrayPanel', () => {
   it('renders the panel from the Ledger: header, source bar and legend, actions', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const settings = makeFakeSettings();
 
     const container = document.createElement('div');
@@ -173,7 +173,7 @@ describe('TrayPanel', () => {
   it('marks the token figure ≥ when an Unreadable Artifact could touch the window', async () => {
     const ledger = makeFakeLedger({
       summary,
-      modelRows: toolRows,
+      modelRows: sourceRows,
       scan: {
         scannedAt: 0,
         ingestRev: 0,
@@ -204,10 +204,10 @@ describe('TrayPanel', () => {
   it('renders the Models section and the stat tiles from the extra reads', async () => {
     const ledger = makeFakeLedger({
       summary: { ...summary, cacheHitRate: 0.9124 },
-      toolRows,
+      sourceRows,
       modelRows: [
-        { ...toolRows[0], key: 'claude-sonnet-4-5', source: 'claude', cost: 6.12 },
-        { ...toolRows[1], key: 'gpt-5-codex', source: 'codex', cost: 1.11 },
+        { ...sourceRows[0], key: 'claude-sonnet-4-5', source: 'claude', cost: 6.12 },
+        { ...sourceRows[1], key: 'gpt-5-codex', source: 'codex', cost: 1.11 },
       ],
       lastScan: Math.floor(Date.now() / 1000) - 132,
     });
@@ -256,7 +256,7 @@ describe('TrayPanel', () => {
   it('draws the bar chart for the selected period and rebuckets on a switch', async () => {
     const ledger = makeFakeLedger({
       summary,
-      toolRows,
+      sourceRows,
       dayPoints: [point(day(1), 3), point(day(0), 9)],
     });
     const container = document.createElement('div');
@@ -293,7 +293,7 @@ describe('TrayPanel', () => {
   it('hovering the chart reads out that bucket; leaving clears the read-out', async () => {
     const ledger = makeFakeLedger({
       summary,
-      toolRows,
+      sourceRows,
       dayPoints: [point(day(1), 3), point(day(0), 9)],
     });
     const container = document.createElement('div');
@@ -350,7 +350,7 @@ describe('TrayPanel', () => {
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
     const piRow: BreakdownRow = {
-      ...toolRows[0],
+      ...sourceRows[0],
       key: 'pi',
       totalTokens: 239,
       requests: 3,
@@ -375,7 +375,7 @@ describe('TrayPanel', () => {
   it('renders all-Unattributed headline and Source Cost as unavailable', async () => {
     const ledger = makeFakeLedger({
       summary: { ...summary, totalTokens: 50, requests: 1, cost: null, unattributedTokens: 50 },
-      modelRows: [{ ...toolRows[0], totalTokens: 50, cost: null, unattributedTokens: 50 }],
+      modelRows: [{ ...sourceRows[0], totalTokens: 50, cost: null, unattributedTokens: 50 }],
     });
     const container = document.createElement('div');
     document.body.append(container);
@@ -415,7 +415,7 @@ describe('TrayPanel', () => {
   // the last scan and Rescan is the only way to current ones. Holding the scan
   // pins the other half: the paint does not wait on it.
   it('rescans on open, without holding the paint behind the scan', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     ledger.hold('scan');
 
     const container = document.createElement('div');
@@ -447,7 +447,7 @@ describe('TrayPanel', () => {
   // and the gate still releases — a stranded one would leave Rescan disabled
   // for the life of the window and swallow every later open.
   it('survives a failed scan — still paints, and Rescan still works after', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     ledger.failNext('scan', new Error('scan blew up'));
     const container = document.createElement('div');
     document.body.append(container);
@@ -470,7 +470,7 @@ describe('TrayPanel', () => {
   // A window the tray reshows instead of rebuilding gets no mount, so the
   // scan-on-open has to hang off panel-shown too.
   it('rescans again when the tray reshows an existing panel', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -491,7 +491,7 @@ describe('TrayPanel', () => {
   });
 
   it('Rescan runs the scan through the ledger port and refetches', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const settings = makeFakeSettings();
     const container = document.createElement('div');
     document.body.append(container);
@@ -513,7 +513,7 @@ describe('TrayPanel', () => {
   });
 
   it('Rescan spins while the scan runs and settles when it lands', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const settings = makeFakeSettings();
     const container = document.createElement('div');
     document.body.append(container);
@@ -549,7 +549,7 @@ describe('TrayPanel', () => {
   });
 
   it('period segments switch the fetched window and refetch without the skeleton', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const settings = makeFakeSettings();
     const container = document.createElement('div');
     document.body.append(container);
@@ -582,7 +582,7 @@ describe('TrayPanel', () => {
   });
 
   it('shows the loading skeleton while the panel load is in flight', async () => {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const settings = makeFakeSettings();
     ledger.hold('summary');
 
@@ -622,7 +622,7 @@ describe('TrayPanel', () => {
       await act(async () => {
         root.render(
           <TrayPanel
-            ports={{ ledger: makeFakeLedger({ summary, modelRows: toolRows }), settings: makeFakeSettings() }}
+            ports={{ ledger: makeFakeLedger({ summary, modelRows: sourceRows }), settings: makeFakeSettings() }}
             platform={platform}
           />,
         );
@@ -649,7 +649,7 @@ describe('TrayPanel', () => {
       await act(async () => {
         root.render(
           <TrayPanel
-            ports={{ ledger: makeFakeLedger({ summary, modelRows: toolRows }), settings: makeFakeSettings() }}
+            ports={{ ledger: makeFakeLedger({ summary, modelRows: sourceRows }), settings: makeFakeSettings() }}
             platform={platform}
           />,
         );
@@ -672,7 +672,7 @@ describe('TrayPanel', () => {
   describe('keyboard', () => {
     const mount = async (
       platform: Platform,
-      ledger = makeFakeLedger({ summary, modelRows: toolRows }),
+      ledger = makeFakeLedger({ summary, modelRows: sourceRows }),
     ) => {
       const container = document.createElement('div');
       document.body.append(container);
@@ -868,7 +868,7 @@ describe('TrayPanel limits', () => {
   }
 
   async function mountWithLimits(limits: LimitsPort) {
-    const ledger = makeFakeLedger({ summary, modelRows: toolRows });
+    const ledger = makeFakeLedger({ summary, modelRows: sourceRows });
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);

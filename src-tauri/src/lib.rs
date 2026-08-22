@@ -68,8 +68,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use pricing::{ModelPricing, RatesPerTok};
 use queries::{
-    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, SeriesPoint,
-    SourceLimits, Summary, TrendPoint,
+    BreakdownRow, CtxBuckets, CtxExecRow, CtxResource, CtxSkillRow, CtxToolRow, Filters, LedgerWindow,
+    SeriesPoint, SourceLimits, Summary,
 };
 use scan::{run_scan, SourceRoots};
 use settings::{Settings, UpdateStatus};
@@ -425,13 +425,11 @@ fn summary(state: State<'_, AppState>, filters: Filters) -> Result<Summary, Stri
     read(&state, |db| queries::summary(db, &filters))
 }
 
+/// One date window of priced facts: Summary plus Model, Project, and Source
+/// breakdowns, under one read transaction. Cost-only callers keep `summary`.
 #[tauri::command(async)]
-fn trend(
-    state: State<'_, AppState>,
-    filters: Filters,
-    bucket: String,
-) -> Result<Vec<TrendPoint>, String> {
-    read(&state, |db| queries::trend(db, &filters, &bucket))
+fn window(state: State<'_, AppState>, filters: Filters) -> Result<LedgerWindow, String> {
+    read(&state, |db| queries::window(db, &filters))
 }
 
 #[tauri::command(async)]
@@ -860,7 +858,7 @@ pub fn run() {
             unreadable_artifacts,
             export_antigravity,
             summary,
-            trend,
+            window,
             series,
             breakdown,
             ctx_resources,

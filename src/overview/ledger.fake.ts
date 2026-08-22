@@ -8,6 +8,7 @@ import type {
   SourceUnreadable,
   SeriesPoint,
   Summary,
+  LedgerWindow,
   BreakdownRow,
   CtxResource,
   CtxBuckets,
@@ -31,7 +32,7 @@ interface Data {
   modelRows: BreakdownRow[];
   // Source rows (breakdown('tool')); falls back to modelRows so the callers
   // that only care about one list stay a one-field seed.
-  toolRows?: BreakdownRow[];
+  sourceRows?: BreakdownRow[];
   projectRows: BreakdownRow[];
   ctxResources: CtxResource[];
   ctxBuckets: CtxBuckets[];
@@ -55,6 +56,9 @@ export interface FakeLedger extends LedgerPort {
   held(method: string): Deferred[];
   resolveHeld(method: string, index: number, value?: unknown): void;
   emitPricesRebuilt(): void;
+  // The canned window() payload, optionally with a Summary override so a
+  // held reload can land two different windows.
+  windowPayload(summary?: Summary): LedgerWindow;
 }
 
 const EMPTY_SUMMARY: Summary = {
@@ -74,13 +78,20 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     ...seed,
   };
   const calls: Record<string, unknown[][]> = {
-    scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], breakdown: [],
+    scan: [], lastScan: [], unreadableArtifacts: [], exportAntigravity: [], series: [], summary: [], window: [], breakdown: [],
     ctxResources: [], ctxBuckets: [], ctxTools: [], ctxSkills: [], ctxExec: [],
   };
   const fails = new Map<string, unknown>();
   const holds = new Set<string>();
   const heldMap: Record<string, Deferred[]> = {};
   const priceCbs = new Set<() => void>();
+
+  const windowPayload = (summary?: Summary): LedgerWindow => ({
+    summary: summary ?? data.summary,
+    models: data.modelRows,
+    projects: data.projectRows,
+    sources: data.sourceRows ?? data.modelRows,
+  });
 
   const cannedFor = (method: string, args: unknown[]): unknown => {
     switch (method) {
@@ -90,9 +101,10 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
       case 'exportAntigravity': return data.exportReport ?? 'exported 0 Session(s), 0 generation(s)';
       case 'series': return args[1] === 'hour' ? data.hourPoints : data.dayPoints;
       case 'summary': return data.summary;
+      case 'window': return windowPayload();
       case 'breakdown':
         if (args[0] === 'project') return data.projectRows;
-        if (args[0] === 'tool') return data.toolRows ?? data.modelRows;
+        if (args[0] === 'tool') return data.sourceRows ?? data.modelRows;
         return data.modelRows;
       case 'ctxResources': return data.ctxResources;
       case 'ctxBuckets': return data.ctxBuckets;
@@ -127,6 +139,8 @@ export function makeFakeLedger(seed: Partial<Data> = {}): FakeLedger {
     series: (filters: Filters, bucket: 'day' | 'hour') =>
       respond('series', [filters, bucket]) as Promise<SeriesPoint[]>,
     summary: (filters: Filters) => respond('summary', [filters]) as Promise<Summary>,
+    window: (filters: Filters) => respond('window', [filters]) as Promise<LedgerWindow>,
+    windowPayload,
     breakdown: (by: 'model' | 'project' | 'tool', filters: Filters) =>
       respond('breakdown', [by, filters]) as Promise<BreakdownRow[]>,
     ctxResources: (filters: Filters) =>

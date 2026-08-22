@@ -4,6 +4,7 @@ import type {
   SourceLimits,
   SourceUnreadable,
   Summary,
+  LedgerWindow,
   SeriesPoint,
   BreakdownRow,
   CtxResource,
@@ -45,6 +46,12 @@ export function exportAntigravity(): Promise<string> {
 
 export function fetchSummary(filters: Filters): Promise<Summary> {
   return invoke('summary', { filters });
+}
+
+// One date window of priced facts: Summary plus Model, Project, and Source
+// breakdowns. Cost-only callers keep fetchSummary.
+export function fetchWindow(filters: Filters): Promise<LedgerWindow> {
+  return invoke('window', { filters });
 }
 
 export function fetchSeries(

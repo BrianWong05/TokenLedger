@@ -3,6 +3,7 @@
 export type { Filters } from './bindings/Filters';
 export type { Summary } from './bindings/Summary';
 export type { TrendPoint } from './bindings/TrendPoint';
+export type { LedgerWindow } from './bindings/LedgerWindow';
 export type { SeriesPoint } from './bindings/SeriesPoint';
 export type { BreakdownRow } from './bindings/BreakdownRow';
 export type { CtxResource } from './bindings/CtxResource';

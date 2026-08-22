@@ -51,6 +51,7 @@ import type {
   SourceUnreadable,
   SeriesPoint,
   Summary,
+  LedgerWindow,
   BreakdownRow,
   CtxResource,
   CtxSkillRow,
@@ -183,7 +184,7 @@ class Store implements OverviewStore {
   private snapshot: OverviewSnapshot;
   private listeners = new Set<() => void>();
   // Reload results by window (filters + hourly day): returning to a window
-  // already fetched since the last scan skips the 10-query fan-out and
+  // already fetched since the last scan skips the window fan-out and
   // repatches the exact same references, so the memoized panels don't
   // re-render either. Cleared at EVERY refresh — the idle gate's zero-insert
   // signal cannot stand in for "unchanged", because keep-max adapters upgrade
@@ -315,7 +316,7 @@ class Store implements OverviewStore {
 
     // Idle tick: nothing ingested, no source errored, data already on screen —
     // the Ledger is bit-identical to what's rendered, so skip the series fetch
-    // and the 9-query reload. This is the every-30s steady state of an open
+    // and the window reload. This is the every-30s steady state of an open
     // app; the skip is what lets it sit at ~0 CPU instead of re-rendering the
     // whole Overview each tick. Prices-rebuilt still forces a reload via its
     // own listener.
@@ -553,9 +554,9 @@ class Store implements OverviewStore {
     this.publish();
   }
 
-  // All jobs land as ONE patch/publish: nine individual landings would
-  // re-render the dashboard nine times per reload (visible as a long-task
-  // burst every refresh tick).
+  // All jobs land as ONE patch/publish: individual landings would re-render
+  // the dashboard once per hop per reload (visible as a long-task burst
+  // every refresh tick).
   private runReload(epoch: number, filters: Filters, hourDay: string | null, key: string) {
     // Both the success and the failure path land, so a reload that throws
     // clears `reloading` too — fetchError is how a failure is reported, and
@@ -585,9 +586,13 @@ class Store implements OverviewStore {
     if (this.state.hourPoints.length && held !== hourDay) {
       this.patch({ hourPoints: [] });
     }
-    const apply = ([summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour, sourceRows]: ReloadResult) =>
+    const apply = ([win, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, hour]: ReloadResult) =>
       this.patch({
-        summary, modelRows, projectRows, ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows, sourceRows,
+        summary: win.summary,
+        modelRows: win.models,
+        projectRows: win.projects,
+        sourceRows: win.sources,
+        ctxResources, ctxBuckets, ctxToolRows, ctxSkillRows, ctxExecRows,
         ...(hour ? { hourPoints: hour } : {}),
         fetchError: null,
       });
@@ -597,16 +602,13 @@ class Store implements OverviewStore {
       return;
     }
     Promise.all([
-      L.summary(filters),
-      L.breakdown('model', filters),
-      L.breakdown('project', filters),
+      L.window(filters),
       L.ctxResources(filters),
       L.ctxBuckets(filters),
       L.ctxTools(filters),
       L.ctxSkills(filters),
       L.ctxExec(filters),
       hourDay ? L.series(filters, 'hour') : null,
-      L.breakdown('tool', filters),
     ])
       .then((result) =>
         land(() => {
@@ -638,20 +640,16 @@ class Store implements OverviewStore {
   }
 }
 
-// What one reload fetches, in Promise.all order: summary, the model and
-// project breakdowns, the five ctx reads, the optional hourly series, and
-// last the Source breakdown.
+// What one reload fetches, in Promise.all order: the date window's priced
+// facts, the five Context reads, and the optional hourly series.
 type ReloadResult = [
-  Summary,
-  BreakdownRow[],
-  BreakdownRow[],
+  LedgerWindow,
   CtxResource[],
   CtxBuckets[],
   CtxToolRow[],
   CtxSkillRow[],
   CtxExecRow[],
   SeriesPoint[] | null,
-  BreakdownRow[],
 ];
 
 export function createOverviewStore(ports?: {
@@ -765,7 +763,7 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     // holds a same-window change still, and the entrance is spent once). The
     // post-scan SERIES earns it, not the Summary: the series is what `total`
     // reads while the window fan-out is in flight, and it lands one query pair
-    // after the scan rather than ten. A Summary alone would not do — the
+    // after the scan rather than waiting on that reload. A Summary alone would not do — the
     // launch's provisional one describes a pre-scan Ledger.
     headline: {
       total: s.reloading ? total : s.summary?.totalTokens ?? total,
