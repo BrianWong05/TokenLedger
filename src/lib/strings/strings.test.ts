@@ -56,6 +56,22 @@ describe('strings', () => {
     }
   });
 
+  // Same rule, second term: CONTEXT.md's *Unbooked Request* rejects "dropped",
+  // "lost", "zero-token record" and "skipped". "Skipped" is the sharp one — the
+  // Overview already says it about unrecognised log lines two elements away
+  // (overview.scanSkipped, overview.scanNotice*), and reusing it here would
+  // merge a line the parser could not read with a Request it read fine and
+  // could not book. Different facts, different remedies, different words.
+  it('uses the Unbooked Request vocabulary, not the synonyms CONTEXT.md rejects', () => {
+    const rejected = /\bdropped\b|\blost\b|\bskipped\b|zero-token|遺失|遺漏|略過/i;
+    for (const [lang, entries] of Object.entries(overview)) {
+      for (const [key, value] of Object.entries(entries as Record<string, string>)) {
+        if (!/unbooked/i.test(key)) continue;
+        expect(value, `overview.${lang}.${key}`).not.toMatch(rejected);
+      }
+    }
+  });
+
   // 限額 is the domain word for Limit itself (the tab is titled with it), and
   // 限額時段 — a Limit window — is its one legitimate estimate use. The compound
   // "token 限額" is different: it names the vendor token quota the estimate must
