@@ -249,6 +249,13 @@ fn process_db(conn: &mut Connection, db_path: &Path, result: &mut SourceScanResu
 /// schema we know. An export naming no generations still counts: "this Session
 /// billed nothing" is an answer, and real installs do hold such Sessions, so
 /// treating empty as failure would pin the ≥ on them for good.
+///
+/// Since TOKL-28 such an export still stands in, but is no longer *stamped*:
+/// nothing on the wire separates a Session that billed nothing from one whose
+/// counts were renamed away, so both are re-read on every Scan. The cost is a
+/// small JSON re-parse per Scan, and a `lines_skipped` that recurs instead of
+/// firing once; the alternative is deleting Records this parser can no longer
+/// re-derive.
 fn process_export(conn: &mut Connection, path: &Path, result: &mut SourceScanResult) -> bool {
     let state = FileState { byte_offset: PARSER_VERSION, ..file_state_of(path) };
     if unchanged(conn, path, &state) {
@@ -1089,7 +1096,8 @@ mod tests {
     fn moved_usage_field_keeps_booked_db_records() {
         let convs = tempdir().unwrap();
         let db_path = convs.path().join("s.db");
-        build_db(&db_path, &[gen_blob("gemini-3-flash-a", 1780300000, 1132, 500, 20000, 300, 150, "r1")], None);
+        let booked_gen = gen_blob("gemini-3-flash-a", 1780300000, 1132, 500, 20000, 300, 150, "r1");
+        build_db(&db_path, &[booked_gen], None);
 
         let app = tempdir().unwrap();
         let mut conn = open_db(&app.path().join("ledger.db")).unwrap();
@@ -1156,9 +1164,13 @@ mod tests {
         // The export still stands in for its `.pb`: refusing to book from it is
         // not the same as failing to read it, and treating it as a failure would
         // re-pin the >= marker on this Session.
-        assert_eq!(res.artifacts_unreadable, 0, "guarding the write must not un-stand-in the export");
+        assert_eq!(
+            res.artifacts_unreadable, 0,
+            "guarding the write must not un-stand-in the export"
+        );
 
-        let state = crate::db::get_file_state(&conn, &export_path.to_string_lossy()).unwrap().unwrap();
+        let state =
+            crate::db::get_file_state(&conn, &export_path.to_string_lossy()).unwrap().unwrap();
         assert_eq!(state.size, stamped.size, "empty parse must not be marked scanned");
     }
 }

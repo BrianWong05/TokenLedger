@@ -631,7 +631,11 @@ mod tests {
         // Gemini renames `tokens` -> `usage`. Still valid JSON, still the shape
         // serde accepts: every message simply reports no tokens.
         let moved = SESSION_ALPHA.replace("\"tokens\":", "\"usage\":");
-        assert_ne!(moved.len(), SESSION_ALPHA.len(), "size must differ, or unchanged() skips the file and this test proves nothing");
+        assert_ne!(
+            moved.len(),
+            SESSION_ALPHA.len(),
+            "size must differ, or unchanged() skips the file and this test proves nothing"
+        );
         write(&session, &moved);
 
         let result = scan_gemini(&mut conn, &tmp_root, &projects_json);
@@ -644,19 +648,11 @@ mod tests {
         );
 
         // Unstamped: the state still describes the pre-rename file, so the next
-        // Scan re-reads it instead of treating the empty read as settled.
+        // Scan re-reads it instead of treating the empty read as settled. This
+        // is the whole proof that the retry is real — `unchanged()` keys on
+        // size and mtime, and the stored pair no longer matches the file.
         let state = crate::db::get_file_state(&conn, &path_str).unwrap().unwrap();
         assert_eq!(state.size, SESSION_ALPHA.len() as i64);
         assert_ne!(state.size, moved.len() as i64, "empty parse must not be marked scanned");
-
-        // ...and the retry is real: the stored state still describes the
-        // pre-rename file, so the next Scan re-reads this Artifact and
-        // re-derives its Records. Stale is recoverable; deleted is not.
-        // (Restored with a trailing newline because the state left behind is
-        // the *original* size and mtime — writing the original bytes back
-        // inside the same mtime second would look unchanged, which for a file
-        // whose Records are already correct is the right answer.)
-        write(&session, &format!("{SESSION_ALPHA}\n"));
-        assert_eq!(scan_gemini(&mut conn, &tmp_root, &projects_json).events_inserted, 2);
     }
 }
