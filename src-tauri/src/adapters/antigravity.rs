@@ -909,6 +909,20 @@ mod tests {
         assert!(res.error.is_none(), "{:?}", res.error);
         assert_eq!(res.events_inserted, 0);
         assert_eq!(res.artifacts_unreadable, 0);
+
+        // Since TOKL-28 an empty parse is left unstamped — nothing separates
+        // this Session from one whose counts were renamed away — so it is
+        // re-read on every Scan and must keep standing in each time.
+        let export_path = convs.path().join(export_artifact::file_name("quiet"));
+        assert!(
+            crate::db::get_file_state(&conn, &export_path.to_string_lossy())
+                .unwrap()
+                .is_none(),
+            "an empty parse must not be marked scanned"
+        );
+        let again = scan_antigravity(&mut conn, &[convs.path()]);
+        assert_eq!(again.events_inserted, 0);
+        assert_eq!(again.artifacts_unreadable, 0, "still stands in on the re-Scan");
     }
 
     // Antigravity keeps the same Session under several app data dirs, all of
