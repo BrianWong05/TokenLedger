@@ -336,7 +336,7 @@ fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
                 ))
             })
             .map_err(|error| format!("{SOURCE}: message read failed: {error}"))?;
-        let mut booked = false;
+        let mut booked: Vec<String> = Vec::new();
         for message in message_rows {
             let (message_id, data, message_time) =
                 message.map_err(|error| format!("{SOURCE}: message row failed: {error}"))?;
@@ -345,23 +345,29 @@ fn scan_database(path: &Path) -> Result<OpencodeScan, String> {
                     ParsedMessage::NotUsage => {}
                     ParsedMessage::Zero => scan.lines_skipped += 1,
                     ParsedMessage::Usage(snapshot) => {
+                        let dedup_key = message_dedup_key(&session_id, &message_id);
+                        booked.push(dedup_key.clone());
                         scan.events.push(snapshot.event(MessageBooking {
-                            dedup_key: message_dedup_key(&session_id, &message_id),
+                            dedup_key,
                             session_id: session_id.clone(),
                             timestamp: message_timestamp(message_time, timestamp),
                             project: project.clone(),
                             source_file: path.to_path_buf(),
                         }));
-                        booked = true;
                     }
                     ParsedMessage::Invalid => scan.lines_skipped += 1,
                 },
                 Err(_) => scan.lines_skipped += 1,
             }
         }
-        if booked {
+        // Only a Session that booked something supersedes its own aggregate.
+        // A parse that suddenly yields nothing — a renamed token field — must
+        // leave the pre-TOKL-24 Record standing, on TOKL-28's reasoning: the
+        // aggregate is then the only surviving evidence, and this parser can no
+        // longer re-derive it.
+        if !booked.is_empty() {
             scan.superseded
-                .extend(supersedes_session_aggregates(&session_id));
+                .extend(supersedes_session_aggregates(&session_id, &booked));
         }
     }
 
@@ -448,6 +454,7 @@ fn scan_legacy_session(
         });
     };
     let mut scan = OpencodeScan::default();
+    let mut booked: Vec<String> = Vec::new();
     let project = absolute_project(value.get("directory").and_then(Value::as_str));
     let messages = message_root.join(&session_id);
     let mut message_files = Vec::new();
@@ -473,8 +480,10 @@ fn scan_legacy_session(
             ParsedMessage::Zero | ParsedMessage::Invalid => scan.lines_skipped += 1,
             ParsedMessage::Usage(snapshot) => {
                 let message_id = legacy_message_id(&value, &message_path, &messages);
+                let dedup_key = message_dedup_key(&session_id, &message_id);
+                booked.push(dedup_key.clone());
                 scan.events.push(snapshot.event(MessageBooking {
-                    dedup_key: message_dedup_key(&session_id, &message_id),
+                    dedup_key,
                     session_id: session_id.clone(),
                     timestamp: message_timestamp(json_message_created_ms(&value), timestamp),
                     project: project.clone(),
@@ -483,9 +492,9 @@ fn scan_legacy_session(
             }
         }
     }
-    if !scan.events.is_empty() {
+    if !booked.is_empty() {
         scan.superseded
-            .extend(supersedes_session_aggregates(&session_id));
+            .extend(supersedes_session_aggregates(&session_id, &booked));
     }
     Ok(scan)
 }
@@ -501,11 +510,29 @@ fn scan_legacy_session(
 /// a Record that is not superseded keeps its old Model name for ever and
 /// stays permanently Unpriced. GLOB, not LIKE, so the `_` in OpenCode
 /// session ids stays literal.
-fn supersedes_session_aggregates(session_id: &str) -> [String; 2] {
-    [
-        format!("{SOURCE}:session:{session_id}"),
-        format!("{SOURCE}:session:{session_id}:*"),
-    ]
+///
+/// Deliberately NOT the blanket `…:session:<sid>:*`. That pattern also matches
+/// the `…:message:<id>` keys this parser writes, so a Request the Artifact no
+/// longer holds — OpenCode compacts a Session's messages, and `message` rows
+/// CASCADE — had its Record DELETEd and never re-INSERTed. CONTEXT.md (Ledger)
+/// allows a scan to delete a Record only "to supersede a coarser Record with
+/// the finer Records the Source proves stand in its place"; a pruned Request
+/// has nothing standing in its place, so it keeps the Record it already
+/// proved. Naming the two legacy split shapes instead of globbing them is what
+/// lets the pruned Record survive.
+///
+/// `booked` carries the key of every Request this parse did book, so a present
+/// Request is still DELETEd and re-INSERTed. That preserves the whole reason
+/// the per-Request key is Session-scoped: `translate_antigravity` learning a
+/// new alias must update the Record's Model rather than land on ON CONFLICT,
+/// which skips the Immutable `model` column and would freeze it Unpriced.
+fn supersedes_session_aggregates(session_id: &str, booked: &[String]) -> Vec<String> {
+    let mut patterns = Vec::with_capacity(booked.len() + 3);
+    patterns.push(format!("{SOURCE}:session:{session_id}"));
+    patterns.push(format!("{SOURCE}:session:{session_id}:model:*"));
+    patterns.push(format!("{SOURCE}:session:{session_id}:unattributed"));
+    patterns.extend(booked.iter().cloned());
+    patterns
 }
 
 /// One Usage Record per Request, keyed on the Message that is that Request.
@@ -1541,37 +1568,100 @@ mod tests {
             "unexpected scan error: {:?}",
             fourth.error
         );
+        // The Ledger outlives the Source's logs (CONTEXT.md, Ledger): a scan
+        // deletes a Record only to supersede it with the finer Records that
+        // stand in its place, and a pruned Request has none. m2's Record must
+        // survive the Session it is no longer in.
+        //
+        // Mutation check: widen `supersedes_session_aggregates` back to the
+        // blanket `…:session:<sid>:*` and this assertion drops to 1.
+        let surviving: Vec<(String, Option<String>, i64, i64)> = ledger
+            .prepare(
+                "SELECT dedup_key, model, input_tokens, output_tokens
+                 FROM events WHERE source = 'opencode' ORDER BY dedup_key",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
         assert_eq!(
-            ledger
-                .query_row(
-                    "SELECT COUNT(*) FROM events WHERE source = 'opencode'",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )
-                .unwrap(),
-            1,
-            "the Record of a Request the Artifact no longer holds is superseded"
+            surviving.len(),
+            2,
+            "a pruned Request keeps the Record it already proved: {surviving:?}"
         );
         assert_eq!(
-            ledger
-                .query_row(
-                    "SELECT dedup_key, model, input_tokens, output_tokens
-                     FROM events WHERE source = 'opencode'",
-                    [],
-                    |row| Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, i64>(3)?,
-                    )),
-                )
-                .unwrap(),
+            surviving[0],
             (
                 "opencode:session:mixed:message:m1".to_string(),
                 Some("model-a".to_string()),
                 10,
                 4
             )
+        );
+        assert_eq!(
+            surviving[1],
+            (
+                "opencode:session:mixed:message:m2".to_string(),
+                Some("model-b".to_string()),
+                2,
+                8
+            ),
+            "the pruned Request's Record is unchanged, not recounted"
+        );
+    }
+
+    /// The reason the per-Request key stays Session-scoped: a Request still
+    /// present must be DELETEd and re-INSERTed so a Model rename lands, rather
+    /// than hitting `INSERT_SQL`'s ON CONFLICT, which skips the Immutable
+    /// `model` column. Narrowing supersession to protect pruned Requests must
+    /// not cost this.
+    ///
+    /// Mutation check: drop `booked` from the patterns
+    /// `supersedes_session_aggregates` returns and the Model stays `"one"`.
+    #[test]
+    fn a_present_requests_model_still_refreshes_on_a_rescan() {
+        let tmp = tempdir().unwrap();
+        let data_root = tmp.path().join("opencode");
+        fs::create_dir_all(&data_root).unwrap();
+        let current = data_root.join("opencode.db");
+        create_database(&current);
+        let db = Connection::open(&current).unwrap();
+        insert_session(&db, "renamed", "/private/renamed", 1_780_000_900_000);
+        insert_message(
+            &db,
+            "m1",
+            "renamed",
+            r#"{"role":"assistant","modelID":"one","tokens":{"input":10,"output":4,"cache":{"read":0,"write":0}}}"#,
+        );
+        drop(db);
+
+        let mut ledger = crate::db::open_db(&tmp.path().join("ledger.db")).unwrap();
+        scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+
+        let db = Connection::open(&current).unwrap();
+        db.execute(
+            "UPDATE message SET data = ?1 WHERE id = 'm1'",
+            params![
+                r#"{"role":"assistant","modelID":"two","tokens":{"input":10,"output":4,"cache":{"read":0,"write":0}}}"#
+            ],
+        )
+        .unwrap();
+        drop(db);
+
+        scan_opencode(&mut ledger, &data_root, &data_root.join("storage"), None);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT model FROM events WHERE dedup_key = 'opencode:session:renamed:message:m1'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0)
+                )
+                .unwrap(),
+            Some("two".to_string()),
+            "a present Request's Model must follow the Artifact"
         );
     }
 
