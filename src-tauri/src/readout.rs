@@ -62,45 +62,11 @@ pub(crate) fn tokens_are_floor(
     })
 }
 
-/// A figure is also a floor when a Source holds Unbooked Requests the window
-/// could contain (TOKL-25) — Requests it read and understood but booked no
-/// Usage Record for, because the Source reported no tokens for them. Both the
-/// Requests figure and every token total are bounded by it: the Requests
-/// happened, and so did the tokens they spent, and neither is in the Ledger.
-///
-/// Unlike an Unreadable Artifact this has a real span, not just a file mtime —
-/// these Requests carry their own timestamps — so a window strictly outside it
-/// is left exact rather than marked. A null bound is a row written before the
-/// span was recorded (schema v21) and marks conservatively, and a window with
-/// no end is unbounded above. Mirror of unbookedSourcesIn in
-/// src/lib/tokenCompleteness.ts, pinned by readout-cases.json's floors rows.
-pub(crate) fn unbooked_are_floor(
-    unbooked: &[crate::types::SourceUnbooked],
-    window_start: i64,
-    window_end: Option<i64>,
-) -> bool {
-    unbooked.iter().any(|u| {
-        u.requests > 0
-            && u.last_at.is_none_or(|last| last >= window_start)
-            && match (u.first_at, window_end) {
-                (Some(first), Some(end)) => first <= end,
-                _ => true,
-            }
-    })
-}
-
-/// The ≥ marker's whole condition, for any figure a completeness gap bounds:
-/// an Unreadable Artifact the window could draw content from, or an Unbooked
-/// Request the window could contain. One function so a surface cannot mark
-/// tokens for one cause and forget the other.
-pub(crate) fn figures_are_floor(
-    unreadable: &[crate::types::SourceUnreadable],
-    unbooked: &[crate::types::SourceUnbooked],
-    window_start: i64,
-    window_end: Option<i64>,
-) -> bool {
-    tokens_are_floor(unreadable, window_start) || unbooked_are_floor(unbooked, window_start, window_end)
-}
+// Unbooked Requests (TOKL-25) deliberately do NOT qualify any figure. They are
+// stated — the Overview's scan footer and the CSV report carry the per-Source
+// counts — but never move a total and never mark one with ≥. The floor ran for
+// one release and read as noise: a banner plus a marked headline for a count
+// the reader can do nothing about. Only Unreadable Artifacts (ADR-0017) mark.
 
 /// The Linux menu's Today row: the bar title, prefixed — a menu row, unlike a
 /// title welded to the icon, has to name what it is counting.
@@ -267,7 +233,6 @@ mod tests {
         tokens: Vec<TokenCase>,
         costs: Vec<CostCase>,
         floors: Vec<FloorCase>,
-        unbooked_floors: Vec<UnbookedFloorCase>,
         partial_costs: Vec<PartialCase>,
     }
     #[derive(serde::Deserialize)]
@@ -290,16 +255,6 @@ mod tests {
         artifacts_unreadable: u64,
         unreadable_max_mtime: Option<i64>,
         window_start: i64,
-        floor: bool,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct UnbookedFloorCase {
-        requests: u64,
-        first_at: Option<i64>,
-        last_at: Option<i64>,
-        window_start: i64,
-        window_end: Option<i64>,
         floor: bool,
     }
     #[derive(serde::Deserialize)]
@@ -366,27 +321,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unbooked_floor_rule_matches_the_shared_readout_cases() {
-        for c in cases().unbooked_floors {
-            let u = crate::types::SourceUnbooked {
-                source: "qoder".to_string(),
-                requests: c.requests,
-                first_at: c.first_at,
-                last_at: c.last_at,
-            };
-            assert_eq!(
-                unbooked_are_floor(&[u], c.window_start, c.window_end),
-                c.floor,
-                "unbooked_are_floor({} requests in [{:?}, {:?}], window [{}, {:?}])",
-                c.requests,
-                c.first_at,
-                c.last_at,
-                c.window_start,
-                c.window_end
-            );
-        }
-    }
 
     #[test]
     fn partial_cost_markers_match_the_shared_readout_cases() {

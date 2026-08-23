@@ -269,16 +269,15 @@ export default function TrayPanel({
           ledger.series(current, seriesBucket(periodRef.current)),
           ledger.lastScan(),
           ledger.unreadableArtifacts(),
-          ledger.unbookedRequests(),
         ]),
       ]),
       new Promise((r) => setTimeout(r, showLoading ? minLoadingMs() : 0)),
     ]);
     if (fetched[0].status === 'fulfilled') {
-      const [t, y, rows, s, models, series, scannedAt, sources, unbooked] = fetched[0].value;
+      const [t, y, rows, s, models, series, scannedAt, sources] = fetched[0].value;
       const lang = s.language === 'zh-Hant' ? 'zh-Hant' : 'en';
       // Today runs to now, so the window has no end to rule anything out.
-      setTokensFloor(tokenFloor(sources, w.start, lang, unbooked, null));
+      setTokensFloor(tokenFloor(sources, w.start, lang));
       setModel(
         panelModel(t, y, rows, s, lang, {
           period: periodRef.current,

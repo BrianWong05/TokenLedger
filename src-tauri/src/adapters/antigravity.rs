@@ -1109,7 +1109,7 @@ mod tests {
         f_len(1, &chat_model)
     }
 
-    // TOKL-28, the `.db` path: a conversation whose usage moved decodes to zero
+    // TOKL-28, the `.db` path: a Session whose usage moved decodes to zero
     // generations. The Records it already booked must survive, and the db must
     // stay unstamped so the next Scan retries it.
     #[test]

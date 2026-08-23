@@ -737,8 +737,8 @@ mod tests {
         // the sibling of the `cached_tokens` this adapter already subtracts, so
         // ADR-0001 requires Input to exclude both. The first line here is the
         // exact payload OpenAI's own parser test asserts — 100 = 40 cached + 60
-        // written — which is also the saturating case: Input is legitimately 0
-        // while 100 prompt tokens were billed.
+        // written — which is also the saturating case: Input Tokens are
+        // legitimately 0 while 100 tokens of prompt were billed.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("sessions");
         write_rollout(&root, "rollout-2026-08-20-cw.jsonl", &[

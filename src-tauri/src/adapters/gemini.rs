@@ -919,6 +919,41 @@ mod tests {
         assert_eq!(state.size, SESSION_JSONL.len() as i64);
     }
 
+    /// The other half of that guard: a Session that never booked a Request is
+    /// an ordinary empty Session — cancelled before a reply, or still open —
+    /// not the Source moving its Artifact. Warning about it would cry moved on
+    /// every new Session and train the reader to ignore the one warning that
+    /// matters.
+    ///
+    /// Mutation check: delete the `file_has_events` condition so the warning
+    /// always fires, and this test fails. Without it the condition is free to
+    /// vanish — both moved-Artifact tests keep passing, because
+    /// `record_gemini_warning` appends and they only assert `contains`.
+    #[test]
+    fn a_jsonl_session_that_never_booked_a_request_does_not_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tmp_root, projects_json) = jsonl_fixture(dir.path());
+        // Header plus a cancelled turn: valid lines, no `tokens` anywhere.
+        let cancelled = format!(
+            "{}\n{}\n",
+            r#"{"sessionId":"sess-empty","projectHash":"h","startTime":"2026-07-05T08:25:00.000Z","lastUpdated":"2026-07-05T08:25:30.000Z","kind":"main"}"#,
+            r#"{"id":"i1","timestamp":"2026-07-05T08:25:30.000Z","type":"info","content":"Request cancelled."}"#
+        );
+        write(
+            &tmp_root.join("alpha/chats/session-2026-07-05T08-25-empty.jsonl"),
+            &cancelled,
+        );
+
+        let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
+        let r = scan_gemini(&mut conn, &tmp_root, &projects_json);
+        assert_eq!(r.events_inserted, 0);
+        assert_eq!(
+            r.error, None,
+            "an empty Session is not a moved Artifact: {:?}",
+            r.error
+        );
+    }
+
     // Classification must never cost a Request. This Source already moved its
     // Artifact once (TOKL-23); were it to stamp each record with the Session it
     // belongs to, a reader that treats any `sessionId` as the header would drop
