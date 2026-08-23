@@ -235,12 +235,23 @@ describe('card states', () => {
     expect(out.detail).toBeUndefined();
   });
 
-  it('shows no plan pill and no windows on a card that is not live', () => {
+  it('keeps the held windows on an error card but hides its plan pill', () => {
     const [claude] = cards([held('claude', [win()], 'Team 5x')], NOW, 'left', {
       claude: { detail: 'network unreachable' },
     });
+    expect(claude.state).toBe('error');
     expect(claude.plan).toBeNull();
     expect(claude.usageResetsAvailable).toBeNull();
+    // The failure says why nothing refreshed; the dated rows say what is still
+    // known. A bare error card made a refused check look like having nothing.
+    expect(claude.windows).toHaveLength(1);
+  });
+
+  it('shows no windows on a signed-out card — those figures may belong to a login that is gone', () => {
+    const [claude] = cards([held('claude', [win()], 'Team 5x')], NOW, 'left', {
+      claude: 'signed-out',
+    });
+    expect(claude.plan).toBeNull();
     expect(claude.windows).toEqual([]);
   });
 });
