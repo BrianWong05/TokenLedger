@@ -185,6 +185,7 @@ export const overview = {
 
     // models list
     'overview.modelsHead': 'Models',
+    'overview.setRate': 'Set rate…',
 
     // profile (the window's Models across every Source; footer is the Ledger's)
     'overview.profile.started': 'First record',
@@ -368,6 +369,7 @@ export const overview = {
     'overview.decryptHint': '透過 Antigravity 讀取加密的工作階段，需先開啟 Antigravity',
 
     'overview.modelsHead': '模型',
+    'overview.setRate': '設定價格…',
 
     'overview.profile.started': '首筆紀錄',
     'overview.profile.activeDays': '活躍天數',

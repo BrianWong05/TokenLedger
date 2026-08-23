@@ -13,9 +13,9 @@ import { useT } from '../lib/i18n';
 import type { ModelPricing, RatesPerTok, Settings } from '../types';
 import type { PricingPort } from './pricing';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
-import { sourceIcon } from '../overview/icons';
 import { useModalPageLock } from '../overview/useDialogChrome';
-import { fill, originLabelQualified, pricingSourceMeta, sourceLabel, fmtRate } from './pricing.derive';
+import DialogHead from './DialogHead';
+import { fill, originLabelQualified, sourceLabel, fmtRate } from './pricing.derive';
 
 const FIELDS: { key: keyof RatesPerTok; labelKey: 'pricing.col.input' | 'pricing.col.output' | 'pricing.col.cacheRead' | 'pricing.col.cacheWrite' }[] = [
   { key: 'input', labelKey: 'pricing.col.input' },
@@ -95,8 +95,6 @@ export default function OverrideEditor({
     pricing.deleteOverride(model.model).then(() => onClose(true)).catch(() => setBusy(false));
   };
 
-  const meta = pricingSourceMeta(model.tool);
-  const icon = sourceIcon(meta.icon);
   const tool = sourceLabel(model.tool);
   const subtitle = hasOverride
     ? fill(t('pricing.editor.subtitleOverride'), { tool })
@@ -116,20 +114,13 @@ export default function OverrideEditor({
         aria-labelledby="tl-pr-dialog-name"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* the backdrop covers the shell's drag handles, so the dialog's own
-            header is one ("deep": the whole strip drags, buttons still click) */}
-        <div className="tl-pr-dialog-head" data-tauri-drag-region="deep">
-          <span className={'tl-pr-icon ' + model.tool}>
-            {icon ? <img src={icon} alt="" width={15} height={15} /> : <b>{tool[0]}</b>}
-          </span>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="name" id="tl-pr-dialog-name">{model.model}</div>
-            <div className="subtitle">{subtitle}</div>
-          </div>
-          <button type="button" className="tl-pr-dialog-close" aria-label={t('pricing.editor.close')} onClick={() => close(false)}>
-            ✕
-          </button>
-        </div>
+        <DialogHead
+          tool={model.tool}
+          name={model.model}
+          subtitle={subtitle}
+          closeLabel={t('pricing.editor.close')}
+          onClose={() => close(false)}
+        />
 
         <div className="tl-pr-dialog-body">
           {hasOverride ? (

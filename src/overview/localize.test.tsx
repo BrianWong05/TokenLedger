@@ -42,7 +42,15 @@ describe('overview localisation', () => {
   });
 
   it('renders per-Model costs in the Display Currency', () => {
-    const bar: ModelBar = { name: 'claude-opus-4-8', tokens: 100, cost: 5, share: 1, segs: [], cacheEstimated: false };
+    const bar: ModelBar = {
+      name: 'claude-opus-4-8', tokens: 100, cost: 5, share: 1, segs: [], cacheEstimated: false,
+      row: {
+        key: 'claude-opus-4-8', source: 'claude', inputTokens: 100, outputTokens: 0,
+        cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 100, requests: 1,
+        cost: 5, reasoningTokens: null, convs: 1, cacheEstimated: false,
+        hasUnpriced: false, unattributedTokens: 0,
+      },
+    };
     const c = render(
       <I18nProvider lang="en">
         <ModelsList tool={SOURCES[0]} toolTokens={100} models={[bar]} settings={{ currency: 'HKD', usdRate: 7.8 }} />

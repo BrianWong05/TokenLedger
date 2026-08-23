@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { CATEGORIES, type SourceMeta } from './meta';
 import type { ModelBar } from './data';
+import type { BreakdownRow } from '../types';
 import { fmtTok, fmtPct } from '../lib/format';
 import { CAT_KEY, formatDisplayCost, overviewT, useOverviewT, USD_IDENTITY } from './localize';
 import type { Settings } from '../types';
@@ -21,9 +22,11 @@ function ModelsList({
   toolTokens: number;
   models: ModelBar[];
   showCost?: boolean;
-  // When set, a Model row is a button that opens the Override editor in place
-  // (the Pricing fix reachable where the "unpriced" symptom shows).
-  onModelClick?: (model: string) => void;
+  // When set, a Model row is a button that opens that Model's breakdown
+  // dialog (whose "Set rate…" keeps the Override editor one step away). The
+  // row travels with the name: the caller needs the figures behind the bar,
+  // and handing them over beats looking the Model back up by name.
+  onModelClick?: (model: string, row: BreakdownRow) => void;
   settings?: Pick<Settings, 'currency' | 'usdRate'>;
 }) {
   const { t, lang } = useOverviewT();
@@ -41,7 +44,7 @@ function ModelsList({
         const unattributed = modelName === null;
         const activate = modelName === null || onModelClick === undefined
           ? undefined
-          : () => onModelClick(modelName);
+          : () => onModelClick(modelName, m.row);
         const name = unattributed ? t('overview.unattributedUsage') : modelName;
         return (
           <div

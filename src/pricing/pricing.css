@@ -676,7 +676,8 @@ button.tl-pr-colhead.sorted {
   cursor: pointer;
   padding: 8px 4px;
 }
-.tl-pr-cancel {
+.tl-pr-cancel,
+.tl-pr-secondary {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -687,7 +688,8 @@ button.tl-pr-colhead.sorted {
   font-weight: 500;
   cursor: pointer;
 }
-.tl-pr-save {
+.tl-pr-save,
+.tl-pr-primary {
   background: var(--accent);
   border: 1px solid var(--accent);
   border-radius: 8px;
@@ -701,4 +703,18 @@ button.tl-pr-colhead.sorted {
 .tl-pr-save:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Model breakdown dialog (Models card row → detail). Category rows reuse the
+   Overview's .tt-ctx-row look; only the per-bucket cost column is new. */
+.tl-pr-bd-rows {
+  margin: 14px 0 12px;
+}
+.tl-pr-bd-rows .rcost {
+  min-width: 72px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--tt-mono);
 }
