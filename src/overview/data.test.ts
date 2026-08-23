@@ -443,6 +443,10 @@ describe('modelBars + catTotals + rangeToFilters', () => {
     expect(bars[0].share).toBeCloseTo(0.5);
     expect(bars[0].cacheEstimated).toBe(true);
     expect(bars[0].segs.map((s) => s.frac)).toEqual([0.1, 0.1, 0.6, 0.2]);
+    // The bar carries the row it was built from — the Model detail dialog reads
+    // its figures from there, so a substituted or stale row would misreport
+    // every bucket. Identity, not a copy: nothing may re-derive these.
+    expect(bars[0].row).toBe(rows[0]);
   });
 
   // The Model rows and the tool total reach modelBars from independently timed

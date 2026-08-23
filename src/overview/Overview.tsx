@@ -31,7 +31,8 @@ import { heatFilters } from './data';
 import { tauriPricing, type PricingPort } from '../pricing/pricing';
 import type { SettingsPort } from '../settings/settings';
 import OverrideEditor from '../pricing/OverrideEditor';
-import type { ModelPricing } from '../types';
+import ModelBreakdownModal from './ModelBreakdownModal';
+import type { BreakdownRow, ModelPricing } from '../types';
 
 // "App · Overview", rebuilt to the dashboard-v2 design and wired to the real
 // Ledger through useOverview(): one unbounded daily series powers
@@ -79,19 +80,14 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   );
   const openHeatModal = useCallback(() => setHeatModalOpen(true), []);
 
-  // Model-selection entry point into the shared Override editor: fetch a fresh
-  // ModelPricing list on open (the Overview may show a Model absent from a stale
-  // list, so we always re-list), then open the same editor the Pricing tab uses.
+  // Model-selection detail: a Models-card row opens that Model's token/cost
+  // breakdown, with the shared Override editor one step behind its "Set rate…"
+  // button. The ModelPricing list is fetched fresh on open (the Overview may
+  // show a Model absent from a stale list, so we always re-list); the found
+  // entry rides along so the editor handoff needs no second fetch.
   const pricing = ports?.pricing ?? tauriPricing;
   const [pricingEditor, setPricingEditor] = useState<ModelPricing | null>(null);
-  const openPricing = useCallback(
-    (name: string, toolKey: string) => {
-      pricing.list()
-        .then((list) => setPricingEditor(list.find((m) => m.model === name) ?? { model: name, tool: toolKey, overrideRates: null, catalog: null }))
-        .catch(() => setPricingEditor({ model: name, tool: toolKey, overrideRates: null, catalog: null }));
-    },
-    [pricing],
-  );
+  const [modelDetail, setModelDetail] = useState<{ row: BreakdownRow; model: ModelPricing } | null>(null);
   const costBreakdownFocusTargetRef = useRef<HTMLElement | null>(null);
   const setCostBreakdownFocusTarget = useCallback((element: HTMLElement | null) => {
     costBreakdownFocusTargetRef.current = element;
@@ -190,7 +186,15 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   };
 
   // Stable identity so the memoized ModelsList skips per-tick re-renders.
-  const onModelClick = useCallback((name: string) => openPricing(name, tool.key), [openPricing, tool.key]);
+  // The clicked row arrives with the click (it is what the bar was drawn
+  // from), so the only thing left to fetch is the Model's pricing — and a
+  // failed or missing list still opens the dialog, unpriced.
+  const onModelClick = useCallback((name: string, row: BreakdownRow) => {
+    const unpriced: ModelPricing = { model: name, tool: tool.key, overrideRates: null, catalog: null };
+    pricing.list()
+      .then((list) => list.find((m) => m.model === name) ?? unpriced, () => unpriced)
+      .then((model) => setModelDetail({ row, model }));
+  }, [pricing, tool.key]);
 
   // The Rescan shortcut, the same chord the Menu Bar Extra's panel carries. It
   // lives here because this tab owns the scan, and it answers from every tab:
@@ -487,6 +491,18 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
           exporter={exporter}
           returnFocusRef={trendEnlargeRef}
           onClose={() => setTrendModalOpen(false)}
+        />
+      )}
+      {modelDetail && (
+        <ModelBreakdownModal
+          row={modelDetail.row}
+          model={modelDetail.model}
+          settings={settings}
+          onSetRate={() => {
+            setPricingEditor(modelDetail.model);
+            setModelDetail(null);
+          }}
+          onClose={() => setModelDetail(null)}
         />
       )}
       {pricingEditor && (

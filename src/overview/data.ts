@@ -834,6 +834,11 @@ export interface ModelBar {
   share: number | null;
   segs: { key: string; color: string; frac: number }[];
   cacheEstimated: boolean;
+  // The Breakdown row this bar was built from. The Model detail dialog needs
+  // the raw per-category counts and completeness flags, and carrying the row
+  // on the bar means a click can never fail to find its own figures — no
+  // lookup by name, so no unreachable miss to branch on.
+  row: BreakdownRow;
 }
 
 export function modelBars(rows: BreakdownRow[], tool: SourceKey, toolTokens: number): ModelBar[] {
@@ -851,6 +856,7 @@ export function modelBars(rows: BreakdownRow[], tool: SourceKey, toolTokens: num
           : null,
         segs: CATEGORIES.map((c, i) => ({ key: c.key, color: c.color, frac: cats[i] / total })),
         cacheEstimated: r.cacheEstimated,
+        row: r,
       };
     });
 }
