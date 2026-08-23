@@ -106,7 +106,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
     sel, setSel,
     rangeLabel, tool, grand, toolTotals, visibleTools,
     summary, modelRows, canOpenCostBreakdown, headline, unreadable, unreadableArtifacts,
-    unbooked, unbookedRequests,
+    unbookedRequests,
     panels,
   } = useOverview(ports);
 
@@ -142,16 +142,14 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // figures share one, each Source card gets its own — visible count beside
   // the eyebrow, per-Source detail as hover text on the marked figures. The
   // store already window-filtered `unreadable`, so no start is re-applied.
-  // Both lists arrive already window-filtered by the store, so no bounds are
-  // re-applied here (null start, null end).
-  const floor = tokenFloor(unreadable, null, lang, unbooked, null);
+  // Unbooked Requests (TOKL-25) never reach this: they are stated in the scan
+  // footer below and qualify no figure.
+  const floor = tokenFloor(unreadable, null, lang);
   const cardFloor = (key: string) =>
     tokenFloor(
       unreadable.filter((u) => u.source === key),
       null,
       lang,
-      unbooked.filter((u) => u.source === key),
-      null,
     );
   const unreadableCount = unreadable.reduce((n, u) => n + u.artifactsUnreadable, 0);
 
@@ -312,12 +310,6 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         </div>
       )}
 
-      {unbookedRequests.map((u) => (
-        <div key={u.source} className="tt-notice">
-          {sourceMeta(u.source).source}: {countLabel(u.requests, 'overview.unbookedNoticeOne', 'overview.unbookedNoticeMany', lang)}
-        </div>
-      ))}
-
       {/* HERO: totals + proportion bar + per-source cards */}
       <div className="tt-hero">
         <div className="tt-hero-head">
@@ -477,13 +469,7 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
         <HeatmapModal
           days={panels.heatmap.days}
           summary={heatSummary}
-          floor={tokenFloor(
-            unreadableArtifacts,
-            heatFilters().startTs ?? null,
-            lang,
-            unbookedRequests,
-            heatFilters().endTs ?? null,
-          )}
+          floor={tokenFloor(unreadableArtifacts, heatFilters().startTs ?? null, lang)}
           returnFocusRef={heatEnlargeRef}
           onClose={() => setHeatModalOpen(false)}
         />
@@ -494,7 +480,6 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
           firstIso={firstIso}
           lastIso={lastIso}
           unreadable={unreadableArtifacts}
-          unbooked={unbookedRequests}
           initialRange={range}
           initialCustomFrom={customFrom}
           initialCustomTo={customTo}

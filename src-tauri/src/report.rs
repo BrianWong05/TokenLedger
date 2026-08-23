@@ -90,17 +90,11 @@ fn cost_cell(cost: Option<f64>) -> String {
 }
 
 /// A figure is a floor when a Source holds an Unreadable Artifact whose content
-/// could fall in the window, or Unbooked Requests the window could contain —
-/// readout::figures_are_floor's rule, worded for a CSV column. Both the token
-/// totals and the Requests figure read it: the same gap bounds both.
-///
-/// The report always runs to the present, so there is no window end to test.
-fn tokens_basis(
-    unreadable: &[SourceUnreadable],
-    unbooked: &[crate::types::SourceUnbooked],
-    window_start: i64,
-) -> &'static str {
-    if crate::readout::figures_are_floor(unreadable, unbooked, window_start, None) {
+/// could fall in the window — readout::tokens_are_floor's rule, worded for a
+/// CSV column. Unbooked Requests deliberately do NOT flip this: they are stated
+/// in their own report rows below, never folded into a marker (TOKL-25).
+fn tokens_basis(unreadable: &[SourceUnreadable], window_start: i64) -> &'static str {
+    if crate::readout::tokens_are_floor(unreadable, window_start) {
         "floor"
     } else {
         "exact"
@@ -209,7 +203,7 @@ fn run(conn: &Connection, days: i64, today: NaiveDate, out: &Path) -> std::io::R
         vec![format!(
             "{},{}",
             summary_row(&format!("{from} .. {today}"), &summary),
-            tokens_basis(&unreadable, &unbooked, start_ts)
+            tokens_basis(&unreadable, start_ts)
         )],
     )?);
 
@@ -250,7 +244,7 @@ fn run(conn: &Connection, days: i64, today: NaiveDate, out: &Path) -> std::io::R
         format!("window            {from} .. {today}  ({days} local days)"),
         format!(
             "tokens            {}{}  (in {} · out {} · cache read {} · cache write {})",
-            if tokens_basis(&unreadable, &unbooked, start_ts) == "floor" { "≥ " } else { "" },
+            if tokens_basis(&unreadable, start_ts) == "floor" { "≥ " } else { "" },
             summary.total_tokens,
             summary.input_tokens,
             summary.output_tokens,
@@ -269,7 +263,7 @@ fn run(conn: &Connection, days: i64, today: NaiveDate, out: &Path) -> std::io::R
             // The same gap that floors the tokens floors this: an unreadable
             // Session hides the Requests in it, and an Unbooked Request is one
             // the Source made and the Ledger cannot count.
-            if tokens_basis(&unreadable, &unbooked, start_ts) == "floor" { "≥ " } else { "" },
+            if tokens_basis(&unreadable, start_ts) == "floor" { "≥ " } else { "" },
             summary.requests, summary.convs, summary.cache_hit_rate * 100.0
         ),
     ];
@@ -365,26 +359,11 @@ mod tests {
             artifacts_unreadable: count,
             unreadable_max_mtime: mtime,
         };
-        assert_eq!(tokens_basis(&[u(6, Some(1_000))], &[], 1_000), "floor");
-        assert_eq!(tokens_basis(&[u(6, Some(999))], &[], 1_000), "exact");
-        assert_eq!(tokens_basis(&[u(6, None)], &[], 1_000), "floor");
-        assert_eq!(tokens_basis(&[u(0, None)], &[], 0), "exact");
-        assert_eq!(tokens_basis(&[], &[], 0), "exact");
-
-        // TOKL-25: Unbooked Requests floor the same figures, bounded by when
-        // they actually happened rather than by a file mtime.
-        let b = |requests, first, last| crate::types::SourceUnbooked {
-            source: "qoder".into(),
-            requests,
-            first_at: first,
-            last_at: last,
-        };
-        assert_eq!(tokens_basis(&[], &[b(628, Some(500), Some(1_500))], 1_000), "floor");
-        // Every unbooked Request predates the window: nothing to admit.
-        assert_eq!(tokens_basis(&[], &[b(628, Some(100), Some(999))], 1_000), "exact");
-        assert_eq!(tokens_basis(&[], &[b(0, Some(100), Some(9_999))], 1_000), "exact");
-        // A pre-v21 row knows no span and marks conservatively.
-        assert_eq!(tokens_basis(&[], &[b(628, None, None)], 1_000), "floor");
+        assert_eq!(tokens_basis(&[u(6, Some(1_000))], 1_000), "floor");
+        assert_eq!(tokens_basis(&[u(6, Some(999))], 1_000), "exact");
+        assert_eq!(tokens_basis(&[u(6, None)], 1_000), "floor");
+        assert_eq!(tokens_basis(&[u(0, None)], 0), "exact");
+        assert_eq!(tokens_basis(&[], 0), "exact");
     }
 
     #[test]
@@ -410,62 +389,44 @@ mod tests {
         assert!(out.join("by-model.csv").exists());
     }
 
-    /// TOKL-25: the text report's Requests figure carries the ≥ too. The gap
-    /// that floors the tokens floors this — an unreadable Session hides the
-    /// Requests inside it, and an Unbooked Request is one the Source made that
-    /// no Usage Record could count.
+    /// TOKL-25's settled shape: Unbooked Requests are STATED — their own report
+    /// row, count and cause — and qualify nothing. No ≥ lands on the tokens or
+    /// the Requests figure for them; only an Unreadable Artifact marks
+    /// (ADR-0017).
+    ///
+    /// Mutation pin: fold unbooked back into `tokens_basis` (the one-release
+    /// floor this replaces) and the no-≥ assertions below fail.
     #[test]
-    fn unbooked_requests_floor_the_reported_requests_figure() {
+    fn unbooked_requests_are_stated_but_never_mark_a_figure() {
         let dir = tempfile::tempdir().unwrap();
         let conn = open_db(&dir.path().join("tokenledger.db")).unwrap();
         let today = NaiveDate::from_ymd_opt(2026, 8, 10).unwrap();
         let out = dir.path().join("report");
 
-        // Clean Ledger first: neither figure is marked, so the assertions below
-        // cannot pass on a report that marks everything.
+        // Clean Ledger first, so the statement row below is proven to come
+        // from the unbooked write and not from a report that says it always.
         let clean = run(&conn, 30, today, &out).unwrap();
-        assert!(
-            clean.iter().any(|l| l.starts_with("requests          0 ")),
-            "{clean:?}"
-        );
         assert!(clean.iter().all(|l| !l.contains("unbooked  ")), "{clean:?}");
 
-        // A window the Unbooked Requests fall inside.
+        // Unbooked Requests inside the window: stated, and nothing marked.
         let at = crate::time::iso_to_epoch("2026-08-09T12:00:00Z").unwrap();
         crate::db::set_unbooked_requests(&conn, "/t/s.jsonl", "qoder", 628, Some(at), Some(at))
             .unwrap();
         let lines = run(&conn, 30, today, &out).unwrap();
-        assert!(
-            lines.iter().any(|l| l.starts_with("requests          ≥ ")),
-            "{lines:?}"
-        );
-        assert!(
-            lines.iter().any(|l| l.contains("tokens            ≥ ")),
-            "{lines:?}"
-        );
         assert!(
             lines
                 .iter()
                 .any(|l| l.starts_with("unbooked") && l.contains("628 Request(s)")),
             "{lines:?}"
         );
-
-        // A window that closes before the Requests happened is left exact: the
-        // span is what an Unreadable Artifact cannot offer.
-        let old_at = crate::time::iso_to_epoch("2020-01-01T00:00:00Z").unwrap();
-        crate::db::set_unbooked_requests(
-            &conn,
-            "/t/s.jsonl",
-            "qoder",
-            628,
-            Some(old_at),
-            Some(old_at),
-        )
-        .unwrap();
-        let exact = run(&conn, 30, today, &out).unwrap();
         assert!(
-            exact.iter().any(|l| l.starts_with("requests          0 ")),
-            "{exact:?}"
+            lines.iter().all(|l| !l.contains('≥')),
+            "an Unbooked Request must not put ≥ on any figure: {lines:?}"
+        );
+        let summary = fs::read_to_string(out.join("summary.csv")).unwrap();
+        assert!(
+            summary.lines().nth(1).is_some_and(|row| row.ends_with(",exact")),
+            "tokens_basis stays exact with only unbooked present: {summary}"
         );
     }
 }

@@ -38,7 +38,7 @@ import { SOURCES, orderedSourceKeys, sourceMeta, type Range8b, type SourceKey, t
 import type { Lang } from '../lib/i18n';
 import { fmtIsoDateL, overviewT, RANGE_LONG_KEY } from './localize';
 import { parseLocalDate } from '../lib/dateRange';
-import { unreadableSourcesIn, unbookedSourcesIn } from '../lib/tokenCompleteness';
+import { unreadableSourcesIn } from '../lib/tokenCompleteness';
 import type {
   Filters,
   SourceStatus,
@@ -692,10 +692,6 @@ export interface OverviewView {
   // (ADR-0017) — every token total shown for the window is a floor. Read from
   // the persisted per-scan state, the same provenance the Menu Bar Extra uses.
   unreadable: SourceUnreadable[];
-  // Sources holding Unbooked Requests this window could contain (TOKL-25) —
-  // the other cause of the same ≥ floor, and the one that bounds the Requests
-  // figure as well as the token totals.
-  unbooked: SourceUnbooked[];
 }
 
 // The 365-day heatmap grid depends only on the full series. Callers MUST
@@ -732,15 +728,6 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
   const win = windowOf(s.range, s.from, s.to, now);
   const winStartSec = win.fromIso ? Math.floor(parseLocalDate(win.fromIso).getTime() / 1000) : null;
   const unreadable = unreadableSourcesIn(s.unreadableArtifacts, winStartSec);
-  // An Unbooked Request has its own second, so unlike an Unreadable Artifact it
-  // can be ruled OUT of a window that ends before it: `toIso` is inclusive of
-  // its day, so the bound is that day's end. A preset window runs to now and
-  // has no toIso, which is unbounded above.
-  const unbooked = unbookedSourcesIn(
-    s.unbookedRequests,
-    winStartSec,
-    win.toIso ? Math.floor(parseLocalDate(win.toIso).getTime() / 1000) + 86_400 - 1 : null,
-  );
   return {
     rpts,
     total,
@@ -781,7 +768,6 @@ export function selectView(s: OverviewSnapshot, now: Date = new Date(), lang: La
     },
     canOpenCostBreakdown: s.summary !== null && s.modelRows.length > 0,
     unreadable,
-    unbooked,
   };
 }
 
@@ -930,8 +916,9 @@ export function selectReportInput(
     }
   }
 
-  const basis: 'floor' | 'exact' =
-    view.unreadable.length > 0 || view.unbooked.length > 0 ? 'floor' : 'exact';
+  // Unreadable Artifacts alone decide the basis (ADR-0017). Unbooked Requests
+  // are stated in the scan footer and the report's own rows, never here.
+  const basis: 'floor' | 'exact' = view.unreadable.length > 0 ? 'floor' : 'exact';
 
   return {
     generatedIso: generatedAt.toISOString(),

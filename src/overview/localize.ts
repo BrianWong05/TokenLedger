@@ -15,7 +15,7 @@ import {
   isPartialCost,
   type CostCompleteness,
 } from '../lib/costCompleteness';
-import { unreadableSourcesIn, unbookedSourcesIn, type UnreadableCounts, type UnbookedCounts } from '../lib/tokenCompleteness';
+import { unreadableSourcesIn, type UnreadableCounts } from '../lib/tokenCompleteness';
 import { sourceMeta, type Range8b } from './meta';
 import type { PresetKey, PresetSlot, RangePreset } from './data';
 import type { Settings } from '../types';
@@ -123,46 +123,23 @@ export interface TokenFloor {
 
 export const NO_FLOOR: TokenFloor = { marked: false, reason: '' };
 
-// The other half: names the Sources holding Unbooked Requests, e.g.
-// "Qoder: 628 Requests report no tokens".
-function unbookedReasons(
-  sources: (UnbookedCounts & { source: string })[],
-  lang: Lang,
-): string {
-  return sources
-    .map((u) => `${sourceMeta(u.source).label}: ${countLabel(u.requests, 'overview.unbookedNoticeOne', 'overview.unbookedNoticeMany', lang)}`)
-    .join(' · ');
-}
-
-// Both causes, one shape, so a surface cannot mark tokens for an Unreadable
-// Artifact and stay silent about an Unbooked Request. Both new arguments are
-// REQUIRED and deliberately not defaulted: a default would let a surface keep
-// compiling while silently marking nothing, which is the failure this codebase
-// keeps meeting — a guard that survives removal of the thing it guards. Pass an
-// empty list to mean "this Source state says nothing", never to mean "not
-// wired". `windowEndSec` bounds only the unbooked span; ADR-0017's mtime rule
-// has no upper bound, because nothing dates an unreadable Artifact's content
-// downward.
+// Unbooked Requests (TOKL-25) deliberately contribute NO reason and NO marker
+// here: they are stated in the scan footer, never folded into the ≥. Only
+// ADR-0017's Unreadable Artifacts mark a figure.
 export function tokenFloor(
   sources: (UnreadableCounts & { source: string })[],
   windowStartSec: number | null,
   lang: Lang,
-  unbooked: (UnbookedCounts & { source: string })[],
-  windowEndSec: number | null,
 ): TokenFloor {
   const unreadableIn = unreadableSourcesIn(sources, windowStartSec);
-  const unbookedIn = unbookedSourcesIn(unbooked, windowStartSec, windowEndSec);
-  const reasons = [
-    unreadableIn.length > 0 ? unreadableReasons(unreadableIn, lang) : '',
-    unbookedIn.length > 0 ? unbookedReasons(unbookedIn, lang) : '',
-  ].filter(Boolean);
-  return reasons.length > 0 ? { marked: true, reason: reasons.join(' · ') } : NO_FLOOR;
+  return unreadableIn.length > 0
+    ? { marked: true, reason: unreadableReasons(unreadableIn, lang) }
+    : NO_FLOOR;
 }
 
 // Named for tokens because that is where the ≥ started (ADR-0017), but the
-// marker belongs on any figure the same gap bounds — the Requests figure reads
-// it too, since an unreadable Session hides the Requests in it and an Unbooked
-// Request is one the Source made that the Ledger cannot count.
+// marker belongs on any figure the same gap bounds — an unreadable Session
+// hides the Requests inside it as well as the tokens.
 export function markedTokenFigure(figure: string, floor: TokenFloor): string {
   return floor.marked ? `≥ ${figure}` : figure;
 }

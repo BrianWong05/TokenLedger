@@ -172,8 +172,6 @@ export const overview = {
     // exist for them, so the count is all there is to say. Informational for
     // the same reason as the notice above — nobody can make the Source log
     // figures it does not have — and it names Requests, never tokens.
-    'overview.unbookedNoticeOne': 'Request reports no tokens — not booked',
-    'overview.unbookedNoticeMany': 'Requests report no tokens — not booked',
 
     // Unreadable Artifacts (ADR-0017): the ≥ reason and its aria reading
     'overview.unreadableSessionOne': 'session unreadable',
@@ -361,9 +359,6 @@ export const overview = {
 
     'overview.scanNoticeOne': '行無法識別的記錄已略過',
     'overview.scanNoticeMany': '行無法識別的記錄已略過',
-
-    'overview.unbookedNoticeOne': '個要求未回報 token — 未計入',
-    'overview.unbookedNoticeMany': '個要求未回報 token — 未計入',
 
     'overview.unreadableSessionOne': '個工作階段無法讀取',
     'overview.unreadableSessionMany': '個工作階段無法讀取',

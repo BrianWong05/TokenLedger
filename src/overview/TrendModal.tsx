@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type RefObject } from 'react';
-import type { SeriesPoint, SourceUnbooked, SourceUnreadable } from '../types';
+import type { SeriesPoint, SourceUnreadable } from '../types';
 import { bucketCsv, bucketFilters, bucketStats, csvFilename, effectiveBounds, hourlyDayOf, modelOwner, peakOf, rangeToFilters, splitRows, stackModels, trendSlice, UNATTRIBUTED_COLOR, windowModelSplit, type Bucket, type Granularity, type SplitRow } from './data';
 import { orderedSourceKeys, sourceMeta, type Range8b } from './meta';
 import type { LedgerPort } from './ledger';
@@ -63,7 +63,6 @@ export default function TrendModal({
   firstIso,
   lastIso,
   unreadable = [],
-  unbooked = [],
   initialRange,
   initialCustomFrom,
   initialCustomTo,
@@ -78,7 +77,6 @@ export default function TrendModal({
   // Sources holding Unreadable Artifacts (ADR-0017), unfiltered — the dialog
   // applies the floor rule to its own window and to the inspected bucket.
   unreadable?: SourceUnreadable[];
-  unbooked?: SourceUnbooked[];
   initialRange: Range8b;
   initialCustomFrom: string;
   initialCustomTo: string;
@@ -193,23 +191,9 @@ export default function TrendModal({
   // inspected bucket: a figure is marked when unreadable content could fall in
   // it, i.e. its start precedes some Unreadable Artifact's last write.
   const windowFilters = rangeToFilters(range, from, to);
-  const windowFloor = tokenFloor(
-    unreadable,
-    windowFilters.startTs ?? null,
-    lang,
-    unbooked,
-    windowFilters.endTs ?? null,
-  );
+  const windowFloor = tokenFloor(unreadable, windowFilters.startTs ?? null, lang);
   const selFloor = selKey
-    ? tokenFloor(
-        unreadable,
-        bucketFilters(selKey, per).startTs ?? null,
-        lang,
-        unbooked,
-        // A bucket is a closed interval, so an Unbooked Request after it does
-        // not mark it — the one place the span's upper bound really bites.
-        bucketFilters(selKey, per).endTs ?? null,
-      )
+    ? tokenFloor(unreadable, bucketFilters(selKey, per).startTs ?? null, lang)
     : NO_FLOOR;
 
   // Inspector read-outs for the selected bucket, computed by the selector

@@ -309,13 +309,7 @@ pub fn refresh(app: &AppHandle) {
         ) else {
             return;
         };
-        // Today's window runs to now, so it has no end to test against.
-        let floor = crate::readout::figures_are_floor(
-            &crate::db::load_unreadable(&db),
-            &crate::db::load_unbooked(&db),
-            start,
-            None,
-        );
+        let floor = crate::readout::tokens_are_floor(&crate::db::load_unreadable(&db), start);
         crate::readout::bar_title(&today, &settings, floor)
     };
     show_today(&tray, &title);

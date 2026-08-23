@@ -342,13 +342,12 @@ describe('overviewStore refresh / scan', () => {
     await refreshing;
   });
 
-  // The two gaps a mutation run found: nothing tested that the report's bases
-  // are DERIVED from the completeness state (the CSV test hands them in), and
-  // nothing tested that the unbooked span is filtered against the window (the
-  // earlier fixture used null bounds, so filtering was a no-op either way).
-  it('derives both report bases from the unbooked state, filtered by the window', async () => {
-    // NOW is 2026-07-16 and the range is the unbounded Total window, so a
-    // Request inside it floors both figures.
+  // TOKL-25's settled shape: Unbooked Requests are stated, never a basis. The
+  // report's bases derive from Unreadable Artifacts alone.
+  //
+  // Mutation pin: fold unbookedRequests back into `basis` (the one-release
+  // floor this replaces) and the exact-basis assertions fail.
+  it('leaves both report bases exact however many Requests are unbooked', async () => {
     const inWindow = Math.floor(new Date(2026, 6, 1).getTime() / 1000);
     const ledger = makeFakeLedger({
       dayPoints: [pt({ source: 'qoder', totalTokens: 500 })],
@@ -359,31 +358,26 @@ describe('overviewStore refresh / scan', () => {
 
     const snap = store.getSnapshot();
     const view = selectView(snap, NOW);
-    expect(view.unbooked.map((u) => u.source)).toEqual(['qoder']);
-    const input = selectReportInput(snap, view, SETTINGS, NOW);
-    expect(input.tokensBasis).toBe('floor');
-    expect(input.requestsBasis).toBe('floor');
-  });
-
-  it('leaves both bases exact when the unbooked Requests fall outside the window', async () => {
-    // A Day window on NOW; the Requests are from a year earlier, so the span
-    // rules them out. Dropping the window filter makes this fail.
-    const longAgo = Math.floor(new Date(2025, 0, 5).getTime() / 1000);
-    const ledger = makeFakeLedger({
-      dayPoints: [pt({ source: 'qoder', totalTokens: 500 })],
-      unbookedRequests: [{ source: 'qoder', requests: 628, firstAt: longAgo, lastAt: longAgo }],
-    });
-    const store = createOverviewStore({ ledger, clock: fakeClock() });
-    await store.refresh();
-    store.setRange('day');
-    await flush();
-
-    const snap = store.getSnapshot();
-    const view = selectView(snap, NOW);
-    expect(view.unbooked).toEqual([]);
     const input = selectReportInput(snap, view, SETTINGS, NOW);
     expect(input.tokensBasis).toBe('exact');
     expect(input.requestsBasis).toBe('exact');
+  });
+
+  it('floors both report bases only for an Unreadable Artifact', async () => {
+    const ledger = makeFakeLedger({
+      dayPoints: [pt({ source: 'antigravity', totalTokens: 500 })],
+      unreadableArtifacts: [
+        { source: 'antigravity', artifactsUnreadable: 3, unreadableMaxMtime: null },
+      ],
+    });
+    const store = createOverviewStore({ ledger, clock: fakeClock() });
+    await store.refresh();
+
+    const snap = store.getSnapshot();
+    const view = selectView(snap, NOW);
+    const input = selectReportInput(snap, view, SETTINGS, NOW);
+    expect(input.tokensBasis).toBe('floor');
+    expect(input.requestsBasis).toBe('floor');
   });
 
   it('reconciles the provisional paint after the scan even when it reports idle', async () => {

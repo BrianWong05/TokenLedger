@@ -196,11 +196,13 @@ describe('TrayPanel', () => {
     expect(sub.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
   });
 
-  // TOKL-25: the same ≥, from the other cause, and on BOTH figures. The
-  // Requests tile is the one this adds — an Unbooked Request is a Request the
-  // Source made that no Usage Record could count, so the tile was reporting a
-  // floor as an exact figure.
-  it('marks both the token figure and the Requests tile ≥ for Unbooked Requests', async () => {
+  // TOKL-25's settled shape: Unbooked Requests mark NOTHING here — the panel
+  // no longer reads them at all. The count lives in the Overview's scan
+  // footer; the Menu Bar Extra's figures stay bare.
+  //
+  // Mutation pin: wire unbookedRequests back into tokensFloor (the one-release
+  // floor this replaces) and both bare-figure assertions fail.
+  it('leaves every figure bare however many Requests are unbooked', async () => {
     const now = Math.floor(Date.now() / 1000);
     const ledger = makeFakeLedger({
       summary,
@@ -219,24 +221,19 @@ describe('TrayPanel', () => {
     await settle();
 
     const sub = container.querySelector('.tp-sub')!;
-    expect(sub.textContent).toBe('≥ 3.4M tokens');
-    expect(sub.getAttribute('title')).toBe('Qoder: 628 Requests report no tokens — not booked');
+    expect(sub.textContent).toBe('3.4M tokens');
+    expect(sub.getAttribute('title')).toBeNull();
 
     const tiles = Array.from(container.querySelectorAll('.tp-tile')).map((t) => [
       t.querySelector('.tp-tile-v')?.textContent,
       t.querySelector('.tp-tile-k')?.textContent,
     ]);
-    // Only the Requests tile is this test's business; the cache-hit figure is
-    // whatever the base fixture says.
     expect(tiles).toEqual([
       ['0.0%', 'cache hit'],
-      ['≥ 1,912', 'requests'],
+      ['1,912', 'requests'],
     ]);
   });
 
-  // The mutation the assertion above is worth nothing without: with no Unbooked
-  // Requests the Requests tile is bare, so the ≥ tracks the fact and not the
-  // mere presence of the tile.
   it('leaves the Requests tile bare when nothing is unbooked', async () => {
     const ledger = makeFakeLedger({ summary, modelRows: sourceRows, unbookedRequests: [] });
     const settings = makeFakeSettings();

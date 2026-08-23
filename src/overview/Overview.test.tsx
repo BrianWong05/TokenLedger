@@ -297,16 +297,20 @@ describe('Overview presentation', () => {
     expect(c.querySelector('.tt-error')).toBeNull();
   });
 
-  it('states the Requests a Source reports no tokens for, and floors the tokens', async () => {
-    // TOKL-25: Qoder's CLI prices Requests in credits and reports every token
-    // bucket as zero, so no Usage Record can be booked for them. The count is
-    // stated as a notice, not a warning — nothing can be done about it — and
-    // the tokens those Requests spent are missing from every total, so the
-    // window's token figures are a floor, not an exact reading.
+  it('states unbooked Requests in the scan footer alone — no banner, no ≥', async () => {
+    // TOKL-25's settled shape: Qoder's CLI prices Requests in credits and
+    // reports every token bucket as zero, so no Usage Record can exist for
+    // them. The count is STATED — the scan footer, from the persisted
+    // per-file state, so an idle scan that reparsed nothing still says it —
+    // and it qualifies no figure: no notice above the hero, no ≥ on any
+    // total. The floor ran for one release and read as noise.
+    //
+    // Mutation pin: re-add unbooked to tokenFloor or the banner and the
+    // no-≥ / no-notice assertions fail.
     const { container: c } = await mount({
       dayPoints: [pt({ source: 'qoder', totalTokens: 88_788_593 })],
       summary: { ...summary, totalTokens: 88_788_593 },
-      unbookedRequests: [{ source: 'qoder', requests: 551, firstAt: null, lastAt: null }],
+      unbookedRequests: [{ source: 'qoder', requests: 628, firstAt: null, lastAt: null }],
       scan: {
         scannedAt: 1_782_907_202,
         ingestRev: 0,
@@ -316,18 +320,10 @@ describe('Overview presentation', () => {
       },
     });
 
-    const notices = c.querySelectorAll('.tt-notice');
-    expect(notices).toHaveLength(1);
-    expect(notices[0].textContent).toBe('Qoder: 551 Requests report no tokens — not booked');
-    // Informational, not the red banner — but the token total those Requests
-    // are absent from now says so.
+    expect(c.querySelector('.tt-notice')).toBeNull();
     expect(c.querySelector('.tt-error')).toBeNull();
-    expect(c.textContent).toContain('≥');
-    expect(c.querySelector('.tt-toolcard .num')?.textContent).toContain('≥');
-    // The scan footer carries the same count, from the persisted state rather
-    // than this scan's result — an idle scan reparsed nothing and inserted
-    // nothing, and still says it.
-    expect(c.querySelector('.tt-scan-foot')?.textContent).toContain('551 unbooked');
+    expect(c.textContent).not.toContain('≥');
+    expect(c.querySelector('.tt-scan-foot')?.textContent).toContain('628 unbooked');
   });
 
   it('says nothing about unbooked Requests when no Source has any', async () => {
@@ -346,7 +342,6 @@ describe('Overview presentation', () => {
       },
     });
 
-    expect(c.querySelector('.tt-notice')).toBeNull();
     expect(c.querySelector('.tt-scan-foot')?.textContent).not.toContain('unbooked');
   });
 
