@@ -264,11 +264,13 @@ reports every token bucket as zero, so the figures are absent from the Artifact
 rather than badly read. Counted per Session file and stated, never warned, on
 the same reasoning as an Unreadable Artifact — a warning requests an action, and
 there is none to take. Unlike one, the Artifact here is read in full; only the
-tokens are missing. The count qualifies no figure: it is of Requests, so it
-never moves a token total, and no Cost is derived from whatever unit the Source
-priced it in. A shape the scan cannot read is a malformed instance of a
-supported shape (a warning, ADR-0015), not a Source reporting nothing, and is
-never counted here.
+tokens are missing. It qualifies both figures of any window it falls in, with
+the same "≥" marker as an Unreadable Artifact: the Requests figure because the
+Request happened and is uncounted, and every token total because the Request
+burned tokens the Source did not report. No Cost is derived from whatever unit
+the Source priced it in. A shape the scan cannot read is a malformed instance
+of a supported shape (a warning, ADR-0015), not a Source reporting nothing, and
+is never counted here.
 _Avoid_: Dropped request, lost request, zero-token record, skipped request
 
 **Project**:

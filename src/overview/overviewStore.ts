@@ -108,8 +108,9 @@ export interface OverviewSnapshot {
   unreadableArtifacts: SourceUnreadable[];
   // Requests the scan read but could not book, per Source (TOKL-25) — Qoder's
   // CLI prices them in credits and reports no tokens, so no Usage Record can
-  // exist for them. Persisted like the state above, and window-independent:
-  // these carry no timestamp, so no range hides or reveals them.
+  // exist for them. Persisted like the state above. Each row carries the span
+  // its Requests fall in (firstAt/lastAt, schema v22), so selectView filters
+  // them by the selected range like any other figure.
   unbookedRequests: SourceUnbooked[];
   scanError: string | null;
   scanAt: number | null; // epoch ms of the last successful scan; drives the toolbar's last-scan label
@@ -929,18 +930,21 @@ export function selectReportInput(
     }
   }
 
+  const basis: 'floor' | 'exact' =
+    view.unreadable.length > 0 || view.unbooked.length > 0 ? 'floor' : 'exact';
+
   return {
     generatedIso: generatedAt.toISOString(),
     fromIso,
     toIso,
     grain,
-    // Both causes bound the tokens; only these two lists decide it, so the CSV
-    // and the screen cannot disagree about which window was exact.
-    tokensBasis: view.unreadable.length > 0 || view.unbooked.length > 0 ? 'floor' : 'exact',
-    // The Requests figure is bounded by the same two: an unreadable Session
-    // hides the Requests inside it, and an Unbooked Request is one the Source
-    // made that no Usage Record could count.
-    requestsBasis: view.unreadable.length > 0 || view.unbooked.length > 0 ? 'floor' : 'exact',
+    // Both causes bound both figures, and by the same test: an unreadable
+    // Session hides the tokens AND the Requests inside it, and an Unbooked
+    // Request is one the Source made that no Usage Record could count. One
+    // expression so the CSV and the screen cannot disagree about which window
+    // was exact, nor the two figures about each other.
+    tokensBasis: basis,
+    requestsBasis: basis,
     // USD needs no conversion note; anything else does, and the figures below
     // stay USD either way (CONTEXT.md Display Currency).
     displayCurrency: settings.currency === 'USD' ? null : settings.currency,

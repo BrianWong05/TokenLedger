@@ -46,10 +46,10 @@
 //!    zero, so `claude_shaped_usage` refuses it and no Usage Record is booked
 //!    — correctly, a Usage Record requires a non-zero token count, and the
 //!    tokens are not in the Artifact to read. That silently lost every CLI
-//!    Request (TOKL-25), so each transcript's dropped Requests are now counted
-//!    into `unbooked_requests` and stated. Requests only: no Record is
-//!    invented, no token total moves, and `credits` are never priced — Qoder
-//!    publishes no credit-to-currency rate, so a Cost from them would be made
+//!    Request (TOKL-25), so each transcript's Unbooked Requests are now counted
+//!    into `unbooked_requests` and stated. No Record is invented, and `credits`
+//!    are never priced — Qoder publishes no credit-to-currency rate, so a Cost
+//!    from them would be made
 //!    up.
 //!
 //!    Being Claude-Code-shaped, CLI transcripts also log thinking text, so
@@ -628,7 +628,7 @@ fn unbooked_request(v: &Value) -> Option<(&str, i64)> {
 }
 
 /// The token buckets `claude_shaped_usage` reads. Named here only to tell a
-/// reported zero from a shape the scan cannot read (see `unbooked_request_id`).
+/// reported zero from a shape the scan cannot read (see `unbooked_request`).
 const TOKEN_FIELDS: [&str; 4] = [
     "input_tokens",
     "output_tokens",

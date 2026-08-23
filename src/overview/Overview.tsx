@@ -164,9 +164,11 @@ export default function Overview({ ports, visible = true, platform = detectPlatf
   // Requests a Source reports no tokens for (TOKL-25): read and understood,
   // but a Usage Record requires a non-zero token count, so none was booked.
   // Stated rather than warned — nobody can make a Source log figures it never
-  // had — and it qualifies no figure on this page: the count is of Requests,
-  // and the Overview shows tokens. Read off the persisted per-file counts, not
-  // this scan's result, so an idle tick that reparsed nothing still says it.
+  // had — and it qualifies BOTH figures of the window it falls in: Requests,
+  // because the Request happened and is uncounted, and every token total,
+  // because it burned tokens the Source did not report. Read off the persisted
+  // per-file counts, not this scan's result, so an idle tick that reparsed
+  // nothing still says it.
   const unbookedFor = (key: string) => unbookedRequests.find((u) => u.source === key)?.requests ?? 0;
 
   // The ≥ marker's only remedy: hand Antigravity's encrypted Sessions to its
