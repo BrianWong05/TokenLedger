@@ -158,6 +158,46 @@ fn a_fresh_cache_answers_fully_locally_and_lands_through_the_real_ingest() {
     assert_eq!(held, 3, "append-only means no duplicates, not more rows");
 }
 
+/// The gate half of the never-regress rule: a cache inside the freshness gate
+/// still yields to the live fetch when the Artifact already holds something
+/// newer — answering locally there would overwrite a newer reading with an
+/// older one.
+#[test]
+fn a_fresh_cache_behind_the_artifact_yields_to_the_live_fetch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config");
+    let limits = tmp.path().join("limits");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&limits).unwrap();
+
+    // Two minutes old — inside the gate — but the Artifact is one minute old.
+    write_cache_document(&config, now_ms() - 120_000);
+    write_credentials(&config);
+    limits_artifact::write(
+        &limits,
+        &limits_artifact::LimitsExport {
+            schema: limits_artifact::SCHEMA,
+            source: "claude".to_string(),
+            fetched_at: now_ms() / 1000 - 60,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let started = now_ms() / 1000;
+    let url = serve(vec![answered(
+        r#"{"five_hour":{"utilization":77.0,"resets_at":1786503900}}"#,
+    )]);
+    let output = run_companion(&config, &limits, &url);
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+
+    // The live answer won — the in-gate cache did not answer locally.
+    let export = limits_artifact::read(&limits, "claude").expect("the export must be written");
+    assert_eq!(export.windows.len(), 1);
+    assert_eq!(export.windows[0].used_pct, 77.0);
+    assert!(export.fetched_at >= started, "a live fetch is stamped with its own moment");
+}
+
 #[test]
 fn a_stale_cache_yields_to_the_live_fetch() {
     let tmp = tempfile::tempdir().unwrap();
@@ -208,6 +248,93 @@ fn a_rate_limited_fetch_falls_back_to_the_stale_cache() {
     let export = limits_artifact::read(&limits, "claude").expect("the export must be written");
     assert_eq!(export.fetched_at, fetched_at_ms / 1000, "an hour old and says so");
     assert_eq!(export.windows.len(), 3);
+}
+
+/// The incident this rule comes from: Claude Code stopped refreshing its
+/// cache for days while live checks kept landing, then a 429 arrived. The
+/// fallback delivered the days-old cache, overwriting the newer Artifact and
+/// exiting 0 — so the card sat stale with no refusal to explain why. A cache
+/// from behind the Artifact must not answer a 429: the refusal is the verdict,
+/// and the Artifact keeps the newest reading.
+#[test]
+fn a_rate_limited_fetch_never_regresses_the_artifact_to_an_older_cache() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config");
+    let limits = tmp.path().join("limits");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&limits).unwrap();
+
+    // The cache is an hour old; the Artifact holds a LIVE reading from after
+    // it — written the way a real earlier run wrote it.
+    write_cache_document(&config, now_ms() - 3_600_000);
+    write_credentials(&config);
+    let held = limits_artifact::LimitsExport {
+        schema: limits_artifact::SCHEMA,
+        source: "claude".to_string(),
+        fetched_at: now_ms() / 1000 - 60,
+        windows: vec![limits_artifact::WindowExport {
+            key: "five_hour".into(),
+            window_minutes: Some(300),
+            used_pct: 55.0,
+            resets_at: 1_786_503_900,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    limits_artifact::write(&limits, &held).unwrap();
+
+    let url = serve(vec![REFUSED.to_string(), REFUSED.to_string()]);
+    let output = run_companion(&config, &limits, &url);
+    assert!(!output.status.success(), "with nothing newer to say, the 429 is the verdict");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "claude-limits: the vendor rate-limited this check (429) — try again in a minute",
+    );
+
+    // The Artifact still holds the newer live reading, untouched.
+    let export = limits_artifact::read(&limits, "claude").expect("the export must survive");
+    assert_eq!(export.fetched_at, held.fetched_at);
+    assert_eq!(export.windows.len(), 1);
+    assert_eq!(export.windows[0].used_pct, 55.0);
+}
+
+/// The equal-stamp corner of the same rule: an Artifact that IS the cache
+/// (an earlier run inside the gate delivered it, then the cache aged past the
+/// gate unrefreshed) means the fallback has no news either — re-delivering it
+/// would exit 0 having changed nothing, and the card would sit silently stale.
+#[test]
+fn a_rate_limited_fetch_does_not_redeliver_the_cache_it_already_wrote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config");
+    let limits = tmp.path().join("limits");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&limits).unwrap();
+
+    // Six minutes old — past the gate — and the Artifact carries the SAME
+    // stamp: exactly what an earlier in-gate run of this binary left behind.
+    let fetched_at_ms = now_ms() - 360_000;
+    write_cache_document(&config, fetched_at_ms);
+    write_credentials(&config);
+    limits_artifact::write(
+        &limits,
+        &limits_artifact::LimitsExport {
+            schema: limits_artifact::SCHEMA,
+            source: "claude".to_string(),
+            fetched_at: fetched_at_ms / 1000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let url = serve(vec![REFUSED.to_string(), REFUSED.to_string()]);
+    let output = run_companion(&config, &limits, &url);
+    assert!(
+        !output.status.success(),
+        "an already-delivered cache answers nothing: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("rate-limited"), "{stderr}");
 }
 
 #[test]
