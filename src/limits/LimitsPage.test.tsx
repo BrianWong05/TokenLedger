@@ -283,6 +283,38 @@ describe('card states', () => {
     expect(btn(claude, 'Retry')).toBeTruthy();
   });
 
+  it('keeps the held rows, dated, under a Companion failure line', async () => {
+    // The 429 story: the vendor refused a fresh answer, but the Ledger still
+    // holds readings from an earlier check. The verdict leads and the figures
+    // stay visible under it, dated — a bare error card hid what was known.
+    const staleClaude: SourceLimits = {
+      ...CLAUDE_LIVE,
+      windows: CLAUDE_LIVE.windows.map((w) => ({ ...w, observedAt: NOW - 3 * HOUR })),
+    };
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([staleClaude]),
+      checkLive: (source) => source === 'claude'
+        ? Promise.reject(new Error('the vendor rate-limited this check (429) — try again in a minute'))
+        : Promise.resolve(),
+    }));
+    const claude = cardFor(c, 'Claude');
+
+    expect(claude.className).toMatch(/off/);
+    const trouble = claude.querySelector('.tl-lim-trouble')!;
+    expect(trouble.className).toMatch(/error/);
+    expect(trouble.querySelector('.hint')?.textContent).toContain('rate-limited');
+    expect(btn(claude, 'Retry')).toBeTruthy();
+
+    const heldRows = rows(claude);
+    expect(heldRows).toHaveLength(3);
+    // The verdict comes first; the rows follow it.
+    expect(
+      trouble.compareDocumentPosition(heldRows[0]) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The freshness line dates the held figures — the age IS the explanation.
+    expect(claude.querySelector('.tl-lim-fresh')?.textContent).toBe('checked 3h ago');
+  });
+
   it('renders a refused credential as sign-in unavailable, not as a failure', async () => {
     // The Companion marks this case with the "not signed in" prefix; the page
     // trusts that word, never the bare status code.

@@ -28,7 +28,10 @@
 //! (`cachedUsageUtilization`), stamped with when it fetched. Inside a short
 //! freshness gate that cache IS the reading — no network, no credential, no
 //! shared budget spent — and past the gate it remains the fallback when the
-//! live fetch is rate-limited. A person still has to ask (bound 3 is about
+//! live fetch is rate-limited, but only while it is newer than the Artifact
+//! already delivered: Claude Code has been seen to stop refreshing this cache
+//! for days, and a Reading from behind the Artifact must never overwrite it
+//! nor let a refused check exit 0. A person still has to ask (bound 3 is about
 //! when this runs, not what it reads). Inside the gate no sign-in question is
 //! asked at all; past it, a sign-in failure never borrows the cache — old
 //! figures must not paper over a dead login, which therefore surfaces on the
@@ -93,7 +96,21 @@ fn run() -> Result<String, String> {
     // refreshed, so serving it dodges the 429 AND stops spending the budget the
     // session is using. Held past the gate too — it is the 429 fallback below.
     let cache = if diagnostic { None } else { cache_reading() };
-    if let Some(fresh) = cache.as_ref().filter(|c| cache_is_fresh(c.fetched_at, now())) {
+    // The Artifact this run would overwrite — the newest reading already
+    // delivered. The cache is measured against it, because TOKL-20's premise
+    // ("Claude Code refreshes this cache constantly while in use") has been
+    // seen to fail for days at a stretch: a cache from behind the Artifact
+    // must never regress it. The gate may re-serve an equal stamp (the
+    // idempotent no-op every page open inside the gate depends on), but the
+    // 429 fallback below demands strictly newer — re-delivering figures the
+    // Ledger already holds would exit 0 with nothing to show, and the card
+    // would sit silently stale with no refusal to explain why.
+    let delivered_at = limits_dir()
+        .and_then(|dir| limits_artifact::read(&dir, "claude"))
+        .map(|held| held.fetched_at);
+    if let Some(fresh) = cache.as_ref().filter(|c| {
+        cache_is_fresh(c.fetched_at, now()) && delivered_at.is_none_or(|d| c.fetched_at >= d)
+    }) {
         return deliver(fresh.clone());
     }
 
@@ -108,15 +125,19 @@ fn run() -> Result<String, String> {
 
     let body = match fetch(&usage_url(), &credential.access_token) {
         Ok(body) => body,
-        // The 429 verdict — and ONLY it — falls back to the cache at any age: a
-        // refusal does not invalidate the newest answer the vendor already gave,
-        // and the Artifact carries the cache's own stamp so the card dates it
-        // honestly. Sign-in failures take the arm below instead (401/403) or
-        // returned before the fetch (absent credential, missing scope), so a
-        // dead login is never papered over with old figures. A diagnostic run
-        // never loaded a cache, so its 429 stays a plain error here too.
+        // The 429 verdict — and ONLY it — falls back to the cache at any age,
+        // provided the cache says something NEW (strictly newer than the
+        // Artifact already delivered): a refusal does not invalidate the newest
+        // answer the vendor already gave, and the Artifact carries the cache's
+        // own stamp so the card dates it honestly. A cache the Ledger already
+        // holds is no answer at all — delivering it would report success while
+        // the card sat stale — so there the refusal stays the verdict. Sign-in
+        // failures take the arm below instead (401/403) or returned before the
+        // fetch (absent credential, missing scope), so a dead login is never
+        // papered over with old figures. A diagnostic run never loaded a cache,
+        // so its 429 stays a plain error here too.
         Err(err) if err == RATE_LIMITED => {
-            return match cache {
+            return match cache.filter(|c| delivered_at.is_none_or(|d| c.fetched_at > d)) {
                 Some(held) => deliver(held),
                 None => Err(err),
             };
@@ -151,13 +172,10 @@ fn run() -> Result<String, String> {
     })
 }
 
-/// One meter answers this endpoint, whichever shape (or cache) it answers in:
-/// the usage limits themselves. Nothing in the response distinguishes a second
-/// regime, so naming one would be inventing it — and if one ever appears, this
-/// identity changes deliberately and a new Series starts. One constant for both
-/// producers, so a cache Reading and a live Reading can never split a Series
-/// over a typo.
-const METERING_REGIME: &str = "claude:usage_limits";
+/// The one Claude regime, shared with every other producer of this Source's
+/// Readings (the statusline tap included) — see the constant's own doc in
+/// limits_artifact.rs for why there is exactly one.
+const METERING_REGIME: &str = limits_artifact::CLAUDE_METERING_REGIME;
 
 /// The end of every successful run, whichever path answered. The durable
 /// Artifact is how the reading reaches the app at all — the scan and the
@@ -166,11 +184,18 @@ const METERING_REGIME: &str = "claude:usage_limits";
 /// delivered nothing, and the card would show an absence rather than the error
 /// that caused it. A hand run with no directory named just prints.
 fn deliver(export: LimitsExport) -> Result<String, String> {
-    if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
-        limits_artifact::write(&PathBuf::from(dir), &export)
+    if let Some(dir) = limits_dir() {
+        limits_artifact::write(&dir, &export)
             .map_err(|err| format!("could not write the export: {err}"))?;
     }
     serde_json::to_string(&export).map_err(|e| e.to_string())
+}
+
+/// Where the app told this run to write — and so where the previous run's
+/// Artifact sits to be measured against. A hand run with no directory named
+/// has neither, and the cache stands on its own stamp alone.
+fn limits_dir() -> Option<PathBuf> {
+    std::env::var_os("TOKENLEDGER_LIMITS_DIR").map(PathBuf::from)
 }
 
 // ---------------------------------------------------------------------------

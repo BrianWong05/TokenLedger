@@ -216,7 +216,9 @@ function Card({
   card, mode, nowSec, t, onRetry,
 }: { card: CardView; mode: Mode; nowSec: number; t: T; onRetry: () => void }) {
   const icon = sourceIcon(card.meta.icon);
-  const fresh = card.state === 'live' ? freshness(card, nowSec) : null;
+  // Dated whenever there are figures to date — a live card's, or the held rows
+  // an error card keeps under its failure line, whose age IS the explanation.
+  const fresh = card.windows.length ? freshness(card, nowSec) : null;
 
   return (
     <section className={'tl-lim-card' + (card.state === 'live' ? '' : ' off')}>
@@ -252,11 +254,12 @@ function Card({
         )}
       </div>
 
-      {card.state === 'live' ? (
-        card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)
-      ) : (
-        <Trouble card={card} t={t} onRetry={onRetry} />
-      )}
+      {/* A trouble state leads with its verdict; an error card's held rows
+          (dimmed by the card's `off` class, dated by the freshness line above)
+          follow it. The other trouble states carry no windows, so the map is
+          empty there. */}
+      {card.state !== 'live' && <Trouble card={card} t={t} onRetry={onRetry} />}
+      {card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)}
     </section>
   );
 }

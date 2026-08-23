@@ -354,7 +354,13 @@ export function cards(
       plan: state === 'live' ? (held?.plan ?? null) : null,
       usageResetsAvailable: state === 'live' ? (held?.usageResetsAvailable ?? null) : null,
       observedAt,
-      windows: state === 'live' ? windows : [],
+      // An error card keeps its held windows: the failure line says why the
+      // figures could not refresh, and the dated rows say what is still known —
+      // a bare error card made a refused check look like having nothing at all.
+      // The other trouble states stay bare: signed-out figures could belong to
+      // a login that is gone (the same rule that keeps the Companion's cache
+      // from answering a 401), and nothing-recorded has nothing to show.
+      windows: state === 'live' || state === 'error' ? windows : [],
       ...(failure && failure !== 'signed-out' ? { detail: failure.detail } : {}),
     };
   });
