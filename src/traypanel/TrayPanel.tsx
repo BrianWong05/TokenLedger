@@ -440,16 +440,18 @@ export default function TrayPanel({
 
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
 
-  // Only Sources whose card is live render a strip; trouble states (signed
-  // out, error, nothing recorded) stay on the app's Limits page, so the
-  // stored verdicts ride along and take their Sources' strips down. Framing
-  // follows the page's stored Left/Used choice — the panel adds no second
-  // toggle.
+  // Only Sources whose card still carries windows render a strip: live cards,
+  // and error cards holding earlier Readings (a refused check must not make a
+  // Source vanish from the panel — the failure's text stays on the app's
+  // Limits page, the figures stay here). Signed-out and nothing-recorded
+  // cards carry none, so the stored verdicts still take those strips down.
+  // Framing follows the page's stored Left/Used choice — the panel adds no
+  // second toggle.
   const limitsMode: LimitsMode = limits.read(MODE_KEY) === 'used' ? 'used' : 'left';
-  const liveLimits = useMemo(
+  const limitStrips = useMemo(
     () =>
       cards(limitsStored, limitsNow, limitsMode, limitsFailures).filter(
-        (c) => c.state === 'live',
+        (c) => c.windows.length > 0,
       ),
     [limitsStored, limitsNow, limitsMode, limitsFailures],
   );
@@ -638,9 +640,9 @@ export default function TrayPanel({
           Weekly meters with reset countdowns, the whole header a disclosure
           to every window — per-model rows included. Not gated on model.empty:
           Limits are about now, and an idle day does not blank them. */}
-      {!loading && liveLimits.length > 0 && (
+      {!loading && limitStrips.length > 0 && (
         <div className="tp-limsrcs">
-          {liveLimits.map((card) => {
+          {limitStrips.map((card) => {
             const open = !!limitsOpen[card.source];
             const plan = planLabel(card.plan);
             const parsed: ParsedWindow[] = card.windows.map((w) => ({

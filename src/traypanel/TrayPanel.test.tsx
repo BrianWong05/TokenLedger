@@ -1045,6 +1045,22 @@ describe('TrayPanel limits', () => {
     ).toEqual(['Claude', 'Codex']);
   });
 
+  it('keeps the strip up through a couldn\'t-check verdict — the figures are held Readings', async () => {
+    // The 429 story on this surface: the vendor refused a fresh answer, the
+    // page carries the error text, and the panel keeps the last-known meters
+    // rather than making the Source vanish for the floor's duration.
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [lastFailureKey('claude')]:
+          'error:the vendor rate-limited this check (429) — try again in a minute',
+        [lastCheckKey('claude')]: String(Date.now()),
+      }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limcard-name')).map((e) => e.textContent),
+    ).toEqual(['Claude', 'Codex']);
+  });
+
   it('frames the numerals by the stored Left/Used mode', async () => {
     const container = await mountWithLimits(
       makeFakeLimits([claudeStored()], { 'tl.limits.mode': 'used' }),
