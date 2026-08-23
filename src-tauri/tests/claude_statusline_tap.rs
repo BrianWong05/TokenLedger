@@ -143,6 +143,48 @@ fn a_newer_artifact_is_never_regressed() {
     assert_eq!(held.windows[0].used_pct, 55.0, "the newer Artifact survives");
 }
 
+/// The incident, verbatim: a long-idle session pushed a belief whose
+/// five_hour window had reset two days earlier, and the tap stamped it as
+/// now. An expired window dates the whole belief — none of it may land, the
+/// still-future weekly included.
+#[test]
+fn a_belief_with_any_expired_window_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, limits) = dirs_in(tmp.path());
+    let doc = format!(
+        r#"{{"rate_limits":{{
+            "five_hour":{{"used_percentage":3,"resets_at":{}}},
+            "seven_day":{{"used_percentage":18,"resets_at":{}}}}}}}"#,
+        now() - 2 * 24 * 3600,
+        now() + 2 * 3600,
+    );
+    assert!(run(&config, &limits, &doc).status.success());
+    assert!(limits_artifact::read(&limits, "claude").is_none(), "a dated belief may not land");
+}
+
+/// Two live sessions render side by side; the idler one's belief is minutes
+/// behind. Usage within a window only grows, so the same reset instant with a
+/// lower figure is the older belief — it must not overwrite the fresher one
+/// (which would ping-pong the Artifact at render frequency).
+#[test]
+fn an_older_belief_on_a_shared_window_never_overwrites_a_fresher_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (config, limits) = dirs_in(tmp.path());
+    let resets = now() + 3 * 3600;
+
+    assert!(run(&config, &limits, &payload(24.0, 72.0, resets)).status.success());
+    // Same windows, lower session figure: an earlier belief arriving later.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(run(&config, &limits, &payload(23.0, 72.0, resets)).status.success());
+    let held = limits_artifact::read(&limits, "claude").unwrap();
+    assert_eq!(held.windows[0].used_pct, 24.0, "the fresher belief survives");
+
+    // And the genuinely newer belief still lands.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert!(run(&config, &limits, &payload(25.0, 72.0, resets)).status.success());
+    assert_eq!(limits_artifact::read(&limits, "claude").unwrap().windows[0].used_pct, 25.0);
+}
+
 #[test]
 fn a_document_with_no_rate_limits_writes_nothing_and_still_renders() {
     let tmp = tempfile::tempdir().unwrap();

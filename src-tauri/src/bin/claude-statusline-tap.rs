@@ -81,15 +81,30 @@ fn tap(raw: &[u8]) {
     if windows.is_empty() {
         return;
     }
+    let now = now();
+    // A long-idle session renders statuslines too, pushing a belief that can
+    // be DAYS old (observed live: a five_hour window two days expired, pushed
+    // as current). The snapshot dates itself: the vendor never reports an
+    // expired window, so any expired window means the whole belief predates
+    // that reset — none of its figures may be written. What this cannot catch
+    // is a belief stale by less than the session window; that residue is the
+    // bounded dishonesty this channel accepted, now with a provable bound.
+    if windows.iter().any(|w| w.resets_at <= now) {
+        return;
+    }
     let dir = limits_dir();
 
     // Unchanged windows are the same observation — no churn at render
-    // frequency — and a newer Artifact is never regressed.
-    let now = now();
+    // frequency — and a newer Artifact is never regressed. Beliefs order by
+    // the windows themselves: usage within one window only grows, so on any
+    // shared key an earlier reset instant — or the same instant with a lower
+    // figure — is an older belief and yields. (A vendor recalculation that
+    // lowers a figure mid-window — a limits promo moving the denominator —
+    // is refused too; the next person-asked Companion check delivers it.)
     if let Some(held) = limits_artifact::read(&dir, "claude") {
         let same = serde_json::to_value(&held.windows).ok()
             == serde_json::to_value(&windows).ok();
-        if same || held.fetched_at >= now {
+        if same || held.fetched_at >= now || older_belief(&windows, &held.windows) {
             return;
         }
     }
@@ -132,6 +147,21 @@ fn windows(rate_limits: &serde_json::Map<String, Value>) -> Vec<WindowExport> {
             })
         })
         .collect()
+}
+
+/// Whether `next` is an older belief than `held`, judged on the windows they
+/// share: usage within one window never falls on its own, so an earlier reset
+/// instant — or the same instant with a lower figure — says the pushing
+/// session's knowledge predates the held Artifact's. No shared key says
+/// nothing, and nothing is not a veto.
+fn older_belief(next: &[WindowExport], held: &[WindowExport]) -> bool {
+    next.iter().any(|n| {
+        held.iter().any(|h| {
+            h.key == n.key
+                && (n.resets_at < h.resets_at
+                    || (n.resets_at == h.resets_at && n.used_pct < h.used_pct))
+        })
+    })
 }
 
 fn minutes(key: &str) -> Option<i64> {
