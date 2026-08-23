@@ -108,6 +108,14 @@ pub fn grok_credit_window(config: &serde_json::Value) -> Option<WindowExport> {
 /// and is not read, rather than being guessed at.
 pub const SCHEMA: u32 = 4;
 
+/// Claude's one metering regime: the usage limits themselves. Nothing in the
+/// vendor's response distinguishes a second regime, so naming one would be
+/// inventing it — and if one ever appears, this identity changes deliberately
+/// and a new Series starts. One constant for every producer — the Companion's
+/// live fetch, its cache fallback, and the statusline tap — so no two of them
+/// can split a Series over a typo.
+pub const CLAUDE_METERING_REGIME: &str = "claude:usage_limits";
+
 fn supported_schema(schema: u32) -> bool {
     // An explicit accept-list, never a range: a range pre-accepts every future
     // bump without a decision. 4 adds `account_id`; 3 added window evidence.

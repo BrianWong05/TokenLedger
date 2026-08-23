@@ -172,13 +172,10 @@ fn run() -> Result<String, String> {
     })
 }
 
-/// One meter answers this endpoint, whichever shape (or cache) it answers in:
-/// the usage limits themselves. Nothing in the response distinguishes a second
-/// regime, so naming one would be inventing it — and if one ever appears, this
-/// identity changes deliberately and a new Series starts. One constant for both
-/// producers, so a cache Reading and a live Reading can never split a Series
-/// over a typo.
-const METERING_REGIME: &str = "claude:usage_limits";
+/// The one Claude regime, shared with every other producer of this Source's
+/// Readings (the statusline tap included) — see the constant's own doc in
+/// limits_artifact.rs for why there is exactly one.
+const METERING_REGIME: &str = limits_artifact::CLAUDE_METERING_REGIME;
 
 /// The end of every successful run, whichever path answered. The durable
 /// Artifact is how the reading reaches the app at all — the scan and the
