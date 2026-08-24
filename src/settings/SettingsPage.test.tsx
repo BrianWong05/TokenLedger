@@ -14,7 +14,6 @@ import { CUSTOM_PRESETS_KEY } from '../overview/customPresets';
 import { publishFirstRecord } from '../overview/ledgerExtent';
 import type { UpdateStatus } from './settings';
 
-vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn().mockResolvedValue('1.4.2') }));
 vi.mock('./startup', () => ({ setLaunchAtLogin: vi.fn() }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =

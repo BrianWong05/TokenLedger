@@ -3,6 +3,7 @@
 // instead of @tauri-apps directly (lets tests swap in settings.fake.ts).
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getVersion } from '@tauri-apps/api/app';
 import { getSettings, setSettings, checkUpdates } from '../api';
 import type { Settings, UpdateStatus } from '../types';
 
@@ -14,6 +15,9 @@ export interface SettingsPort {
   get(): Promise<Settings>;
   set(s: Settings): Promise<void>;
   checkUpdates(): Promise<UpdateStatus>;
+  // The running app version, shown in Settings and compared across runs by the
+  // shell's "updated" notice.
+  version(): Promise<string>;
   // User-approved update actions driven by the Settings banner button.
   downloadUpdate(): Promise<UpdateStatus>;
   restartApp(): Promise<void>;
@@ -25,6 +29,10 @@ export const tauriSettings: SettingsPort = {
   get: getSettings,
   set: setSettings,
   checkUpdates,
+  // getVersion can fail synchronously off-runtime (jsdom), so the throw is
+  // turned into a rejection here — the port owns the Tauri quirk, not its
+  // callers.
+  version: () => Promise.resolve().then(getVersion),
   // Inlined invoke (not routed through api.ts, which the Overview wave owns);
   // matches the check_updates command shape in src-tauri.
   downloadUpdate: () => invoke('download_update'),

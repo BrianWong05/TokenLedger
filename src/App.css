@@ -90,6 +90,14 @@
 .tl-nav button.active svg {
   color: var(--text-accent);
 }
+.tl-nav-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: auto;
+  flex: none;
+}
 .tl-nav button:focus-visible {
   outline: none;
   box-shadow: var(--focus-shadow);
@@ -114,4 +122,79 @@
 
 .tl-page {
   min-height: 240px;
+}
+
+/* ---- update cards, bottom-right (TOKL-21) ---- */
+
+.tl-update-cards {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  z-index: 50;
+}
+.tl-update-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 300px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
+  color: var(--text-primary);
+}
+.tl-update-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tl-update-card-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.tl-update-card-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.tl-update-card-btn {
+  width: 100%;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  color: var(--text-on-accent);
+  padding: 8px 13px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tl-update-card-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.tl-update-card-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.tl-update-card-close {
+  border: none;
+  background: transparent;
+  margin: -4px -4px 0 0;
+  padding: 2px 6px;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tl-update-card-close:hover {
+  color: var(--text-primary);
 }
