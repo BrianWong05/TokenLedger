@@ -2,8 +2,7 @@
 // persisted immediately through the context (no Save button — the design has
 // none). Reads the live Settings from context; keeps only view-local state
 // (the rate text field, the app version, the update-check result).
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { getVersion } from '@tauri-apps/api/app';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Reorder, useDragControls } from 'motion/react';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
@@ -29,8 +28,8 @@ import {
   MENU_BAR_REFRESH_OFF,
   MENU_BAR_REFRESH_PRESETS,
   type SettingsPort,
-  type UpdateStatus,
 } from './settings';
+import { isPending, useAppVersion, useUpdateFlow } from './updateFlow';
 import type { Settings } from '../types';
 import './settings.css';
 
@@ -569,57 +568,17 @@ function CustomIntervalRow({ sec, onCommit }: { sec: number; onCommit: (n: numbe
 function UpdatesGroup({ port }: { port: SettingsPort }) {
   const { t } = useT();
   const { settings, update } = useSettings();
-  const [version, setVersion] = useState<string | null>(null);
-  const [status, setStatus] = useState<UpdateStatus | null>(null);
-  const [checking, setChecking] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    // getVersion talks to Tauri directly (not a port). Route it through a
-    // resolved promise so even a synchronous failure off-runtime (e.g. jsdom)
-    // is a caught rejection, never an unhandled throw.
-    Promise.resolve()
-      .then(getVersion)
-      .then((v) => {
-        if (alive) setVersion(v);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const check = useCallback(() => {
-    setChecking(true);
-    port
-      .checkUpdates()
-      .then(setStatus)
-      .catch(() => {})
-      .finally(() => setChecking(false));
-  }, [port]);
-
+  const version = useAppVersion(port);
   // The banner button drives the user-approved install: download when an update
   // is merely available, then restart to apply it once downloaded.
-  const [acting, setActing] = useState(false);
-  const onBannerAction = useCallback(() => {
-    if (status?.state === 'available') {
-      setActing(true);
-      port
-        .downloadUpdate()
-        .then(setStatus)
-        .catch(() => {})
-        .finally(() => setActing(false));
-    } else if (status?.state === 'downloaded') {
-      port.restartApp().catch(() => {});
-    }
-  }, [status?.state, port]);
+  const { status, checking, acting, check, act } = useUpdateFlow(port);
 
   // Populate the last-known state when the tab opens; the button re-checks.
   useEffect(() => {
     check();
   }, [check]);
 
-  const showBanner = status?.state === 'available' || status?.state === 'downloaded';
+  const showBanner = isPending(status);
 
   let caption: ReactNode = null;
   if (status?.state === 'not-configured') {
@@ -651,7 +610,7 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
           <button
             type="button"
             className="set-primary-btn"
-            onClick={onBannerAction}
+            onClick={act}
             disabled={acting}
           >
             {t('settings.updates.restart')}

@@ -1,22 +1,18 @@
 /** @vitest-environment jsdom */
 
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import App from './App';
+import App, { LAST_VERSION_KEY } from './App';
 import type { Platform } from './lib/platform';
 import { systemClock } from './overview/overviewStore';
 import { makeFakeLedger } from './overview/ledger.fake';
-import { makeFakeSettings } from './settings/settings.fake';
-import type { Settings, Summary } from './types';
+import { FAKE_VERSION, makeFakeSettings } from './settings/settings.fake';
+import type { Settings, Summary, UpdateStatus } from './types';
 import { seriesPoint as pt } from './overview/seriesPoint';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
-
-// The shell reads the running version (off-runtime getVersion would reject and
-// hide the auto-updated toast from every test).
-vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn().mockResolvedValue('1.4.2') }));
 
 // applyTheme() reads matchMedia, which jsdom does not implement.
 beforeEach(() => {
@@ -57,7 +53,40 @@ afterEach(() => {
   // The shell records the running version here; a value left behind would
   // announce a phantom update to the next test.
   localStorage.clear();
+  vi.restoreAllMocks();
 });
+
+const AVAILABLE: UpdateStatus = { state: 'available', version: '9.9.9' };
+
+const basePorts = () => ({
+  ledger: makeFakeLedger({ dayPoints: [pt({})], summary }),
+  clock: systemClock,
+});
+
+// One mounted App per call, torn down by afterEach.
+async function mountApp(settings: ReturnType<typeof makeFakeSettings>) {
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  await act(async () => {
+    root.render(<App ports={{ ...basePorts(), settings }} />);
+  });
+  await settle();
+  return container;
+}
+
+const navOf = (container: Element) =>
+  Array.from(container.querySelectorAll('.tl-nav button')) as HTMLButtonElement[];
+
+// The Settings tab is lazy; awaiting its module keeps the click and the mount
+// inside one act().
+async function openSettings(container: Element) {
+  await act(async () => {
+    navOf(container)[3].click();
+    await import('./settings/SettingsPage');
+  });
+}
 
 describe('App shell', () => {
   // The strip exists to clear the macOS traffic lights, which sit over the
@@ -293,41 +322,23 @@ describe('App shell', () => {
   // TOKL-21: an available update shows as a dot on the Settings nav item, and
   // visiting Settings (where the banner and install flow live) retires it.
   it('marks the Settings nav item when an update is available, until visited', async () => {
-    const mount = async (settings: ReturnType<typeof makeFakeSettings>) => {
-      const container = document.createElement('div');
-      document.body.append(container);
-      const root = createRoot(container);
-      mountedRoots.push(root);
-      await act(async () => {
-        root.render(
-          <App ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings }} />,
-        );
-      });
-      await settle();
-      return container;
-    };
-
-    // An update pending: the dot appears without any tab being opened…
-    const available = makeFakeSettings({}, { state: 'available', version: '9.9.9' });
-    const withUpdate = await mount(available);
-    expect(withUpdate.querySelector('.tl-nav-dot')).not.toBeNull();
+    // An update pending: the dot appears without any tab being opened, on the
+    // Settings item itself — nowhere else.
+    const withUpdate = await mountApp(makeFakeSettings({}, AVAILABLE));
+    expect(navOf(withUpdate)[3].querySelector('.tl-nav-dot')).not.toBeNull();
+    expect(withUpdate.querySelectorAll('.tl-nav-dot')).toHaveLength(1);
 
     // …and opening Settings retires it, even after leaving again.
-    const nav = () =>
-      Array.from(withUpdate.querySelectorAll('.tl-nav button')) as HTMLButtonElement[];
-    await act(async () => {
-      nav()[3].click();
-      await import('./settings/SettingsPage');
-    });
+    await openSettings(withUpdate);
     expect(withUpdate.querySelector('.tl-nav-dot')).toBeNull();
-    await act(async () => nav()[0].click());
+    await act(async () => navOf(withUpdate)[0].click());
     expect(withUpdate.querySelector('.tl-nav-dot')).toBeNull();
 
     // No update pending: no dot. Auto-check off: not even a check.
-    const none = await mount(makeFakeSettings());
+    const none = await mountApp(makeFakeSettings());
     expect(none.querySelector('.tl-nav-dot')).toBeNull();
-    const off = makeFakeSettings({ autoCheckUpdates: false }, { state: 'available', version: '9.9.9' });
-    await mount(off);
+    const off = makeFakeSettings({ autoCheckUpdates: false }, AVAILABLE);
+    await mountApp(off);
     expect(off.calls.checkUpdates).toBe(0);
   });
 
@@ -335,25 +346,11 @@ describe('App shell', () => {
   // download → restart flow as the Settings banner; ✕ merely dismisses the
   // card, leaving the nav dot as the quieter reminder.
   it('offers the update flow from the bottom-right card', async () => {
-    const mount = async (settings: ReturnType<typeof makeFakeSettings>) => {
-      const container = document.createElement('div');
-      document.body.append(container);
-      const root = createRoot(container);
-      mountedRoots.push(root);
-      await act(async () => {
-        root.render(
-          <App ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings }} />,
-        );
-      });
-      await settle();
-      return container;
-    };
-
     // Update: downloads and stages it, then the same button restarts into it.
-    const port = makeFakeSettings({}, { state: 'available', version: '9.9.9' });
-    const card = await mount(port);
-    expect(card.querySelector('.tl-toast')?.textContent).toContain('9.9.9');
-    const btn = () => card.querySelector('.tl-toast-btn') as HTMLButtonElement;
+    const port = makeFakeSettings({}, AVAILABLE);
+    const card = await mountApp(port);
+    expect(card.querySelector('.tl-update-card')?.textContent).toContain('9.9.9');
+    const btn = () => card.querySelector('.tl-update-card-btn') as HTMLButtonElement;
     await act(async () => btn().click());
     await settle();
     expect(port.calls.downloadUpdate).toBe(1);
@@ -361,55 +358,104 @@ describe('App shell', () => {
     expect(port.calls.restartApp).toBe(1);
 
     // ✕: the card goes, the dot stays.
-    const dismissed = await mount(makeFakeSettings({}, { state: 'available', version: '9.9.9' }));
+    const dismissed = await mountApp(makeFakeSettings({}, AVAILABLE));
     await act(async () =>
-      (dismissed.querySelector('.tl-toast-close') as HTMLButtonElement).click(),
+      (dismissed.querySelector('.tl-update-card-close') as HTMLButtonElement).click(),
     );
-    expect(dismissed.querySelector('.tl-toast')).toBeNull();
+    expect(dismissed.querySelector('.tl-update-card')).toBeNull();
     expect(dismissed.querySelector('.tl-nav-dot')).not.toBeNull();
 
     // Visiting Settings retires the card — the banner there takes over.
-    const visited = await mount(makeFakeSettings({}, { state: 'available', version: '9.9.9' }));
-    const nav = Array.from(visited.querySelectorAll('.tl-nav button')) as HTMLButtonElement[];
-    await act(async () => {
-      nav[3].click();
-      await import('./settings/SettingsPage');
-    });
+    const visited = await mountApp(makeFakeSettings({}, AVAILABLE));
+    await openSettings(visited);
     await settle();
-    expect(visited.querySelector('.tl-toast')).toBeNull();
+    expect(visited.querySelector('.tl-update-card')).toBeNull();
   });
 
-  it('announces an executed auto-update with the version jump, once', async () => {
-    const mount = async () => {
-      const container = document.createElement('div');
-      document.body.append(container);
-      const root = createRoot(container);
-      mountedRoots.push(root);
-      await act(async () => {
-        root.render(
-          <App
-            ports={{ ledger: makeFakeLedger({ dayPoints: [pt({})], summary }), clock: systemClock, settings: makeFakeSettings() }}
-          />,
-        );
-      });
-      await settle();
-      return container;
-    };
+  // A staged update is the exception: the Settings banner re-checks and reports
+  // it as merely 'available' again, so retiring the card there would take the
+  // only "Restart to update" on screen with it.
+  it('keeps a staged update card through a visit to Settings', async () => {
+    const port = makeFakeSettings({}, AVAILABLE);
+    const card = await mountApp(port);
+    await act(async () => (card.querySelector('.tl-update-card-btn') as HTMLButtonElement).click());
+    await settle();
+    expect(port.calls.downloadUpdate).toBe(1);
 
+    await openSettings(card);
+    await settle();
+    const btn = card.querySelector('.tl-update-card-btn') as HTMLButtonElement | null;
+    expect(btn).not.toBeNull();
+    await act(async () => btn!.click());
+    expect(port.calls.restartApp).toBe(1);
+  });
+
+  // A window left open outlives its one mount-time check, so coming back to the
+  // front re-checks — and the floor keeps alt-tabbing off the update endpoint.
+  it('re-checks for updates when the window comes back to the front', async () => {
+    const port = makeFakeSettings();
+    await mountApp(port);
+    expect(port.calls.checkUpdates).toBe(1);
+
+    // Straight back: inside the floor, so no second call.
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+    expect(port.calls.checkUpdates).toBe(1);
+
+    // Long enough away, and the return checks again.
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 7 * 60 * 60 * 1000);
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+    expect(port.calls.checkUpdates).toBe(2);
+  });
+
+  it('announces an applied update with the version jump, once', async () => {
     // First ever run: nothing to compare against, so no announcement — but the
     // running version is recorded for the next run.
-    const first = await mount();
-    expect(first.querySelector('.tl-toast')).toBeNull();
-    expect(localStorage.getItem('tl-last-version')).toBe('1.4.2');
+    const first = await mountApp(makeFakeSettings());
+    expect(first.querySelector('.tl-update-card')).toBeNull();
+    expect(localStorage.getItem(LAST_VERSION_KEY)).toBe(FAKE_VERSION);
 
     // A run after an update was applied: the jump is announced…
-    localStorage.setItem('tl-last-version', '1.0.0');
-    const updated = await mount();
-    expect(updated.querySelector('.tl-toast')?.textContent).toContain('1.0.0 → 1.4.2');
+    localStorage.setItem(LAST_VERSION_KEY, '1.0.0');
+    const updated = await mountApp(makeFakeSettings());
+    expect(updated.querySelector('.tl-update-card')?.textContent).toContain(`1.0.0 → ${FAKE_VERSION}`);
 
     // …and the record moves forward, so the next run stays quiet.
-    expect(localStorage.getItem('tl-last-version')).toBe('1.4.2');
-    const quiet = await mount();
-    expect(quiet.querySelector('.tl-toast')).toBeNull();
+    expect(localStorage.getItem(LAST_VERSION_KEY)).toBe(FAKE_VERSION);
+    const quiet = await mountApp(makeFakeSettings());
+    expect(quiet.querySelector('.tl-update-card')).toBeNull();
+  });
+
+  // StrictMode double-invokes every effect in dev. Recording the running
+  // version from a pass that was already torn down would eat the jump the live
+  // pass is there to find — and make the notice invisible under `tauri dev`.
+  it('still announces the jump when effects run twice (StrictMode)', async () => {
+    localStorage.setItem(LAST_VERSION_KEY, '1.0.0');
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => {
+      root.render(
+        <StrictMode>
+          <App ports={{ ...basePorts(), settings: makeFakeSettings() }} />
+        </StrictMode>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('.tl-update-card')?.textContent).toContain(
+      `1.0.0 → ${FAKE_VERSION}`,
+    );
+  });
+
+  // A version that went *down* is a rollback or a stale record, not an update.
+  it('stays quiet when the running version is older than the record', async () => {
+    localStorage.setItem(LAST_VERSION_KEY, '9.9.9');
+    const rolled = await mountApp(makeFakeSettings());
+    expect(rolled.querySelector('.tl-update-card')).toBeNull();
+    // The record still follows the running version, so the next run compares
+    // against what is actually installed.
+    expect(localStorage.getItem(LAST_VERSION_KEY)).toBe(FAKE_VERSION);
   });
 });

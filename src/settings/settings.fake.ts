@@ -1,23 +1,44 @@
 // In-memory SettingsPort for tests: a get/set round-trip over one held Settings
-// value, a call log, per-method failNext, and a canned checkUpdates.
+// value, a call log, per-method failNext, and a canned checkUpdates + version.
 import { DEFAULT_SETTINGS, type SettingsPort, type UpdateStatus } from './settings';
 import type { Settings } from '../types';
 
 export interface FakeSettings extends SettingsPort {
   value: Settings;
-  calls: { get: number; set: Settings[]; checkUpdates: number; downloadUpdate: number; restartApp: number };
-  failNext(method: 'get' | 'set' | 'checkUpdates' | 'downloadUpdate' | 'restartApp', err: unknown): void;
+  calls: {
+    get: number;
+    set: Settings[];
+    checkUpdates: number;
+    version: number;
+    downloadUpdate: number;
+    restartApp: number;
+  };
+  failNext(
+    method: 'get' | 'set' | 'checkUpdates' | 'version' | 'downloadUpdate' | 'restartApp',
+    err: unknown,
+  ): void;
   emitOpenSettings(): void;
 }
 
 const NO_UPDATE: UpdateStatus = { state: 'not-configured', version: null };
 
+// The running version every fake reports unless a test names another one.
+export const FAKE_VERSION = '1.4.2';
+
 export function makeFakeSettings(
   seed: Partial<Settings> = {},
   update: UpdateStatus = NO_UPDATE,
+  version = FAKE_VERSION,
 ): FakeSettings {
   let value: Settings = { ...DEFAULT_SETTINGS, ...seed };
-  const calls: FakeSettings['calls'] = { get: 0, set: [], checkUpdates: 0, downloadUpdate: 0, restartApp: 0 };
+  const calls: FakeSettings['calls'] = {
+    get: 0,
+    set: [],
+    checkUpdates: 0,
+    version: 0,
+    downloadUpdate: 0,
+    restartApp: 0,
+  };
   const fails = new Map<string, unknown>();
   const openSettingsCbs = new Set<() => void>();
   // download stages the checked update: same version, state 'downloaded'.
@@ -38,6 +59,7 @@ export function makeFakeSettings(
     get: () => guard('get', () => { calls.get++; return { ...value }; }),
     set: (s) => guard('set', () => { calls.set.push(s); value = { ...s }; }),
     checkUpdates: () => guard('checkUpdates', () => { calls.checkUpdates++; return update; }),
+    version: () => guard('version', () => { calls.version++; return version; }),
     downloadUpdate: () => guard('downloadUpdate', () => { calls.downloadUpdate++; return downloaded; }),
     restartApp: () => guard('restartApp', () => { calls.restartApp++; }),
     failNext: (method, err) => fails.set(method, err),

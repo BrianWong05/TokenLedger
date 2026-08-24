@@ -6,8 +6,7 @@
 // across tab switches so its data survives; the Pricing and Settings pages mount on
 // demand. Settings state is owned by SettingsProvider so theme + language changes
 // take effect live app-wide.
-import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
-import { getVersion } from '@tauri-apps/api/app';
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react';
 import Overview from './overview/Overview';
 import FirstRunDialog from './settings/FirstRunDialog';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
@@ -17,10 +16,16 @@ import { detectPlatform, type Platform } from './lib/platform';
 import { hotkeyHint, isHotkey } from './lib/hotkeys';
 import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
-import { tauriSettings, type SettingsPort, type UpdateStatus } from './settings/settings';
+import { tauriSettings, type SettingsPort } from './settings/settings';
+import { isNewerVersion, isPending, isStaged, useUpdateFlow } from './settings/updateFlow';
 import type { PricingPort } from './pricing/pricing';
 import type { LimitsPort } from './limits/limits';
 import './App.css';
+
+// What the last run was running, so this one can tell an update happened.
+export const LAST_VERSION_KEY = 'tokenledger.lastVersion';
+// The shortest gap between two update checks in one window's lifetime.
+const CHECK_FLOOR_MS = 6 * 60 * 60 * 1000;
 
 const PricingPage = lazy(() => import('./pricing/PricingPage'));
 const LimitsPage = lazy(() => import('./limits/LimitsPage'));
@@ -119,80 +124,66 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
   const ledger = ports?.ledger ?? tauriLedger;
   const settingsPort = ports?.settings ?? tauriSettings;
 
-  // The in-app "update available" notice (TOKL-21): one check when the window
-  // mounts (each open is a fresh webview, so a resident app re-checks whenever
-  // its window reopens), surfaced as a dot on the Settings nav item plus an
-  // Orca-style card bottom-right whose Update button drives the same
-  // download → restart flow the Settings banner owns. Visiting Settings
-  // retires both (the banner takes over there).
-  const [updateReady, setUpdateReady] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
-  const [updateCardGone, setUpdateCardGone] = useState(false);
-  const [updating, setUpdating] = useState(false);
+  // The in-app "update available" notice (TOKL-21): a dot on the Settings nav
+  // item plus a card bottom-right whose button drives the same download →
+  // restart flow the Settings banner owns (one shared hook, so the two surfaces
+  // cannot drift). Both are derived from the check's result — visiting Settings
+  // hands the notice to the banner there, and ✕ closes the card while the dot
+  // stays as the quieter reminder.
+  const { status: updateStatus, acting: updating, check, act } = useUpdateFlow(settingsPort);
+  const [settingsSeen, setSettingsSeen] = useState(false);
+  const [cardDismissed, setCardDismissed] = useState(false);
   useEffect(() => {
-    if (!loaded || !settings.autoCheckUpdates) return;
+    if (tab === 'settings') setSettingsSeen(true);
+  }, [tab]);
+
+  // Checked on mount and again whenever the window comes back to the front, so
+  // a window left open for days still learns about a release. The floor keeps
+  // alt-tabbing from hammering the update endpoint.
+  // ponytail: focus-driven, no timer. A window kept in front the whole time
+  // waits until the next visit — add an interval if that becomes a complaint.
+  const lastCheck = useRef(0);
+  const autoCheck = loaded && settings.autoCheckUpdates;
+  useEffect(() => {
+    if (!autoCheck) return;
+    const run = () => {
+      if (Date.now() - lastCheck.current < CHECK_FLOOR_MS) return;
+      lastCheck.current = Date.now();
+      check();
+    };
+    run();
+    window.addEventListener('focus', run);
+    return () => window.removeEventListener('focus', run);
+  }, [autoCheck, check]);
+
+  // The "updated" notice: an applied update shows itself as the running version
+  // being newer than the one the previous run recorded, so remember it and
+  // announce the climb. A first run has no record — nothing to announce, just
+  // start the memory — and a downgrade is not an update, so it stays quiet.
+  const [applied, setApplied] = useState<{ from: string; to: string } | null>(null);
+  useEffect(() => {
     let alive = true;
     settingsPort
-      .checkUpdates()
-      .then((s) => {
-        if (alive && (s.state === 'available' || s.state === 'downloaded')) {
-          setUpdateReady(true);
-          setUpdateStatus(s);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [loaded, settings.autoCheckUpdates, settingsPort]);
-  useEffect(() => {
-    if (tab === 'settings') {
-      setUpdateReady(false);
-      setUpdateCardGone(true);
-    }
-  }, [tab]);
-  // Available: download and stage it; downloaded: restart into it — the same
-  // two steps as the Settings banner, from the card.
-  const onUpdate = () => {
-    if (updateStatus?.state === 'available') {
-      setUpdating(true);
-      settingsPort
-        .downloadUpdate()
-        .then(setUpdateStatus)
-        .catch(() => {})
-        .finally(() => setUpdating(false));
-    } else if (updateStatus?.state === 'downloaded') {
-      settingsPort.restartApp().catch(() => {});
-    }
-  };
-
-  // The "you were auto-updated" toast: an applied update only shows itself as
-  // the running version differing from the one the previous run recorded, so
-  // remember it in localStorage and announce the jump. First run has no record
-  // — nothing to announce, just start the memory.
-  const [updatedToast, setUpdatedToast] = useState<{ from: string; to: string } | null>(null);
-  useEffect(() => {
-    let alive = true;
-    // getVersion talks to Tauri directly (not a port); route it through a
-    // resolved promise so a synchronous off-runtime failure stays a caught
-    // rejection (same guard as the Settings page).
-    Promise.resolve()
-      .then(getVersion)
+      .version()
       .then((v) => {
+        // Bail before touching storage: a torn-down pass (StrictMode mounts
+        // every effect twice in dev) that recorded the version anyway would eat
+        // the very jump the next pass is meant to find.
+        if (!alive) return;
         let last: string | null = null;
         try {
-          last = localStorage.getItem('tl-last-version');
-          localStorage.setItem('tl-last-version', v);
+          last = localStorage.getItem(LAST_VERSION_KEY);
+          localStorage.setItem(LAST_VERSION_KEY, v);
         } catch {
           // Storage unavailable: no memory of the prior run, so no announcement.
         }
-        if (alive && last && last !== v) setUpdatedToast({ from: last, to: v });
+        if (last && isNewerVersion(v, last)) setApplied({ from: last, to: v });
       })
       .catch(() => {});
     return () => {
       alive = false;
     };
-  }, []);
+  }, [settingsPort]);
 
   // The Menu Bar Extra's "Settings… ⌘," item: the tray shows the window and
   // asks the shell to land on the Settings tab.
@@ -209,6 +200,14 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [platform]);
+
+  // A staged update keeps its card even after a visit to Settings: the banner
+  // there re-checks and reports the staged update as merely 'available' again,
+  // so retiring the card would take the only "Restart to update" on screen with
+  // it.
+  const staged = isStaged(updateStatus);
+  const showDot = isPending(updateStatus) && !settingsSeen;
+  const showCard = isPending(updateStatus) && !cardDismissed && (!settingsSeen || staged);
 
   return (
     <div className="tl-shell">
@@ -238,8 +237,10 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
             >
               {tb.icon}
               {t(tb.strKey)}
-              {tb.key === 'settings' && updateReady && (
-                <span className="tl-nav-dot" role="status" aria-label={t('nav.updateReady')} />
+              {tb.key === 'settings' && showDot && (
+                // role="img", not a live region: the card below does the
+                // announcing, and this is the standing mark left behind.
+                <span className="tl-nav-dot" role="img" aria-label={t('update.available')} />
               )}
             </button>
           ))}
@@ -264,48 +265,55 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
         </Suspense>
       </main>
 
-      {(updatedToast !== null || (updateStatus !== null && !updateCardGone)) && (
-        <div className="tl-toasts">
-          {updatedToast && (
-            <div className="tl-toast" role="status">
-              <div className="tl-toast-head">
-                <span className="tl-toast-title">{t('toast.autoUpdated')}</span>
+      {(applied !== null || showCard) && (
+        <div className="tl-update-cards">
+          {applied && (
+            <div className="tl-update-card" role="status">
+              <div className="tl-update-card-head">
+                <span className="tl-update-card-title">{t('update.applied')}</span>
                 <button
-                  className="tl-toast-close"
-                  aria-label={t('toast.dismiss')}
-                  onClick={() => setUpdatedToast(null)}
+                  type="button"
+                  className="tl-update-card-close"
+                  aria-label={t('update.dismiss')}
+                  onClick={() => setApplied(null)}
                 >
                   ×
                 </button>
               </div>
-              <p className="tl-toast-detail">
-                TokenLedger {updatedToast.from} → {updatedToast.to}
+              <p className="tl-update-card-detail">
+                TokenLedger {applied.from} → {applied.to}
               </p>
             </div>
           )}
-          {updateStatus !== null && !updateCardGone && (
-            <div className="tl-toast" role="status">
-              <div className="tl-toast-head">
-                <span className="tl-toast-title">{t('nav.updateReady')}</span>
+          {showCard && (
+            <div className="tl-update-card" role="status">
+              <div className="tl-update-card-head">
+                <span className="tl-update-card-title">{t('update.available')}</span>
                 <button
-                  className="tl-toast-close"
-                  aria-label={t('toast.dismiss')}
-                  onClick={() => setUpdateCardGone(true)}
+                  type="button"
+                  className="tl-update-card-close"
+                  aria-label={t('update.dismiss')}
+                  onClick={() => setCardDismissed(true)}
                 >
                   ×
                 </button>
               </div>
-              <p className="tl-toast-detail">
-                {updateStatus.state === 'downloaded'
-                  ? `${updateStatus.version} ${t('settings.updates.downloadedNote')}`
-                  : `TokenLedger ${updateStatus.version} ${t('settings.updates.isReady')}`}
+              <p className="tl-update-card-detail">
+                {staged
+                  ? `${updateStatus?.version} ${t('update.staged')}`
+                  : `TokenLedger ${updateStatus?.version} ${t('update.ready')}`}
               </p>
-              <button className="tl-toast-btn" disabled={updating} onClick={onUpdate}>
+              <button
+                type="button"
+                className="tl-update-card-btn"
+                disabled={updating}
+                onClick={act}
+              >
                 {updating
-                  ? t('toast.downloading')
-                  : updateStatus.state === 'downloaded'
-                    ? t('settings.updates.restart')
-                    : t('toast.update')}
+                  ? t('update.downloading')
+                  : staged
+                    ? t('update.restart')
+                    : t('update.action')}
               </button>
             </div>
           )}
