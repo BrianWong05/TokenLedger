@@ -6,7 +6,7 @@ and estimated cost across the AI coding agents and assistants on your machine �
 **Google Antigravity**, **Goose**, **OpenCode**, **Cline**, **Kilo**, **Zed**, **pi**, **WorkBuddy**, and **CodeBuddy** — by parsing each tool's local logs into a
 normalized SQLite ledger.
 
-**Status: 0.2.0.** Driven daily on macOS. Windows and Linux build and pass the
+**Status: 0.3.0.** Driven daily on macOS. Windows and Linux build and pass the
 full test suite in CI (run on demand), but have had no real-world use yet —
 expect rough edges there, and please report them.
 
