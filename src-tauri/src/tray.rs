@@ -125,19 +125,22 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     }
 }
 
+/// The panel window's logical width — the one number lib.rs's resize_panel and
+/// the fallback below hardcode. tauri.conf.json's traypanel entry and
+/// TrayPanel.tsx's PANEL_WIDTH carry the same figure; tests pin each of them
+/// to their conf (panel_width_matches_the_window_config here,
+/// TrayPanel.css.test.js on the frontend).
+///
+/// Ungated: resize_panel is a `generate_handler!` command, so it compiles on
+/// Linux too and reads this.
+pub(crate) const PANEL_WIDTH: f64 = 320.0;
+
 /// Show the panel beside the tray icon, or destroy it if it's already up. Where
 /// the panel lands is panel_position's business; this gathers the icon rect,
 /// the panel size, and the work area of the monitor holding the icon. The
 /// panel fetches on mount; destroy-on-blur lives in lib.rs's window-event
 /// handler. Absent on Linux, which never delivers the click that would call it.
 #[cfg(not(target_os = "linux"))]
-/// The panel window's logical width — the one number lib.rs's resize_panel and
-/// the fallback below hardcode. tauri.conf.json's traypanel entry and
-/// TrayPanel.tsx's PANEL_WIDTH carry the same figure; tests pin each of them
-/// to their conf (panel_width_matches_the_window_config here,
-/// TrayPanel.css.test.js on the frontend).
-pub(crate) const PANEL_WIDTH: f64 = 320.0;
-
 fn toggle_panel<R: Runtime>(app: &AppHandle<R>, rect: tauri::Rect) -> tauri::Result<()> {
     let w = if let Some(w) = app.get_webview_window("traypanel") {
         w
