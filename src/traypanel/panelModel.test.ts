@@ -152,6 +152,39 @@ describe('panelModel', () => {
     ]);
   });
 
+  // The legend is capped where the bar is not: the bar splits the whole priced
+  // Cost, so hiding a slice would misstate the split, while the legend only
+  // names slices and the app holds the full list.
+  //
+  // Three is not a taste: the panel's window hugs its content, and at eight
+  // Sources and twenty-one Models the card measured ~950px against a 14"
+  // work area of ~875px (ADR-0007, second amendment). Three-and-three measured
+  // 643px. Nothing here can measure a layout — jsdom has none — so raising
+  // either cap means re-measuring the panel, and these two tests are what make
+  // that a deliberate act rather than a silent one.
+  it('caps the legend at three Sources and counts the rest, bar untouched', () => {
+    const m = panelModel(sum(1, 1), sum(0, null), [
+      brow('claude', 5_000, 6.0),
+      brow('codex', 4_000, 5.0),
+      brow('grok', 3_000, 3.0),
+      brow('gemini', 2_000, 2.0),
+      brow('qoder', 1_000, 1.0),
+    ], S, 'en');
+    expect(m.legend.map((r) => r.label)).toEqual(['Claude', 'Codex', 'Grok']);
+    expect(m.legendOverflow).toBe(2);
+    expect(m.rows.map((r) => r.label)).toEqual(['Claude', 'Codex', 'Grok', 'Gemini', 'Qoder']);
+    expect(m.rows.reduce((a, r) => a + (r.share ?? 0), 0)).toBeCloseTo(1, 10);
+  });
+
+  it('leaves the legend uncapped when the Sources fit, with nothing to count', () => {
+    const m = panelModel(sum(1, 1), sum(0, null), [
+      brow('claude', 5_000, 6.0),
+      brow('codex', 4_000, 5.0),
+    ], S, 'en');
+    expect(m.legend.map((r) => r.label)).toEqual(['Claude', 'Codex']);
+    expect(m.legendOverflow).toBe(0);
+  });
+
   it('shares are all zero when no Source carries priced Cost', () => {
     const m = panelModel(sum(10, null, true), sum(0, null), [brow('grok', 10, null, true)], S, 'en');
     expect(m.rows[0].share).toBe(0);
@@ -306,12 +339,14 @@ describe('panelModel Models section', () => {
     expect(m.modelsOverflow).toBe(0);
   });
 
-  it('caps the list at five rows and counts what it hid', () => {
+  // Three rows for the same reason the legend takes three — see the height
+  // budget on the legend cap test above.
+  it('caps the list at three rows and counts what it hid', () => {
     const models = Array.from({ length: 8 }, (_, i) =>
       mrow(`m-${i}`, 'claude', 1_000, 8 - i));
     const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({ models }));
-    expect(m.models.map((r) => r.label)).toEqual(['m-0', 'm-1', 'm-2', 'm-3', 'm-4']);
-    expect(m.modelsOverflow).toBe(3);
+    expect(m.models.map((r) => r.label)).toEqual(['m-0', 'm-1', 'm-2']);
+    expect(m.modelsOverflow).toBe(5);
   });
 
   it('keeps one row per Source when two Sources ran the same Model', () => {

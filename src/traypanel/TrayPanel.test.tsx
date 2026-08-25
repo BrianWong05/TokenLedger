@@ -65,7 +65,7 @@ const day = (back: number) => {
 };
 const point = (bucket: string, cost: number) => seriesPoint({ bucket, cost, totalTokens: 1_000 });
 
-// A silent limits port: tests that are not about the strips pass one so the
+// A silent limits port: tests that are not about the Limit lines pass one so the
 // default port's IPC read never lands in `invoked`, and the limits tests seed
 // it with stored Readings. `checked` records live checks the way the ledger
 // fake records scans.
@@ -398,6 +398,34 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
     expect(container.querySelector('.tp-chart-hover')).toBeNull();
     expect(container.querySelector('.tp-chart-peak')).not.toBeNull(); // the caption returns
+  });
+
+  // The cap is on the panel, not on the Ledger: the bar keeps every slice, the
+  // legend names three, and the count says where the rest are. A month with
+  // eight Sources is what grew the card past a laptop's work area.
+  it('names three Sources in the legend and counts the rest, bar still whole', async () => {
+    const many = ['claude', 'codex', 'grok', 'gemini', 'qoder'].map((key, i) => ({
+      ...sourceRows[0],
+      key,
+      totalTokens: 1_000_000 - i * 1_000,
+      cost: 6 - i,
+    }));
+    const ledger = makeFakeLedger({ summary, modelRows: many });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    expect(
+      Array.from(container.querySelectorAll('.tp-leg-name')).map((e) => e.textContent),
+    ).toEqual(['Claude', 'Codex', 'Grok']);
+    expect(container.querySelector('.tp-sources .tp-more')?.textContent).toBe(
+      '+2 more Sources in the app',
+    );
+    // Five slices for five Sources — capping the bar would misstate the split.
+    expect(container.querySelectorAll('.tp-srcbar span').length).toBe(5);
   });
 
   it('renders lowercase pi with the official mark in the Menu Bar Extra', async () => {
@@ -883,8 +911,9 @@ describe('TrayPanel', () => {
   });
 });
 
-// The Limit strips (TOKL-19): one per live Source, collapsed to Session +
-// Weekly meters, the header a disclosure to every window. Fixtures seed the
+// The Limit lines (TOKL-19, capped by ADR-0007's second amendment): one per
+// live Source, carrying the window nearest its wall, the line a disclosure to
+// the Source's others. Fixtures seed the
 // real provenance mix — a plan string the label derives from, a per-model
 // window beside the named lanes — because an impossible fixture is how a walk
 // bug hides.
@@ -934,10 +963,10 @@ describe('TrayPanel limits', () => {
     return container;
   }
 
-  it('renders one collapsed strip per live Source: name, plan, Session + Weekly meters', async () => {
+  it('renders one line per live Source: name, plan, and its Session window', async () => {
     const container = await mountWithLimits(makeFakeLimits([claudeStored(), codexStored()]));
 
-    // Two strips — Sources with no Readings (copilot, grok, …) get none; their
+    // Two lines — Sources with no Readings (copilot, grok, …) get none; their
     // trouble states live on the app's Limits page.
     const cardEls = Array.from(container.querySelectorAll('.tp-limcard'));
     expect(cardEls.length).toBe(2);
@@ -952,39 +981,148 @@ describe('TrayPanel limits', () => {
       ['Codex', 'Pro', SOURCE_ICONS.codex],
     ]);
 
-    // Collapsed: the two named lanes only — the per-model window waits behind
-    // the disclosure. Label, toned numeral, countdown, and the fill geometry.
-    const meters = (el: Element) =>
-      Array.from(el.querySelectorAll('.tp-limmeter')).map((m) => [
-        m.querySelector('.tp-limmeter-k')?.textContent,
-        m.querySelector('.tp-limmeter-v')?.textContent,
-        m.querySelector('.tp-limmeter-v')?.className,
-        m.querySelector('.tp-limmeter-t')?.textContent,
-      ]);
-    expect(meters(cardEls[0])).toEqual([
-      ['Session', '62%', 'tp-limmeter-v tp-t-ok', '· 3h 10m'],
-      ['Weekly', '31%', 'tp-limmeter-v tp-t-low', '· 2d 4h'],
-    ]);
-    expect(meters(cardEls[1])).toEqual([
-      ['Session', '71%', 'tp-limmeter-v tp-t-ok', '· 2h 5m'],
-      ['Weekly', '14%', 'tp-limmeter-v tp-t-dry', '· 5d 12h'],
-    ]);
+    // The line carries one window — the Session — with its toned numeral.
+    const lead = (el: Element) => [
+      el.querySelector('.tp-limcard-head .tp-limwin-k')?.textContent,
+      el.querySelector('.tp-limcard-head .tp-limwin-pct')?.textContent,
+      el.querySelector('.tp-limcard-head .tp-limwin-pct')?.className,
+    ];
+    expect(lead(cardEls[0])).toEqual(['Session', '62%', 'tp-limwin-pct tp-t-ok']);
+    expect(lead(cardEls[1])).toEqual(['Session', '71%', 'tp-limwin-pct tp-t-ok']);
+    // Every other window waits behind the disclosure — the Weekly lane and the
+    // per-model one alike. Naming them here is what the 250px of cards bought,
+    // and it is what this design gave up.
+    expect(container.textContent).not.toContain('Weekly');
     expect(container.textContent).not.toContain('Fable');
 
-    const claudeFills = Array.from(cardEls[0].querySelectorAll('.tp-limbar .fill')).map((f) => [
+    // One bar per line, the Session's, and the tick is time: 190 of 300
+    // minutes left ≈ 63.3% under Left framing.
+    const claudeBars = Array.from(cardEls[0].querySelectorAll('.tp-limbar .fill')).map((f) => [
       (f as HTMLElement).style.width,
       f.className,
     ]);
-    expect(claudeFills).toEqual([
-      ['62%', 'fill ok'],
-      ['31%', 'fill low'],
-    ]);
-    // The tick is time: 190 of 300 minutes left ≈ 63.3% under Left framing.
+    expect(claudeBars).toEqual([['62%', 'fill ok']]);
     const tick = cardEls[0].querySelector('.tp-limbar .tick') as HTMLElement;
     expect(parseFloat(tick.style.left)).toBeCloseTo((190 / 300) * 100, 1);
   });
 
-  it('expands a Source to every window on header click, and collapses back', async () => {
+  // The pick is Session-first so the same slot means the same window on every
+  // line; a Source that recorded no Session must still lead with something,
+  // because a name beside an empty right-hand side says nothing at all.
+  it('falls back to the Weekly lane, then to whatever window the Source has', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const weeklyOnly: SourceLimits = {
+      source: 'codex',
+      plan: 'pro',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'w10080', windowMinutes: 10080, usedPct: 86, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(makeFakeLimits([weeklyOnly]));
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-k')?.textContent).toBe('Weekly');
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-pct')?.textContent).toBe('14%');
+    // Nothing behind the line, so no chevron and no disclosure state to claim.
+    expect(container.querySelector('.tp-limcard-chev')).toBeNull();
+    expect(
+      container.querySelector('.tp-limcard-head')?.getAttribute('aria-expanded'),
+    ).toBeNull();
+  });
+
+  // Antigravity records two Sessions that coexist — one per pool (its
+  // companion reports `gemini:w300` and `3p:w300`) — and the query hands them
+  // over ordered by window_key, so plain first-match would let the alphabet
+  // decide which pool the line speaks for. Between windows of the same kind the
+  // tie goes to the one nearest its wall, which is the one a glance is for.
+  it('leads with the Session nearest its wall when a Source has two', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const twoPools: SourceLimits = {
+      source: 'antigravity',
+      plan: null,
+      usageResetsAvailable: null,
+      windows: [
+        // Stored order, alphabetical by key: the 3p pool comes first and has
+        // plenty left, so only the tiebreak can put Gemini's on the line.
+        { windowKey: '3p:w300', windowMinutes: 300, usedPct: 20, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 90, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(makeFakeLimits([twoPools]));
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-k')?.textContent).toBe(
+      'Gemini · Session',
+    );
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-pct')?.textContent).toBe('10%');
+  });
+
+  // The tie the displayed figure cannot break: both pools round to 20% used,
+  // so the printed numerals are identical and a pick made on them falls back
+  // to stored order — the alphabet again, with 3p first. The fraction is what
+  // separates them, and Gemini is the one actually nearer its wall.
+  it('breaks a same-numeral tie on the unrounded figure, not stored order', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const hairsBreadth: SourceLimits = {
+      source: 'antigravity',
+      plan: null,
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: '3p:w300', windowMinutes: 300, usedPct: 20.1, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 20.4, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(makeFakeLimits([hairsBreadth]));
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-k')?.textContent).toBe(
+      'Gemini · Session',
+    );
+    // Both would print 80%: the numeral cannot show why this one won.
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-pct')?.textContent).toBe('80%');
+  });
+
+  // The last rung, which the two above never reach: a Source with neither a
+  // Session nor a Weekly lane still gets a line, and the same nearest-the-wall
+  // tie applies there — the monthly credits sit first in stored order and have
+  // more left, so only the tie can put the odd duration on the line.
+  it('leads with the nearest window when a Source has neither lane', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const oddOnly: SourceLimits = {
+      source: 'grok',
+      plan: 'super',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'w43200', windowMinutes: 43200, usedPct: 41, resetsAt: now + 9 * 1440 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'w900', windowMinutes: 900, usedPct: 85, resetsAt: now + 200 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(makeFakeLimits([oddOnly]));
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-k')?.textContent).toBe(
+      '900 window',
+    );
+    expect(container.querySelector('.tp-limcard-head .tp-limwin-pct')?.textContent).toBe('15%');
+  });
+
+  // A line with nothing behind it must not pretend otherwise: withholding the
+  // chevron is not enough while the row is still a focusable button that
+  // announces itself as one and toggles state no one can see.
+  it('gives a Source with one window no interactive line at all', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const oneWindow: SourceLimits = {
+      source: 'codex',
+      plan: 'pro',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 12, resetsAt: now + 40 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(makeFakeLimits([oneWindow]));
+    const head = container.querySelector('.tp-limcard-head')!;
+    expect(head.tagName).not.toBe('BUTTON');
+    expect(head.getAttribute('tabindex')).toBeNull();
+    expect(head.getAttribute('role')).toBeNull();
+    expect(container.querySelector('.tp-limcard-chev')).toBeNull();
+    // The figures still render — it is the affordance that goes, not the line.
+    expect(head.querySelector('.tp-limwin-pct')?.textContent).toBe('88%');
+  });
+
+  it('expands a Source to its other windows on line click, and collapses back', async () => {
     const container = await mountWithLimits(makeFakeLimits([claudeStored(), codexStored()]));
     const head = container.querySelector('.tp-limcard-head') as HTMLButtonElement;
 
@@ -995,8 +1133,8 @@ describe('TrayPanel limits', () => {
       r.querySelector('.tp-limwin-pct')?.textContent,
       r.querySelector('.tp-limwin-resets')?.textContent,
     ]);
+    // The Session is not repeated here — it is the line that was clicked.
     expect(rows).toEqual([
-      ['Session', '62%', 'resets in 3h 10m'],
       ['Weekly', '31%', 'resets in 2d 4h'],
       // The per-model weekly, discovered from the key's own tail — the "·"
       // rides the sub, so the row reads "Fable · Weekly".
@@ -1005,19 +1143,19 @@ describe('TrayPanel limits', () => {
     expect(
       container.querySelector('.tp-limwin:last-of-type .tp-limwin-k .sub')?.textContent,
     ).toBe('· Weekly');
-    // Only the clicked Source expanded; Codex keeps its meters.
+    // Only the clicked Source expanded; Codex keeps its line alone.
     const codexCard = container.querySelectorAll('.tp-limcard')[1];
-    expect(codexCard.querySelectorAll('.tp-limmeter').length).toBe(2);
     expect(codexCard.querySelectorAll('.tp-limwin').length).toBe(0);
+    expect(codexCard.querySelector('.tp-limcard-head .tp-limwin-pct')?.textContent).toBe('71%');
 
     await act(async () => head.click());
     expect(head.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelectorAll('.tp-limwin').length).toBe(0);
-    expect(container.querySelectorAll('.tp-limmeter').length).toBe(4);
+    expect(container.querySelectorAll('.tp-limcard-head .tp-limwin-pct').length).toBe(2);
   });
 
   it('keeps a Source with a stored failure verdict off the panel while the floor holds it', async () => {
-    // Held Readings do not earn a strip past a failure verdict the floor is
+    // Held Readings do not earn a line past a failure verdict the floor is
     // still holding: a signed-out Claude must not show yesterday's
     // percentages as a current fact. Its trouble state renders on the app's
     // Limits page, not here.
@@ -1031,7 +1169,7 @@ describe('TrayPanel limits', () => {
       Array.from(withFresh.querySelectorAll('.tp-limcard-name')).map((e) => e.textContent),
     ).toEqual(['Codex']);
 
-    // A verdict older than the floor says nothing about now — the strip
+    // A verdict older than the floor says nothing about now — the line
     // returns, same replay rule as the page.
     document.body.replaceChildren();
     const withStale = await mountWithLimits(
@@ -1045,9 +1183,9 @@ describe('TrayPanel limits', () => {
     ).toEqual(['Claude', 'Codex']);
   });
 
-  it('keeps the strip up through a couldn\'t-check verdict — the figures are held Readings', async () => {
+  it('keeps the line up through a couldn\'t-check verdict — the figures are held Readings', async () => {
     // The 429 story on this surface: the vendor refused a fresh answer, the
-    // page carries the error text, and the panel keeps the last-known meters
+    // page carries the error text, and the panel keeps the last-known figures
     // rather than making the Source vanish for the floor's duration.
     const container = await mountWithLimits(
       makeFakeLimits([claudeStored(), codexStored()], {
@@ -1066,8 +1204,10 @@ describe('TrayPanel limits', () => {
       makeFakeLimits([claudeStored()], { 'tl.limits.mode': 'used' }),
     );
     expect(
-      Array.from(container.querySelectorAll('.tp-limmeter-v')).map((v) => v.textContent),
-    ).toEqual(['38%', '69%']);
+      Array.from(container.querySelectorAll('.tp-limcard-head .tp-limwin-pct')).map(
+        (v) => v.textContent,
+      ),
+    ).toEqual(['38%']);
   });
 
   it('checks live Sources on open only behind the opt-in, at most once per floor', async () => {
