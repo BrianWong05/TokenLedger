@@ -30,11 +30,40 @@ fn payload(session_pct: f64, weekly_pct: f64, resets_at: i64) -> String {
     )
 }
 
+/// A byte-faithful cat to sit downstream of the tap. Windows ships none —
+/// `more`, `type` and `findstr` all rewrite line endings, and the assertion
+/// below is byte-for-byte — so the raw console streams are copied instead.
+fn cat() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$o=[Console]::OpenStandardOutput();\
+             [Console]::OpenStandardInput().CopyTo($o);$o.Flush()",
+        ]
+    } else {
+        &["/bin/cat"]
+    }
+}
+
+/// A downstream that runs and fails, so the exit-code test proves the code is
+/// relayed rather than the spawn-failure path — `/usr/bin/false` is absent on
+/// Windows, where failing to spawn also exits 1 and the assertion would hold
+/// for the wrong reason.
+fn exits_nonzero() -> &'static [&'static str] {
+    if cfg!(windows) {
+        &["cmd", "/c", "exit 1"]
+    } else {
+        &["/usr/bin/false"]
+    }
+}
+
 /// Run the tap with `cat` downstream, so the render leg is the real spawn
 /// path and stdout proves the pipe-through.
 fn run(config: &Path, limits: &Path, stdin: &str) -> Output {
     let mut child = Command::new(BIN)
-        .arg("/bin/cat")
+        .args(cat())
         .env("CLAUDE_CONFIG_DIR", config)
         .env("TOKENLEDGER_LIMITS_DIR", limits)
         .stdin(Stdio::piped())
@@ -202,7 +231,7 @@ fn the_downstreams_exit_code_is_the_taps() {
     let tmp = tempfile::tempdir().unwrap();
     let (config, limits) = dirs_in(tmp.path());
     let output = Command::new(BIN)
-        .arg("/usr/bin/false")
+        .args(exits_nonzero())
         .env("CLAUDE_CONFIG_DIR", &config)
         .env("TOKENLEDGER_LIMITS_DIR", &limits)
         .stdin(Stdio::null())
