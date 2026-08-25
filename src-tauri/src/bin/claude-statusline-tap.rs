@@ -226,10 +226,24 @@ fn limits_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("TOKENLEDGER_LIMITS_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join("Library/Application Support/com.brianwong.tokenledger/limits")
+    default_limits_dir()
 }
+
+/// The app reads Artifacts from `app_data_dir()/limits`, and Tauri spells
+/// `app_data_dir()` as `dirs::data_dir()/<identifier>` (tauri's
+/// `path/desktop.rs`). The Companions never need this — the app spawns them
+/// with `TOKENLEDGER_LIMITS_DIR` already set — but Claude Code spawns the tap,
+/// so this default is the only thing putting the file where the app looks.
+///
+/// `dirs::data_dir()`, not a hardcoded `~/Library/Application Support`: that
+/// literal is only macOS's spelling of this, so off macOS the tap wrote to a
+/// directory the app never opens and the Source read as idle.
+fn default_limits_dir() -> PathBuf {
+    dirs::data_dir().unwrap_or_default().join(APP_IDENTIFIER).join("limits")
+}
+
+/// The bundle identifier, pinned to tauri.conf.json by the test below.
+const APP_IDENTIFIER: &str = "com.brianwong.tokenledger";
 
 /// One capture of the raw payload, for diagnosing the vendor's bucket set.
 /// Written once — delete the file to re-capture — and never fatal. Lands in
@@ -254,4 +268,36 @@ fn now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The tap is the one Artifact writer the app does not spawn, so nothing
+    /// hands it `TOKENLEDGER_LIMITS_DIR` and this default is load-bearing: let
+    /// it drift from where the app reads and the tap writes into a directory
+    /// nobody opens, which the UI shows as a Source that simply never updates.
+    ///
+    /// Half of this bites only off macOS — there `dirs::data_dir()` IS
+    /// `~/Library/Application Support`, so the hardcoded path this replaced
+    /// passes here and fails on the other two. The identifier half bites
+    /// everywhere.
+    #[test]
+    fn the_default_artifact_dir_is_the_one_the_app_reads() {
+        let conf: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            conf["identifier"].as_str(),
+            Some(APP_IDENTIFIER),
+            "the bundle was renamed; the tap still writes under the old identifier"
+        );
+        assert_eq!(
+            default_limits_dir(),
+            dirs::data_dir().unwrap().join(APP_IDENTIFIER).join("limits"),
+        );
+    }
 }
