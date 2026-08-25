@@ -562,6 +562,10 @@ fn message_dedup_key(session_id: &str, message_id: &str) -> String {
 /// two `a.json` in different subdirectories would collide on one dedup key —
 /// and the token columns are `Immutable` on conflict, so the second Request's
 /// tokens would be silently dropped rather than summed.
+///
+/// Joined with `/` rather than `to_string_lossy`, which would spell the same
+/// Message `nested\c` on Windows and `nested/c` everywhere else: a dedup key
+/// is a stored identity, so it must not read differently per platform.
 fn legacy_message_id(value: &Value, path: &Path, message_root: &Path) -> String {
     value
         .get("id")
@@ -572,8 +576,10 @@ fn legacy_message_id(value: &Value, path: &Path, message_root: &Path) -> String 
             path.strip_prefix(message_root)
                 .unwrap_or(path)
                 .with_extension("")
-                .to_string_lossy()
-                .into_owned()
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
         })
 }
 

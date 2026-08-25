@@ -738,7 +738,9 @@ mod tests {
         let tmp_root = base.join("tmp");
         let projects_json = base.join("projects.json");
         std::fs::write(&projects_json, r#"{"projects":{}}"#).unwrap();
-        let session = tmp_root.join("alpha/chats/session-1.json");
+        // Joined a component at a time: the state key below is compared against
+        // the string the Scan stored, and Windows keeps an embedded `/` verbatim.
+        let session = tmp_root.join("alpha").join("chats").join("session-1.json");
         write(&session, SESSION_ALPHA);
         let path_str = session.to_string_lossy().to_string();
 
@@ -889,7 +891,9 @@ mod tests {
     fn a_jsonl_session_whose_counts_moved_keeps_its_records_and_warns() {
         let dir = tempfile::tempdir().unwrap();
         let (tmp_root, projects_json) = jsonl_fixture(dir.path());
-        let session = tmp_root.join("alpha/chats/session-2026-05-03T08-00-abcd.jsonl");
+        // Per-component, so the key matches the Scan's on Windows too.
+        let session =
+            tmp_root.join("alpha").join("chats").join("session-2026-05-03T08-00-abcd.jsonl");
         write(&session, SESSION_JSONL);
 
         let mut conn = crate::db::open_db(&dir.path().join("t.db")).unwrap();
