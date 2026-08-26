@@ -3,8 +3,9 @@
 // period tabs top-left double as the window's label, the last-scan time and
 // Rescan sit top-right, and beneath the hero Cost sit the stacked source bar
 // with its legend, the Cost bar chart, the Model rows (led by their Source's
-// mark), one line per live Source's Limits (its nearest window, disclosing the
-// rest), the stat tiles, and the three icon actions. The lists are capped and
+// mark), one Limits card per live Source (collapsed to its Session + Weekly
+// meters, expandable to every window), the stat tiles, and the three icon
+// actions. The lists are capped and
 // say what they hid, because the window hugs its content and the app holds the
 // full story — see panelModel's caps. Every figure is a display string the
 // view model already decided. Data goes through the same ports the app shell
@@ -122,37 +123,29 @@ function limitDuration(minutes: number): string {
     .join(' ');
 }
 
-// The one window a Source's line carries: Session, else the Weekly lane, else
-// whatever it did record — a Source whose only windows are credits or a raw
-// duration has neither of the first two, and a line with a name and nothing
-// beside it told nobody anything. The same rung meaning the same thing on
-// every line is what makes the lines comparable at a glance.
-//
-// A rung can hold more than one window, though: Antigravity records a Session
-// per pool (`gemini:w300` and `3p:w300`), and the query hands them over ordered
-// by key, so first-match let the alphabet choose which pool the line spoke
-// for. Within a rung — the last one included, where the windows share no
-// meaning to preserve — the tie goes to the window nearest its wall, the one a
-// glance is actually for. That is read off `pctLeft`, which is neither of the
-// figures the line can print (`pctShown` is the used or the left figure
-// depending on the framing) precisely because both of those are rounded to
-// whole percent: two pools a fraction apart tie on the printed numeral, and a
-// tie hands the pick back to stored order — the alphabet, the thing this is
-// here to stop. `pctLeft` is unrounded and framing-independent, so the
-// Left/Used toggle cannot change which window leads.
-//
-// Two ties it cannot break, both landing back on stored order: windows whose
-// `pctLeft` is exactly equal, and a rung whose windows have all expired, since
-// `windowView` reads an expired epoch as 100 left. The second is also what
-// keeps a stale window from leading a rung that still holds a live one. Callers pass a Source that has windows, so there is always one.
-function primaryWindow(parsed: ParsedWindow[]): ParsedWindow {
+// The two windows a Source's card collapses to: its Session and its Weekly
+// lane. Restored after the one-line design was reverted (ADR-0007's third
+// amendment) — but not restored to picking each with a bare `find`, because a
+// rung can hold more than one window and first-match let the alphabet choose.
+// Antigravity records a Session per pool (`gemini:w300` and `3p:w300`) and the
+// query orders by key, so the meter showed whichever pool sorted first. Each
+// meter now shows the window nearest its wall, read off `pctLeft`: neither
+// figure a meter can print is usable for this, since both round to whole
+// percent and two pools a fraction apart tie on the numeral, and a tie hands
+// the pick back to stored order. `pctLeft` is unrounded and
+// framing-independent, so the Left/Used toggle cannot move it either. Two ties
+// it still cannot break — windows whose `pctLeft` is exactly equal, and a rung
+// whose windows have all expired, since `windowView` reads an expired epoch as
+// 100 left. That second one is also what keeps a stale window out of a meter
+// while a live sibling exists.
+function primaryWindows(parsed: ParsedWindow[]): ParsedWindow[] {
   const nearestWall = (ps: ParsedWindow[]) =>
-    ps.reduce((a, b) => (b.w.pctLeft < a.w.pctLeft ? b : a));
-  const rungs = [
-    parsed.filter((p) => p.label.kind === 'session'),
+    ps.length > 0 ? ps.reduce((a, b) => (b.w.pctLeft < a.w.pctLeft ? b : a)) : undefined;
+  const session = nearestWall(parsed.filter((p) => p.label.kind === 'session'));
+  const weekly = nearestWall(
     parsed.filter((p) => p.label.kind === 'weekly' || p.label.kind === 'weeklyCredits'),
-  ];
-  return nearestWall(rungs.find((r) => r.length > 0) ?? parsed);
+  );
+  return [session, weekly].filter((p): p is ParsedWindow => p !== undefined);
 }
 
 // One limit bar, shared by the Source lines and the expanded rows: the
@@ -219,7 +212,7 @@ export default function TrayPanel({
   const settings = ports?.settings ?? tauriSettings;
   const limits = ports?.limits ?? tauriLimits;
   const [model, setModel] = useState<PanelModel | null>(null);
-  // The Limit lines are *now*, not the selected period (same rule as the
+  // The Limit cards are *now*, not the selected period (same rule as the
   // Limits page): stored Readings plus the clock they were read at, and which
   // Sources the user has flipped open. The panel is destroyed on dismissal
   // (ADR-0007), so the open set naturally resets per open.
@@ -265,7 +258,7 @@ export default function TrayPanel({
   const loadLimits = useCallback(() => {
     setLimitsNow(Math.floor(Date.now() / 1000));
     // The verdicts the floor still holds ride along with every read, so a
-    // signed-out or erroring Source keeps its line off the panel (its
+    // signed-out or erroring Source keeps its card off the panel (its
     // trouble state renders on the app's Limits page instead).
     setLimitsFailures(storedFailures(limits, Date.now()));
     try {
@@ -466,15 +459,15 @@ export default function TrayPanel({
 
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
 
-  // Only Sources whose card still carries windows earn a line: live cards, and
+  // Only Sources whose card still carries windows render one: live cards, and
   // error cards holding earlier Readings (a refused check must not make a
   // Source vanish from the panel — the failure's text stays on the app's
   // Limits page, the figures stay here). Signed-out and nothing-recorded cards
-  // carry none, so the stored verdicts still take those lines down.
+  // carry none, so the stored verdicts still take those cards down.
   // Framing follows the page's stored Left/Used choice — the panel adds no
   // second toggle.
   const limitsMode: LimitsMode = limits.read(MODE_KEY) === 'used' ? 'used' : 'left';
-  const limitLines = useMemo(
+  const limitCards = useMemo(
     () =>
       cards(limitsStored, limitsNow, limitsMode, limitsFailures).filter(
         (c) => c.windows.length > 0,
@@ -665,77 +658,51 @@ export default function TrayPanel({
         </div>
       )}
 
-      {/* One line per live Source (TOKL-19): its name and the one window a
-          glance wants, the line itself a disclosure to every other window the
-          Source recorded — per-model rows included. One line each rather than
-          a two-meter card because the panel is a glance whose window hugs its
-          content, and three cards were 250px of it. Not gated on model.empty:
-          Limits are about now, and an idle day does not blank them. */}
-      {!loading && limitLines.length > 0 && (
+      {/* One card per live Source (TOKL-19): collapsed to its Session + Weekly
+          meters with reset countdowns, the whole header a disclosure to every
+          window — per-model rows included. The one-line form this replaced was
+          shorter, and the ADR's third amendment records why the card came
+          back. Not gated on model.empty: Limits are about now, and an idle day
+          does not blank them. */}
+      {!loading && limitCards.length > 0 && (
         <div className="tp-limsrcs">
-          {limitLines.map((card) => {
+          {limitCards.map((card) => {
             const open = !!limitsOpen[card.source];
             const plan = planLabel(card.plan);
             const parsed: ParsedWindow[] = card.windows.map((w) => ({
               w,
               label: windowLabel(w.key, card.source),
             }));
-            const lead = primaryWindow(parsed);
-            const rest = parsed.filter((p) => p !== lead);
-            const leadText = limitText(lead.label);
-            // The line's own content, worn by a button or a plain row
-            // depending on whether this Source has anything behind it.
-            const line = (
-              <>
-                <img src={sourceIcon(card.meta.icon)} alt="" width={12} height={12} />
-                <span className="tp-limcard-name">{card.meta.label}</span>
-                {plan && <span className="tp-limcard-plan">{plan}</span>}
-                <span className="tp-spacer" />
-                <span className="tp-limwin-k">
-                  {leadText.text}
-                  {leadText.sub && <span className="sub">{leadText.sub}</span>}
-                </span>
-                <span className={'tp-limwin-pct tp-t-' + lead.w.tone}>{lead.w.pctShown}%</span>
-                <span className="tp-limcard-bar">
-                  <LimitBar w={lead.w} mode={limitsMode} />
-                </span>
-              </>
-            );
             return (
               <div className="tp-limcard" key={card.source}>
-                {/* A Source with one window is the whole story on its line, so
-                    it is not a control at all: withholding just the chevron
-                    would leave a tab stop that announces itself as a button
-                    and toggles a disclosure with nothing in it. */}
-                {rest.length === 0 ? (
-                  <div className="tp-limcard-head">{line}</div>
-                ) : (
-                  <button
-                    className="tp-limcard-head"
-                    aria-expanded={open}
-                    onClick={() =>
-                      setLimitsOpen((o) => ({ ...o, [card.source]: !o[card.source] }))
-                    }
+                <button
+                  className="tp-limcard-head"
+                  aria-expanded={open}
+                  onClick={() =>
+                    setLimitsOpen((o) => ({ ...o, [card.source]: !o[card.source] }))
+                  }
+                >
+                  <img src={sourceIcon(card.meta.icon)} alt="" width={12} height={12} />
+                  <span className="tp-limcard-name">{card.meta.label}</span>
+                  {plan && <span className="tp-limcard-plan">{plan}</span>}
+                  <span className="tp-spacer" />
+                  <svg
+                    className={open ? 'tp-limcard-chev open' : 'tp-limcard-chev'}
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
                   >
-                    {line}
-                    <svg
-                      className={open ? 'tp-limcard-chev open' : 'tp-limcard-chev'}
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <path d="M9 6l6 6-6 6" />
-                    </svg>
-                  </button>
-                )}
-                {open &&
-                  rest.map(({ w, label }) => {
+                    <path d="M9 6l6 6-6 6" />
+                  </svg>
+                </button>
+                {open ? (
+                  parsed.map(({ w, label }) => {
                     const l = limitText(label);
                     return (
                       <div className="tp-limwin" key={w.key}>
@@ -753,7 +720,25 @@ export default function TrayPanel({
                         <LimitBar w={w} mode={limitsMode} />
                       </div>
                     );
-                  })}
+                  })
+                ) : (
+                  <div className="tp-limmeters">
+                    {primaryWindows(parsed).map(({ w, label }) => (
+                      <div className="tp-limmeter" key={w.key}>
+                        <div className="tp-limmeter-row">
+                          <span className="tp-limmeter-k">{limitText(label).text}</span>
+                          <span>
+                            <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
+                            {w.resetsInMin !== null && (
+                              <span className="tp-limmeter-t">· {limitDuration(w.resetsInMin)}</span>
+                            )}
+                          </span>
+                        </div>
+                        <LimitBar w={w} mode={limitsMode} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}

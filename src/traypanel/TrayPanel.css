@@ -262,18 +262,15 @@ body.tp-macos .tp {
 .tp-top-right { display: flex; align-items: center; gap: 6px; }
 .tp-scanned { font-family: ui-monospace, monospace; font-size: 10px; color: var(--tp-faint); }
 
-/* Limits (TOKL-19): one line per live Source in the tile idiom — name on the
-   left, its lead window on the right (label, numeral, a short bar), the line
-   itself the disclosure to every other window it recorded. The window
-   vocabulary is one family (.tp-limwin-*), worn by the line and the expanded
-   rows alike. Tones follow % left (>50 ok, ≤50 low, ≤20 dry) like the Limits
-   page; the numerals wear the page's *-text shades, the fills its bases. */
+/* Limits (TOKL-19): one card per live Source in the tile idiom. Collapsed
+   shows the Session + Weekly meters; the header button expands to every
+   window. The one-line form that briefly replaced this was shorter — see
+   ADR-0007's third amendment for why the card came back. Tones follow % left
+   (>50 ok, ≤50 low, ≤20 dry) like the Limits page; the numerals wear the
+   page's *-text shades, the fills its bases. */
 .tp-limsrcs { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .tp-limcard {
-  /* Tighter than the two-meter card this replaced (9px 10px 10px): what it
-     wraps is a single row of text now, and that card's padding read as a box
-     with a line rattling around in it. */
-  padding: 7px 10px 8px;
+  padding: 9px 10px 10px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.06);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
@@ -283,9 +280,6 @@ body.tp-macos .tp {
   align-items: center;
   gap: 6px;
   width: 100%;
-}
-/* Only the expandable line is a button, and only it needs the reset. */
-button.tp-limcard-head {
   padding: 0;
   border: 0;
   background: none;
@@ -304,22 +298,19 @@ button.tp-limcard-head {
   background: rgba(124, 107, 242, 0.16);
   border: 1px solid rgba(124, 107, 242, 0.35);
 }
-.tp-limcard-bar { flex: none; width: 54px; }
-/* The line is one line. The lead label is the only part that can run long — a
-   per-model window on a Source that recorded nothing else — so it ellipsizes
-   rather than wrapping the row into two. */
-.tp-limcard-head .tp-limwin-k {
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 .tp-limcard-chev { display: block; color: var(--tp-faint); transition: transform 0.15s; }
 .tp-limcard-chev.open { transform: rotate(90deg); }
 
 .tp-t-ok { color: #7bd3aa; }
 .tp-t-low { color: #e8c476; }
 .tp-t-dry { color: #f09090; }
+
+.tp-limmeters { display: flex; gap: 12px; margin-top: 7px; }
+.tp-limmeter { flex: 1; min-width: 0; }
+.tp-limmeter-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+.tp-limmeter-k { font-size: 9.5px; color: var(--tp-quiet); }
+.tp-limmeter-v { font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600; }
+.tp-limmeter-t { margin-left: 4px; font-family: ui-monospace, monospace; font-size: 9.5px; color: var(--tp-faint); }
 
 .tp-limwin { margin-top: 8px; }
 .tp-limwin-labels { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }

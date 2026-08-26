@@ -76,3 +76,33 @@ honest limit: no veil short of opaque clears 4.5:1 on a white backdrop, because
 the card's top gradient stop is about as light as the material itself — the
 glass is what caps it. Going opaque was offered and declined; the panel keeps
 the glass and the type does what work it can.
+
+## Amendment (2026-08-27)
+
+The Limits card is back; the one-line form the amendment above introduced is
+reverted at the user's request.
+
+That form gave each Source one line — the window nearest its wall, with the
+Source's other windows behind a disclosure — and it was the largest single
+saving in the capping work, ~250px of cards down to ~100px of lines. The user
+asked for the card back after living with it. What the card restores: two
+meters per Source, the Session and the Weekly lane side by side, each with its
+reset countdown, which is the thing the line could not show without a click.
+What it costs, knowingly: the panel measures 720px rather than 643px on the
+shape that provoked the capping, and a Source that recorded neither named lane
+— credits, or a raw duration — collapses to a bare name again, its figures one
+click away. A test pins that last behaviour so it stays a decision rather than
+a surprise.
+
+Two things from the reverted design were kept deliberately. The type and veil
+recalibration is untouched: it answered a different report and nothing about it
+depended on the line. And each meter still picks the window nearest its wall
+within its lane, rather than the first one the query hands over: Antigravity
+records a Session per pool (`gemini:w300` and `3p:w300`) ordered by key, so the
+`find` this ADR's previous shape used let the alphabet decide which pool the
+Session meter spoke for. Restoring the card did not mean restoring that.
+
+Everything the caps decided stands: three Sources in the legend, three Model
+rows, the 12px section rhythm, and the Rust-side clamp on `resize_panel` still
+owed — more so now, since the taller card leaves less headroom before an
+expanded Source runs off the screen.
