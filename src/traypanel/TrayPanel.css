@@ -11,14 +11,20 @@
    things that look like polish are load-bearing:
 
    - The gradient is a veil over the material, and how heavy it needs to be
-     depends on which way the material went. The material follows the system
-     appearance and this file is dark-only, so in Dark mode the material is
-     already doing the darkening and the veil stays thin — a heavy one just
-     buries it and the card goes back to looking like flat paint, which is
-     the bug this replaced. In Light mode the material turns near-white and
-     the veil is the only thing keeping #f2f2f5 text and #6e6e76 captions
-     readable, so it goes heavy. Hence the prefers-color-scheme branch: two
-     calibrations of one veil, not a light theme.
+     depends on how bright the material comes out. That is not decided by the
+     system appearance alone: the material transmits whatever is behind the
+     window, so a panel opened over a white document is lit by that document.
+     Measured on a real Dark-mode panel over a white page, the card composited
+     to rgb(65,67,70) — nothing like the #1e1e24 the type was calibrated on,
+     and the old quiet grey sat at 1.7:1 on it. So the Dark veil is no longer
+     thin: it is heavy enough that a white backdrop cannot lift the card past
+     roughly rgb(49,50,56). It stays lighter than the Light-mode veil, which
+     starts from a near-white material and is heavier still — hence the
+     prefers-color-scheme branch: two calibrations of one veil, not a light
+     theme. The card is still translucent in both, so it still reads as glass
+     over a dark desktop; it just no longer trusts the desktop to be dark.
+     The type tiers moved with it (--tp-faint and --tp-quiet), because no veil
+     this side of opaque clears 4.5:1 on a white backdrop by itself.
    - Both halves of that are scoped to macOS, and they have to move together.
      Windows would take acrylic/mica, but radius is macOS-only there, so a
      square blurred rect would show at the 14px corners; Win10 acrylic also
@@ -37,7 +43,18 @@ body.tp-window #root {
   overflow: hidden;
 }
 
+/* The two quiet type tiers, as tokens: they are spread over a dozen rules and
+   they had to move together when the card turned out to be lighter than this
+   file assumed (see the veil note in the header above). They read faintest
+   first — --tp-faint is the captions, axis, token figures and countdowns;
+   --tp-quiet is a step louder, and keeps the #a3a3ab this file already used
+   rather than introducing a third grey a few units from it. So a recalibration
+   of the type is these two lines, with one deliberate exception noted at
+   .tp-limbar .tick: that shade is a time marker, not type, and must not move
+   when the type does. */
 .tp {
+  --tp-faint: #85858e;
+  --tp-quiet: #a3a3ab;
   width: 320px;
   box-sizing: border-box;
   background: #1e1e24;
@@ -62,9 +79,9 @@ body.tp-window #root {
 body.tp-macos .tp {
   background: linear-gradient(
     180deg,
-    rgba(72, 72, 88, 0.2) 0%,
-    rgba(32, 32, 39, 0.28) 45%,
-    rgba(16, 16, 22, 0.36) 100%
+    rgba(72, 72, 88, 0.55) 0%,
+    rgba(32, 32, 39, 0.62) 45%,
+    rgba(16, 16, 22, 0.7) 100%
   );
   border-color: rgba(255, 255, 255, 0.14);
   box-shadow:
@@ -112,7 +129,7 @@ body.tp-macos .tp {
   border: 0;
   border-radius: 6px;
   background: none;
-  color: #8a8a93;
+  color: var(--tp-quiet);
   cursor: default;
 }
 .tp-refresh:hover { background: rgba(255, 255, 255, 0.08); color: #f2f2f5; }
@@ -134,25 +151,28 @@ body.tp-macos .tp {
   display: block;
   font-family: ui-monospace, monospace;
   font-size: 12.5px;
-  color: #a3a3ab;
+  color: var(--tp-quiet);
   margin-top: 4px;
 }
 
 /* Sources: the stacked bar splits the period's priced Cost by brand colour;
-   the legend beneath names each slice and its Cost. */
-.tp-sources { margin-top: 16px; }
+   the legend beneath names each slice the cap kept and its Cost (panelModel's
+   SOURCE_CAP — the bar still splits them all), and .tp-more counts the rest.
+   Sections sit 12px apart rather than 16: the panel's window hugs its content,
+   so six gaps are 24px of screen. */
+.tp-sources { margin-top: 12px; }
 .tp-srcbar { display: flex; gap: 2px; height: 8px; border-radius: 4px; overflow: hidden; }
 .tp-srcbar span { height: 8px; }
 .tp-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 10px; }
 .tp-leg { display: flex; flex-direction: column; gap: 2px; }
 .tp-leg-name { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #d6d6dc; }
 .tp-leg-name img { display: block; }
-.tp-leg-cost { font-family: ui-monospace, monospace; font-size: 12px; color: #a3a3ab; padding-left: 17px; }
+.tp-leg-cost { font-family: ui-monospace, monospace; font-size: 12px; color: var(--tp-quiet); padding-left: 17px; }
 
 /* Cost bar chart: one column per bucket, the peak bucket in the brighter
    fill. The svg stretches to the panel's content width; its geometry comes
    from the normalised points the model hands over. */
-.tp-chart { margin-top: 16px; }
+.tp-chart { margin-top: 12px; }
 .tp-chart svg { display: block; width: 100%; height: 56px; }
 .tp-bars { fill: #7c6bf2; fill-opacity: 0.62; }
 .tp-bar-peak { fill: #a99dff; }
@@ -169,28 +189,28 @@ body.tp-macos .tp {
   font-size: 10.5px;
 }
 .tp-chart-cap-row { height: 13px; margin-bottom: 4px; white-space: nowrap; }
-.tp-chart-peak { color: #6e6e76; flex-shrink: 0; }
+.tp-chart-peak { color: var(--tp-faint); flex-shrink: 0; }
 .tp-chart-read {
   color: #d9d4ff;
   margin-left: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tp-chart-cap { margin-top: 3px; color: #6e6e76; }
+.tp-chart-cap { margin-top: 3px; color: var(--tp-faint); }
 
 /* Models: the Source rows' idiom, led by the owning Source's mark. Long
    Model names ellipsize so the columns stay aligned. */
-.tp-models { margin-top: 16px; }
-.tp-sec { font-size: 11.5px; font-weight: 500; color: #a3a3ab; margin-bottom: 4px; }
+.tp-models { margin-top: 12px; }
+.tp-sec { font-size: 11.5px; font-weight: 500; color: var(--tp-quiet); margin-bottom: 4px; }
 .tp-row { display: flex; align-items: center; height: 24px; gap: 8px; }
 .tp-row img { display: block; }
 .tp-row-label { color: #f2f2f5; }
 .tp-spacer { flex: 1; }
-.tp-row-tokens { font-family: ui-monospace, monospace; font-size: 10.5px; color: #6e6e76; }
+.tp-row-tokens { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--tp-faint); }
 .tp-row-cost {
   font-family: ui-monospace, monospace;
   font-size: 12px;
-  color: #a3a3ab;
+  color: var(--tp-quiet);
   min-width: 42px;
   text-align: right;
 }
@@ -203,10 +223,10 @@ body.tp-macos .tp {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.tp-more { font-size: 10.5px; color: #6e6e76; margin-top: 2px; }
+.tp-more { font-size: 10.5px; color: var(--tp-faint); margin-top: 2px; }
 
 /* Stat tiles: value over caption, three across. */
-.tp-tiles { display: flex; gap: 8px; margin-top: 16px; }
+.tp-tiles { display: flex; gap: 8px; margin-top: 12px; }
 .tp-tile {
   flex: 1;
   background: rgba(255, 255, 255, 0.06);
@@ -215,10 +235,10 @@ body.tp-macos .tp {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 .tp-tile-v { font-family: ui-monospace, monospace; font-size: 14.5px; font-weight: 600; }
-.tp-tile-k { font-size: 10px; color: #8a8a93; margin-top: 2px; }
+.tp-tile-k { font-size: 10px; color: var(--tp-quiet); margin-top: 2px; }
 
 /* Actions: icon over label, three across, accent on hover. */
-.tp-actions { display: flex; gap: 8px; margin-top: 16px; }
+.tp-actions { display: flex; gap: 8px; margin-top: 12px; }
 .tp-action {
   flex: 1;
   display: flex;
@@ -240,15 +260,20 @@ body.tp-macos .tp {
 
 /* The last-scan time, quiet mono beside the Rescan button it belongs to. */
 .tp-top-right { display: flex; align-items: center; gap: 6px; }
-.tp-scanned { font-family: ui-monospace, monospace; font-size: 10px; color: #6e6e76; }
+.tp-scanned { font-family: ui-monospace, monospace; font-size: 10px; color: var(--tp-faint); }
 
-/* Limits (TOKL-19): one strip per live Source in the tile idiom. Collapsed
-   shows the Session + Weekly meters; the header button expands to every
-   window. Tones follow % left (>50 ok, ≤50 low, ≤20 dry) like the Limits
+/* Limits (TOKL-19): one line per live Source in the tile idiom — name on the
+   left, its lead window on the right (label, numeral, a short bar), the line
+   itself the disclosure to every other window it recorded. The window
+   vocabulary is one family (.tp-limwin-*), worn by the line and the expanded
+   rows alike. Tones follow % left (>50 ok, ≤50 low, ≤20 dry) like the Limits
    page; the numerals wear the page's *-text shades, the fills its bases. */
-.tp-limsrcs { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+.tp-limsrcs { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .tp-limcard {
-  padding: 9px 10px 10px;
+  /* Tighter than the two-meter card this replaced (9px 10px 10px): what it
+     wraps is a single row of text now, and that card's padding read as a box
+     with a line rattling around in it. */
+  padding: 7px 10px 8px;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.06);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
@@ -258,6 +283,9 @@ body.tp-macos .tp {
   align-items: center;
   gap: 6px;
   width: 100%;
+}
+/* Only the expandable line is a button, and only it needs the reset. */
+button.tp-limcard-head {
   padding: 0;
   border: 0;
   background: none;
@@ -276,29 +304,35 @@ body.tp-macos .tp {
   background: rgba(124, 107, 242, 0.16);
   border: 1px solid rgba(124, 107, 242, 0.35);
 }
-.tp-limcard-chev { display: block; color: #6e6e76; transition: transform 0.15s; }
+.tp-limcard-bar { flex: none; width: 54px; }
+/* The line is one line. The lead label is the only part that can run long — a
+   per-model window on a Source that recorded nothing else — so it ellipsizes
+   rather than wrapping the row into two. */
+.tp-limcard-head .tp-limwin-k {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tp-limcard-chev { display: block; color: var(--tp-faint); transition: transform 0.15s; }
 .tp-limcard-chev.open { transform: rotate(90deg); }
 
 .tp-t-ok { color: #7bd3aa; }
 .tp-t-low { color: #e8c476; }
 .tp-t-dry { color: #f09090; }
 
-.tp-limmeters { display: flex; gap: 12px; margin-top: 7px; }
-.tp-limmeter { flex: 1; min-width: 0; }
-.tp-limmeter-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
-.tp-limmeter-k { font-size: 9.5px; color: #8a8a93; }
-.tp-limmeter-v { font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600; }
-.tp-limmeter-t { margin-left: 4px; font-family: ui-monospace, monospace; font-size: 9.5px; color: #6e6e76; }
-
 .tp-limwin { margin-top: 8px; }
 .tp-limwin-labels { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
 .tp-limwin-k { font-size: 10.5px; font-weight: 500; color: #d6d6dc; }
-.tp-limwin-k .sub { margin-left: 5px; font-size: 9.5px; font-weight: 400; color: #6e6e76; }
+.tp-limwin-k .sub { margin-left: 5px; font-size: 9.5px; font-weight: 400; color: var(--tp-faint); }
 .tp-limwin-pct { margin-left: auto; font-family: ui-monospace, monospace; font-size: 11.5px; font-weight: 600; }
-.tp-limwin-resets { font-family: ui-monospace, monospace; font-size: 10px; color: #6e6e76; }
+.tp-limwin-resets { font-family: ui-monospace, monospace; font-size: 10px; color: var(--tp-faint); }
 
 /* The shared bar: framed fill plus the time tick. The tick is TIME (where
-   "now" sits in the window), so it stays neutral — never scarcity-tinted. */
+   "now" sits in the window), so it stays neutral — never scarcity-tinted, and
+   never tokenised with the type either: it happens to be the same #a3a3ab as
+   --tp-quiet, but a recalibration of captions has no business moving a time
+   marker, so this one keeps its literal. */
 .tp-limbar {
   position: relative;
   height: 3px;
@@ -329,8 +363,8 @@ body.tp-macos .tp {
 }
 .tp-skel-cost { width: 150px; height: 34px; }
 .tp-skel-sub { width: 170px; height: 13px; margin-top: 6px; }
-.tp-skel-bar { width: 100%; height: 8px; margin-top: 16px; }
-.tp-skel-chart { width: 100%; height: 56px; margin-top: 16px; }
+.tp-skel-bar { width: 100%; height: 8px; margin-top: 12px; }
+.tp-skel-chart { width: 100%; height: 56px; margin-top: 12px; }
 .tp-skel-tile { flex: 1; height: 48px; border-radius: 10px; }
 @keyframes tp-shimmer {
   from { background-position: 200% 0; }

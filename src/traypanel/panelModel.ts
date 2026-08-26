@@ -51,7 +51,9 @@ export interface PanelModel {
   cost: string; // "$12.84" | "≥ $12.84" | "unpriced" | "unavailable"
   delta: string | null; // "+12.4%", null when yesterday-so-far has no Cost
   deltaUp: boolean;
-  rows: PanelRow[];
+  rows: PanelRow[]; // every Source with usage — the stacked bar splits them all
+  legend: PanelRow[]; // the head of `rows` the legend names, capped
+  legendOverflow: number; // Sources the cap hid, 0 when none
   empty: boolean; // no usage in the window → the figures read $0.00 · 0 tok, but
   // the sections below them stay away rather than fabricating a 0.0% cache hit
   // Raw values + per-frame formatters for the header count-up animation:
@@ -89,7 +91,14 @@ function byCost(a: BreakdownRow, b: BreakdownRow): number {
   return b.totalTokens - a.totalTokens;
 }
 
-const MODEL_CAP = 5;
+// Both lists are capped, and the caps are why the panel still fits a laptop.
+// The window hugs its content (resize_panel), and an anchored panel taller
+// than the monitor's work area has nowhere left to clamp to (tray.rs), so it
+// simply hangs off the bottom of the screen — which an 8-Source, 20-Model
+// month did. Three of each is the tallest either list gets; the app holds the
+// rest and the overflow lines say how much.
+const MODEL_CAP = 3;
+const SOURCE_CAP = 3;
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -244,6 +253,19 @@ export function panelModel(
   const pricedTotal = used.reduce((a, r) => a + (r.cost ?? 0), 0);
 
   const requestsText = today.requests.toLocaleString('en-US');
+  const rows: PanelRow[] = used.map((r) => {
+    const key = r.key ?? 'unknown';
+    const meta = sourceMeta(key);
+    return {
+      key,
+      label: meta.label,
+      icon: sourceIcon(meta.icon),
+      color: meta.color,
+      share: pricedTotal > 0 ? (r.cost ?? 0) / pricedTotal : 0,
+      tokens: formatCompactTokenTotal(r.totalTokens),
+      cost: cost(r, settings, lang),
+    };
+  });
   return {
     cost: cost(today, settings, lang),
     delta,
@@ -253,19 +275,11 @@ export function panelModel(
     requestsText,
     fmtCost: (v: number) => cost({ ...today, cost: v }, settings, lang),
     fmtTokens: formatCompactTokenTotal,
-    rows: used.map((r) => {
-      const key = r.key ?? 'unknown';
-      const meta = sourceMeta(key);
-      return {
-        key,
-        label: meta.label,
-        icon: sourceIcon(meta.icon),
-        color: meta.color,
-        share: pricedTotal > 0 ? (r.cost ?? 0) / pricedTotal : 0,
-        tokens: formatCompactTokenTotal(r.totalTokens),
-        cost: cost(r, settings, lang),
-      };
-    }),
+    // The bar keeps every slice — it splits the whole priced Cost, and a
+    // capped bar would misstate the split. Only the naming is capped.
+    rows,
+    legend: rows.slice(0, SOURCE_CAP),
+    legendOverflow: Math.max(0, rows.length - SOURCE_CAP),
     empty: today.totalTokens === 0,
     chart: extras ? costChart(today, extras, settings, lang) : null,
     models,

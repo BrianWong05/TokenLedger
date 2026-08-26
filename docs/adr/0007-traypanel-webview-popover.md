@@ -39,3 +39,40 @@ panel no longer fetches the Project breakdown, and the window widened 300 →
 stands: the surface remains an ordinary-frontend webview on the same ports,
 formatters, and lazy create/destroy lifecycle — only the design it renders
 pixel-faithfully changed.
+
+## Amendment (2026-08-25)
+
+The panel is capped, and its colours no longer assume a dark desktop.
+
+A window that hugs its content has no ceiling of its own: with eight Sources,
+twenty-one Models and three Sources reporting Limits the card measured ~950
+logical px, and an anchored panel taller than the monitor's work area has
+nothing left to clamp against (`panel_position`'s `clamp_or_leave`), so the
+bottom simply hung off a 14" screen. Four shapes were prototyped — cap the
+lists, cap the window and scroll it, collapse the detail behind disclosures,
+and swap the detail through one tabbed slot. Capping the lists won: the panel
+is a glance, the app already holds the full story, and the other three all keep
+a full-height panel or hide something a glance wants. So the legend names three
+Sources and the Models list three rows, each counting what it hid; the Limits
+section became one line per Source carrying the window nearest its wall and
+disclosing that Source's others; and the section rhythm tightened 16 → 12px.
+Measured on the shape that provoked this: 643px. What it costs, accepted: the
+collapsed line no longer names a second window or its reset countdown, and the
+Rust-side clamp on `resize_panel` is still owed — three Sources expanded add
+~200px, and nothing yet stops that from leaving the screen again.
+
+The colours moved for a different reason. The material behind the card
+transmits whatever is behind the *window*, so "Dark mode" was never a promise
+that the card comes out dark: measured on a real panel over a white document it
+composited to rgb(65,67,70), nothing like the #1e1e24 the type was calibrated
+on, leaving the quiet captions at 1.7:1. The Dark veil is therefore no longer
+thin (0.20/0.28/0.36 → 0.55/0.62/0.70, still lighter at every stop than the
+Light-mode calibration, which starts from a near-white material) and the quiet
+type tiers became tokens and came up: the captions, axis, token figures and
+countdowns #6e6e76 → #85858e, and the tier above them — the Rescan glyph and
+the tile captions — #8a8a93 → the #a3a3ab this file already used elsewhere,
+rather than a third grey a few units away from it. The
+honest limit: no veil short of opaque clears 4.5:1 on a white backdrop, because
+the card's top gradient stop is about as light as the material itself — the
+glass is what caps it. Going opaque was offered and declined; the panel keeps
+the glass and the type does what work it can.
