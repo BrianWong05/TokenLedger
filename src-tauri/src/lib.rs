@@ -712,7 +712,6 @@ fn save_csv(app: AppHandle, filename: String, contents: String) -> Result<bool, 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         // Launch at login passing HIDDEN_FLAG, so an at-login start comes up
         // hidden (tray only) while a manual launch does not. Enrollment itself
         // is driven from the frontend (first-run dialog + Settings toggle →
