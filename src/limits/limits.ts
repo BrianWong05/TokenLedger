@@ -13,9 +13,9 @@ import type { SourceLimits } from '../types';
 
 // The stored preference keys the Limits surfaces own. None is read by Rust, so
 // they live in web storage rather than growing the Settings contract. Two are
-// this page's alone; `PANEL_WINDOWS_KEY` is the exception and deliberately
-// shared — Settings writes it and the panel reads it, which is still both ends
-// inside the webviews.
+// this page's alone; `PANEL_WINDOWS_KEY` and `PANEL_CARDS_KEY` are the
+// exceptions and deliberately shared — Settings writes them and the panel
+// reads them, which is still both ends inside the webviews.
 // The `.3` is a consent version, not clutter: the disclosure this boolean
 // records acceptance of named only Claude Code's sign-in at `.1`, gained
 // Codex's at `.2`, and now covers Antigravity's — whose Google sign-in works on
@@ -31,6 +31,13 @@ export const MODE_KEY = 'tl.limits.mode';
 // reads it, and a Source with no entry keeps the Session + Weekly default — so
 // storage being empty (or refused) is the shipped behaviour, not a broken one.
 export const PANEL_WINDOWS_KEY = 'tl.limits.panelWindows';
+// The order Source cards stack on the panel, and which of them are off,
+// as JSON: `{ order: Source keys, off: Source keys }`. Settings writes it,
+// the panel reads it, and an empty or unreadable value keeps catalog order
+// with every card on — so storage being empty (or refused) is the shipped
+// behaviour, not a broken one. An `off` list is a choice: those cards stay
+// out of the panel until switched back on.
+export const PANEL_CARDS_KEY = 'tl.limits.panelCards';
 
 // When a Source was last checked live, as epoch millis. Stored rather than kept
 // in memory so the floor between calls survives the page being unmounted — which

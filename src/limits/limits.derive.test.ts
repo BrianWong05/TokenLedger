@@ -3,8 +3,9 @@ import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
-  cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, panelWindows,
-  parsePanelPicks, planLabel, primaryWindows, tone, windowLabel, windowView,
+  cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, panelCardOrder,
+  panelCardRows, panelWindows, parsePanelCardPick, parsePanelPicks, planLabel,
+  primaryWindows, tone, windowLabel, windowView,
 } from './limits.derive';
 import type { ParsedWindow } from './limits.derive';
 
@@ -508,5 +509,82 @@ describe('the panel\'s collapsed windows', () => {
     expect(parsePanelPicks('{"claude":["seven_day"],"codex":3}')).toEqual({
       claude: ['seven_day'],
     });
+  });
+});
+
+describe("the panel's card order", () => {
+  const catalog = ['claude', 'codex', 'copilot', 'grok'];
+  const pick = (order: string[], off: string[] = []) => ({ order, off });
+  const keys = (rows: { source: string; on: boolean }[]) => rows.map((r) => r.source);
+  const on = (rows: { source: string; on: boolean }[]) =>
+    rows.filter((r) => r.on).map((r) => r.source);
+
+  it('keeps catalog order, every card on, when there is no pick', () => {
+    expect(panelCardRows(catalog, null)).toEqual(catalog.map((source) => ({ source, on: true })));
+    expect(panelCardOrder(catalog, null)).toEqual(catalog);
+  });
+
+  it("stacks the cards in the pick's own order", () => {
+    // The pick is a running order, not a filter: reversing it reverses the
+    // cards, which is the only way Settings can put Codex above Claude.
+    expect(panelCardOrder(catalog, pick(['grok', 'claude', 'codex', 'copilot']))).toEqual([
+      'grok',
+      'claude',
+      'codex',
+      'copilot',
+    ]);
+    expect(panelCardOrder(catalog, pick(['codex', 'claude', 'copilot', 'grok']))).toEqual([
+      'codex',
+      'claude',
+      'copilot',
+      'grok',
+    ]);
+  });
+
+  it('appends a Source the pick has not named, in catalog order among the unnamed', () => {
+    // Codex was moved to the front; Copilot and Grok were never named, so they
+    // keep their catalog sequence behind the named ones rather than jumping.
+    expect(panelCardOrder(catalog, pick(['codex', 'claude']))).toEqual([
+      'codex',
+      'claude',
+      'copilot',
+      'grok',
+    ]);
+    expect(panelCardOrder(catalog, pick(['grok']))).toEqual(['grok', 'claude', 'codex', 'copilot']);
+  });
+
+  it('keeps a switched-off Source in its place, and omits it from the panel', () => {
+    const rows = panelCardRows(catalog, pick(['codex', 'claude', 'copilot', 'grok'], ['claude']));
+    expect(keys(rows)).toEqual(['codex', 'claude', 'copilot', 'grok']);
+    expect(on(rows)).toEqual(['codex', 'copilot', 'grok']);
+    expect(panelCardOrder(catalog, pick(['codex', 'claude', 'copilot', 'grok'], ['claude']))).toEqual(
+      ['codex', 'copilot', 'grok'],
+    );
+    // Every card off is a choice the panel can express: no cards, not catalog.
+    expect(panelCardOrder(catalog, pick(catalog, catalog))).toEqual([]);
+  });
+
+  it('ignores a key the Source no longer reports', () => {
+    expect(panelCardOrder(['claude', 'codex'], pick(['codex', 'gemini', 'claude']))).toEqual([
+      'codex',
+      'claude',
+    ]);
+    // A pick whose every Source has gone signed-out is a choice about a lineup
+    // that no longer exists. The unnamed current Sources append, on.
+    expect(panelCardOrder(['claude', 'codex'], pick(['gemini']))).toEqual(['claude', 'codex']);
+  });
+
+  it('reads a stored pick, and treats anything else as no pick at all', () => {
+    expect(parsePanelCardPick('{"order":["codex","claude"],"off":["claude"]}')).toEqual({
+      order: ['codex', 'claude'],
+      off: ['claude'],
+    });
+    expect(parsePanelCardPick('{"order":["codex"]}')).toEqual({ order: ['codex'], off: [] });
+    // Web storage holds whatever anyone put there. None of these may throw, and
+    // none may reach the panel as a pick — an unreadable entry has to fall
+    // back to catalog order, never to a blank panel.
+    for (const raw of [null, '', 'not json', '{}', '[]', '"claude"', '7', '["codex","claude"]', '["claude",1]', '[null]', '{"0":"claude"}', '{"order":3}', '{"off":["claude"]}']) {
+      expect(parsePanelCardPick(raw), raw ?? 'null').toBeNull();
+    }
   });
 });

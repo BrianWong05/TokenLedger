@@ -21,10 +21,11 @@ import { hotkeyHint, isHotkey } from '../lib/hotkeys';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
-import { tauriLimits, MODE_KEY, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
+import { tauriLimits, MODE_KEY, PANEL_CARDS_KEY, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
 import { runDueLiveChecks, storedFailures, type LiveFailure } from '../limits/limits.live';
 import {
-  cards, durationParts, panelWindows, parsePanelPicks, planLabel, windowLabel,
+  cards, durationParts, panelCardOrder, panelWindows, parsePanelCardPick,
+  parsePanelPicks, planLabel, windowLabel,
   type Mode as LimitsMode, type ParsedWindow, type WindowView,
 } from '../limits/limits.derive';
 import { limits as limitStrings } from '../lib/strings/limits';
@@ -417,18 +418,23 @@ export default function TrayPanel({
   // Framing follows the page's stored Left/Used choice — the panel adds no
   // second toggle.
   const limitsMode: LimitsMode = limits.read(MODE_KEY) === 'used' ? 'used' : 'left';
-  // Which windows each Source shows collapsed, chosen in Settings. Read on
-  // every render like the framing above, so a change made in the app's window
-  // lands the next time this panel draws — the two webviews share the store but
-  // not its events.
+  // Which windows each Source shows collapsed, and in which order the cards
+  // themselves stack — both chosen in Settings. Read on every render like the
+  // framing above, so a change made in the app's window lands the next time
+  // this panel draws — the two webviews share the store but not its events.
   const panelPicks = parsePanelPicks(limits.read(PANEL_WINDOWS_KEY));
-  const limitCards = useMemo(
+  const panelCardPick = parsePanelCardPick(limits.read(PANEL_CARDS_KEY));
+  const catalogCards = useMemo(
     () =>
       cards(limitsStored, limitsNow, limitsMode, limitsFailures).filter(
         (c) => c.windows.length > 0,
       ),
     [limitsStored, limitsNow, limitsMode, limitsFailures],
   );
+  const limitCards = panelCardOrder(
+    catalogCards.map((c) => c.source),
+    panelCardPick,
+  ).flatMap((key) => catalogCards.filter((c) => c.source === key));
 
   return (
     <div className="tp" ref={bodyRef}>
@@ -615,10 +621,11 @@ export default function TrayPanel({
 
       {/* One card per live Source (TOKL-19): collapsed to its Session + Weekly
           meters with reset countdowns, the whole header a disclosure to every
-          window — per-model rows included. The one-line form this replaced was
-          shorter, and the ADR's third amendment records why the card came
-          back. Not gated on model.empty: Limits are about now, and an idle day
-          does not blank them. */}
+          window — per-model rows included. Stacked in Settings' card order
+          (catalog order until someone moves one). The one-line form this
+          replaced was shorter, and the ADR's third amendment records why the
+          card came back. Not gated on model.empty: Limits are about now, and
+          an idle day does not blank them. */}
       {!loading && limitCards.length > 0 && (
         <div className="tp-limsrcs">
           {limitCards.map((card) => {

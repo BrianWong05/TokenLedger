@@ -13,7 +13,7 @@ import { STORAGE_KEY } from '../overview/useAutoRefresh';
 import { CUSTOM_PRESETS_KEY } from '../overview/customPresets';
 import { publishFirstRecord } from '../overview/ledgerExtent';
 import type { UpdateStatus } from './settings';
-import { PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
+import { PANEL_CARDS_KEY, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
 import { makeFakeEstimate } from '../limits/limits.fake';
 import type { SourceLimits } from '../types';
 
@@ -658,43 +658,55 @@ describe('SettingsPage', () => {
   });
 });
 
-// Which windows the tray panel's collapsed card shows, per Source. The pick is
+function makeFakeLimits(
+  stored: SourceLimits[],
+  store: Record<string, string> = {},
+): LimitsPort & { store: Map<string, string> } {
+  const map = new Map(Object.entries(store));
+  return {
+    store: map,
+    list: () => Promise.resolve(stored),
+    checkLive: () => Promise.resolve(),
+    scan: () => Promise.resolve(),
+    onLimitsChanged: () => () => {},
+    read: (k) => map.get(k) ?? null,
+    write: (k, v) => {
+      map.set(k, v);
+    },
+  };
+}
+
+function claudeStored(): SourceLimits {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    source: 'claude',
+    plan: 'default_claude_max_5x',
+    usageResetsAvailable: null,
+    windows: [
+      { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+      { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+    ],
+  };
+}
+
+function codexStored(): SourceLimits {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    source: 'codex',
+    plan: 'plus',
+    usageResetsAvailable: null,
+    windows: [
+      { windowKey: 'w300', windowMinutes: 300, usedPct: 10, resetsAt: now + 125 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+      { windowKey: 'w10080', windowMinutes: 10080, usedPct: 20, resetsAt: now + 5 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+    ],
+  };
+}
+
+// Which windows the panel's collapsed card shows, per Source. The pick is
 // web storage the panel reads (not the Ledger's settings), so the port's own
 // read/write is what these assert against.
 describe('SettingsPage panel bars', () => {
-  function makeFakeLimits(
-    stored: SourceLimits[],
-    store: Record<string, string> = {},
-  ): LimitsPort & { store: Map<string, string> } {
-    const map = new Map(Object.entries(store));
-    return {
-      store: map,
-      list: () => Promise.resolve(stored),
-      checkLive: () => Promise.resolve(),
-      scan: () => Promise.resolve(),
-      onLimitsChanged: () => () => {},
-      read: (k) => map.get(k) ?? null,
-      write: (k, v) => {
-        map.set(k, v);
-      },
-    };
-  }
-
-  // A Source's real provenance mix: the two named lanes plus a per-model window.
-  function claudeStored(): SourceLimits {
-    const now = Math.floor(Date.now() / 1000);
-    return {
-      source: 'claude',
-      plan: 'default_claude_max_5x',
-      usageResetsAvailable: null,
-      windows: [
-        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
-      ],
-    };
-  }
-
   const wins = (c: HTMLElement) =>
     Array.from(
       c.querySelectorAll('.set-seg-wrap[aria-label="Claude"] button'),
@@ -734,7 +746,7 @@ describe('SettingsPage panel bars', () => {
   it('offers every window a Source records, with the panel default pressed', async () => {
     const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([claudeStored()]));
 
-    expect(c.textContent).toContain('Panel bars');
+    expect(c.textContent).toContain('Panel cards');
     expect(wins(c).map((b) => b.textContent)).toEqual(['Session', 'Weekly', 'Fable']);
     // Untouched: the pair the panel draws on its own.
     expect(pressed(c)).toEqual(['Session', 'Weekly']);
@@ -859,7 +871,7 @@ describe('SettingsPage panel bars', () => {
 
   it('renders no rows at all when no Source has Readings', async () => {
     const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([]));
-    expect(c.textContent).not.toContain('Panel bars');
+    expect(c.textContent).not.toContain('Panel cards');
     expect(c.querySelector('.set-seg-wrap')).toBeNull();
   });
 
@@ -871,5 +883,173 @@ describe('SettingsPage panel bars', () => {
       }),
     );
     expect(pressed(c)).toEqual(['Fable']);
+  });
+});
+
+// The order the panel stacks its Source cards, and which of them are on.
+// Same web-storage seam as the bar pick: Settings writes, the panel reads,
+// catalog order with every card on is the default.
+describe('SettingsPage panel cards', () => {
+  const barRowLabels = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll('.set-seg-wrap'))
+      .map((el) => el.getAttribute('aria-label'))
+      .filter((label): label is string => !!label);
+  const moveBtn = (c: HTMLElement, dir: 'up' | 'down', name: string) =>
+    c.querySelector(
+      `button[aria-label="${dir === 'up' ? 'Move up' : 'Move down'} ${name}"]`,
+    ) as HTMLButtonElement;
+  const showSwitch = (c: HTMLElement, name: string) =>
+    c.querySelector(`[role="switch"][aria-label="Show ${name} on the panel"]`) as HTMLButtonElement;
+
+  it('offers every Source that has Readings, in catalog order when untouched', async () => {
+    const limits = makeFakeLimits([claudeStored(), codexStored()]);
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    expect(c.textContent).toContain('Panel cards');
+    expect(c.querySelector('.set-panelcards')).not.toBeNull();
+    expect(barRowLabels(c)).toEqual(['Claude', 'Codex']);
+    expect(showSwitch(c, 'Claude').getAttribute('aria-checked')).toBe('true');
+    expect(showSwitch(c, 'Codex').getAttribute('aria-checked')).toBe('true');
+    // Untouched: nothing written, so the panel keeps catalog order, every card on.
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBeUndefined();
+  });
+
+  it('moves a card along the order with the arrow buttons', async () => {
+    const limits = makeFakeLimits([claudeStored(), codexStored()]);
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    await click(moveBtn(c, 'up', 'Codex'));
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(
+      JSON.stringify({ order: ['codex', 'claude'], off: [] }),
+    );
+    expect(barRowLabels(c)).toEqual(['Codex', 'Claude']);
+
+    await click(moveBtn(c, 'down', 'Codex'));
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(
+      JSON.stringify({ order: ['claude', 'codex'], off: [] }),
+    );
+    expect(barRowLabels(c)).toEqual(['Claude', 'Codex']);
+
+    // Neither end wraps, and neither end writes: a move with nowhere to go is
+    // not a reorder that happens to look the same. The end buttons are disabled.
+    const atEnd = JSON.stringify({ order: ['claude', 'codex'], off: [] });
+    expect(moveBtn(c, 'up', 'Claude').disabled).toBe(true);
+    expect(moveBtn(c, 'down', 'Codex').disabled).toBe(true);
+    await click(moveBtn(c, 'up', 'Claude'));
+    await click(moveBtn(c, 'down', 'Codex'));
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(atEnd);
+  });
+
+  it('reads a stored order back as the rows', async () => {
+    const c = await mount(
+      makeFakeSettings({ firstRunDone: true }),
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [PANEL_CARDS_KEY]: JSON.stringify({ order: ['codex', 'claude'], off: [] }),
+      }),
+    );
+    expect(barRowLabels(c)).toEqual(['Codex', 'Claude']);
+  });
+
+  it('switches a card off without dropping it from the list', async () => {
+    const limits = makeFakeLimits([claudeStored(), codexStored()]);
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    await click(showSwitch(c, 'Claude'));
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(
+      JSON.stringify({ order: ['claude', 'codex'], off: ['claude'] }),
+    );
+    expect(barRowLabels(c)).toEqual(['Claude', 'Codex']);
+    expect(showSwitch(c, 'Claude').getAttribute('aria-checked')).toBe('false');
+    expect(showSwitch(c, 'Codex').getAttribute('aria-checked')).toBe('true');
+    expect(c.querySelector('.set-row-panelcard.off .set-row-title')?.textContent).toBe('Claude');
+  });
+
+  // A Source that has stopped reporting draws no row, so it cannot be part of
+  // what a move sends back — and rewriting the order to that alone deleted the
+  // absent Source's place on the first unrelated move.
+  it('keeps a pick for a Source that no longer has Readings', async () => {
+    const limits = makeFakeLimits([claudeStored(), codexStored()], {
+      [PANEL_CARDS_KEY]: JSON.stringify({ order: ['codex', 'grok', 'claude'], off: ['grok'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    expect(barRowLabels(c)).toEqual(['Codex', 'Claude']);
+
+    await click(moveBtn(c, 'up', 'Claude'));
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(
+      JSON.stringify({ order: ['claude', 'codex', 'grok'], off: ['grok'] }),
+    );
+  });
+
+  it('renders no card rows when no Source has Readings', async () => {
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([]));
+    expect(c.textContent).not.toContain('Panel cards');
+    expect(c.querySelector('.set-row-panelcard')).toBeNull();
+  });
+
+  // Motion's Reorder auto-scrolls the document when the pointer nears the
+  // window edge — picking Claude up from the top of this list used to jump
+  // Settings to Updates. The grip is a plain pointer capture instead.
+  it('reorders by dragging a row grip', async () => {
+    const limits = makeFakeLimits([claudeStored(), codexStored()]);
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+    const rowOf = (name: string) =>
+      Array.from(c.querySelectorAll('.set-row-panelcard')).find(
+        (el) => el.querySelector('.set-row-title')?.textContent === name,
+      ) as HTMLElement;
+    const box = (el: HTMLElement, top: number) => {
+      vi.spyOn(el, 'getBoundingClientRect').mockReturnValue({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + 80,
+        left: 0,
+        right: 400,
+        width: 400,
+        height: 80,
+        toJSON: () => ({}),
+      });
+    };
+    box(rowOf('Claude'), 100);
+    box(rowOf('Codex'), 180);
+    const grip = rowOf('Claude').querySelector('.set-grip') as HTMLElement;
+
+    await act(async () => {
+      grip.dispatchEvent(
+        new PointerEvent('pointerdown', { button: 0, clientX: 10, clientY: 110, bubbles: true }),
+      );
+    });
+    const ghost = c.querySelector('.set-row-panelcard-ghost') as HTMLElement;
+    expect(ghost).not.toBeNull();
+    // The lifted card carries its bars: they must not slide as a second layer.
+    expect(ghost.textContent).toContain('Claude');
+    expect(ghost.textContent).toContain('Session');
+    expect(ghost.textContent).toContain('Weekly');
+    // overflow:hidden on html/body is the jump to the top of Settings.
+    expect(document.documentElement.style.overflow).toBe('');
+    expect(document.body.style.overflow).toBe('');
+
+    box(rowOf('Claude'), 100);
+    box(rowOf('Codex'), 180);
+    await act(async () => {
+      window.dispatchEvent(
+        new PointerEvent('pointermove', { clientX: 10, clientY: 230, bubbles: true }),
+      );
+    });
+    // Other cards shuffle as the pointer crosses their midpoint.
+    expect(barRowLabels(c)).toEqual(['Codex', 'Claude']);
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(
+      JSON.stringify({ order: ['codex', 'claude'], off: [] }),
+    );
+
+    await act(async () => {
+      window.dispatchEvent(new PointerEvent('pointerup', { clientY: 230, bubbles: true }));
+    });
+    expect(barRowLabels(c)).toEqual(['Codex', 'Claude']);
+    expect(limits.store.get(PANEL_CARDS_KEY)).toBe(
+      JSON.stringify({ order: ['codex', 'claude'], off: [] }),
+    );
+    expect(c.querySelector('.set-row-panelcard-ghost')).toBeNull();
+    expect(rowOf('Claude').classList.contains('is-dragging')).toBe(false);
   });
 });

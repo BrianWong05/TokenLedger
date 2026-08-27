@@ -76,15 +76,19 @@ export const settings = {
     'settings.menuBarRefresh.offNote':
       'The Menu Bar Extra falls back to a scan every few hours. Recording never stops.',
 
-    // The panel's collapsed card draws two bars by default; this is where a
-    // reader says which windows those are, per Source. "Bar" is CONTEXT.md's
-    // word for the thing ("a bar per Limit") — and "windows" cannot be the
+    // One row per Source that has a card: drag to stack them, a switch to hide
+    // one, the chosen bars for what the collapsed card draws. "Card" is
+    // CONTEXT.md's word for the Source-sized unit ("one card per Source");
+    // "bar" is the thing on it ("a bar per Limit"). "windows" cannot be the
     // title, since the copy guard reserves that word for "limit windows".
-    'settings.panelBars': 'Panel bars',
+    'settings.panelCards': 'Panel cards',
     // {k} is the platform's own spelling of the Alt key, filled in by the row:
     // what a surface prints and what fires must not drift (lib/hotkeys.ts).
-    'settings.panelBars.caption':
-      'Which limit windows a Source shows on the panel before its card is expanded. Drag the chosen ones — or hold {k} and press the arrow keys — to set their order.',
+    'settings.panelCards.caption':
+      'The Sources the panel shows, in the order they stack. Drag a row — or use the arrows — to rearrange; switch one off to hide its card. Drag the chosen bars — or hold {k} and press the arrow keys — to set which limit windows a card shows before it is expanded.',
+    'settings.panelCards.moveUp': 'Move up',
+    'settings.panelCards.moveDown': 'Move down',
+    'settings.panelCards.toggle': 'Show {name} on the panel',
 
     'settings.updates': 'Updates',
     'settings.autoCheck': 'Check for updates automatically',
@@ -164,9 +168,12 @@ export const settings = {
     'settings.menuBarRefresh.off': '關閉',
     'settings.menuBarRefresh.offNote': '選單列輔助程式改回每幾小時掃描一次。記錄不會停止。',
 
-    'settings.panelBars': '面板量條',
-    'settings.panelBars.caption':
-      '來源的卡片展開前，面板上顯示哪些限額時段。拖曳已選項目，或按住 {k} 並按方向鍵，即可調整順序。',
+    'settings.panelCards': '面板卡片',
+    'settings.panelCards.caption':
+      '面板上顯示的來源及其排列順序。拖曳一列，或用箭頭，即可調整；關閉開關即可隱藏卡片。拖曳已選量條，或按住 {k} 並按方向鍵，即可設定卡片展開前顯示哪些限額時段。',
+    'settings.panelCards.moveUp': '上移',
+    'settings.panelCards.moveDown': '下移',
+    'settings.panelCards.toggle': '在面板上顯示 {name}',
 
     'settings.updates': '更新',
     'settings.autoCheck': '自動檢查更新',
