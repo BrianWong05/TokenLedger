@@ -131,15 +131,15 @@
 
 /* a calendar period already configured — it stays visible, but it is not a
    second shortcut to be had */
+.set-seg button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* A multi-select segment: one Source's limit windows, whose labels are long
    enough (and numerous enough) to need a second line. */
 .set-seg-wrap {
   flex-wrap: wrap;
-}
-
-.set-seg button:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 .set-seg button.active {

@@ -28,6 +28,7 @@ import {
   type Mode as LimitsMode, type ParsedWindow, type WindowView,
 } from '../limits/limits.derive';
 import { limits as limitStrings } from '../lib/strings/limits';
+import { windowText, type LimitT } from '../limits/limitLabel';
 import { fill } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import { NO_FLOOR, tokenFloor, markedTokenFigure, type TokenFloor } from '../overview/localize';
@@ -84,30 +85,9 @@ function ipc(cmd: string) {
 // — the same keys the Limits page renders through `t()` — so the words have
 // one home and cannot drift.
 const LIMITS_EN = limitStrings.en;
-
-// Label parts to render. Pools ride the label the way the Limits page
-// prefixes them; a per-model window carries "· Weekly" as a sub so long model
-// names stay scannable.
-function limitText(label: ParsedWindow['label']): { text: string; sub?: string } {
-  const pools: Record<string, string> = {
-    gemini: LIMITS_EN['limits.pool.gemini'],
-    '3p': LIMITS_EN['limits.pool.other'],
-  };
-  const pool = label.pool ? `${pools[label.pool] ?? label.pool} · ` : '';
-  if (label.kind === 'model') {
-    return { text: `${pool}${label.model}`, sub: `· ${LIMITS_EN['limits.win.weeklySub']}` };
-  }
-  if (label.kind === 'other') {
-    return { text: pool + fill(LIMITS_EN['limits.win.other'], { n: label.minutes }) };
-  }
-  const names = {
-    session: LIMITS_EN['limits.win.session'],
-    weekly: LIMITS_EN['limits.win.weekly'],
-    weeklyCredits: LIMITS_EN['limits.win.weeklyCredits'],
-    monthlyCredits: LIMITS_EN['limits.win.monthlyCredits'],
-  } as const;
-  return { text: pool + names[label.kind] };
-}
+// The panel's translator: the dictionary read straight, since this window ships
+// English only (see above).
+const EN: LimitT = (key) => LIMITS_EN[key];
 
 // "1d 6h" — durationParts' largest two units, through the dictionary's own
 // unit templates (the same `as` the page's fmtDuration uses, for the same
@@ -678,7 +658,7 @@ export default function TrayPanel({
                 </button>
                 {open ? (
                   parsed.map(({ w, label }) => {
-                    const l = limitText(label);
+                    const l = windowText(EN, label);
                     return (
                       <div className="tp-limwin" key={w.key}>
                         <div className="tp-limwin-labels">
@@ -701,7 +681,7 @@ export default function TrayPanel({
                     {panelWindows(parsed, panelPicks[card.source]).map(({ w, label }) => (
                       <div className="tp-limmeter" key={w.key}>
                         <div className="tp-limmeter-row">
-                          <span className="tp-limmeter-k">{limitText(label).text}</span>
+                          <span className="tp-limmeter-k">{windowText(EN, label).text}</span>
                           <span>
                             <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
                             {w.resetsInMin !== null && (

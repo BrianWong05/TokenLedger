@@ -1,7 +1,10 @@
-// Pure derivation for the Limits tab: which Sources get a card, what state each
-// card is in, and the four numbers a bar draws from. No React, no fetching and
-// no `t()`, so every rule the wayfinder map settled is unit-testable against a
-// SourceLimits[] and a clock.
+// Pure derivation for the Limits tab and the panel's cards: which Sources get a
+// card, what state each card is in, the four numbers a bar draws from, and which
+// of a Source's bars the panel shows collapsed — including reading that last one
+// back out of the reader's own storage, since a stored preference is an input to
+// the derivation like the clock is. No React, no fetching and no `t()`, so every
+// rule the wayfinder map settled is unit-testable against a SourceLimits[], a
+// clock and a stored string.
 import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import type { LimitEstimateState } from '../bindings/LimitEstimateState';
@@ -437,17 +440,22 @@ export function primaryWindows(parsed: ParsedWindow[]): ParsedWindow[] {
  * The windows the panel shows for a Source before its card is expanded, in the
  * order it shows them. A Source the reader has picked windows for shows exactly
  * that pick, in the pick's OWN order — the pick is a running order, not a
- * filter, which is what lets Settings put the weekly meter above the session
- * one. An empty pick shows none, which is a choice and not a fault; a Source
- * they never touched keeps the Session + Weekly default, so the pick is opt-in
- * per Source rather than a switch that blanks every card at once.
+ * filter, which is what lets Settings put the weekly bar above the session one.
+ * An empty pick shows none, which is a choice and not a fault; a Source they
+ * never touched keeps the Session + Weekly default, so the pick is opt-in per
+ * Source rather than a switch that blanks every card at once.
  *
- * A key the Source no longer reports simply contributes nothing, so a window a
- * vendor retires cannot leave a hole or an undefined row behind.
+ * A key the Source no longer reports contributes nothing, so a window a vendor
+ * retires leaves no hole. If that empties a pick that DID name something, the
+ * default pair comes back rather than the card going blank: a pick naming only
+ * windows this Source has stopped reporting is a choice about a lineup that no
+ * longer exists, and a blank card is indistinguishable from the deliberate empty
+ * pick above — with nothing on it to say why or how to get back.
  */
 export function panelWindows(parsed: ParsedWindow[], pick?: string[]): ParsedWindow[] {
   if (!pick) return primaryWindows(parsed);
-  return pick.flatMap((key) => parsed.filter((p) => p.w.key === key));
+  const held = pick.flatMap((key) => parsed.filter((p) => p.w.key === key));
+  return held.length === 0 && pick.length > 0 ? primaryWindows(parsed) : held;
 }
 
 /**

@@ -661,7 +661,7 @@ describe('SettingsPage', () => {
 // Which windows the tray panel's collapsed card shows, per Source. The pick is
 // web storage the panel reads (not the Ledger's settings), so the port's own
 // read/write is what these assert against.
-describe('SettingsPage panel meters', () => {
+describe('SettingsPage panel bars', () => {
   function makeFakeLimits(
     stored: SourceLimits[],
     store: Record<string, string> = {},
@@ -703,11 +703,24 @@ describe('SettingsPage panel meters', () => {
     wins(c).find((b) => b.textContent === label)!;
   // A press that travels: pointerdown here, the click that follows it there.
   // jsdom has no PointerEvent, and React only needs the type and the
-  // coordinates — a MouseEvent named 'pointerdown' carries both.
+  // coordinates — a MouseEvent named 'pointerdown' carries both. `detail: 1` is
+  // what makes it a POINTER click: MouseEvent defaults detail to 0, which is
+  // the keyboard's signature, and a fixture that skips it tests the other
+  // branch while looking like it tests this one.
+  const pressDown = (el: HTMLElement) =>
+    el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
   const dragTo = (el: HTMLElement, dx: number) =>
     act(async () => {
-      el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
-      el.dispatchEvent(new MouseEvent('click', { clientX: 100 + dx, clientY: 20, bubbles: true }));
+      pressDown(el);
+      el.dispatchEvent(
+        new MouseEvent('click', { clientX: 100 + dx, clientY: 20, detail: 1, bubbles: true }),
+      );
+    });
+  // Space or Enter on the focused pill: a click with no pointer behind it, which
+  // the platform reports as detail 0 at the origin.
+  const keyActivate = (el: HTMLElement) =>
+    act(async () => {
+      el.dispatchEvent(new MouseEvent('click', { detail: 0, bubbles: true }));
     });
   const altArrow = (el: HTMLElement, key: string, altKey = true) =>
     act(async () => {
@@ -721,8 +734,8 @@ describe('SettingsPage panel meters', () => {
   it('offers every window a Source records, with the panel default pressed', async () => {
     const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([claudeStored()]));
 
-    expect(c.textContent).toContain('Panel meters');
-    expect(wins(c).map((b) => b.textContent)).toEqual(['Session', 'Weekly', 'Fable · Weekly']);
+    expect(c.textContent).toContain('Panel bars');
+    expect(wins(c).map((b) => b.textContent)).toEqual(['Session', 'Weekly', 'Fable']);
     // Untouched: the pair the panel draws on its own.
     expect(pressed(c)).toEqual(['Session', 'Weekly']);
   });
@@ -733,7 +746,7 @@ describe('SettingsPage panel meters', () => {
 
     // Weekly + Fable: add the per-model window, drop the Session. Addressed by
     // label, never by index — the strip reorders itself as the pick changes.
-    await click(win(c, 'Fable · Weekly'));
+    await click(win(c, 'Fable'));
     expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
       JSON.stringify({ claude: ['five_hour', 'seven_day', 'seven_day_fable'] }),
     );
@@ -741,15 +754,15 @@ describe('SettingsPage panel meters', () => {
     expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
       JSON.stringify({ claude: ['seven_day', 'seven_day_fable'] }),
     );
-    expect(pressed(c)).toEqual(['Weekly', 'Fable · Weekly']);
+    expect(pressed(c)).toEqual(['Weekly', 'Fable']);
     // Switched off, the Session falls behind the chosen pair rather than
     // holding the place it had while it was on.
-    expect(wins(c).map((b) => b.textContent)).toEqual(['Weekly', 'Fable · Weekly', 'Session']);
+    expect(wins(c).map((b) => b.textContent)).toEqual(['Weekly', 'Fable', 'Session']);
 
     // Every window off is a choice the row can express, and it survives as one:
     // an empty list is a pick, not a missing entry that would restore the pair.
     await click(win(c, 'Weekly'));
-    await click(win(c, 'Fable · Weekly'));
+    await click(win(c, 'Fable'));
     expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(JSON.stringify({ claude: [] }));
     expect(pressed(c)).toEqual([]);
   });
@@ -758,27 +771,27 @@ describe('SettingsPage panel meters', () => {
   // able to move a chosen meter without switching anything off. Dragging is the
   // mouse's way; ⌥←/⌥→ is the same move from the keyboard, and the one a test
   // can press.
-  it('moves a chosen meter along the order with ⌥← / ⌥→', async () => {
+  it('moves a chosen bar along the order with ⌥← / ⌥→', async () => {
     const limits = makeFakeLimits([claudeStored()], {
       [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['five_hour', 'seven_day', 'seven_day_fable'] }),
     });
     const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
-    expect(pressed(c)).toEqual(['Session', 'Weekly', 'Fable · Weekly']);
+    expect(pressed(c)).toEqual(['Session', 'Weekly', 'Fable']);
 
-    await altArrow(win(c, 'Fable · Weekly'), 'ArrowLeft');
+    await altArrow(win(c, 'Fable'), 'ArrowLeft');
     expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
       JSON.stringify({ claude: ['five_hour', 'seven_day_fable', 'seven_day'] }),
     );
-    expect(pressed(c)).toEqual(['Session', 'Fable · Weekly', 'Weekly']);
+    expect(pressed(c)).toEqual(['Session', 'Fable', 'Weekly']);
 
     await altArrow(win(c, 'Session'), 'ArrowRight');
-    expect(pressed(c)).toEqual(['Fable · Weekly', 'Session', 'Weekly']);
+    expect(pressed(c)).toEqual(['Fable', 'Session', 'Weekly']);
 
     // Neither end wraps, and neither end writes: a move with nowhere to go is
     // not a reorder that happens to look the same.
     const atEnd = JSON.stringify({ claude: ['seven_day_fable', 'five_hour', 'seven_day'] });
     expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(atEnd);
-    await altArrow(win(c, 'Fable · Weekly'), 'ArrowLeft');
+    await altArrow(win(c, 'Fable'), 'ArrowLeft');
     await altArrow(win(c, 'Weekly'), 'ArrowRight');
     expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(atEnd);
 
@@ -790,7 +803,7 @@ describe('SettingsPage panel meters', () => {
   // Dragging a pill and dropping it produces a click like any other press, and
   // switching the meter off is the one thing the person carrying it cannot have
   // meant.
-  it('does not toggle a meter that was dragged rather than pressed', async () => {
+  it('does not toggle a bar that was dragged rather than pressed', async () => {
     const limits = makeFakeLimits([claudeStored()], {
       [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['five_hour', 'seven_day'] }),
     });
@@ -808,9 +821,45 @@ describe('SettingsPage panel meters', () => {
     expect(pressed(c)).toEqual(['Weekly']);
   });
 
+  // A pointer that goes down on the pill and never produces a click there — a
+  // cancelled press, a release outside the webview — used to leave its position
+  // behind, and the next keyboard activation was measured against it and thrown
+  // away. A keyboard click is judged by carrying no pointer, not by distance.
+  it('still toggles from the keyboard after an abandoned press', async () => {
+    const limits = makeFakeLimits([claudeStored()], {
+      [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['five_hour', 'seven_day'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    await act(async () => {
+      pressDown(win(c, 'Session'));
+    });
+    await keyActivate(win(c, 'Session'));
+    expect(pressed(c)).toEqual(['Weekly']);
+  });
+
+  // A window the vendor has stopped reporting draws no pill, so it cannot be
+  // part of what a click sends back — and rewriting the pick to that alone
+  // deleted the absent window's place on the first unrelated click.
+  it('keeps a pick for a window the Source no longer reports', async () => {
+    const limits = makeFakeLimits([claudeStored()], {
+      [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['seven_day', 'seven_day_zephyr'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    // Zephyr is not on offer: it has no Reading behind it any more.
+    expect(wins(c).map((b) => b.textContent)).toEqual(['Weekly', 'Session', 'Fable']);
+    expect(pressed(c)).toEqual(['Weekly']);
+
+    await click(win(c, 'Fable'));
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
+      JSON.stringify({ claude: ['seven_day', 'seven_day_fable', 'seven_day_zephyr'] }),
+    );
+  });
+
   it('renders no rows at all when no Source has Readings', async () => {
     const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([]));
-    expect(c.textContent).not.toContain('Panel meters');
+    expect(c.textContent).not.toContain('Panel bars');
     expect(c.querySelector('.set-seg-wrap')).toBeNull();
   });
 
@@ -821,6 +870,6 @@ describe('SettingsPage panel meters', () => {
         [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['seven_day_fable'] }),
       }),
     );
-    expect(pressed(c)).toEqual(['Fable · Weekly']);
+    expect(pressed(c)).toEqual(['Fable']);
   });
 });

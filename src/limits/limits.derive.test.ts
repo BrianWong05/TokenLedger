@@ -478,6 +478,20 @@ describe('the panel\'s collapsed windows', () => {
     expect(keys(panelWindows(claude(), ['seven_day_zephyr', 'seven_day']))).toEqual(['seven_day']);
   });
 
+  it('falls back to the default pair when the pick names nothing still reported', () => {
+    // A pick whose every window the vendor has retired is a choice about a
+    // lineup that no longer exists. The default pair is recoverable; a blank
+    // card is indistinguishable from the deliberate empty pick above.
+    expect(keys(panelWindows(claude(), ['seven_day_zephyr']))).toEqual(['five_hour', 'seven_day']);
+    // Only when NOTHING matches: one surviving key is still a pick, and the
+    // default must not come back beside it.
+    expect(keys(panelWindows(claude(), ['seven_day_zephyr', 'seven_day_fable']))).toEqual([
+      'seven_day_fable',
+    ]);
+    // And an emptied pick stays empty — it names no retired window either.
+    expect(panelWindows(claude(), [])).toEqual([]);
+  });
+
   it('reads stored picks, and treats anything else as no pick at all', () => {
     expect(parsePanelPicks('{"claude":["seven_day","seven_day_fable"],"codex":[]}')).toEqual({
       claude: ['seven_day', 'seven_day_fable'],

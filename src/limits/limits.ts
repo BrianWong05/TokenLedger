@@ -11,9 +11,11 @@ import { listen } from '@tauri-apps/api/event';
 import { fetchLimits, checkLiveLimits, scan } from '../api';
 import type { SourceLimits } from '../types';
 
-// The stored preference keys this page owns. Two booleans-worth of state, so
-// they live in web storage rather than growing the Settings contract: neither is
-// read by Rust, the tray, or any other page.
+// The stored preference keys the Limits surfaces own. None is read by Rust, so
+// they live in web storage rather than growing the Settings contract. Two are
+// this page's alone; `PANEL_WINDOWS_KEY` is the exception and deliberately
+// shared — Settings writes it and the panel reads it, which is still both ends
+// inside the webviews.
 // The `.3` is a consent version, not clutter: the disclosure this boolean
 // records acceptance of named only Claude Code's sign-in at `.1`, gained
 // Codex's at `.2`, and now covers Antigravity's — whose Google sign-in works on
