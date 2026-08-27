@@ -3,7 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import TrayPanel, { barRect } from './TrayPanel';
+import TrayPanel, { barRect, sparkXY, PANEL_COST_DRAWING_KEY } from './TrayPanel';
 import { SOURCE_ICONS } from '../overview/icons';
 import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
@@ -108,10 +108,38 @@ async function settle(times = 4) {
   }
 }
 
+// Shared seam for Cost-per-bucket drawing tests: paint Today, switch to
+// 30 days (daily buckets), and size the plot so hover hit-testing has
+// geometry. jsdom boxes are 0×0 without the stub.
+async function mountCostDrawing(dayPoints = [point(day(1), 3), point(day(0), 9)]) {
+  const ledger = makeFakeLedger({ summary, sourceRows, dayPoints });
+  const container = document.createElement('div');
+  document.body.append(container);
+  const root = createRoot(container);
+  mountedRoots.push(root);
+  await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+  await settle();
+  const days30 = Array.from(container.querySelectorAll('.tp-seg-btn')).find(
+    (b) => b.textContent === '30 days',
+  ) as HTMLButtonElement;
+  await act(async () => days30.click());
+  await settle();
+  const plot = () => {
+    const svg = container.querySelector('.tp-chart-plot') as SVGSVGElement;
+    svg.getBoundingClientRect = () =>
+      ({ left: 0, top: 0, width: 288, height: 56, right: 288, bottom: 56, x: 0, y: 0 }) as DOMRect;
+    return svg;
+  };
+  const pick = (label: 'Columns' | 'Line') =>
+    act(async () => (container.querySelector(`[aria-label="${label}"]`) as HTMLButtonElement).click());
+  return { container, root, ledger, plot, pick };
+}
+
 afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   invoked.length = 0;
+  localStorage.removeItem(PANEL_COST_DRAWING_KEY);
 });
 
 describe('TrayPanel', () => {
@@ -349,34 +377,83 @@ describe('TrayPanel', () => {
     expect(barRect([1], 0)).toContain('h28.0');
   });
 
+  // The sparkline this restores parked a one-bucket day on the left pad
+  // (last = max(1, n-1) with n=1). A centred dot would be a new drawing.
+  it('parks a lone line point on the left pad', () => {
+    const [x, y] = sparkXY([1], 0);
+    expect(x).toBe(3); // SPARK_PAD
+    expect(y).toBe(6); // peak sits at the top of the 56px box
+    expect(sparkXY([0], 0)[1]).toBe(52); // idle sits on the baseline
+  });
+
+  it('switches Cost per bucket to the line and remembers it across a remount', async () => {
+    const { container, root, pick } = await mountCostDrawing();
+
+    // Default is columns, the drawing the redesign shipped.
+    expect(container.querySelector('.tp-bars')).not.toBeNull();
+    expect(container.querySelector('.tp-line')).toBeNull();
+    expect(container.querySelector('[aria-label="Columns"]')?.getAttribute('aria-checked')).toBe(
+      'true',
+    );
+    expect(container.querySelector('[aria-label="Line"]')?.getAttribute('aria-checked')).toBe(
+      'false',
+    );
+
+    await pick('Line');
+    expect(container.querySelector('.tp-bars')).toBeNull();
+    expect(container.querySelector('.tp-bar-peak')).toBeNull();
+    expect(container.querySelector('.tp-line')?.getAttribute('d')).toMatch(/^M/);
+    expect(container.querySelector('.tp-line-area')).not.toBeNull();
+    expect(container.querySelector('.tp-line-now')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Line"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(localStorage.getItem(PANEL_COST_DRAWING_KEY)).toBe('line');
+    // The peak caption and the axis survive the switch — only the drawing
+    // changed.
+    expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(
+      `peak ${day(0).slice(5)} · $9.00`,
+    );
+
+    await pick('Columns');
+    expect(container.querySelector('.tp-bars')).not.toBeNull();
+    expect(container.querySelector('.tp-line')).toBeNull();
+    expect(localStorage.getItem(PANEL_COST_DRAWING_KEY)).toBe('columns');
+    await pick('Line');
+
+    // The panel is destroyed on dismiss (ADR-0007); a later open re-reads.
+    act(() => root.unmount());
+    mountedRoots.length = 0;
+    const { container: again } = await mountCostDrawing();
+    expect(again.querySelector('.tp-line')).not.toBeNull();
+    expect(again.querySelector('.tp-bars')).toBeNull();
+    expect(again.querySelector('[aria-label="Line"]')?.getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('marks the latest bucket on the line, not the peak', async () => {
+    const { container, pick } = await mountCostDrawing([point(day(15), 12), point(day(0), 3)]);
+    await pick('Line');
+
+    expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(
+      `peak ${day(15).slice(5)} · $12.00`,
+    );
+    const cx = Number(container.querySelector('.tp-line-now')?.getAttribute('cx'));
+    expect(cx).toBe(285); // SPARK_PAD + (W - 2·pad) — the right edge, today
+  });
+
+  it('falls back to columns when stored drawing is junk', async () => {
+    localStorage.setItem(PANEL_COST_DRAWING_KEY, 'spaghetti');
+    const { container } = await mountCostDrawing();
+    expect(container.querySelector('.tp-bars')).not.toBeNull();
+    expect(container.querySelector('.tp-line')).toBeNull();
+  });
+
   it('hovering the chart reads out that bucket; leaving clears the read-out', async () => {
-    const ledger = makeFakeLedger({
-      summary,
-      sourceRows,
-      dayPoints: [point(day(1), 3), point(day(0), 9)],
-    });
-    const container = document.createElement('div');
-    document.body.append(container);
-    const root = createRoot(container);
-    mountedRoots.push(root);
-    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
-    await settle();
-    const days30 = Array.from(container.querySelectorAll('.tp-seg-btn')).find(
-      (b) => b.textContent === '30 days',
-    ) as HTMLButtonElement;
-    await act(async () => days30.click());
-    await settle();
+    const { container, plot } = await mountCostDrawing();
 
     // Idle: the reserved line stays empty; the peak caption holds the row.
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
     expect(container.querySelector('.tp-chart-hover')).toBeNull();
 
-    // jsdom boxes have no size; give the svg the viewBox's width so the
-    // pointer maths has geometry to invert.
-    const svg = container.querySelector('.tp-chart svg') as SVGSVGElement;
-    svg.getBoundingClientRect = () =>
-      ({ left: 0, top: 0, width: 288, height: 56, right: 288, bottom: 56, x: 0, y: 0 }) as DOMRect;
-
+    const svg = plot();
     // The right edge is the latest bucket (today, $9); the left edge day 29.
     await act(async () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 287 }));
@@ -405,6 +482,25 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
     expect(container.querySelector('.tp-chart-hover')).toBeNull();
     expect(container.querySelector('.tp-chart-peak')).not.toBeNull(); // the caption returns
+  });
+
+  it('hovering the line drawing reads out that bucket with a guide, toggle stays', async () => {
+    const { container, plot, pick } = await mountCostDrawing();
+    await pick('Line');
+
+    const svg = plot();
+    await act(async () => {
+      svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 287 }));
+    });
+    expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
+      `${day(0).slice(5)} · $9.00 · 1K tok`,
+    );
+    expect(container.querySelector('.tp-chart-peak')).toBeNull();
+    expect(container.querySelector('.tp-chart-hover')).toBeNull(); // slot fill is columns-only
+    expect(container.querySelector('.tp-line-hover')).not.toBeNull();
+    expect(container.querySelector('.tp-line-hover-dot')).not.toBeNull();
+    // The drawing toggle does not yield the row the way the peak caption does.
+    expect(container.querySelector('[aria-label="Line"]')).not.toBeNull();
   });
 
   // The cap is on the panel, not on the Ledger: the bar keeps every slice, the

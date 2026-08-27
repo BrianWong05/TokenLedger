@@ -106,3 +106,12 @@ Everything the caps decided stands: three Sources in the legend, three Model
 rows, the 12px section rhythm, and the Rust-side clamp on `resize_panel` still
 owed — more so now, since the taller card leaves less headroom before an
 expanded Source runs off the screen.
+
+## Amendment (2026-08-28)
+
+The Cost-per-bucket drawing is a choice again. Columns stay the default the
+redesign shipped; the sparkline it replaced sits behind a Columns/Line
+control on the caption row. Same series, same peak caption, same hover
+read-out — only the drawing changes. The sparkline still marks now (the
+latest bucket) with a dot; the peak stays in the caption. The choice lives
+in web storage so it survives the panel being destroyed on dismiss.
