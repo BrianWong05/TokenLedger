@@ -2,9 +2,10 @@
 
 A desktop app (Tauri v2) for macOS, Windows, and Linux that tracks token usage
 and estimated cost across the AI coding agents and assistants on your machine —
-**Claude Code**, **Codex CLI**, **Gemini CLI**, **Hermes**, **Grok Build**,
-**Google Antigravity**, **Goose**, **OpenCode**, **Cline**, **Kilo**, **Zed**, **pi**, **WorkBuddy**, and **CodeBuddy** — by parsing each tool's local logs into a
-normalized SQLite ledger.
+**Claude Code**, **Codex CLI**, **GitHub Copilot**, **Gemini CLI**, **Hermes**,
+**Grok Build**, **Google Antigravity**, **Goose**, **OpenCode**, **Cline**,
+**Kilo**, **Zed**, **pi**, **Oh My Pi**, **WorkBuddy**, **CodeBuddy**, and
+**Qoder** — by parsing each tool's local logs into a normalized SQLite ledger.
 
 **Status: 0.4.0.** Driven daily on macOS. Windows and Linux build and pass the
 full test suite in CI (run on demand), but have had no real-world use yet —
@@ -25,8 +26,9 @@ expect rough edges there, and please report them.
 - **Where the context went** — not just how many tokens, but what they were:
   messages, system prompt, and reasoning, with tool calls, subagents, MCP
   servers, and skills broken out beneath them, down to which tools and which
-  Bash commands. Reported for Claude Code, Codex, and pi; the sub-figures are
-  size estimates, labeled as such, while the headline splits are exact.
+  Bash commands. Reported for Claude Code, Codex, Grok Build, pi, Oh My Pi,
+  and Qoder; the sub-figures are size estimates, labeled as such, while the
+  headline splits are exact.
 - **Estimated cost** from public API list prices (LiteLLM's pricing
   database), with a bundled offline snapshot and user-editable per-model
   price overrides for self-hosted models (entered as `$ / 1M tokens`).
@@ -35,9 +37,8 @@ expect rough edges there, and please report them.
   default), so once ingested, history is retained even after the originals
   are gone.
 - **Always at hand** — a Menu Bar Extra carries today's tokens and cost beside
-  its icon, and the panel behind it reads out a window you pick (today,
-  yesterday, or the trailing 30 days). Closing the window leaves TokenLedger
-  running so it keeps capturing.
+  its icon, with the detail one click away. Closing the window leaves
+  TokenLedger running so it keeps capturing.
 
 Cost is labeled *at API list prices — not billed*: every source here is
 subscription, free-tier, or self-hosted, so the number is an estimate, not
@@ -48,8 +49,19 @@ an invoice.
 | Tab | What's on it |
 |---|---|
 | **Overview** | Everything above, over a date window and source selection you choose — plus **Export** (the whole selected window written to one sectioned CSV), **Trend** (enlarges into its own window, bucket size, and per-bucket CSV export), **Activity** (a 12-month heatmap that enlarges into a rotatable 3D landscape), and **Profile** (the window's models ranked across every source, top five with the rest one click away). Activity deliberately ignores the date window and source selection; Profile follows the window but never the source selection. |
+| **Limits** | Vendor usage windows as percentages used or left, with reset times. Live checks for Claude, Codex, Copilot, Grok, and Antigravity require a one-time opt-in, reuse each tool's saved sign-in, and run when you open the tab or press **Refresh**. |
 | **Pricing** | Every model seen in the ledger with its resolved list price, the catalog it came from, and any override you've set |
-| **Settings** | Theme (system / light / dark), language (English / 繁體中文), display currency at a fixed exchange rate, launch at login, auto-update checks, the scan interval, and **Custom range presets** — up to four of your own beside the four that ship, each a rolling *last N days* or a completed calendar period. Add one, reorder them by dragging (or with the arrows), retype a rolling one's day count, remove any; each row shows the dates it currently resolves to, and the picker lists them in the order you put them in |
+| **Settings** | Theme (system / light / dark), language (English / 繁體中文), display currency at a fixed exchange rate, launch at login, window and Menu Bar Extra scan intervals, panel limit-card visibility/order and collapsed meters, daily update checks with in-app or OS notices plus download/restart controls, and **Custom range presets** — up to four of your own beside the four that ship, each a rolling *last N days* or a completed calendar period. Add one, reorder them by dragging (or with the arrows), retype a rolling one's day count, remove any; each row shows the dates it currently resolves to, and the picker lists them in the order you put them in. |
+
+## Menu Bar Extra
+
+Choose today, yesterday, or the trailing 30 days. The panel shows tokens, cost,
+change from the previous period, source and model breakdowns, hourly trend,
+cache hit, and requests. Vendor limit cards show remaining windows and reset
+times; Settings controls which cards and collapsed meters appear, and the order
+they stack.
+
+![TokenLedger's Menu Bar Extra showing yesterday's usage, model breakdown, and live limit cards](docs/menu-bar-extra.png)
 
 ## Install
 
@@ -99,9 +111,10 @@ OpenRouter's model list for pricing, and the GitHub release manifest for
 updates. One optional feature reaches further and asks first: enabling **live
 limit checks** on the Limits tab runs a separate companion process that presents
 the sign-in each tool already stores to its own vendor — Claude Code's to
-`api.anthropic.com`, Codex's to `chatgpt.com`, Grok's to `cli-chat-proxy.grok.com`,
-Antigravity's to Google — read-only, only when you open that page or press
-Refresh, never on a timer, to ask how much of each rolling window you have used.
+`api.anthropic.com`, Codex's to `chatgpt.com`, Copilot's to `api.github.com`,
+Grok's to `cli-chat-proxy.grok.com`, Antigravity's to Google — read-only, only
+when you open that page or press Refresh, never on a timer, to ask how much of
+each rolling window you have used.
 Until you press that button, no credential is read and no authenticated request
 exists, and **no companion ever writes your sign-in files.** Most present a
 still-valid token untouched. Two may need a fresh one first: Antigravity's Google
@@ -119,6 +132,7 @@ asking Grok live, accepted deliberately
 |---|---|---|
 | [Claude Code](https://claude.com/claude-code) | Anthropic's CLI coding agent | `~/.claude/projects/**/*.jsonl` |
 | [Codex CLI](https://github.com/openai/codex) | OpenAI's CLI coding agent | `~/.codex/sessions/**/rollout-*.jsonl`, plus `$CODEX_HOME/sessions/**/rollout-*.jsonl` when visible |
+| GitHub Copilot | GitHub's AI coding assistant | `~/.copilot/session-store.db`, or `$COPILOT_HOME/session-store.db` when configured |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google's CLI coding agent | `~/.gemini/tmp/*/chats/session-*.json` |
 | [Hermes](https://github.com/NousResearch/hermes-agent) | Nous Research's self-improving agent | `~/.hermes/state.db` (opened read-only) |
 | [Grok Build](https://github.com/xai-org/grok-build) | Coding agent harness and TUI | `$GROK_HOME/sessions/**/updates.jsonl` (fallback `~/.grok/sessions/**/updates.jsonl`), plus `$GROK_HOME/logs/unified.jsonl` for the credit-pool Limit |
@@ -129,8 +143,10 @@ asking Grok live, accepted deliberately
 | [Kilo](https://kilocode.ai) | Kilo Code CLI | `~/Library/Application Support/kilo/kilo.db` on macOS; `~/.local/share/kilo/kilo.db` on Linux; `%LOCALAPPDATA%\\kilo\\kilo.db` on Windows; `$KILO_DB` when overridden |
 | [Zed](https://zed.dev) | Zed Editor's hosted agent | `~/Library/Application Support/Zed/threads/threads.db` on macOS; `~/.local/share/zed/threads/threads.db` on Linux; `%LOCALAPPDATA%\\Zed\\threads\\threads.db` on Windows; XDG and Flatpak data-home branches on Linux |
 | [pi](https://github.com/earendil-works/pi) | Agent toolkit — unified LLM API, agent loop, TUI, coding agent CLI | `~/.pi/agent/sessions/**/*.jsonl` |
+| Oh My Pi | Coding agent | `~/.omp/agent/sessions/**/*.jsonl`, plus `OMP_SESSION_DIR` or `<OMP_AGENT_DIR>/sessions` when configured |
 | WorkBuddy | Desktop AI assistant | `~/.workbuddy/projects/**/*.jsonl` |
 | CodeBuddy | CLI, IDE, and VS Code plugin coding agent | `~/.codebuddy/projects/**/*.jsonl` |
+| Qoder | AI coding IDE and CLI | Qoder/QoderCN application databases, plus `~/.qoder{,-cli,-cn}/projects/**/*.jsonl` |
 
 For the JSONL Sources discovered by the shared recursive walk — Claude Code,
 Codex CLI, pi, Oh My Pi, WorkBuddy, CodeBuddy, Qoder — a configured root may
