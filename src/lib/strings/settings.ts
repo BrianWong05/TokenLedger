@@ -76,6 +76,16 @@ export const settings = {
     'settings.menuBarRefresh.offNote':
       'The Menu Bar Extra falls back to a scan every few hours. Recording never stops.',
 
+    // The panel's collapsed card draws two bars by default; this is where a
+    // reader says which windows those are, per Source. "Bar" is CONTEXT.md's
+    // word for the thing ("a bar per Limit") — and "windows" cannot be the
+    // title, since the copy guard reserves that word for "limit windows".
+    'settings.panelBars': 'Panel bars',
+    // {k} is the platform's own spelling of the Alt key, filled in by the row:
+    // what a surface prints and what fires must not drift (lib/hotkeys.ts).
+    'settings.panelBars.caption':
+      'Which limit windows a Source shows on the panel before its card is expanded. Drag the chosen ones — or hold {k} and press the arrow keys — to set their order.',
+
     'settings.updates': 'Updates',
     'settings.autoCheck': 'Check for updates automatically',
     'settings.autoCheck.caption': 'Once a day, in the background',
@@ -153,6 +163,10 @@ export const settings = {
     'settings.menuBarRefresh.caption': '所有視窗關閉時，選單列輔助程式的數字多久重讀一次',
     'settings.menuBarRefresh.off': '關閉',
     'settings.menuBarRefresh.offNote': '選單列輔助程式改回每幾小時掃描一次。記錄不會停止。',
+
+    'settings.panelBars': '面板量條',
+    'settings.panelBars.caption':
+      '來源的卡片展開前，面板上顯示哪些限額時段。拖曳已選項目，或按住 {k} 並按方向鍵，即可調整順序。',
 
     'settings.updates': '更新',
     'settings.autoCheck': '自動檢查更新',

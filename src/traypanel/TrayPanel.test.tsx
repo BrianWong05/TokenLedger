@@ -9,7 +9,13 @@ import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { makeFakeEstimate } from '../limits/limits.fake';
-import { LIVE_ENABLED_KEY, lastCheckKey, lastFailureKey, type LimitsPort } from '../limits/limits';
+import {
+  LIVE_ENABLED_KEY,
+  lastCheckKey,
+  lastFailureKey,
+  PANEL_WINDOWS_KEY,
+  type LimitsPort,
+} from '../limits/limits';
 import type { BreakdownRow, SourceLimits, Summary } from '../types';
 import { seriesPoint } from '../overview/seriesPoint';
 
@@ -1011,6 +1017,51 @@ describe('TrayPanel limits', () => {
     // The tick is time: 190 of 300 minutes left ≈ 63.3% under Left framing.
     const tick = cardEls[0].querySelector('.tp-limbar .tick') as HTMLElement;
     expect(parseFloat(tick.style.left)).toBeCloseTo((190 / 300) * 100, 1);
+  });
+
+  // Which windows a card collapses to is a Settings choice (stored per Source),
+  // and the default pair is only what an untouched Source falls back to.
+  it('collapses to the windows Settings picked, per Source', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['seven_day', 'seven_day_fable'] }),
+      }),
+    );
+    const cardEls = Array.from(container.querySelectorAll('.tp-limcard'));
+    const meters = (el: Element) =>
+      Array.from(el.querySelectorAll('.tp-limmeter')).map(
+        (m) => m.querySelector('.tp-limmeter-k')?.textContent,
+      );
+
+    // Claude's pick replaces the default pair outright: no Session, and the
+    // per-model window promoted out from behind the disclosure.
+    expect(meters(cardEls[0])).toEqual(['Weekly', 'Fable']);
+    // Codex was never picked for, so it keeps the default.
+    expect(meters(cardEls[1])).toEqual(['Session', 'Weekly']);
+  });
+
+  // The pick is an order as well as a set: Settings writes the running order,
+  // and the meters are drawn in it rather than in the query's.
+  it('draws the meters in the picked order, not the stored one', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored()], {
+        [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['seven_day_fable', 'five_hour'] }),
+      }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limmeter')).map(
+        (m) => m.querySelector('.tp-limmeter-k')?.textContent,
+      ),
+    ).toEqual(['Fable', 'Session']);
+  });
+
+  it('shows no meters for a Source whose every window was switched off', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored()], { [PANEL_WINDOWS_KEY]: '{"claude":[]}' }),
+    );
+    // The card stays — its header is still the way to every window.
+    expect(container.querySelectorAll('.tp-limcard').length).toBe(1);
+    expect(container.querySelectorAll('.tp-limmeter').length).toBe(0);
   });
 
   it('expands a Source to every window on header click, and collapses back', async () => {

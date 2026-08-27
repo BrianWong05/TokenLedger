@@ -1,7 +1,10 @@
-// Pure derivation for the Limits tab: which Sources get a card, what state each
-// card is in, and the four numbers a bar draws from. No React, no fetching and
-// no `t()`, so every rule the wayfinder map settled is unit-testable against a
-// SourceLimits[] and a clock.
+// Pure derivation for the Limits tab and the panel's cards: which Sources get a
+// card, what state each card is in, the four numbers a bar draws from, and which
+// of a Source's bars the panel shows collapsed — including reading that last one
+// back out of the reader's own storage, since a stored preference is an input to
+// the derivation like the clock is. No React, no fetching and no `t()`, so every
+// rule the wayfinder map settled is unit-testable against a SourceLimits[], a
+// clock and a stored string.
 import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import type { LimitEstimateState } from '../bindings/LimitEstimateState';
@@ -400,4 +403,80 @@ export function freshness(
     return { key: ageMin < 0.5 ? 'checkedNow' : 'checkedAgo', ageMin };
   }
   return { key: ageMin > 1440 ? 'observedOld' : 'observedAgo', ageMin };
+}
+
+/**
+ * A window beside its parsed label, so the panel's pick and its render read the
+ * same parts.
+ */
+export type ParsedWindow = { w: WindowView; label: ReturnType<typeof windowLabel> };
+
+// The two windows a Source's card collapses to on the panel: its Session and
+// its Weekly lane. Restored after the one-line design was reverted (ADR-0007's
+// third amendment) — but not restored to picking each with a bare `find`,
+// because a rung can hold more than one window and first-match let the alphabet
+// choose. Antigravity records a Session per pool (`gemini:w300` and `3p:w300`)
+// and the query orders by key, so the meter showed whichever pool sorted first.
+// Each meter now shows the window nearest its wall, read off `pctLeft`: neither
+// figure a meter can print is usable for this, since both round to whole
+// percent and two pools a fraction apart tie on the numeral, and a tie hands
+// the pick back to stored order. `pctLeft` is unrounded and
+// framing-independent, so the Left/Used toggle cannot move it either. Two ties
+// it still cannot break — windows whose `pctLeft` is exactly equal, and a rung
+// whose windows have all expired, since `windowView` reads an expired epoch as
+// 100 left. That second one is also what keeps a stale window out of a meter
+// while a live sibling exists.
+export function primaryWindows(parsed: ParsedWindow[]): ParsedWindow[] {
+  const nearestWall = (ps: ParsedWindow[]) =>
+    ps.length > 0 ? ps.reduce((a, b) => (b.w.pctLeft < a.w.pctLeft ? b : a)) : undefined;
+  const session = nearestWall(parsed.filter((p) => p.label.kind === 'session'));
+  const weekly = nearestWall(
+    parsed.filter((p) => p.label.kind === 'weekly' || p.label.kind === 'weeklyCredits'),
+  );
+  return [session, weekly].filter((p): p is ParsedWindow => p !== undefined);
+}
+
+/**
+ * The windows the panel shows for a Source before its card is expanded, in the
+ * order it shows them. A Source the reader has picked windows for shows exactly
+ * that pick, in the pick's OWN order — the pick is a running order, not a
+ * filter, which is what lets Settings put the weekly bar above the session one.
+ * An empty pick shows none, which is a choice and not a fault; a Source they
+ * never touched keeps the Session + Weekly default, so the pick is opt-in per
+ * Source rather than a switch that blanks every card at once.
+ *
+ * A key the Source no longer reports contributes nothing, so a window a vendor
+ * retires leaves no hole. If that empties a pick that DID name something, the
+ * default pair comes back rather than the card going blank: a pick naming only
+ * windows this Source has stopped reporting is a choice about a lineup that no
+ * longer exists, and a blank card is indistinguishable from the deliberate empty
+ * pick above — with nothing on it to say why or how to get back.
+ */
+export function panelWindows(parsed: ParsedWindow[], pick?: string[]): ParsedWindow[] {
+  if (!pick) return primaryWindows(parsed);
+  const held = pick.flatMap((key) => parsed.filter((p) => p.w.key === key));
+  return held.length === 0 && pick.length > 0 ? primaryWindows(parsed) : held;
+}
+
+/**
+ * The stored panel picks, Source → window keys. This is a trust boundary: the
+ * value is whatever web storage holds, so unreadable JSON — or any entry that
+ * is not a list of strings — reads as "no pick for that Source" rather than
+ * throwing away the panel that asked.
+ */
+export function parsePanelPicks(raw: string | null): Record<string, string[]> {
+  let parsed: unknown;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  return Object.fromEntries(
+    Object.entries(parsed as Record<string, unknown>).flatMap(([source, keys]) =>
+      Array.isArray(keys) && keys.every((k) => typeof k === 'string')
+        ? [[source, keys as string[]]]
+        : [],
+    ),
+  );
 }

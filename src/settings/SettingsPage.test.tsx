@@ -13,6 +13,9 @@ import { STORAGE_KEY } from '../overview/useAutoRefresh';
 import { CUSTOM_PRESETS_KEY } from '../overview/customPresets';
 import { publishFirstRecord } from '../overview/ledgerExtent';
 import type { UpdateStatus } from './settings';
+import { PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
+import { makeFakeEstimate } from '../limits/limits.fake';
+import type { SourceLimits } from '../types';
 
 vi.mock('./startup', () => ({ setLaunchAtLogin: vi.fn() }));
 
@@ -37,18 +40,18 @@ beforeEach(() => {
 
 // Mirrors App's AppInner wiring so language flows from context and the first-run
 // dialog mounts on the same gate.
-function Harness({ port }: { port: FakeSettings }) {
+function Harness({ port, limits }: { port: FakeSettings; limits?: LimitsPort }) {
   return (
     <SettingsProvider port={port}>
-      <Inner port={port} />
+      <Inner port={port} limits={limits} />
     </SettingsProvider>
   );
 }
-function Inner({ port }: { port: FakeSettings }) {
+function Inner({ port, limits }: { port: FakeSettings; limits?: LimitsPort }) {
   const { settings, loaded } = useSettings();
   return (
     <I18nProvider lang={settings.language}>
-      <SettingsPage port={port} />
+      <SettingsPage port={port} limits={limits} />
       {loaded && !settings.firstRunDone && <FirstRunDialog />}
     </I18nProvider>
   );
@@ -64,13 +67,13 @@ async function settle(times = 4) {
   }
 }
 
-async function mount(port: FakeSettings): Promise<HTMLElement> {
+async function mount(port: FakeSettings, limits?: LimitsPort): Promise<HTMLElement> {
   const container = document.createElement('div');
   document.body.append(container);
   const root = createRoot(container);
   mountedRoots.push(root);
   await act(async () => {
-    root.render(<Harness port={port} />);
+    root.render(<Harness port={port} limits={limits} />);
   });
   await settle();
   return container;
@@ -652,5 +655,221 @@ describe('SettingsPage', () => {
     // Never reappears.
     await settle();
     expect(c.querySelector('[role="dialog"]')).toBeNull();
+  });
+});
+
+// Which windows the tray panel's collapsed card shows, per Source. The pick is
+// web storage the panel reads (not the Ledger's settings), so the port's own
+// read/write is what these assert against.
+describe('SettingsPage panel bars', () => {
+  function makeFakeLimits(
+    stored: SourceLimits[],
+    store: Record<string, string> = {},
+  ): LimitsPort & { store: Map<string, string> } {
+    const map = new Map(Object.entries(store));
+    return {
+      store: map,
+      list: () => Promise.resolve(stored),
+      checkLive: () => Promise.resolve(),
+      scan: () => Promise.resolve(),
+      onLimitsChanged: () => () => {},
+      read: (k) => map.get(k) ?? null,
+      write: (k, v) => {
+        map.set(k, v);
+      },
+    };
+  }
+
+  // A Source's real provenance mix: the two named lanes plus a per-model window.
+  function claudeStored(): SourceLimits {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      source: 'claude',
+      plan: 'default_claude_max_5x',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+      ],
+    };
+  }
+
+  const wins = (c: HTMLElement) =>
+    Array.from(
+      c.querySelectorAll('.set-seg-wrap[aria-label="Claude"] button'),
+    ) as HTMLButtonElement[];
+  const win = (c: HTMLElement, label: string) =>
+    wins(c).find((b) => b.textContent === label)!;
+  // A press that travels: pointerdown here, the click that follows it there.
+  // jsdom has no PointerEvent, and React only needs the type and the
+  // coordinates — a MouseEvent named 'pointerdown' carries both. `detail: 1` is
+  // what makes it a POINTER click: MouseEvent defaults detail to 0, which is
+  // the keyboard's signature, and a fixture that skips it tests the other
+  // branch while looking like it tests this one.
+  const pressDown = (el: HTMLElement) =>
+    el.dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 20, bubbles: true }));
+  const dragTo = (el: HTMLElement, dx: number) =>
+    act(async () => {
+      pressDown(el);
+      el.dispatchEvent(
+        new MouseEvent('click', { clientX: 100 + dx, clientY: 20, detail: 1, bubbles: true }),
+      );
+    });
+  // Space or Enter on the focused pill: a click with no pointer behind it, which
+  // the platform reports as detail 0 at the origin.
+  const keyActivate = (el: HTMLElement) =>
+    act(async () => {
+      el.dispatchEvent(new MouseEvent('click', { detail: 0, bubbles: true }));
+    });
+  const altArrow = (el: HTMLElement, key: string, altKey = true) =>
+    act(async () => {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key, altKey, bubbles: true }));
+    });
+  const pressed = (c: HTMLElement) =>
+    wins(c)
+      .filter((b) => b.getAttribute('aria-pressed') === 'true')
+      .map((b) => b.textContent);
+
+  it('offers every window a Source records, with the panel default pressed', async () => {
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([claudeStored()]));
+
+    expect(c.textContent).toContain('Panel bars');
+    expect(wins(c).map((b) => b.textContent)).toEqual(['Session', 'Weekly', 'Fable']);
+    // Untouched: the pair the panel draws on its own.
+    expect(pressed(c)).toEqual(['Session', 'Weekly']);
+  });
+
+  it('writes the pick the panel reads, materialising the default on the first click', async () => {
+    const limits = makeFakeLimits([claudeStored()]);
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    // Weekly + Fable: add the per-model window, drop the Session. Addressed by
+    // label, never by index — the strip reorders itself as the pick changes.
+    await click(win(c, 'Fable'));
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
+      JSON.stringify({ claude: ['five_hour', 'seven_day', 'seven_day_fable'] }),
+    );
+    await click(win(c, 'Session'));
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
+      JSON.stringify({ claude: ['seven_day', 'seven_day_fable'] }),
+    );
+    expect(pressed(c)).toEqual(['Weekly', 'Fable']);
+    // Switched off, the Session falls behind the chosen pair rather than
+    // holding the place it had while it was on.
+    expect(wins(c).map((b) => b.textContent)).toEqual(['Weekly', 'Fable', 'Session']);
+
+    // Every window off is a choice the row can express, and it survives as one:
+    // an empty list is a pick, not a missing entry that would restore the pair.
+    await click(win(c, 'Weekly'));
+    await click(win(c, 'Fable'));
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(JSON.stringify({ claude: [] }));
+    expect(pressed(c)).toEqual([]);
+  });
+
+  // The pick is the running order the panel draws in, so Settings has to be
+  // able to move a chosen meter without switching anything off. Dragging is the
+  // mouse's way; ⌥←/⌥→ is the same move from the keyboard, and the one a test
+  // can press.
+  it('moves a chosen bar along the order with ⌥← / ⌥→', async () => {
+    const limits = makeFakeLimits([claudeStored()], {
+      [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['five_hour', 'seven_day', 'seven_day_fable'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+    expect(pressed(c)).toEqual(['Session', 'Weekly', 'Fable']);
+
+    await altArrow(win(c, 'Fable'), 'ArrowLeft');
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
+      JSON.stringify({ claude: ['five_hour', 'seven_day_fable', 'seven_day'] }),
+    );
+    expect(pressed(c)).toEqual(['Session', 'Fable', 'Weekly']);
+
+    await altArrow(win(c, 'Session'), 'ArrowRight');
+    expect(pressed(c)).toEqual(['Fable', 'Session', 'Weekly']);
+
+    // Neither end wraps, and neither end writes: a move with nowhere to go is
+    // not a reorder that happens to look the same.
+    const atEnd = JSON.stringify({ claude: ['seven_day_fable', 'five_hour', 'seven_day'] });
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(atEnd);
+    await altArrow(win(c, 'Fable'), 'ArrowLeft');
+    await altArrow(win(c, 'Weekly'), 'ArrowRight');
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(atEnd);
+
+    // A bare arrow is the segment's own focus movement, not a reorder.
+    await altArrow(win(c, 'Weekly'), 'ArrowLeft', false);
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(atEnd);
+  });
+
+  // Dragging a pill and dropping it produces a click like any other press, and
+  // switching the meter off is the one thing the person carrying it cannot have
+  // meant.
+  it('does not toggle a bar that was dragged rather than pressed', async () => {
+    const limits = makeFakeLimits([claudeStored()], {
+      [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['five_hour', 'seven_day'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    await dragTo(win(c, 'Session'), 60);
+    expect(pressed(c)).toEqual(['Session', 'Weekly']);
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
+      JSON.stringify({ claude: ['five_hour', 'seven_day'] }),
+    );
+
+    // A press that barely moved is still a press: the slop is for a pointer's
+    // own noise, not for a reorder.
+    await dragTo(win(c, 'Session'), 2);
+    expect(pressed(c)).toEqual(['Weekly']);
+  });
+
+  // A pointer that goes down on the pill and never produces a click there — a
+  // cancelled press, a release outside the webview — used to leave its position
+  // behind, and the next keyboard activation was measured against it and thrown
+  // away. A keyboard click is judged by carrying no pointer, not by distance.
+  it('still toggles from the keyboard after an abandoned press', async () => {
+    const limits = makeFakeLimits([claudeStored()], {
+      [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['five_hour', 'seven_day'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    await act(async () => {
+      pressDown(win(c, 'Session'));
+    });
+    await keyActivate(win(c, 'Session'));
+    expect(pressed(c)).toEqual(['Weekly']);
+  });
+
+  // A window the vendor has stopped reporting draws no pill, so it cannot be
+  // part of what a click sends back — and rewriting the pick to that alone
+  // deleted the absent window's place on the first unrelated click.
+  it('keeps a pick for a window the Source no longer reports', async () => {
+    const limits = makeFakeLimits([claudeStored()], {
+      [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['seven_day', 'seven_day_zephyr'] }),
+    });
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), limits);
+
+    // Zephyr is not on offer: it has no Reading behind it any more.
+    expect(wins(c).map((b) => b.textContent)).toEqual(['Weekly', 'Session', 'Fable']);
+    expect(pressed(c)).toEqual(['Weekly']);
+
+    await click(win(c, 'Fable'));
+    expect(limits.store.get(PANEL_WINDOWS_KEY)).toBe(
+      JSON.stringify({ claude: ['seven_day', 'seven_day_fable', 'seven_day_zephyr'] }),
+    );
+  });
+
+  it('renders no rows at all when no Source has Readings', async () => {
+    const c = await mount(makeFakeSettings({ firstRunDone: true }), makeFakeLimits([]));
+    expect(c.textContent).not.toContain('Panel bars');
+    expect(c.querySelector('.set-seg-wrap')).toBeNull();
+  });
+
+  it('reads a stored pick back as the pressed set', async () => {
+    const c = await mount(
+      makeFakeSettings({ firstRunDone: true }),
+      makeFakeLimits([claudeStored()], {
+        [PANEL_WINDOWS_KEY]: JSON.stringify({ claude: ['seven_day_fable'] }),
+      }),
+    );
+    expect(pressed(c)).toEqual(['Fable']);
   });
 });

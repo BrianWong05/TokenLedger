@@ -11,9 +11,11 @@ import { listen } from '@tauri-apps/api/event';
 import { fetchLimits, checkLiveLimits, scan } from '../api';
 import type { SourceLimits } from '../types';
 
-// The stored preference keys this page owns. Two booleans-worth of state, so
-// they live in web storage rather than growing the Settings contract: neither is
-// read by Rust, the tray, or any other page.
+// The stored preference keys the Limits surfaces own. None is read by Rust, so
+// they live in web storage rather than growing the Settings contract. Two are
+// this page's alone; `PANEL_WINDOWS_KEY` is the exception and deliberately
+// shared — Settings writes it and the panel reads it, which is still both ends
+// inside the webviews.
 // The `.3` is a consent version, not clutter: the disclosure this boolean
 // records acceptance of named only Claude Code's sign-in at `.1`, gained
 // Codex's at `.2`, and now covers Antigravity's — whose Google sign-in works on
@@ -24,6 +26,11 @@ import type { SourceLimits } from '../types';
 // they were never shown.
 export const LIVE_ENABLED_KEY = 'tl.limits.liveEnabled.3';
 export const MODE_KEY = 'tl.limits.mode';
+// Which windows each Source shows on the tray panel before its card is
+// expanded, as JSON: Source key → window keys. Settings writes it, the panel
+// reads it, and a Source with no entry keeps the Session + Weekly default — so
+// storage being empty (or refused) is the shipped behaviour, not a broken one.
+export const PANEL_WINDOWS_KEY = 'tl.limits.panelWindows';
 
 // When a Source was last checked live, as epoch millis. Stored rather than kept
 // in memory so the floor between calls survives the page being unmounted — which

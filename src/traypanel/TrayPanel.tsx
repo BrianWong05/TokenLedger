@@ -21,13 +21,14 @@ import { hotkeyHint, isHotkey } from '../lib/hotkeys';
 import { panelModel, periodWindows, seriesBucket, type PanelModel, type Period } from './panelModel';
 import { tauriLedger, type LedgerPort } from '../overview/ledger';
 import { tauriSettings, type SettingsPort } from '../settings/settings';
-import { tauriLimits, MODE_KEY, type LimitsPort } from '../limits/limits';
+import { tauriLimits, MODE_KEY, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
 import { runDueLiveChecks, storedFailures, type LiveFailure } from '../limits/limits.live';
 import {
-  cards, durationParts, planLabel, windowLabel,
-  type Mode as LimitsMode, type WindowView,
+  cards, durationParts, panelWindows, parsePanelPicks, planLabel, windowLabel,
+  type Mode as LimitsMode, type ParsedWindow, type WindowView,
 } from '../limits/limits.derive';
 import { limits as limitStrings } from '../lib/strings/limits';
+import { windowText, type LimitT } from '../limits/limitLabel';
 import { fill } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import { NO_FLOOR, tokenFloor, markedTokenFigure, type TokenFloor } from '../overview/localize';
@@ -84,35 +85,9 @@ function ipc(cmd: string) {
 // — the same keys the Limits page renders through `t()` — so the words have
 // one home and cannot drift.
 const LIMITS_EN = limitStrings.en;
-
-// A window's label parts, parsed once and carried beside the window so the
-// pick (which window leads the Source's line) and the render read the same
-// parse.
-type ParsedWindow = { w: WindowView; label: ReturnType<typeof windowLabel> };
-
-// Label parts to render. Pools ride the label the way the Limits page
-// prefixes them; a per-model window carries "· Weekly" as a sub so long model
-// names stay scannable.
-function limitText(label: ParsedWindow['label']): { text: string; sub?: string } {
-  const pools: Record<string, string> = {
-    gemini: LIMITS_EN['limits.pool.gemini'],
-    '3p': LIMITS_EN['limits.pool.other'],
-  };
-  const pool = label.pool ? `${pools[label.pool] ?? label.pool} · ` : '';
-  if (label.kind === 'model') {
-    return { text: `${pool}${label.model}`, sub: `· ${LIMITS_EN['limits.win.weeklySub']}` };
-  }
-  if (label.kind === 'other') {
-    return { text: pool + fill(LIMITS_EN['limits.win.other'], { n: label.minutes }) };
-  }
-  const names = {
-    session: LIMITS_EN['limits.win.session'],
-    weekly: LIMITS_EN['limits.win.weekly'],
-    weeklyCredits: LIMITS_EN['limits.win.weeklyCredits'],
-    monthlyCredits: LIMITS_EN['limits.win.monthlyCredits'],
-  } as const;
-  return { text: pool + names[label.kind] };
-}
+// The panel's translator: the dictionary read straight, since this window ships
+// English only (see above).
+const EN: LimitT = (key) => LIMITS_EN[key];
 
 // "1d 6h" — durationParts' largest two units, through the dictionary's own
 // unit templates (the same `as` the page's fmtDuration uses, for the same
@@ -121,31 +96,6 @@ function limitDuration(minutes: number): string {
   return durationParts(minutes)
     .map((p) => fill(LIMITS_EN[`limits.t.${p.unit}` as 'limits.t.d'], { n: p.n }))
     .join(' ');
-}
-
-// The two windows a Source's card collapses to: its Session and its Weekly
-// lane. Restored after the one-line design was reverted (ADR-0007's third
-// amendment) — but not restored to picking each with a bare `find`, because a
-// rung can hold more than one window and first-match let the alphabet choose.
-// Antigravity records a Session per pool (`gemini:w300` and `3p:w300`) and the
-// query orders by key, so the meter showed whichever pool sorted first. Each
-// meter now shows the window nearest its wall, read off `pctLeft`: neither
-// figure a meter can print is usable for this, since both round to whole
-// percent and two pools a fraction apart tie on the numeral, and a tie hands
-// the pick back to stored order. `pctLeft` is unrounded and
-// framing-independent, so the Left/Used toggle cannot move it either. Two ties
-// it still cannot break — windows whose `pctLeft` is exactly equal, and a rung
-// whose windows have all expired, since `windowView` reads an expired epoch as
-// 100 left. That second one is also what keeps a stale window out of a meter
-// while a live sibling exists.
-function primaryWindows(parsed: ParsedWindow[]): ParsedWindow[] {
-  const nearestWall = (ps: ParsedWindow[]) =>
-    ps.length > 0 ? ps.reduce((a, b) => (b.w.pctLeft < a.w.pctLeft ? b : a)) : undefined;
-  const session = nearestWall(parsed.filter((p) => p.label.kind === 'session'));
-  const weekly = nearestWall(
-    parsed.filter((p) => p.label.kind === 'weekly' || p.label.kind === 'weeklyCredits'),
-  );
-  return [session, weekly].filter((p): p is ParsedWindow => p !== undefined);
 }
 
 // One limit bar, shared by the Source lines and the expanded rows: the
@@ -467,6 +417,11 @@ export default function TrayPanel({
   // Framing follows the page's stored Left/Used choice — the panel adds no
   // second toggle.
   const limitsMode: LimitsMode = limits.read(MODE_KEY) === 'used' ? 'used' : 'left';
+  // Which windows each Source shows collapsed, chosen in Settings. Read on
+  // every render like the framing above, so a change made in the app's window
+  // lands the next time this panel draws — the two webviews share the store but
+  // not its events.
+  const panelPicks = parsePanelPicks(limits.read(PANEL_WINDOWS_KEY));
   const limitCards = useMemo(
     () =>
       cards(limitsStored, limitsNow, limitsMode, limitsFailures).filter(
@@ -703,7 +658,7 @@ export default function TrayPanel({
                 </button>
                 {open ? (
                   parsed.map(({ w, label }) => {
-                    const l = limitText(label);
+                    const l = windowText(EN, label);
                     return (
                       <div className="tp-limwin" key={w.key}>
                         <div className="tp-limwin-labels">
@@ -723,10 +678,10 @@ export default function TrayPanel({
                   })
                 ) : (
                   <div className="tp-limmeters">
-                    {primaryWindows(parsed).map(({ w, label }) => (
+                    {panelWindows(parsed, panelPicks[card.source]).map(({ w, label }) => (
                       <div className="tp-limmeter" key={w.key}>
                         <div className="tp-limmeter-row">
-                          <span className="tp-limmeter-k">{limitText(label).text}</span>
+                          <span className="tp-limmeter-k">{windowText(EN, label).text}</span>
                           <span>
                             <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
                             {w.resetsInMin !== null && (
