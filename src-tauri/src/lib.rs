@@ -699,6 +699,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         // Closing `main` uses Tauri's default lifecycle, destroying that
@@ -753,19 +754,31 @@ pub fn run() {
                 tray::show_main(app.handle())?;
             }
 
-            // Auto-check for updates on start (non-blocking), respecting the
-            // saved setting. When an update is found, emit it for a listener to
-            // surface; today the placeholder endpoint 404s so this quietly
-            // no-ops until a signed release exists.
+            // The relaunch notice, in Rust because a hidden start has no
+            // webview: record the running version and announce an applied
+            // update as an OS notification. A visible start records too but
+            // leaves the announcing to the window's "Updated" card.
+            updater::announce_applied(app.handle(), &data_dir, hidden_startup);
+
+            // Auto-check for updates on a hidden start (non-blocking),
+            // respecting the saved setting. A find is surfaced as an OS
+            // notification — the only channel with no webview to render the
+            // in-window card. A visible start's own mount-time check paints
+            // the card instead, so this would only duplicate it there.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let auto = read(&handle.state::<AppState>(), settings::get_settings)
                     .map(|s| s.auto_check_updates)
                     .unwrap_or(false);
-                if auto {
+                if auto && hidden_startup {
                     let status = updater::check(&handle).await;
                     if status.state == "available" {
-                        let _ = handle.emit("update-available", status.version);
+                        let version = status.version.unwrap_or_default();
+                        updater::notify(
+                            &handle,
+                            "Update available",
+                            &format!("TokenLedger {version} is ready"),
+                        );
                     }
                 }
             });
