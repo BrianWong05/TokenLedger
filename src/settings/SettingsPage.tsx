@@ -3,10 +3,11 @@
 // none). Reads the live Settings from context, and keeps view-local state beside
 // it: the rate text field, the app version, the update-check result. Two groups
 // own state the Ledger's Settings never holds — the Overview's presets and
-// refresh, and the panel-bars pick, which reads the Limits port for the windows
-// to offer and web storage for the choice (see PanelBarsRows).
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Reorder, useDragControls } from 'motion/react';
+// refresh, and the panel's card-order and bar picks, which read the Limits port
+// for the Sources and windows to offer and web storage for the choice (see
+// PanelCardsRows).
+import { useEffect, useMemo, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+import { motion, Reorder, useDragControls } from 'motion/react';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
 import { setLaunchAtLogin } from './startup';
@@ -32,12 +33,15 @@ import {
   MENU_BAR_REFRESH_PRESETS,
   type SettingsPort,
 } from './settings';
-import { tauriLimits, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
+import { tauriLimits, PANEL_CARDS_KEY, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
 import {
   cards,
+  panelCardRows,
   panelWindows,
+  parsePanelCardPick,
   parsePanelPicks,
   windowLabel,
+  type PanelCardPick,
   type ParsedWindow,
 } from '../limits/limits.derive';
 import { windowText } from '../limits/limitLabel';
@@ -661,21 +665,51 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
 }
 
 /**
- * Which windows each Source shows on the panel's collapsed card — one toggle
- * row per Source that has Readings, pressed for the bars the panel draws.
+ * How the panel presents its Limits cards: one row per Source that has
+ * Readings — drag to stack the cards, a switch to hide one, the chosen bars
+ * each card draws collapsed.
  *
- * The pressed set is the panel's own answer (`panelWindows`), not a second copy
- * of the default rule, so an untouched Source shows exactly the pair it shows
- * over there; the first click materialises that pair and toggles inside it.
- * Sources with nothing recorded are left out: the panel has no card for them,
- * so there is nothing here to choose between.
+ * The pressed bar set is the panel's own answer (`panelWindows`), not a second
+ * copy of the default rule, so an untouched Source shows exactly the pair it
+ * shows over there; the first click materialises that pair and toggles inside
+ * it. The rows themselves are the same idea for the cards: an untouched install
+ * shows catalog order with every card on, and the first move or switch writes
+ * that lineup with the one change. Sources with nothing recorded are left out:
+ * the panel has no card for them, so there is nothing here to choose between
+ * or to rearrange.
  */
-function PanelBarsRows({ limits, platform }: { limits: LimitsPort; platform: Platform }) {
+function PanelCardsRows({ limits, platform }: { limits: LimitsPort; platform: Platform }) {
   const { t } = useT();
+  const listRef = useRef<HTMLDivElement>(null);
+  const cardRowsRef = useRef<{ source: string; on: boolean }[]>([]);
+  const persistRowsRef = useRef<(next: { source: string; on: boolean }[]) => void>(() => {});
+  const stopDragListenRef = useRef<(() => void) | null>(null);
+  const dragRef = useRef<null | {
+    source: string;
+    grab: number;
+    left: number;
+    width: number;
+    top: number;
+  }>(null);
   const [stored, setStored] = useState<SourceLimits[]>([]);
   const [picks, setPicks] = useState<Record<string, string[]>>(() =>
     parsePanelPicks(limits.read(PANEL_WINDOWS_KEY)),
   );
+  const [cardPick, setCardPick] = useState<PanelCardPick | null>(() =>
+    parsePanelCardPick(limits.read(PANEL_CARDS_KEY)),
+  );
+  // Pointer drag of a Source row. Motion's Reorder cannot host this list: it
+  // auto-scrolls the document when the pointer nears the window edge, which
+  // is exactly picking a row up from the top of a mid-page list and watching
+  // Settings jump to Updates. The grip drives this instead; the arrow buttons
+  // remain the keyboard's way.
+  const [drag, setDrag] = useState<null | {
+    source: string;
+    grab: number;
+    left: number;
+    width: number;
+    top: number;
+  }>(null);
 
   useEffect(() => {
     let alive = true;
@@ -691,7 +725,7 @@ function PanelBarsRows({ limits, platform }: { limits: LimitsPort; platform: Pla
 
   // The clock only orders the default pair's pool tie-break; a preference row
   // has nothing to keep ticking for, so it reads once per load.
-  const rows = useMemo(
+  const held = useMemo(
     () =>
       cards(stored, Math.floor(Date.now() / 1000), 'left')
         .filter((c) => c.windows.length > 0)
@@ -705,7 +739,19 @@ function PanelBarsRows({ limits, platform }: { limits: LimitsPort; platform: Pla
     [stored],
   );
 
-  if (!rows.length) return null;
+  // Listeners are attached in the grip's pointerdown, not after a render: a
+  // release before useEffect ran used to leave the row stuck as a hole.
+  useEffect(() => () => stopDragListenRef.current?.(), []);
+
+  if (!held.length) return null;
+
+  const sources = held.map((r) => r.card.source);
+  const bySource = new Map(held.map((r) => [r.card.source, r]));
+  const cardRows = panelCardRows(sources, cardPick);
+  cardRowsRef.current = cardRows;
+  // The caption names a modifier key, and the two desktops spell it
+  // differently; the same spelling has to fire the same move on the bars.
+  const altLabel = platform === 'macos' ? '⌥' : 'Alt';
 
   /**
    * The pick as stored, after an edit to the windows this Source reports today.
@@ -724,78 +770,209 @@ function PanelBarsRows({ limits, platform }: { limits: LimitsPort; platform: Pla
     limits.write(PANEL_WINDOWS_KEY, JSON.stringify(all));
   };
 
+  /**
+   * Same absent-key rule as the bars: a Source that has gone signed-out draws
+   * no row, so it cannot be part of `next` — and rewriting the pick to `next`
+   * alone would send it to the back (or drop an `off` flag) on the first
+   * unrelated move.
+   */
+  const saveCards = (next: PanelCardPick) => {
+    const reported = new Set(sources);
+    const absentOrder = (cardPick?.order ?? []).filter((key) => !reported.has(key));
+    const absentOff = (cardPick?.off ?? []).filter((key) => !reported.has(key));
+    const all: PanelCardPick = {
+      order: [...next.order, ...absentOrder],
+      off: [...next.off, ...absentOff],
+    };
+    setCardPick(all);
+    limits.write(PANEL_CARDS_KEY, JSON.stringify(all));
+  };
+
+  const writeCardRows = (next: { source: string; on: boolean }[]) =>
+    saveCards({
+      order: next.map((r) => r.source),
+      off: next.filter((r) => !r.on).map((r) => r.source),
+    });
+  persistRowsRef.current = writeCardRows;
+
   // Switching one on appends it, so it lands where the panel will draw it last
   // — never silently ahead of bars that were already chosen.
-  const toggle = (source: string, key: string, shown: string[], parsed: ParsedWindow[]) =>
-    save(source, shown.includes(key) ? shown.filter((k) => k !== key) : [...shown, key], parsed);
-
-  const move = (source: string, key: string, shown: string[], parsed: ParsedWindow[], dir: -1 | 1) => {
-    const at = shown.indexOf(key);
+  const moveCard = (key: string, dir: -1 | 1) => {
+    const at = cardRows.findIndex((r) => r.source === key);
     const to = at + dir;
-    if (at < 0 || to < 0 || to >= shown.length) return;
-    const next = shown.slice();
+    if (at < 0 || to < 0 || to >= cardRows.length) return;
+    const next = cardRows.slice();
     next.splice(to, 0, ...next.splice(at, 1));
-    save(source, next, parsed);
+    writeCardRows(next);
+  };
+
+  const toggleCard = (key: string) =>
+    writeCardRows(cardRows.map((r) => (r.source === key ? { ...r, on: !r.on } : r)));
+
+  const onGripDown = (source: string, e: PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    const grip = e.currentTarget;
+    const row = grip.closest('.set-row-panelcard') as HTMLElement | null;
+    if (!row) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = row.getBoundingClientRect();
+    const next = {
+      source,
+      grab: e.clientY - rect.top,
+      left: rect.left,
+      width: rect.width,
+      top: rect.top,
+    };
+    dragRef.current = next;
+    setDrag(next);
+
+    const x = window.scrollX;
+    const y = window.scrollY;
+    const pin = () => {
+      if (window.scrollX !== x || window.scrollY !== y) window.scrollTo(x, y);
+    };
+    const pointerId = e.pointerId;
+    const onMove = (ev: globalThis.PointerEvent) => {
+      const held = dragRef.current;
+      if (!held) return;
+      const pos = { ...held, top: ev.clientY - held.grab };
+      dragRef.current = pos;
+      setDrag(pos);
+      const list = listRef.current;
+      if (!list) return;
+      const rows = cardRowsRef.current;
+      const at = rows.findIndex((r) => r.source === held.source);
+      const to = indexAtY(list, ev.clientY);
+      if (at < 0 || to < 0 || to === at) return;
+      const reordered = rows.slice();
+      reordered.splice(to, 0, ...reordered.splice(at, 1));
+      persistRowsRef.current(reordered);
+    };
+    const onUp = (ev: globalThis.PointerEvent) => {
+      const held = dragRef.current;
+      const clientY = ev.clientY;
+      dragRef.current = null;
+      setDrag(null);
+      stopDragListenRef.current?.();
+      if (!held) return;
+      const list = listRef.current;
+      if (!list) return;
+      const rows = cardRowsRef.current;
+      const at = rows.findIndex((r) => r.source === held.source);
+      const to = indexAtY(list, clientY);
+      if (at < 0 || to < 0 || to === at) return;
+      const reordered = rows.slice();
+      reordered.splice(to, 0, ...reordered.splice(at, 1));
+      persistRowsRef.current(reordered);
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', onMove, true);
+      window.removeEventListener('pointerup', onUp, true);
+      window.removeEventListener('pointercancel', onUp, true);
+      window.removeEventListener('scroll', pin);
+      stopDragListenRef.current = null;
+      try {
+        grip.releasePointerCapture(pointerId);
+      } catch {
+        /* already released, or jsdom */
+      }
+    };
+    stopDragListenRef.current = stop;
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', onUp, true);
+    window.addEventListener('pointercancel', onUp, true);
+    window.addEventListener('scroll', pin);
+    try {
+      grip.setPointerCapture(pointerId);
+    } catch {
+      /* jsdom */
+    }
   };
 
   return (
     <>
       <div className="set-row">
         <div className="set-row-text">
-          <div className="set-row-title">{t('settings.panelBars')}</div>
+          <div className="set-row-title">{t('settings.panelCards')}</div>
           <div className="set-row-caption">
-            {fill(t('settings.panelBars.caption'), { k: platform === 'macos' ? '⌥' : 'Alt' })}
+            {fill(t('settings.panelCards.caption'), { k: altLabel })}
           </div>
         </div>
       </div>
-      {rows.map(({ card, parsed }) => {
-        // Chosen bars lead, in the order the panel draws them; the rest wait
-        // behind them. The strip IS the running order, so there is no second
-        // control to keep in step with the first.
-        const chosen = panelWindows(parsed, picks[card.source]);
-        const shown = chosen.map((p) => p.w.key);
-        const off = parsed.filter((p) => !shown.includes(p.w.key));
-        return (
-          <div className="set-row set-row-stack" key={card.source}>
-            <div className="set-row-title">{card.meta.label}</div>
-            <div className="set-seg set-seg-wrap" role="group" aria-label={card.meta.label}>
-              {/* `contents` so the items stay flex children of the segment: the
-                  group is a drag context, not a box. */}
-              <Reorder.Group
-                as="div"
-                axis="x"
-                values={shown}
-                onReorder={(next) => save(card.source, next as string[], parsed)}
-                style={{ display: 'contents' }}
-              >
-                {chosen.map(({ w, label }) => (
-                  <BarPill
-                    key={w.key}
-                    value={w.key}
-                    // The very words the meter will print, from the panel's own
-                    // labeller — picking by one name and being shown another is
-                    // what happens when these are assembled twice.
-                    label={windowText(t, label).text}
-                    onToggle={() => toggle(card.source, w.key, shown, parsed)}
-                    onMove={(dir) => move(card.source, w.key, shown, parsed, dir)}
-                  />
-                ))}
-              </Reorder.Group>
-              {off.map(({ w, label }) => (
-                <button
-                  key={w.key}
-                  type="button"
-                  aria-pressed={false}
-                  onClick={() => toggle(card.source, w.key, shown, parsed)}
-                >
-                  {windowText(t, label).text}
-                </button>
-              ))}
+      <div className="set-panelcards" ref={listRef} data-tauri-drag-region="false">
+        {cardRows.map((row, i) => {
+          const heldRow = bySource.get(row.source)!;
+          const { card, parsed } = heldRow;
+          return (
+            <PanelCardRow
+              key={card.source}
+              source={card.source}
+              label={card.meta.label}
+              on={row.on}
+              first={i === 0}
+              last={i === cardRows.length - 1}
+              dragging={drag?.source === card.source}
+              onToggle={() => toggleCard(card.source)}
+              onMove={(dir) => moveCard(card.source, dir)}
+              onGripDown={(e) => onGripDown(card.source, e)}
+            >
+              <SourceBarStrip
+                parsed={parsed}
+                pick={picks[card.source]}
+                ariaLabel={card.meta.label}
+                lockLayout={!!drag}
+                onSave={(next) => save(card.source, next, parsed)}
+              />
+            </PanelCardRow>
+          );
+        })}
+        {drag && (() => {
+          const heldRow = bySource.get(drag.source);
+          if (!heldRow) return null;
+          const { card, parsed } = heldRow;
+          return (
+            <div
+              className="set-row set-row-stack set-row-panelcard set-row-panelcard-ghost"
+              style={{
+                top: drag.top,
+                left: drag.left,
+                width: drag.width,
+              }}
+              aria-hidden="true"
+            >
+              <div className="set-row-cardhead">
+                <span className="set-grip">
+                  <GripDots />
+                </span>
+                <div className="set-row-title">{card.meta.label}</div>
+              </div>
+              <SourceBarStrip parsed={parsed} pick={picks[card.source]} />
             </div>
-          </div>
-        );
-      })}
+          );
+        })()}
+      </div>
     </>
+  );
+}
+
+/** Which row the pointer is over: the first whose midpoint sits below it. */
+function indexAtY(list: HTMLElement, clientY: number): number {
+  const rows = [...list.querySelectorAll<HTMLElement>(':scope > .set-row-panelcard:not(.set-row-panelcard-ghost)')];
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i].getBoundingClientRect();
+    if (clientY < r.top + r.height / 2) return i;
+  }
+  return Math.max(0, rows.length - 1);
+}
+
+function GripDots() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" />
+      <circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" />
+      <circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" />
+    </svg>
   );
 }
 
@@ -805,28 +982,95 @@ function PanelBarsRows({ limits, platform }: { limits: LimitsPort; platform: Pla
 const PRESS_SLOP_PX = 4;
 
 /**
+ * The bars a Source's card shows collapsed: chosen ones lead, in the order
+ * the panel draws them. Interactive when `onSave` is passed (Settings);
+ * otherwise a still copy for the drag ghost, so Session/Weekly travel with
+ * the card instead of as a second layer.
+ */
+function SourceBarStrip({
+  parsed,
+  pick,
+  ariaLabel,
+  lockLayout,
+  onSave,
+}: {
+  parsed: ParsedWindow[];
+  pick?: string[];
+  ariaLabel?: string;
+  lockLayout?: boolean;
+  onSave?: (next: string[]) => void;
+}) {
+  const { t } = useT();
+  const chosen = panelWindows(parsed, pick);
+  const shown = chosen.map((p) => p.w.key);
+  const off = parsed.filter((p) => !shown.includes(p.w.key));
+  const labelOf = (p: ParsedWindow) => windowText(t, p.label).text;
+  // Reorder.Item projects each bar on its own. While a card is sliding to a
+  // new slot that would peel Session/Weekly off the header, so the strip
+  // becomes ordinary buttons and rides the card's layout as one piece.
+  const live = !!onSave && !lockLayout;
+
+  return (
+    <div
+      className="set-seg set-seg-wrap"
+      role={live ? 'group' : undefined}
+      aria-label={ariaLabel}
+    >
+      {live ? (
+        <Reorder.Group
+          as="div"
+          axis="x"
+          values={shown}
+          onReorder={(next) => onSave(next as string[])}
+          style={{ display: 'contents' }}
+        >
+          {chosen.map((p) => (
+            <BarPill
+              key={p.w.key}
+              value={p.w.key}
+              label={labelOf(p)}
+              onToggle={() =>
+                onSave(shown.includes(p.w.key) ? shown.filter((k) => k !== p.w.key) : [...shown, p.w.key])
+              }
+              onMove={(dir) => {
+                const at = shown.indexOf(p.w.key);
+                const to = at + dir;
+                if (at < 0 || to < 0 || to >= shown.length) return;
+                const next = shown.slice();
+                next.splice(to, 0, ...next.splice(at, 1));
+                onSave(next);
+              }}
+            />
+          ))}
+        </Reorder.Group>
+      ) : (
+        chosen.map((p) => (
+          <button key={p.w.key} type="button" className="active" tabIndex={-1}>
+            {labelOf(p)}
+          </button>
+        ))
+      )}
+      {off.map((p) => (
+        <button
+          key={p.w.key}
+          type="button"
+          aria-pressed={false}
+          tabIndex={live ? undefined : -1}
+          onClick={live ? () => onSave([...shown, p.w.key]) : undefined}
+        >
+          {labelOf(p)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
  * One chosen bar: a pressed segment button that is also the drag handle for its
- * own place in the running order.
- *
- * Its own component for the drag/click seam. A pointer that moved is a reorder
- * and a pointer that did not is a toggle, and the browser sends the same click
- * for both — so without a rule the pill switches itself off every time it is
- * dragged, which is the one thing a person dragging it cannot have meant. The
- * rule is the press's own distance, measured here rather than taken from
- * motion's drag callbacks: this element decides what its click meant, and a
- * wiggle too small to have reordered anything stays a toggle either way.
- *
- * The Preset rows solve the same seam with a grip that owns the drag, and that
- * would be the pattern to copy if a pill had room for one — it does not, and a
- * grip inside the button would take the button's own click anyway.
- *
- * Holding the platform's Alt (⌥) with ← or → is the same move from the
- * keyboard, which drag alone leaves with no way to order anything at all (the
- * Preset rows' move buttons are there for exactly that reader). Keyboard
- * activation is judged on `detail`, not on coordinates: a keyboard click carries
- * none, and reads as 0/0 — which is a long way from wherever the last press
- * landed, so distance alone would swallow it. `detail === 0` is what a keyboard
- * click is, and it toggles, as the space bar on a pressed button must.
+ * own place in the running order. A pointer that moved is a reorder and a
+ * pointer that did not is a toggle; the browser sends the same click for both,
+ * so without a rule the bar switches itself off every time it is dragged.
+ * Holding the platform's Alt with ← or → is the same move from the keyboard.
  */
 function BarPill({
   value,
@@ -873,11 +1117,100 @@ function BarPill({
   );
 }
 
+/**
+ * One Source on the panel: a stacked row whose grip owns the drag (the pills
+ * below are their own reorder group, and a row-wide listener would swallow
+ * those presses), with arrow buttons for the keyboard and a switch to hide
+ * the card without dropping it from this list.
+ */
+function PanelCardRow({
+  source,
+  label,
+  on,
+  first,
+  last,
+  dragging,
+  onToggle,
+  onMove,
+  onGripDown,
+  children,
+}: {
+  source: string;
+  label: string;
+  on: boolean;
+  first: boolean;
+  last: boolean;
+  dragging: boolean;
+  onToggle: () => void;
+  onMove: (dir: -1 | 1) => void;
+  onGripDown: (e: PointerEvent<HTMLElement>) => void;
+  children: ReactNode;
+}) {
+  const { t } = useT();
+
+  return (
+    <motion.div
+      // Position only: a full layout animation resizes the box into the new
+      // slot first (the fill "arrives" before the card). Translate the same
+      // node that paints the background so colour, header and bars travel
+      // together.
+      layout={dragging ? false : 'position'}
+      transition={{ layout: { type: 'spring', stiffness: 520, damping: 38, mass: 0.6 } }}
+      className={
+        'set-row set-row-stack set-row-panelcard' +
+        (on ? '' : ' off') +
+        (dragging ? ' is-dragging' : '')
+      }
+      data-source={source}
+      onMouseDown={(e) => {
+        if (!(e.target as HTMLElement).closest('button')) e.preventDefault();
+      }}
+    >
+      <div className="set-row-cardhead">
+        <span
+          className="set-grip"
+          aria-hidden="true"
+          onPointerDown={onGripDown}
+        >
+          <GripDots />
+        </span>
+        <div className="set-row-title">{label}</div>
+        <div className="set-row-tools">
+          <button
+            type="button"
+            className="set-move"
+            aria-label={`${t('settings.panelCards.moveUp')} ${label}`}
+            disabled={first}
+            onClick={() => onMove(-1)}
+          >
+            <Chevron up />
+          </button>
+          <button
+            type="button"
+            className="set-move"
+            aria-label={`${t('settings.panelCards.moveDown')} ${label}`}
+            disabled={last}
+            onClick={() => onMove(1)}
+          >
+            <Chevron />
+          </button>
+          <Toggle
+            on={on}
+            label={fill(t('settings.panelCards.toggle'), { name: label })}
+            onClick={onToggle}
+          />
+        </div>
+      </div>
+      {children}
+    </motion.div>
+  );
+}
+
 export default function SettingsPage({
   port,
   limits = tauriLimits,
-  // The panel-bars caption names a modifier key, and the two desktops spell it
-  // differently; the shell already knows which one this is (lib/platform.ts).
+  // The panel-cards caption names a modifier key, and the two desktops spell
+  // it differently; the shell already knows which one this is (lib/platform.ts).
   platform = 'macos',
 }: {
   port: SettingsPort;
@@ -1082,7 +1415,7 @@ export default function SettingsPage({
               <div className="set-row-caption">{t('settings.menuBarRefresh.offNote')}</div>
             </div>
           )}
-          <PanelBarsRows limits={limits} platform={platform} />
+          <PanelCardsRows limits={limits} platform={platform} />
         </section>
 
         <UpdatesGroup port={port} />

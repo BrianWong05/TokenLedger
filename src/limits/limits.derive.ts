@@ -1,10 +1,10 @@
 // Pure derivation for the Limits tab and the panel's cards: which Sources get a
-// card, what state each card is in, the four numbers a bar draws from, and which
-// of a Source's bars the panel shows collapsed — including reading that last one
-// back out of the reader's own storage, since a stored preference is an input to
-// the derivation like the clock is. No React, no fetching and no `t()`, so every
-// rule the wayfinder map settled is unit-testable against a SourceLimits[], a
-// clock and a stored string.
+// card, what state each card is in, the four numbers a bar draws from, which
+// of a Source's bars the panel shows collapsed, and in which order the cards
+// themselves stack — including reading those last two back out of the reader's
+// own storage, since a stored preference is an input to the derivation like the
+// clock is. No React, no fetching and no `t()`, so every rule the wayfinder map
+// settled is unit-testable against a SourceLimits[], a clock and a stored string.
 import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import type { LimitEstimateState } from '../bindings/LimitEstimateState';
@@ -479,4 +479,72 @@ export function parsePanelPicks(raw: string | null): Record<string, string[]> {
         : [],
     ),
   );
+}
+
+/** The stored panel-card pick: every known Source in stack order, plus which are off. */
+export interface PanelCardPick {
+  order: string[];
+  off: string[];
+}
+
+export interface PanelCardRow {
+  source: string;
+  on: boolean;
+}
+
+/**
+ * The Sources Settings lists, in the order the panel stacks the ones that are
+ * on. A reader who has picked an order sees exactly that sequence, including
+ * Sources they switched off — those keep their place so turning one back on
+ * does not send it to the end. A Source they have not named yet (a newly live
+ * one) appends in catalog order among the unnamed, on, so a new card never
+ * jumps the queue and never starts hidden.
+ *
+ * No pick keeps catalog order, every card on. Switching every card off is a
+ * real choice (the panel draws none); a pick that names nothing still on
+ * offer is not — that lineup no longer exists, so catalog order comes back.
+ */
+export function panelCardRows(sources: string[], pick: PanelCardPick | null): PanelCardRow[] {
+  if (!pick) return sources.map((source) => ({ source, on: true }));
+  const known = new Set(sources);
+  const ordered = pick.order.filter((k) => known.has(k));
+  const rest = sources.filter((k) => !pick.order.includes(k));
+  return [...ordered, ...rest].map((source) => ({
+    source,
+    on: !pick.off.includes(source),
+  }));
+}
+
+/**
+ * The cards the panel draws: `panelCardRows` with the switched-off Sources
+ * taken out, which is the only list the panel itself has to walk.
+ */
+export function panelCardOrder(sources: string[], pick: PanelCardPick | null): string[] {
+  return panelCardRows(sources, pick)
+    .filter((r) => r.on)
+    .map((r) => r.source);
+}
+
+function isStringList(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((k) => typeof k === 'string');
+}
+
+/**
+ * The stored panel-card pick. This is a trust boundary: the value is whatever
+ * web storage holds, so unreadable JSON — or anything that is not an object of
+ * `{order, off}` string lists — reads as "no pick" rather than throwing away
+ * the panel that asked.
+ */
+export function parsePanelCardPick(raw: string | null): PanelCardPick | null {
+  let parsed: unknown;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const rec = parsed as Record<string, unknown>;
+  if (!isStringList(rec.order)) return null;
+  const off = isStringList(rec.off) ? rec.off : [];
+  return rec.order.length === 0 && off.length === 0 ? null : { order: rec.order, off };
 }

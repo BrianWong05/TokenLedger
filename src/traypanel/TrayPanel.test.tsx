@@ -13,6 +13,7 @@ import {
   LIVE_ENABLED_KEY,
   lastCheckKey,
   lastFailureKey,
+  PANEL_CARDS_KEY,
   PANEL_WINDOWS_KEY,
   type LimitsPort,
 } from '../limits/limits';
@@ -1053,6 +1054,50 @@ describe('TrayPanel limits', () => {
         (m) => m.querySelector('.tp-limmeter-k')?.textContent,
       ),
     ).toEqual(['Fable', 'Session']);
+  });
+
+  // The cards themselves have a running order of their own, chosen in Settings,
+  // and catalog order is only what an untouched install falls back to.
+  it('draws the cards in the picked order, not catalog order', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [PANEL_CARDS_KEY]: JSON.stringify({ order: ['codex', 'claude'], off: [] }),
+      }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limcard-name')).map((n) => n.textContent),
+    ).toEqual(['Codex', 'Claude']);
+  });
+
+  it('keeps catalog order when the stored card order is unreadable', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], { [PANEL_CARDS_KEY]: 'not json' }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limcard-name')).map((n) => n.textContent),
+    ).toEqual(['Claude', 'Codex']);
+  });
+
+  it('appends a Source the pick has not named, rather than dropping it', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [PANEL_CARDS_KEY]: JSON.stringify({ order: ['codex'], off: [] }),
+      }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limcard-name')).map((n) => n.textContent),
+    ).toEqual(['Codex', 'Claude']);
+  });
+
+  it('omits a Source Settings switched off', async () => {
+    const container = await mountWithLimits(
+      makeFakeLimits([claudeStored(), codexStored()], {
+        [PANEL_CARDS_KEY]: JSON.stringify({ order: ['claude', 'codex'], off: ['claude'] }),
+      }),
+    );
+    expect(
+      Array.from(container.querySelectorAll('.tp-limcard-name')).map((n) => n.textContent),
+    ).toEqual(['Codex']);
   });
 
   it('shows no meters for a Source whose every window was switched off', async () => {

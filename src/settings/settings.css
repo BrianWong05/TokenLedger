@@ -31,6 +31,9 @@
   /* the top padding lives on the pinned drag strip so it sits flush at the
      window top */
   padding: 0 24px 30px;
+  /* a panel-card row being picked up must not overflow-anchor the Updates
+     group into view — that is the jump to the bottom of the page */
+  overflow-anchor: none;
 }
 
 /* the window's top strip is its drag handle (frameless window); pinned so
@@ -378,6 +381,72 @@
 .set-row-preset input {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* the panel-card stack. position so a lifted row's z-index stays in this
+   list rather than the page; overflow-anchor is already none on the page
+   and on Reorder.Group, and is repeated here so a sibling group cannot
+   become the document's anchor when a row is picked up */
+.set-panelcards {
+  position: relative;
+  overflow-anchor: none;
+}
+
+/* a panel-card row: grip + name + tools on one line, the window pills below.
+   A press on this row may become a drag, so its text is unselectable like a
+   Preset row — otherwise the row carries a blue smear with it. */
+.set-row-panelcard {
+  -webkit-user-select: none;
+  user-select: none;
+  overflow-anchor: none;
+  /* Own fill, not the group's: layout projection transforms this node, and a
+     transparent row would leave the group colour sitting in the new slot
+     before the header and bars arrived. */
+  background: var(--card);
+}
+
+.set-row-panelcard.is-dragging {
+  pointer-events: none;
+  background: var(--card);
+}
+
+.set-row-panelcard.is-dragging > * {
+  visibility: hidden;
+}
+
+.set-row-panelcard-ghost {
+  position: fixed;
+  z-index: 20;
+  pointer-events: none;
+  box-sizing: border-box;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.22);
+}
+
+.set-row-cardhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.set-row-cardhead .set-row-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.set-row-panelcard.off .set-row-title {
+  color: var(--muted);
+}
+
+.set-row-panelcard.off .set-seg {
+  opacity: 0.45;
+}
+
+.set-row-cardhead .set-grip {
+  margin: 0;
+  padding: 4px;
 }
 
 /* the drag handle on a configured Preset's row — the mouse's way to reorder;
