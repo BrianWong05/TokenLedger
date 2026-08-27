@@ -2,10 +2,11 @@
 // (TOKL-19 added the Limits, and the ADR's second amendment capped the panel):
 // period tabs top-left double as the window's label, the last-scan time and
 // Rescan sit top-right, and beneath the hero Cost sit the stacked source bar
-// with its legend, the Cost bar chart, the Model rows (led by their Source's
-// mark), one Limits card per live Source (collapsed to its Session + Weekly
-// meters, expandable to every window), the stat tiles, and the three icon
-// actions. The lists are capped and
+// with its legend, the Cost-per-bucket drawing (columns by default, a
+// line-and-peak sparkline behind a toggle on the caption row), the Model
+// rows (led by their Source's mark), one Limits card per live Source
+// (collapsed to its Session + Weekly meters, expandable to every window),
+// the stat tiles, and the three icon actions. The lists are capped and
 // say what they hid, because the window hugs its content and the app holds the
 // full story — see panelModel's caps. Every figure is a display string the
 // view model already decided. Data goes through the same ports the app shell
@@ -72,6 +73,94 @@ function barsPath(points: number[], skipIdx: number): string {
 function slotRect(points: number[], i: number): string {
   const slot = CHART_W / points.length;
   return `M${(i * slot).toFixed(1)} 0 h${slot.toFixed(1)} v${CHART_H} h-${slot.toFixed(1)} Z`;
+}
+
+// Line geometry lives in the same 288×56 box as the columns, so switching
+// drawings never resizes the window. The inset keeps the stroke and the
+// now-dot off the box edges. A lone bucket stays on the left pad — the
+// sparkline this restores parked it there; last=max(1, n-1) is what does it.
+const SPARK_PAD = 3;
+export function sparkXY(points: number[], i: number): [number, number] {
+  const last = Math.max(1, points.length - 1);
+  return [
+    SPARK_PAD + (i / last) * (CHART_W - SPARK_PAD * 2),
+    CHART_H - 4 - points[i] * (CHART_H - 10),
+  ];
+}
+function sparkPath(points: number[]): string {
+  return points
+    .map((_, i) => {
+      const [x, y] = sparkXY(points, i);
+      return `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join(' ');
+}
+
+// Columns vs the sparkline the redesign replaced. Stored so the choice
+// survives the panel being destroyed on dismiss (ADR-0007).
+type CostDrawing = 'columns' | 'line';
+export const PANEL_COST_DRAWING_KEY = 'tokenledger.panelCostDrawing';
+function loadCostDrawing(): CostDrawing {
+  try {
+    return localStorage.getItem(PANEL_COST_DRAWING_KEY) === 'line' ? 'line' : 'columns';
+  } catch {
+    return 'columns';
+  }
+}
+function saveCostDrawing(drawing: CostDrawing) {
+  try {
+    localStorage.setItem(PANEL_COST_DRAWING_KEY, drawing);
+  } catch {
+    /* storage disabled: the choice does not survive dismiss */
+  }
+}
+
+function CostDrawingToggle({
+  value,
+  onChange,
+}: {
+  value: CostDrawing;
+  onChange: (d: CostDrawing) => void;
+}) {
+  return (
+    <div className="tp-chart-styles" role="radiogroup" aria-label="Cost per bucket drawing">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === 'columns'}
+        aria-label="Columns"
+        title="Columns"
+        className={value === 'columns' ? 'tp-chart-style on' : 'tp-chart-style'}
+        onClick={() => onChange('columns')}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+          <rect x="1" y="7" width="2.5" height="4" rx="0.5" fill="currentColor" />
+          <rect x="4.75" y="2" width="2.5" height="9" rx="0.5" fill="currentColor" />
+          <rect x="8.5" y="5" width="2.5" height="6" rx="0.5" fill="currentColor" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === 'line'}
+        aria-label="Line"
+        title="Line"
+        className={value === 'line' ? 'tp-chart-style on' : 'tp-chart-style'}
+        onClick={() => onChange('line')}
+      >
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+          <polyline
+            points="1,9 4,5 7,7 11,2"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="11" cy="2" r="1.3" fill="currentColor" />
+        </svg>
+      </button>
+    </div>
+  );
 }
 
 // Fire-and-forget IPC for the actions; harmless outside Tauri (tests).
@@ -182,9 +271,12 @@ export default function TrayPanel({
   const scanningRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const [period, setPeriod] = useState<Period>('today');
-  // The bar chart's hover inspector: which bucket the pointer is over, null
-  // when the mouse is away.
+  // The chart's hover inspector: which bucket the pointer is over, null
+  // when the mouse is away. Same hit-test for both drawings.
   const [chartHover, setChartHover] = useState<number | null>(null);
+  // Columns vs line — loaded once; the panel is destroyed on dismiss, so a
+  // later open re-reads storage. Invalid or missing values stay columns.
+  const [drawing, setDrawing] = useState<CostDrawing>(loadCostDrawing);
   // refresh() reads the ref so its identity doesn't churn on period change
   // (the mount effect re-registering listeners on every switch would be
   // wasteful); pickPeriod keeps ref and state in step.
@@ -408,6 +500,25 @@ export default function TrayPanel({
     void refresh(); // no skeleton beat on a switch — it should feel snappy
   };
 
+  const pickCostDrawing = (d: CostDrawing) => {
+    if (d === drawing) return;
+    setDrawing(d);
+    saveCostDrawing(d);
+  };
+
+  // The inspected bucket and the latest bucket's line positions; null while
+  // that drawing is off or (for hover) the pointer is away. The sparkline
+  // this restores marks "now" (the last bucket), not the peak — the peak
+  // lives in the caption.
+  const lineHoverXY =
+    drawing === 'line' && model?.chart && chartHover != null
+      ? sparkXY(model.chart.points, chartHover)
+      : null;
+  const lineNowXY =
+    drawing === 'line' && model?.chart
+      ? sparkXY(model.chart.points, model.chart.points.length - 1)
+      : null;
+
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
 
   // Only Sources whose card still carries windows render one: live cards, and
@@ -563,14 +674,16 @@ export default function TrayPanel({
               shifts the layout (the window is sized to the content); the peak
               caption holds the row when idle and yields it to the inspected
               bucket while hovering — side by side they squeezed the read-out
-              into an ellipsis. */}
+              into an ellipsis. The Columns/Line toggle stays on the right. */}
           <div className="tp-chart-cap-row">
             {chartHover == null && <span className="tp-chart-peak">{model.chart.peak}</span>}
             <span className="tp-chart-read">
               {chartHover != null ? model.chart.details[chartHover] : ''}
             </span>
+            <CostDrawingToggle value={drawing} onChange={pickCostDrawing} />
           </div>
           <svg
+            className="tp-chart-plot"
             viewBox={`0 0 ${CHART_W} ${CHART_H}`}
             width={CHART_W}
             height={CHART_H}
@@ -579,13 +692,55 @@ export default function TrayPanel({
             onMouseMove={onChartMove}
             onMouseLeave={() => setChartHover(null)}
           >
-            {chartHover != null && (
-              <path className="tp-chart-hover" d={slotRect(model.chart.points, chartHover)} />
+            {drawing === 'columns' && (
+              <>
+                {chartHover != null && (
+                  <path className="tp-chart-hover" d={slotRect(model.chart.points, chartHover)} />
+                )}
+                {/* The peak bucket wears the brighter fill — the same bucket the
+                    model's peak caption names. */}
+                <path className="tp-bars" d={barsPath(model.chart.points, model.chart.peakIndex)} />
+                <path className="tp-bar-peak" d={barRect(model.chart.points, model.chart.peakIndex)} />
+              </>
             )}
-            {/* The peak bucket wears the brighter fill — the same bucket the
-                model's peak caption names. */}
-            <path className="tp-bars" d={barsPath(model.chart.points, model.chart.peakIndex)} />
-            <path className="tp-bar-peak" d={barRect(model.chart.points, model.chart.peakIndex)} />
+            {drawing === 'line' && (
+              <>
+                {model.chart.points.length > 1 && (
+                  <>
+                    <path
+                      className="tp-line-area"
+                      d={`${sparkPath(model.chart.points)} L${CHART_W - SPARK_PAD} ${CHART_H} L${SPARK_PAD} ${CHART_H} Z`}
+                    />
+                    <path
+                      className="tp-line"
+                      d={sparkPath(model.chart.points)}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  </>
+                )}
+                {lineNowXY && (
+                  <circle className="tp-line-now" cx={lineNowXY[0]} cy={lineNowXY[1]} r="2.5" />
+                )}
+                {lineHoverXY && (
+                  <>
+                    <line
+                      className="tp-line-hover"
+                      x1={lineHoverXY[0]}
+                      x2={lineHoverXY[0]}
+                      y1={2}
+                      y2={CHART_H - 2}
+                      vectorEffect="non-scaling-stroke"
+                    />
+                    <circle
+                      className="tp-line-hover-dot"
+                      cx={lineHoverXY[0]}
+                      cy={lineHoverXY[1]}
+                      r="2.5"
+                    />
+                  </>
+                )}
+              </>
+            )}
           </svg>
           {/* The axis: first tick sits at the left edge, last at the right,
               middle between them — space-between puts each where its bucket is. */}
