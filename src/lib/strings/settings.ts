@@ -76,6 +76,12 @@ export const settings = {
     'settings.menuBarRefresh.offNote':
       'The Menu Bar Extra falls back to a scan every few hours. Recording never stops.',
 
+    // The panel's collapsed card shows two meters by default; this is where a
+    // reader says which windows those are, per Source.
+    'settings.panelMeters': 'Panel meters',
+    'settings.panelMeters.caption':
+      'Which limit windows a Source shows on the panel before its card is expanded. Drag the chosen ones (or ⌥←/⌥→) to set their order.',
+
     'settings.updates': 'Updates',
     'settings.autoCheck': 'Check for updates automatically',
     'settings.autoCheck.caption': 'Once a day, in the background',
@@ -153,6 +159,10 @@ export const settings = {
     'settings.menuBarRefresh.caption': '所有視窗關閉時，選單列輔助程式的數字多久重讀一次',
     'settings.menuBarRefresh.off': '關閉',
     'settings.menuBarRefresh.offNote': '選單列輔助程式改回每幾小時掃描一次。記錄不會停止。',
+
+    'settings.panelMeters': '面板量表',
+    'settings.panelMeters.caption':
+      '來源的卡片展開前，面板上顯示哪些限額時段。拖曳已選項目（或按 ⌥←/⌥→）可調整順序。',
 
     'settings.updates': '更新',
     'settings.autoCheck': '自動檢查更新',

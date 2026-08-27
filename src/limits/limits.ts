@@ -24,6 +24,11 @@ import type { SourceLimits } from '../types';
 // they were never shown.
 export const LIVE_ENABLED_KEY = 'tl.limits.liveEnabled.3';
 export const MODE_KEY = 'tl.limits.mode';
+// Which windows each Source shows on the tray panel before its card is
+// expanded, as JSON: Source key → window keys. Settings writes it, the panel
+// reads it, and a Source with no entry keeps the Session + Weekly default — so
+// storage being empty (or refused) is the shipped behaviour, not a broken one.
+export const PANEL_WINDOWS_KEY = 'tl.limits.panelWindows';
 
 // When a Source was last checked live, as epoch millis. Stored rather than kept
 // in memory so the floor between calls survives the page being unmounted — which

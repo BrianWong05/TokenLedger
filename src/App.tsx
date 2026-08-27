@@ -261,7 +261,7 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
           {/* Remounted on every visit by design: opening the page is one of the
               two moments a live limit check is allowed to happen. */}
           {tab === 'limits' && <LimitsPage ports={{ limits: ports?.limits }} />}
-          {tab === 'settings' && <SettingsPage port={settingsPort} />}
+          {tab === 'settings' && <SettingsPage port={settingsPort} limits={ports?.limits} />}
         </Suspense>
       </main>
 

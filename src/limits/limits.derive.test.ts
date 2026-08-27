@@ -3,9 +3,10 @@ import type { LimitWindow, SourceLimits } from '../types';
 import type { LimitEstimateEvaluation } from '../bindings/LimitEstimateEvaluation';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import {
-  cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, planLabel, tone,
-  windowLabel, windowView,
+  cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, panelWindows,
+  parsePanelPicks, planLabel, primaryWindows, tone, windowLabel, windowView,
 } from './limits.derive';
+import type { ParsedWindow } from './limits.derive';
 
 // 2026-08-12T00:00:00Z
 const NOW = 1_786_492_800;
@@ -435,3 +436,63 @@ describe('the estimate view', () => {
   });
 });
 
+
+describe('the panel\'s collapsed windows', () => {
+  const parse = (ws: LimitWindow[], source = 'claude'): ParsedWindow[] =>
+    ws.map((w) => ({ w: windowView(w, 'left', NOW), label: windowLabel(w.windowKey, source) }));
+
+  const claude = () =>
+    parse([
+      win({ windowKey: 'five_hour', windowMinutes: 300, usedPct: 5, resetsAt: NOW + 2 * HOUR }),
+      win({ windowKey: 'seven_day', usedPct: 66 }),
+      win({ windowKey: 'seven_day_fable', usedPct: 46 }),
+    ]);
+
+  const keys = (ps: ParsedWindow[]) => ps.map((p) => p.w.key);
+
+  it('keeps the Session + Weekly default for a Source with no pick', () => {
+    expect(keys(panelWindows(claude()))).toEqual(['five_hour', 'seven_day']);
+    // The default is the shared rule, not a copy of it: whatever primaryWindows
+    // answers is what an untouched Source shows.
+    expect(keys(panelWindows(claude()))).toEqual(keys(primaryWindows(claude())));
+  });
+
+  it("shows exactly the picked windows, in the pick's own order", () => {
+    // The pick is a running order, not a filter: reversing it reverses the
+    // meters, which is the only way Settings can put Weekly above Session.
+    expect(keys(panelWindows(claude(), ['seven_day_fable', 'seven_day']))).toEqual([
+      'seven_day_fable',
+      'seven_day',
+    ]);
+    expect(keys(panelWindows(claude(), ['seven_day', 'seven_day_fable']))).toEqual([
+      'seven_day',
+      'seven_day_fable',
+    ]);
+    // A per-model window alone is a legitimate pick, and it must not drag the
+    // default pair back in beside it.
+    expect(keys(panelWindows(claude(), ['seven_day_fable']))).toEqual(['seven_day_fable']);
+  });
+
+  it('shows none for an empty pick, and ignores a key the Source no longer has', () => {
+    expect(panelWindows(claude(), [])).toEqual([]);
+    expect(keys(panelWindows(claude(), ['seven_day_zephyr', 'seven_day']))).toEqual(['seven_day']);
+  });
+
+  it('reads stored picks, and treats anything else as no pick at all', () => {
+    expect(parsePanelPicks('{"claude":["seven_day","seven_day_fable"],"codex":[]}')).toEqual({
+      claude: ['seven_day', 'seven_day_fable'],
+      codex: [],
+    });
+    // Web storage holds whatever anyone put there. None of these may throw, and
+    // none may reach the panel as a pick — an unreadable entry has to fall back
+    // to the default pair, never to a blank card.
+    for (const raw of [null, '', 'not json', '[]', '"claude"', '7', '{"claude":"seven_day"}',
+      '{"claude":[1,2]}', '{"claude":null}']) {
+      expect(parsePanelPicks(raw), raw ?? 'null').toEqual({});
+    }
+    // One bad entry loses only itself.
+    expect(parsePanelPicks('{"claude":["seven_day"],"codex":3}')).toEqual({
+      claude: ['seven_day'],
+    });
+  });
+});

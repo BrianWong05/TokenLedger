@@ -2,7 +2,7 @@
 // persisted immediately through the context (no Save button — the design has
 // none). Reads the live Settings from context; keeps only view-local state
 // (the rate text field, the app version, the update-check result).
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Reorder, useDragControls } from 'motion/react';
 import { useT, type StringKey } from '../lib/i18n';
 import { useSettings } from './SettingsContext';
@@ -29,6 +29,16 @@ import {
   MENU_BAR_REFRESH_PRESETS,
   type SettingsPort,
 } from './settings';
+import { tauriLimits, PANEL_WINDOWS_KEY, type LimitsPort } from '../limits/limits';
+import {
+  cards,
+  panelWindows,
+  parsePanelPicks,
+  windowLabel,
+  type ParsedWindow,
+} from '../limits/limits.derive';
+import { fill } from '../lib/format';
+import type { SourceLimits } from '../types';
 import { isPending, useAppVersion, useUpdateFlow } from './updateFlow';
 import type { Settings } from '../types';
 import './settings.css';
@@ -645,7 +655,228 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
   );
 }
 
-export default function SettingsPage({ port }: { port: SettingsPort }) {
+type T = ReturnType<typeof useT>['t'];
+
+// One window's label as a single string. The Limits page renders these same
+// parts as JSX and the panel builds its own English pair, but a button needs
+// text — the parts and their string keys are shared, only the assembly is local.
+function windowText(t: T, label: ParsedWindow['label']): string {
+  const pool = label.pool
+    ? (label.pool === 'gemini'
+        ? t('limits.pool.gemini')
+        : label.pool === '3p'
+          ? t('limits.pool.other')
+          : label.pool) + ' '
+    : '';
+  if (label.kind === 'model') return `${pool}${label.model} · ${t('limits.win.weeklySub')}`;
+  if (label.kind === 'other') return pool + fill(t('limits.win.other'), { n: label.minutes });
+  return pool + t(`limits.win.${label.kind}` as StringKey);
+}
+
+/**
+ * Which windows each Source shows on the panel's collapsed card — one toggle
+ * row per Source that has Readings, pressed for the windows the panel draws.
+ *
+ * The pressed set is the panel's own answer (`panelWindows`), not a second copy
+ * of the default rule, so an untouched Source shows exactly the pair it shows
+ * over there; the first click materialises that pair and toggles inside it.
+ * Sources with nothing recorded are left out: the panel has no card for them,
+ * so there is nothing here to choose between.
+ */
+function PanelMetersRows({ limits }: { limits: LimitsPort }) {
+  const { t } = useT();
+  const [stored, setStored] = useState<SourceLimits[]>([]);
+  const [picks, setPicks] = useState<Record<string, string[]>>(() =>
+    parsePanelPicks(limits.read(PANEL_WINDOWS_KEY)),
+  );
+
+  useEffect(() => {
+    let alive = true;
+    Promise.resolve(limits.list())
+      .then((s) => alive && setStored(Array.isArray(s) ? s : []))
+      // No Readings, no rows — the Limits tab is where a Source's trouble is
+      // explained, and repeating it in a preference row would only mislead.
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [limits]);
+
+  // The clock only orders the default pair's pool tie-break; a preference row
+  // has nothing to keep ticking for, so it reads once per load.
+  const rows = useMemo(
+    () =>
+      cards(stored, Math.floor(Date.now() / 1000), 'left')
+        .filter((c) => c.windows.length > 0)
+        .map((c) => {
+          const parsed: ParsedWindow[] = c.windows.map((w) => ({
+            w,
+            label: windowLabel(w.key, c.source),
+          }));
+          return { card: c, parsed };
+        }),
+    [stored],
+  );
+
+  if (!rows.length) return null;
+
+  const shownKeys = (source: string, parsed: ParsedWindow[]) =>
+    panelWindows(parsed, picks[source]).map((p) => p.w.key);
+
+  const save = (source: string, next: string[]) => {
+    const all = { ...picks, [source]: next };
+    setPicks(all);
+    limits.write(PANEL_WINDOWS_KEY, JSON.stringify(all));
+  };
+
+  // Switching one on appends it, so it lands where the panel will draw it last
+  // — never silently ahead of meters that were already chosen.
+  const toggle = (source: string, key: string, shown: string[]) =>
+    save(source, shown.includes(key) ? shown.filter((k) => k !== key) : [...shown, key]);
+
+  const move = (source: string, key: string, shown: string[], dir: -1 | 1) => {
+    const at = shown.indexOf(key);
+    const to = at + dir;
+    if (at < 0 || to < 0 || to >= shown.length) return;
+    const next = shown.slice();
+    next.splice(to, 0, ...next.splice(at, 1));
+    save(source, next);
+  };
+
+  return (
+    <>
+      <div className="set-row">
+        <div className="set-row-text">
+          <div className="set-row-title">{t('settings.panelMeters')}</div>
+          <div className="set-row-caption">{t('settings.panelMeters.caption')}</div>
+        </div>
+      </div>
+      {rows.map(({ card, parsed }) => {
+        // Chosen meters lead, in the order the panel draws them; the rest wait
+        // behind them. The strip IS the running order, so there is no second
+        // control to keep in step with the first.
+        const shown = shownKeys(card.source, parsed);
+        const byKey = new Map(parsed.map((p) => [p.w.key, p]));
+        const off = parsed.filter((p) => !shown.includes(p.w.key));
+        return (
+          <div className="set-row set-row-stack" key={card.source}>
+            <div className="set-row-title">{card.meta.label}</div>
+            <div className="set-seg set-seg-wrap" role="group" aria-label={card.meta.label}>
+              {/* `contents` so the items stay flex children of the segment: the
+                  group is a drag context, not a box. */}
+              <Reorder.Group
+                as="div"
+                axis="x"
+                values={shown}
+                onReorder={(next) => save(card.source, next as string[])}
+                style={{ display: 'contents' }}
+              >
+                {shown.map((key) => {
+                  const held = byKey.get(key);
+                  // A picked window this Source has stopped reporting keeps its
+                  // place in storage but has no pill to draw.
+                  return held ? (
+                    <MeterPill
+                      key={key}
+                      value={key}
+                      label={windowText(t, held.label)}
+                      onToggle={() => toggle(card.source, key, shown)}
+                      onMove={(dir) => move(card.source, key, shown, dir)}
+                    />
+                  ) : null;
+                })}
+              </Reorder.Group>
+              {off.map(({ w, label }) => (
+                <button
+                  key={w.key}
+                  type="button"
+                  aria-pressed={false}
+                  onClick={() => toggle(card.source, w.key, shown)}
+                >
+                  {windowText(t, label)}
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// How far a press may travel and still be a press. Below a pointer's own noise
+// on a trackpad, above nothing — the drag it has to be told apart from moves a
+// pill's width.
+const PRESS_SLOP_PX = 4;
+
+/**
+ * One chosen meter: a pressed segment button that is also the drag handle for
+ * its own place in the running order.
+ *
+ * Its own component for the drag/click seam. A pointer that moved is a reorder
+ * and a pointer that did not is a toggle, and the browser sends the same click
+ * for both — so without a rule the pill switches itself off every time it is
+ * dragged, which is the one thing a person dragging it cannot have meant. The
+ * rule is the press's own distance, measured here rather than taken from
+ * motion's drag callbacks: this element decides what its click meant, and a
+ * wiggle too small to have reordered anything stays a toggle either way.
+ *
+ * ⌥←/⌥→ is the same move from the keyboard, which drag alone leaves with no way
+ * to order anything (the Preset rows pair their grip with move buttons for that
+ * reason). Keyboard activation reaches `onClick` with no press behind it, so it
+ * toggles — as the space bar on a pressed button must.
+ */
+function MeterPill({
+  value,
+  label,
+  onToggle,
+  onMove,
+}: {
+  value: string;
+  label: string;
+  onToggle: () => void;
+  onMove: (dir: -1 | 1) => void;
+}) {
+  const pressedAt = useRef<{ x: number; y: number } | null>(null);
+
+  return (
+    <Reorder.Item
+      as="button"
+      value={value}
+      type="button"
+      className="active"
+      aria-pressed={true}
+      dragMomentum={false}
+      dragElastic={0}
+      whileDrag={{ zIndex: 2 }}
+      onPointerDown={(e) => {
+        pressedAt.current = { x: e.clientX, y: e.clientY };
+      }}
+      onClick={(e) => {
+        const from = pressedAt.current;
+        pressedAt.current = null;
+        if (from && Math.hypot(e.clientX - from.x, e.clientY - from.y) > PRESS_SLOP_PX) return;
+        onToggle();
+      }}
+      onKeyDown={(e) => {
+        const dir = e.altKey && e.key === 'ArrowLeft' ? -1 : e.altKey && e.key === 'ArrowRight' ? 1 : null;
+        if (dir === null) return;
+        e.preventDefault();
+        onMove(dir);
+      }}
+    >
+      {label}
+    </Reorder.Item>
+  );
+}
+
+export default function SettingsPage({
+  port,
+  limits = tauriLimits,
+}: {
+  port: SettingsPort;
+  limits?: LimitsPort;
+}) {
   const { t } = useT();
   const { settings, update } = useSettings();
   const [refreshSec, setRefreshSec] = useRefreshSec();
@@ -844,6 +1075,7 @@ export default function SettingsPage({ port }: { port: SettingsPort }) {
               <div className="set-row-caption">{t('settings.menuBarRefresh.offNote')}</div>
             </div>
           )}
+          <PanelMetersRows limits={limits} />
         </section>
 
         <UpdatesGroup port={port} />
