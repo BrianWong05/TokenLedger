@@ -62,9 +62,8 @@ row switches the drawing; the choice is remembered. Vendor limit cards show
 remaining windows and reset times; Settings controls which cards and collapsed
 meters appear, and the order they stack.
 
-![TokenLedger's Menu Bar Extra with Cost per bucket as a line](docs/menu-bar-extra-line.png)
-
-![TokenLedger's Menu Bar Extra with Cost per bucket as columns](docs/menu-bar-extra.png)
+| ![TokenLedger's Menu Bar Extra with Cost per bucket as a line](docs/menu-bar-extra-line.png) | ![TokenLedger's Menu Bar Extra with Cost per bucket as columns](docs/menu-bar-extra.png) |
+| --- | --- |
 
 ## Install
 
