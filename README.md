@@ -56,12 +56,15 @@ an invoice.
 ## Menu Bar Extra
 
 Choose today, yesterday, or the trailing 30 days. The panel shows tokens, cost,
-change from the previous period, source and model breakdowns, hourly trend,
-cache hit, and requests. Vendor limit cards show remaining windows and reset
-times; Settings controls which cards and collapsed meters appear, and the order
-they stack.
+change from the previous period, source and model breakdowns, Cost per bucket
+as columns or a line, cache hit, and requests. A control on the peak-caption
+row switches the drawing; the choice is remembered. Vendor limit cards show
+remaining windows and reset times; Settings controls which cards and collapsed
+meters appear, and the order they stack.
 
-![TokenLedger's Menu Bar Extra showing yesterday's usage, model breakdown, and live limit cards](docs/menu-bar-extra.png)
+![TokenLedger's Menu Bar Extra with Cost per bucket as a line](docs/menu-bar-extra-line.png)
+
+![TokenLedger's Menu Bar Extra with Cost per bucket as columns](docs/menu-bar-extra.png)
 
 ## Install
 
