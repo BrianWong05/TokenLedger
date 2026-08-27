@@ -14,6 +14,7 @@ export type { CtxSkillRow } from './bindings/CtxSkillRow';
 export type { CtxExecRow } from './bindings/CtxExecRow';
 export type { LimitWindow } from './bindings/LimitWindow';
 export type { SourceLimits } from './bindings/SourceLimits';
+export type { AppliedUpdate } from './bindings/AppliedUpdate';
 export type { SourceStatus } from './bindings/SourceStatus';
 export type { SourceUnreadable } from './bindings/SourceUnreadable';
 export type { SourceUnbooked } from './bindings/SourceUnbooked';

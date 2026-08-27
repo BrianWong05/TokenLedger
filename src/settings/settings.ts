@@ -5,19 +5,22 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import { getSettings, setSettings, checkUpdates } from '../api';
-import type { Settings, UpdateStatus } from '../types';
+import type { AppliedUpdate, Settings, UpdateStatus } from '../types';
 
 // Re-exported so the Settings pages keep importing UpdateStatus from this port;
 // the union itself now lives in types.ts (the backend contract).
-export type { UpdateStatus } from '../types';
+export type { AppliedUpdate, UpdateStatus } from '../types';
 
 export interface SettingsPort {
   get(): Promise<Settings>;
   set(s: Settings): Promise<void>;
   checkUpdates(): Promise<UpdateStatus>;
-  // The running app version, shown in Settings and compared across runs by the
-  // shell's "updated" notice.
+  // The running app version, shown in Settings.
   version(): Promise<string>;
+  // The climb this launch applied, for the shell's "Updated" card — handed
+  // over once (Rust owns the last-run-version memory, ADR-0026); null on an
+  // ordinary run, or when a hidden start's OS notification already said it.
+  appliedUpdate(): Promise<AppliedUpdate | null>;
   // User-approved update actions driven by the Settings banner button.
   downloadUpdate(): Promise<UpdateStatus>;
   restartApp(): Promise<void>;
@@ -35,6 +38,7 @@ export const tauriSettings: SettingsPort = {
   version: () => Promise.resolve().then(getVersion),
   // Inlined invoke (not routed through api.ts, which the Overview wave owns);
   // matches the check_updates command shape in src-tauri.
+  appliedUpdate: () => invoke('applied_update'),
   downloadUpdate: () => invoke('download_update'),
   restartApp: () => invoke('restart_app'),
   onOpenSettings(cb) {

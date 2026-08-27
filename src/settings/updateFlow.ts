@@ -17,20 +17,6 @@ export function isStaged(status: UpdateStatus | null): boolean {
   return status?.state === 'downloaded';
 }
 
-/**
- * Whether `next` is a later version than `prev`, by numeric collation — so
- * 1.10.0 beats 1.9.0 rather than losing a string comparison. Only an upward
- * move is news: a rollback (or a record left by a newer install) must not be
- * announced as an update.
- *
- * ponytail: collation, not semver. A prerelease suffix sorts after its own
- * release (1.4.2-beta > 1.4.2), which the GitHub-Releases channel never ships;
- * reach for a real semver compare if it ever does.
- */
-export function isNewerVersion(next: string, prev: string): boolean {
-  return next.localeCompare(prev, undefined, { numeric: true }) > 0;
-}
-
 /** The running app version, or null until it arrives. */
 export function useAppVersion(port: SettingsPort): string | null {
   const [version, setVersion] = useState<string | null>(null);
