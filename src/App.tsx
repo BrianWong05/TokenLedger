@@ -16,14 +16,12 @@ import { detectPlatform, type Platform } from './lib/platform';
 import { hotkeyHint, isHotkey } from './lib/hotkeys';
 import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
-import { tauriSettings, type SettingsPort } from './settings/settings';
-import { isNewerVersion, isPending, isStaged, useUpdateFlow } from './settings/updateFlow';
+import { tauriSettings, type AppliedUpdate, type SettingsPort } from './settings/settings';
+import { isPending, isStaged, useUpdateFlow } from './settings/updateFlow';
 import type { PricingPort } from './pricing/pricing';
 import type { LimitsPort } from './limits/limits';
 import './App.css';
 
-// What the last run was running, so this one can tell an update happened.
-export const LAST_VERSION_KEY = 'tokenledger.lastVersion';
 // The shortest gap between two update checks in one window's lifetime.
 const CHECK_FLOOR_MS = 6 * 60 * 60 * 1000;
 
@@ -156,33 +154,19 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
     return () => window.removeEventListener('focus', run);
   }, [autoCheck, check]);
 
-  // The "updated" notice: an applied update shows itself as the running version
-  // being newer than the one the previous run recorded, so remember it and
-  // announce the climb. A first run has no record — nothing to announce, just
-  // start the memory — and a downgrade is not an update, so it stays quiet.
-  const [applied, setApplied] = useState<{ from: string; to: string } | null>(null);
+  // The "updated" notice: Rust owns the one memory of the last-run version
+  // and hands the climb over exactly once (ADR-0026) — a hidden start already
+  // announced it as an OS notification, so it arrives here as null there. The
+  // null answer is ignored rather than applied: StrictMode's second dev pass
+  // takes an already-consumed null and must not erase what the first pass set.
+  const [applied, setApplied] = useState<AppliedUpdate | null>(null);
   useEffect(() => {
-    let alive = true;
     settingsPort
-      .version()
-      .then((v) => {
-        // Bail before touching storage: a torn-down pass (StrictMode mounts
-        // every effect twice in dev) that recorded the version anyway would eat
-        // the very jump the next pass is meant to find.
-        if (!alive) return;
-        let last: string | null = null;
-        try {
-          last = localStorage.getItem(LAST_VERSION_KEY);
-          localStorage.setItem(LAST_VERSION_KEY, v);
-        } catch {
-          // Storage unavailable: no memory of the prior run, so no announcement.
-        }
-        if (last && isNewerVersion(v, last)) setApplied({ from: last, to: v });
+      .appliedUpdate()
+      .then((a) => {
+        if (a) setApplied(a);
       })
       .catch(() => {});
-    return () => {
-      alive = false;
-    };
   }, [settingsPort]);
 
   // The Menu Bar Extra's "Settings… ⌘," item: the tray shows the window and

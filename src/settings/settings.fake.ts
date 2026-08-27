@@ -1,6 +1,6 @@
 // In-memory SettingsPort for tests: a get/set round-trip over one held Settings
 // value, a call log, per-method failNext, and a canned checkUpdates + version.
-import { DEFAULT_SETTINGS, type SettingsPort, type UpdateStatus } from './settings';
+import { DEFAULT_SETTINGS, type AppliedUpdate, type SettingsPort, type UpdateStatus } from './settings';
 import type { Settings } from '../types';
 
 export interface FakeSettings extends SettingsPort {
@@ -10,11 +10,12 @@ export interface FakeSettings extends SettingsPort {
     set: Settings[];
     checkUpdates: number;
     version: number;
+    appliedUpdate: number;
     downloadUpdate: number;
     restartApp: number;
   };
   failNext(
-    method: 'get' | 'set' | 'checkUpdates' | 'version' | 'downloadUpdate' | 'restartApp',
+    method: 'get' | 'set' | 'checkUpdates' | 'version' | 'appliedUpdate' | 'downloadUpdate' | 'restartApp',
     err: unknown,
   ): void;
   emitOpenSettings(): void;
@@ -29,13 +30,17 @@ export function makeFakeSettings(
   seed: Partial<Settings> = {},
   update: UpdateStatus = NO_UPDATE,
   version = FAKE_VERSION,
+  applied: AppliedUpdate | null = null,
 ): FakeSettings {
   let value: Settings = { ...DEFAULT_SETTINGS, ...seed };
+  // Take-once, like the real command: the second ask gets null.
+  let pendingApplied = applied;
   const calls: FakeSettings['calls'] = {
     get: 0,
     set: [],
     checkUpdates: 0,
     version: 0,
+    appliedUpdate: 0,
     downloadUpdate: 0,
     restartApp: 0,
   };
@@ -60,6 +65,13 @@ export function makeFakeSettings(
     set: (s) => guard('set', () => { calls.set.push(s); value = { ...s }; }),
     checkUpdates: () => guard('checkUpdates', () => { calls.checkUpdates++; return update; }),
     version: () => guard('version', () => { calls.version++; return version; }),
+    appliedUpdate: () =>
+      guard('appliedUpdate', () => {
+        calls.appliedUpdate++;
+        const a = pendingApplied;
+        pendingApplied = null;
+        return a;
+      }),
     downloadUpdate: () => guard('downloadUpdate', () => { calls.downloadUpdate++; return downloaded; }),
     restartApp: () => guard('restartApp', () => { calls.restartApp++; }),
     failNext: (method, err) => fails.set(method, err),

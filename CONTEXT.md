@@ -514,3 +514,12 @@ never zero. Codex is the one Source reporting them today, but the concept is
 not Codex's: any live Source's Companion may report a count, and the card
 shows what its Export Artifact proves.
 _Avoid_: Manual reset, reset credit, reset
+
+**Update Notice**:
+The announcement that a release is available or that a relaunch applied one,
+made on exactly one surface (ADR-0026): the window's update card, dot, and
+banner when a webview exists, an OS notification from the Rust side when none
+does — a hidden login start, or the window closed while the app stays
+resident. Rust keeps the only record of the last-run version, so the surfaces
+cannot disagree and one update is never announced twice.
+_Avoid_: Toast, alert, announcing on both surfaces

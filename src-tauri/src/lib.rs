@@ -71,7 +71,7 @@ use queries::{
     BreakdownRow, Filters, LedgerContext, LedgerWindow, SeriesPoint, SourceLimits, Summary,
 };
 use scan::{run_scan, SourceRoots};
-use settings::{Settings, UpdateStatus};
+use settings::{AppliedUpdate, Settings, UpdateStatus};
 use types::ScanStatus;
 
 // The at-login LaunchAgent starts the app with this flag so it comes up hidden
@@ -105,6 +105,10 @@ const MAX_PARK_SECS: i64 = 60;
 /// ticks — the cadence beside it is the reader's to change, and "every sixth
 /// tick" would silently become every six minutes when they do.
 const CATALOG_EVERY_SECS: i64 = 24 * 3600;
+
+/// One day between resident update checks (ADR-0026), a deadline of its own
+/// for the same reason as the catalogs'.
+const UPDATE_CHECK_EVERY_SECS: i64 = 24 * 3600;
 
 /// Seconds between resident Scans, given the reader's Menu Bar Extra cadence.
 /// Off (0) is not "never": it hands the bar back to the capture floor, which is
@@ -143,6 +147,9 @@ struct Marks {
     /// every second forever.
     attempted: i64,
     next_catalogs: i64,
+    /// When the next resident update check is due (ADR-0026). Seeded to "now"
+    /// at launch, so the first wake carries the start-up check.
+    next_update_check: i64,
     /// The local day whose figures the bar is showing; None until the first
     /// read says, so the loop never repaints against a day it never painted.
     painted: Option<i64>,
@@ -155,6 +162,7 @@ struct Marks {
 struct Tick {
     scan: bool,
     catalogs: bool,
+    update_check: bool,
     repaint: bool,
     /// The soonest moment worth waking for; `wake_in` bounds the actual park.
     next_deadline: i64,
@@ -167,15 +175,22 @@ fn plan_tick(now: i64, stamped: i64, inputs: Inputs, marks: Marks) -> Tick {
     let due = stamped.max(marks.attempted) + inputs.cadence;
     let scan = now >= due;
     let catalogs = now >= marks.next_catalogs;
+    let update_check = now >= marks.next_update_check;
     Tick {
         scan,
         catalogs,
+        update_check,
         // Today's figures stop being today's at midnight, whether or not a scan
         // has anything to add (CONTEXT.md Menu Bar Extra).
         repaint: marks.painted.is_some_and(|painted| painted != inputs.day),
         // Scanning or refreshing now moves that deadline a full interval on.
         next_deadline: (if scan { now + inputs.cadence } else { due })
             .min(if catalogs { now + CATALOG_EVERY_SECS } else { marks.next_catalogs })
+            .min(if update_check {
+                now + UPDATE_CHECK_EVERY_SECS
+            } else {
+                marks.next_update_check
+            })
             .min(inputs.next_midnight),
     }
 }
@@ -642,6 +657,18 @@ async fn check_updates(app: AppHandle) -> UpdateStatus {
     updater::check(&app).await
 }
 
+/// The climb this launch applied, waiting for the window's "Updated" card —
+/// None on an ordinary run, and already consumed on a hidden start, whose OS
+/// notification announced it (ADR-0026).
+pub struct PendingApplied(pub Mutex<Option<AppliedUpdate>>);
+
+// Taken, not read: a remounted webview (window reopened, StrictMode's second
+// dev pass) must not announce the same update again.
+#[tauri::command]
+fn applied_update(pending: tauri::State<PendingApplied>) -> Option<AppliedUpdate> {
+    pending.0.lock().map(|mut p| p.take()).unwrap_or(None)
+}
+
 // User-approved from the Settings banner: downloads and stages the update.
 #[tauri::command]
 async fn download_update(app: AppHandle) -> Result<UpdateStatus, String> {
@@ -754,34 +781,16 @@ pub fn run() {
                 tray::show_main(app.handle())?;
             }
 
-            // The relaunch notice, in Rust because a hidden start has no
-            // webview: record the running version and announce an applied
-            // update as an OS notification. A visible start records too but
-            // leaves the announcing to the window's "Updated" card.
-            updater::announce_applied(app.handle(), &data_dir, hidden_startup);
-
-            // Auto-check for updates on a hidden start (non-blocking),
-            // respecting the saved setting. A find is surfaced as an OS
-            // notification — the only channel with no webview to render the
-            // in-window card. A visible start's own mount-time check paints
-            // the card instead, so this would only duplicate it there.
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let auto = read(&handle.state::<AppState>(), settings::get_settings)
-                    .map(|s| s.auto_check_updates)
-                    .unwrap_or(false);
-                if auto && hidden_startup {
-                    let status = updater::check(&handle).await;
-                    if status.state == "available" {
-                        let version = status.version.unwrap_or_default();
-                        updater::notify(
-                            &handle,
-                            "Update available",
-                            &format!("TokenLedger {version} is ready"),
-                        );
-                    }
-                }
-            });
+            // The relaunch notice (ADR-0026): Rust keeps the one memory of
+            // the last-run version, finds the climb here, and routes it to
+            // whichever surface exists — announced now over an OS
+            // notification on a hidden start (no webview), or parked for the
+            // window's "Updated" card to take through `applied_update`.
+            app.manage(PendingApplied(Mutex::new(updater::applied_update(
+                app.handle(),
+                &data_dir,
+                hidden_startup,
+            ))));
             // Resident capture and the Menu Bar Extra's refresh, on one parked
             // thread (ADR-0005, amended by TOKL-4). It scans so a hidden app
             // keeps recording, and it scans often enough that the bar's figures
@@ -797,11 +806,16 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 let started = epoch_now();
+                // Versions this run already notified about, so the daily
+                // re-check does not repeat itself about the same release.
+                let notified = std::sync::Arc::new(Mutex::new(None));
                 let mut marks = Marks {
                     // Seeded at launch, so a start with nothing scanned yet waits
                     // a cadence instead of scanning on top of the start-up pass.
                     attempted: started,
                     next_catalogs: started + CATALOG_EVERY_SECS,
+                    // Due at once: the first wake carries the start-up check.
+                    next_update_check: started,
                     painted: None,
                 };
                 loop {
@@ -825,6 +839,17 @@ pub fn run() {
                     if tick.catalogs {
                         marks.next_catalogs = now + CATALOG_EVERY_SECS;
                         refresh_catalogs(&handle);
+                    }
+                    // Daily resident update check (ADR-0026), spawned so a slow
+                    // endpoint cannot stall the scan loop. It notifies only
+                    // when no main window is visible — with one, the window's
+                    // card owns the notice.
+                    if tick.update_check {
+                        marks.next_update_check = now + UPDATE_CHECK_EVERY_SECS;
+                        let (handle, notified) = (handle.clone(), notified.clone());
+                        tauri::async_runtime::spawn(async move {
+                            updater::resident_check(&handle, &notified).await;
+                        });
                     }
                     if tick.repaint {
                         tray::refresh(&handle);
@@ -874,6 +899,7 @@ pub fn run() {
             get_settings,
             set_settings,
             check_updates,
+            applied_update,
             download_update,
             restart_app,
             save_csv
@@ -942,6 +968,7 @@ mod tests {
         super::Marks {
             attempted: T0 - 10_000,
             next_catalogs: T0 + 50_000,
+            next_update_check: T0 + 50_000,
             painted: Some(T0 - 3_600),
         }
     }
@@ -1026,6 +1053,22 @@ mod tests {
             tick.next_deadline,
             "a refresh now pushes the next one a full day out",
         );
+    }
+
+    /// Update checks run on their own daily deadline too (ADR-0026): due at
+    /// launch (Marks seeds it to "now"), then a day after each run — and the
+    /// deadline is one the loop wakes for in its own right.
+    #[test]
+    fn update_checks_run_when_due_and_then_daily() {
+        let i = inputs(60);
+        assert!(super::plan_tick(T0, T0, i, super::Marks { next_update_check: T0, ..marks() })
+            .update_check);
+        assert!(!super::plan_tick(T0, T0, i, marks()).update_check, "not due for hours");
+
+        // A check due in two minutes bounds the park, like midnight does.
+        let slow = super::Inputs { next_midnight: T0 + 80_000, ..inputs(super::CAPTURE_FLOOR_SECS) };
+        let near = super::Marks { attempted: T0, next_update_check: T0 + 120, ..marks() };
+        assert_eq!(super::plan_tick(T0, T0, slow, near).next_deadline, T0 + 120);
     }
 
     /// The park is bounded on both ends: long enough never to spin on a deadline
@@ -1291,6 +1334,7 @@ mod tests {
                 super::Marks {
                     attempted: now,
                     next_catalogs: now + super::CATALOG_EVERY_SECS,
+                    next_update_check: now + super::UPDATE_CHECK_EVERY_SECS,
                     painted: Some(read.day),
                 },
             )

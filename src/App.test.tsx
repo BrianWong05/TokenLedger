@@ -3,7 +3,7 @@
 import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import App, { LAST_VERSION_KEY } from './App';
+import App from './App';
 import type { Platform } from './lib/platform';
 import { systemClock } from './overview/overviewStore';
 import { makeFakeLedger } from './overview/ledger.fake';
@@ -409,29 +409,30 @@ describe('App shell', () => {
     expect(port.calls.checkUpdates).toBe(2);
   });
 
+  // Whether a run has a climb to announce is Rust's call now (it owns the
+  // last-run-version memory; advance_version_record's tests cover first runs
+  // and rollbacks) — the shell's contract is to card what the port hands over,
+  // exactly once.
   it('announces an applied update with the version jump, once', async () => {
-    // First ever run: nothing to compare against, so no announcement — but the
-    // running version is recorded for the next run.
+    // The ordinary run: the port hands over nothing, no card.
     const first = await mountApp(makeFakeSettings());
     expect(first.querySelector('.tl-update-card')).toBeNull();
-    expect(localStorage.getItem(LAST_VERSION_KEY)).toBe(FAKE_VERSION);
 
     // A run after an update was applied: the jump is announced…
-    localStorage.setItem(LAST_VERSION_KEY, '1.0.0');
-    const updated = await mountApp(makeFakeSettings());
+    const port = makeFakeSettings({}, undefined, undefined, { from: '1.0.0', to: FAKE_VERSION });
+    const updated = await mountApp(port);
     expect(updated.querySelector('.tl-update-card')?.textContent).toContain(`1.0.0 → ${FAKE_VERSION}`);
 
-    // …and the record moves forward, so the next run stays quiet.
-    expect(localStorage.getItem(LAST_VERSION_KEY)).toBe(FAKE_VERSION);
-    const quiet = await mountApp(makeFakeSettings());
+    // …and taken with the telling, so a reopened window stays quiet.
+    const quiet = await mountApp(port);
     expect(quiet.querySelector('.tl-update-card')).toBeNull();
   });
 
-  // StrictMode double-invokes every effect in dev. Recording the running
-  // version from a pass that was already torn down would eat the jump the live
-  // pass is there to find — and make the notice invisible under `tauri dev`.
+  // StrictMode double-invokes every effect in dev, and the take-once command
+  // answers the second pass with null. Null must be ignored, not applied —
+  // otherwise the dev build erases the very card the first pass set.
   it('still announces the jump when effects run twice (StrictMode)', async () => {
-    localStorage.setItem(LAST_VERSION_KEY, '1.0.0');
+    const port = makeFakeSettings({}, undefined, undefined, { from: '1.0.0', to: FAKE_VERSION });
     const container = document.createElement('div');
     document.body.append(container);
     const root = createRoot(container);
@@ -439,23 +440,14 @@ describe('App shell', () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <App ports={{ ...basePorts(), settings: makeFakeSettings() }} />
+          <App ports={{ ...basePorts(), settings: port }} />
         </StrictMode>,
       );
     });
     await settle();
+    expect(port.calls.appliedUpdate).toBeGreaterThan(1);
     expect(container.querySelector('.tl-update-card')?.textContent).toContain(
       `1.0.0 → ${FAKE_VERSION}`,
     );
-  });
-
-  // A version that went *down* is a rollback or a stale record, not an update.
-  it('stays quiet when the running version is older than the record', async () => {
-    localStorage.setItem(LAST_VERSION_KEY, '9.9.9');
-    const rolled = await mountApp(makeFakeSettings());
-    expect(rolled.querySelector('.tl-update-card')).toBeNull();
-    // The record still follows the running version, so the next run compares
-    // against what is actually installed.
-    expect(localStorage.getItem(LAST_VERSION_KEY)).toBe(FAKE_VERSION);
   });
 });

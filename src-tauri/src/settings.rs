@@ -98,6 +98,20 @@ pub struct UpdateStatus {
     pub version: Option<String>,
 }
 
+/// An applied update the window's "Updated" card announces: the climb from
+/// the version the previous run recorded to the one running now. Found and
+/// routed by `updater::applied_update` — Rust owns the only memory of the
+/// last-run version — and handed over exactly once by the `applied_update`
+/// command; a hidden start consumes it itself through an OS notification
+/// (ADR-0026).
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../src/bindings/")]
+pub struct AppliedUpdate {
+    pub from: String,
+    pub to: String,
+}
+
 impl UpdateStatus {
     pub fn not_configured() -> Self {
         Self { state: "not-configured".to_string(), version: None }
