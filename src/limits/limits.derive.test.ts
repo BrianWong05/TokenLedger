@@ -258,6 +258,51 @@ describe('card states', () => {
   });
 });
 
+describe("Codex's 30-day window", () => {
+  const codexCard = (windows: LimitWindow[], plan: string | null) =>
+    cards([held('codex', windows, plan)], NOW, 'left').find((c) => c.source === 'codex')!;
+
+  it('is drawn for a free account, which it is the whole meter of', () => {
+    const card = codexCard([win({ windowKey: 'w43200', windowMinutes: 43200 })], 'free');
+    expect(card.windows.map((w) => w.key)).toEqual(['w43200']);
+  });
+
+  it('is hidden on a paid account still holding one free reply', () => {
+    // The stale Reading carries `free` itself — the plan under test is the
+    // card's, from the newest Reading of the Source, or the window would
+    // always vote to keep itself.
+    const card = codexCard(
+      [win({ windowKey: 'w10080' }), win({ windowKey: 'w43200', windowMinutes: 43200 })],
+      'plus',
+    );
+    expect(card.windows.map((w) => w.key)).toEqual(['w10080']);
+  });
+
+  it('is hidden when no Reading names a plan at all: unknown is not free', () => {
+    const card = codexCard([win({ windowKey: 'w43200', windowMinutes: 43200 })], null);
+    expect(card.windows).toEqual([]);
+  });
+
+  it('does not date the card it is hidden from', () => {
+    const card = codexCard(
+      [
+        win({ windowKey: 'w10080', observedAt: NOW - 2 * DAY }),
+        win({ windowKey: 'w43200', windowMinutes: 43200, observedAt: NOW - 60 }),
+      ],
+      'plus',
+    );
+    // The hidden window was checked a minute ago; the card shows only figures
+    // from two days back, and its freshness line must say so.
+    expect(card.observedAt).toBe(NOW - 2 * DAY);
+  });
+
+  it("leaves Grok's monthly credit pool alone, which every Grok plan meters", () => {
+    const grok = cards([held('grok', [win({ windowKey: 'w43200', windowMinutes: 43200 })], 'super')], NOW, 'left')
+      .find((c) => c.source === 'grok')!;
+    expect(grok.windows.map((w) => w.key)).toEqual(['w43200']);
+  });
+});
+
 describe('freshness', () => {
   it('reports the age of the fetch for a live Source', () => {
     // Under half a minute reads as "just now" rather than rounding to "0m ago".

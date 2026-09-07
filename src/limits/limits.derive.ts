@@ -310,6 +310,25 @@ export function planLabel(plan: string | null): string | null {
 }
 
 /**
+ * Whether a Source's card draws a window at all.
+ *
+ * Codex meters the free tier with one 30-day window, and paid plans with the
+ * 5-hour and weekly pair. A single `free` reply — the account saw one on
+ * 2026-09-02 — writes a `w43200` Reading whose epoch then sits on the card for
+ * the whole 30 days, drawing a 0% bar for a plan the reader is not on. The test
+ * is the card's plan, taken from the newest Reading of the Source; the stale
+ * window's own Reading says `free` by construction and could only ever vote to
+ * keep itself.
+ *
+ * Codex-scoped on purpose: `w43200` is also Grok's monthly credit pool, which
+ * every Grok plan meters.
+ */
+function drawsWindow(source: string, key: string, plan: string | null): boolean {
+  if (source !== 'codex' || key !== 'w43200') return true;
+  return plan?.trim().toLowerCase() === 'free';
+}
+
+/**
  * The stored Readings plus any live failure → one card per catalogued Source
  * with a `limits` capability, in catalog order.
  *
@@ -332,10 +351,13 @@ export function cards(
 
   return sources.map(({ meta, via }) => {
     const held = bySource.get(meta.key);
-    const windows = (held?.windows ?? []).map((w) => windowView(w, mode, nowSec));
-    const observedAt = held?.windows.length
-      ? Math.max(...held.windows.map((w) => w.observedAt))
-      : null;
+    const shown = (held?.windows ?? []).filter((w) =>
+      drawsWindow(meta.key, w.windowKey, held?.plan ?? null),
+    );
+    const windows = shown.map((w) => windowView(w, mode, nowSec));
+    // Dated by what it draws: a window the card hides cannot be the check the
+    // freshness line is reporting the age of.
+    const observedAt = shown.length ? Math.max(...shown.map((w) => w.observedAt)) : null;
     const failure = failures[meta.key];
 
     const state: CardState =
