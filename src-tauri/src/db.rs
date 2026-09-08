@@ -1145,6 +1145,22 @@ pub fn set_file_state(conn: &Connection, path: &str, state: FileState) -> rusqli
     Ok(())
 }
 
+/// Removes Records by dedup_key.
+///
+/// The Ledger never deletes Records (see the schema note above) — with one
+/// exception this exists for: a Source whose key scheme becomes finer-grained
+/// leaves the coarse rows it used to book standing beside their replacements,
+/// where they double-count. Only the caller knows which keys its new rows
+/// supersede, so the check lives there and this stays a plain delete. Never
+/// use it to prune history a re-scan cannot re-derive.
+pub fn delete_events(conn: &Connection, dedup_keys: &[String]) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("DELETE FROM events WHERE dedup_key = ?1")?;
+    for key in dedup_keys {
+        stmt.execute([key])?;
+    }
+    Ok(())
+}
+
 pub fn clear_file_state(conn: &Connection, path: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM scanned_files WHERE path = ?1", [path])?;
     // The unbooked-Request count is a fact about this file's content, so it

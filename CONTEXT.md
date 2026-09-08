@@ -13,8 +13,9 @@ The token usage attributed to one unit of billable work from a Source. The
 "unit of work" is one API call/response for Claude, Codex, Gemini,
 Antigravity, OpenCode, and a pi assistant message; one reported auxiliary usage
 block for a pi summary or tool result; one usage-ledger row for Goose; one user
-Turn for Grok; but one whole Session for Hermes, Kilo, or Zed when their
-Artifacts expose no trustworthy finer timestamps. Failed or aborted work
+Turn for Grok; one per-Model, per-task usage row for Hermes; but one whole
+Session for Kilo or Zed when their Artifacts expose no trustworthy finer
+timestamps. Failed or aborted work
 counts when it reports non-zero usage, while a zero-token observation is not a
 Usage Record. (Implemented as `UsageEvent`.)
 _Avoid_: Event, row, entry
@@ -233,9 +234,12 @@ _Avoid_: Feature, field, support level
 
 **Session**:
 One continuous run of a Source's agent, comprising one or more Requests. Every
-Source organises its logs into Sessions; Hermes is the one that stores usage at
-Session granularity (one Usage Record per Session), while a branched pi Session
-retains the Requests from every branch, including branches no longer active.
+Source organises its logs into Sessions; Hermes splits one Session's usage
+across a Usage Record per (Model, billing route, task), which is how its
+auxiliary work — compression, title generation, background review — stays
+visible at all: Hermes books those outside its own Session rollup. A branched pi
+Session retains the Requests from every branch, including branches no longer
+active.
 Copying pi history into a fork or clone creates no new Requests; the child
 becomes a separate Session only when it produces its first new Request. Pi
 usage without a reliable Session identity remains in the Ledger but contributes
