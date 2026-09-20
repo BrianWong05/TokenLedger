@@ -13,6 +13,9 @@
 //! real Claude sign-in before the temp `.credentials.json` fallback. Every
 //! live-path test here aims the fetch at a local scripted server, so which
 //! credential is presented never decides an outcome — the scripted answers do.
+//! An item that exists but holds no sign-in (Claude Code's `invalid_grant`
+//! clear) is not a hit at all (TOKL-35): it falls through to the temp file,
+//! which is what lets these tests pass on a machine in that state.
 
 use std::io::{Read, Write};
 use std::path::Path;

@@ -399,7 +399,10 @@ Read-only, per map decision 3, and in this order:
    filed bug against it, and orca's own recommendation after decompiling Claude
    Code is service-only resolution, which "stays correct if Anthropic changes
    the derivation again". Try these service names in order and take the first
-   hit: `Claude Code-credentials`; then `Claude Code-credentials-<first 8 hex
+   hit **that carries an access token** — an item that exists but holds a blank
+   `accessToken` is what Claude Code leaves behind when a refresh answers
+   `invalid_grant`, and it must read as an absence, not as the answer
+   (TOKL-35): `Claude Code-credentials`; then `Claude Code-credentials-<first 8 hex
    of sha256(NFC(dir))>` for `dir = $CLAUDE_SECURESTORAGE_CONFIG_DIR`,
    `$CLAUDE_CONFIG_DIR`, and the expanded default `~/.claude` — #423 proves the
    default-dir hash occurs in the wild. Exit 44 is `errSecItemNotFound`, the
@@ -408,7 +411,8 @@ Read-only, per map decision 3, and in this order:
    Claude Code's own taxonomy so a locked Keychain says it is locked.
 2. **All platforms: `$CLAUDE_CONFIG_DIR/.credentials.json`, else
    `~/.claude/.credentials.json`.** The sole source on Linux and Windows; on
-   macOS a fallback that must lose to a valid Keychain read.
+   macOS a fallback that must lose to a Keychain read that carries a token, and
+   that must win over one that does not (TOKL-35).
 3. **Do not use `CLAUDE_CODE_OAUTH_TOKEN` for the gauge.** It is official and
    documented, but `claude setup-token` mints an inference-only one-year token
    — "It can only make model requests"
