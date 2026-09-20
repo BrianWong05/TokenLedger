@@ -97,7 +97,6 @@ export interface WindowView {
 export interface CardView {
   source: string;
   meta: SourceMeta;
-  via: LimitsVia;
   state: CardState;
   plan: string | null;
   /** Current source-level count; null means the vendor did not report it. */
@@ -409,13 +408,17 @@ export function cards(
               ? 'signed-out'
               : 'nothing-recorded';
 
+    // The plan pill and the Usage Reset count come from the Companion's own
+    // login. On a card kept alive only by a desktop figure, that login is the
+    // thing reported dead, so they stay off: the bars were asked for, nothing
+    // else that the dead sign-in vouched for.
+    const trusted = state === 'live' && failure !== 'signed-out';
     return {
       source: meta.key,
       meta,
-      via,
       state,
-      plan: state === 'live' ? (held?.plan ?? null) : null,
-      usageResetsAvailable: state === 'live' ? (held?.usageResetsAvailable ?? null) : null,
+      plan: trusted ? (held?.plan ?? null) : null,
+      usageResetsAvailable: trusted ? (held?.usageResetsAvailable ?? null) : null,
       observedAt: newest?.observedAt ?? null,
       freshVia: newest?.via ?? null,
       // An error card keeps its held windows: the failure line says why the
@@ -432,6 +435,16 @@ export function cards(
       ...(failure && failure !== 'signed-out' ? { detail: failure.detail } : {}),
     };
   });
+}
+
+/**
+ * What a row says about its reset, decided once for every surface that draws
+ * one: the minutes until it, `'unknown'` where nobody ever named one (a desktop
+ * figure outside a known epoch, ADR-0027), or null where an expired epoch has
+ * nothing left to count down to.
+ */
+export function resetLabel(w: WindowView): number | 'unknown' | null {
+  return w.resetUnknown ? 'unknown' : w.resetsInMin;
 }
 
 /**

@@ -11,8 +11,10 @@ Claude card reading Sign-in unavailable, and the card was right.
 
 The Claude desktop app keeps its own usage history on disk —
 `plan-usage-history.json` in its Electron user-data directory (macOS
-`~/Library/Application Support/Claude`; Windows `%APPDATA%\Claude` and Linux
-`~/.config/Claude` are the Electron defaults and unverified) — one entry per
+`~/Library/Application Support/Claude` today; Electron's defaults name
+`%APPDATA%\Claude` on Windows and `~/.config/Claude` on Linux, but a Source
+Catalog entry lands only behind ADR-0012's validation gate, so those wait
+until someone has seen the desktop app write them) — one entry per
 poll of the vendor's organisation usage endpoint through the app's own
 session, carrying the vendor's utilisation percentage per window under the
 app's own short codes, the organisation id, and no reset instant. The scan
@@ -34,6 +36,14 @@ known epoch is not a Reading and is not stored. The newest one is written as
 current state beside the Companion's Export Artifact — a Limit State Artifact,
 on the same footing as Codex's Usage Reset count in ADR-0019 — and the card
 shows it as the current figure with its reset unknown.
+
+A file this version cannot read — an unknown `version`, a shape nobody has
+mapped — is a malformed instance of a supported shape and reports as the
+Source's own warning until a later pass reads it (ADR-0015), exactly as an
+export the Companion wrote would. It is not an Unreadable Artifact in
+ADR-0017's sense: it holds no Usage Records and marks no total incomplete. An
+absent file is the ordinary absence of a Source — the desktop app is not
+installed, or has never polled.
 
 On the card the newest observation wins per window, whichever channel
 produced it. A desktop figure older than its own window length is not drawn,

@@ -44,6 +44,7 @@ use crate::adapters::unchanged;
 use crate::db::{self, set_file_state};
 use crate::limits_artifact::{
     self, LimitState, LimitStateWindow, CLAUDE_METERING_REGIME, STATE_SCHEMA,
+    UNKNOWN_WINDOW_MINUTES,
 };
 use crate::types::{FileState, LimitReading, ReadingProvenance};
 
@@ -86,13 +87,6 @@ const WINDOWS: [(&str, &str, Option<i64>); 8] = [
     ("op", "omelette_promotional", None),
 ];
 
-/// How far back an entry may reach for an epoch when its window's length is
-/// unknown. Every named window the vendor meters weekly or shorter, so the
-/// weekly span is the widest an unknown one could plausibly be — and a bound
-/// too wide only ever refuses to place an entry the epoch does not cover,
-/// because the epoch chosen is the closest one after it.
-const UNKNOWN_WINDOW_MINUTES: i64 = 10_080;
-
 /// One entry of the desktop app's history: when the app recorded it, the org it
 /// recorded it for, and the figures it recorded.
 #[derive(Debug, Clone, PartialEq)]
@@ -118,12 +112,12 @@ pub struct Figure {
 /// shape 2 nests the figures under `u` and names an org, shape 1 carries `fh`
 /// and `sd` beside the timestamp and names none.
 ///
-/// `None` is "this file tells us nothing" — unreadable, truncated mid-rewrite,
-/// or a shape nobody has mapped. We do not own this file, so a shape we cannot
-/// read is an ABSENCE rather than a fault: an absence is retried on the next
-/// pass, and warning about a third party's private format would report the
-/// vendor's release cadence as the app's trouble (contrast
-/// `limits_artifact::ingest`, which owns its shape and so must warn about it).
+/// `None` is "this file cannot be read": not JSON, or a shape nobody has
+/// mapped. The caller reports that as the Source's own warning — a malformed
+/// instance of a supported shape, ADR-0015's rule, the same one
+/// `limits_artifact::ingest` applies to an export — and records no file state,
+/// so the next pass reads it again. The desktop app rename-writes this file
+/// whole, so what this catches is a shape drift, not a torn write.
 pub fn parse_history(raw: &str) -> Option<Vec<Entry>> {
     let document: Value = serde_json::from_str(raw).ok()?;
     let version = document.get("version")?.as_u64()?;
@@ -131,13 +125,13 @@ pub fn parse_history(raw: &str) -> Option<Vec<Entry>> {
         return None;
     }
     let entries = document.get(ENTRIES_KEY)?.as_array()?;
-    Some(entries.iter().filter_map(|entry| one(entry, version)).collect())
+    Some(entries.iter().filter_map(|entry| parse_entry(entry, version)).collect())
 }
 
 /// One entry, or `None` where this one entry is unreadable — the file is
 /// rewritten whole, so an entry that does not parse is a shape question about
 /// that entry alone and never a reason to drop the thirty days around it.
-fn one(entry: &Value, version: u64) -> Option<Entry> {
+fn parse_entry(entry: &Value, version: u64) -> Option<Entry> {
     // Milliseconds in the file, seconds everywhere in the Ledger. A raw
     // millisecond value would sort fifty thousand years into the future and
     // stand as the newest epoch forever, so the unit is converted here and the
@@ -184,9 +178,8 @@ fn of_the_current_org(entries: Vec<Entry>) -> Vec<Entry> {
 }
 
 /// Every reset instant the Ledger already holds a Reading for, in one Limit,
-/// ascending. Exported so a profile can `EXPLAIN` the statement this module
-/// actually issues rather than a copy of it.
-pub const KNOWN_EPOCHS_SQL: &str = "SELECT DISTINCT resets_at FROM limit_readings \
+/// ascending.
+const KNOWN_EPOCHS_SQL: &str = "SELECT DISTINCT resets_at FROM limit_readings \
      WHERE source = ?1 AND window_key = ?2 ORDER BY resets_at";
 
 fn known_epochs(conn: &Connection, window_key: &str) -> rusqlite::Result<Vec<i64>> {
@@ -243,10 +236,10 @@ fn reading(entry: &Entry, figure: &Figure, resets_at: i64) -> LimitReading {
 /// Limit Readings were written or genuinely revised — the change signal the scan
 /// reports and an open Limits page reissues its query on.
 ///
-/// Absent file → nothing to do, and not an error. Unreadable file → also nothing
-/// to do, and no file state recorded, so the next pass reads it again: the app
-/// rewrites this file whole, and a read that caught it mid-rename must not be
-/// remembered as the last word on it.
+/// Absent file → nothing to do, and not an error: the desktop app is not
+/// installed, or has never polled. Unreadable file → the Source's own warning
+/// (ADR-0015), with no file state recorded so the next pass reads it again; it
+/// holds no Usage Records, so it marks no total incomplete (ADR-0017).
 ///
 /// Idempotent twice over: the file's own state gates the re-read, and the
 /// Ledger's primary key lands a re-read entry on the row already stored.
@@ -276,7 +269,10 @@ pub fn ingest(conn: &mut Connection, file: &Path, limit_exports: &Path) -> Resul
     }
 
     let Some(entries) = parse_history(&raw) else {
-        return Ok(0);
+        return Err(format!(
+            "unreadable Claude desktop usage history {} — a shape this version cannot read",
+            file.to_string_lossy()
+        ));
     };
     let entries = of_the_current_org(entries);
 
@@ -477,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_this_side_cannot_read_is_an_absence_that_is_retried() {
+    fn a_file_this_side_cannot_read_is_the_sources_warning_and_is_retried() {
         let tmp = tempfile::tempdir().unwrap();
         let mut conn = open_db(&tmp.path().join("t.db")).unwrap();
         let exports = tmp.path().join("limits");
@@ -493,10 +489,12 @@ mod tests {
         ] {
             assert_eq!(parse_history(body), None, "{body}");
             let path = plant(&tmp.path().join("desktop"), body);
-            assert_eq!(ingest(&mut conn, &path, &exports), Ok(0), "{body}");
-            // No file state, so the next pass reads it again — the app rewrites
-            // this file whole, and a read that caught a rename is not the last
-            // word on it.
+            // ADR-0015: a malformed instance of a supported shape is the
+            // Source's own warning, never a silent zero.
+            let trouble = ingest(&mut conn, &path, &exports).expect_err(body);
+            assert!(trouble.contains("unreadable Claude desktop usage history"), "{trouble}");
+            // No file state, so the next pass reads it again rather than
+            // remembering a shape this version could not read as settled.
             assert!(
                 get_file_state(&conn, &path.to_string_lossy()).unwrap().is_none(),
                 "{body}",

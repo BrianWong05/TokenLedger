@@ -1104,12 +1104,6 @@ pub const DISPLAYED_VIA_SQL: &str = "SELECT via FROM limit_readings \
      WHERE source = ?1 AND window_key = ?2 AND resets_at >= ?3 \
      ORDER BY observed_at DESC, used_pct DESC LIMIT 1";
 
-/// How far a state figure may reach for a window whose length nobody has
-/// published: the widest any named Claude window is. Matches the bound the
-/// desktop ingest places an unplaceable entry by, so freshness and placement
-/// answer to one number.
-const UNKNOWN_STATE_WINDOW_MINUTES: i64 = 10_080;
-
 /// The current state of every Limit the Ledger holds Readings for: per
 /// (source, window_key) the newest epoch, and within it the highest `used_pct`
 /// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
@@ -1322,14 +1316,16 @@ pub fn limits(
 /// file was never part of the transaction's view, and pretending otherwise
 /// would buy consistency the filesystem cannot give.
 ///
-/// One rule decides each window: the NEWEST observation wins, and a figure
-/// older than its own window's length is not drawn at all — a five-hour figure
-/// from yesterday describes an epoch that has since reset, and showing it would
-/// be worse than showing nothing. With one exception, which is the case this
-/// overlay exists for: where the newest stored Reading's epoch has already
-/// expired, a fresh state figure wins whatever their instants say, because the
-/// alternative is a card drawing a finished window as though it were the
-/// current one.
+/// One rule decides each window, with no exception: the NEWEST observation
+/// wins, whichever channel made it, and a figure older than its own window's
+/// length is not drawn at all — a five-hour figure from yesterday describes an
+/// epoch that has since reset, and showing it would be worse than showing
+/// nothing. The case this overlay exists for falls out of that rule rather
+/// than bending it: when the newest stored Reading's epoch has expired and the
+/// desktop app has recorded a figure since, that figure is the newest
+/// observation and replaces the finished window the page would otherwise draw
+/// as unused. A state figure OLDER than the drawn Reading never wins, expired
+/// epoch or not — it is an earlier look at the same finished window.
 fn overlay_state_figures(
     cards: &mut Vec<SourceLimits>,
     limit_exports: &std::path::Path,
@@ -1366,7 +1362,9 @@ fn overlay_state_figures(
         };
 
         for figure in &state.windows {
-            let minutes = figure.window_minutes.unwrap_or(UNKNOWN_STATE_WINDOW_MINUTES);
+            let minutes = figure
+                .window_minutes
+                .unwrap_or(crate::limits_artifact::UNKNOWN_WINDOW_MINUTES);
             if evaluated_at - state.observed_at > minutes * 60 {
                 continue;
             }
@@ -2859,6 +2857,12 @@ mod tests {
     use crate::limits_artifact::{LimitState, LimitStateWindow, STATE_SCHEMA};
 
     /// One Source's current state, as the desktop channel writes it.
+    // The overlay is Source-agnostic on purpose, exactly like the Usage Reset
+    // read beside it (only Codex writes that count; only the Claude desktop
+    // channel writes a state Artifact today), so these tests use the same
+    // fixture Source the neighbouring Usage Reset tests do. The Claude
+    // production path — desktop history → Readings + state → this query — is
+    // proven end to end in scan.rs's desktop-history test.
     fn state_of(
         dir: &std::path::Path,
         source: &str,

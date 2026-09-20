@@ -729,8 +729,10 @@ describe('a figure whose reset nobody named', () => {
     const claude = cardFor(c, 'Claude');
 
     // The figures survive the dead login, because they never came from it.
+    // The plan pill does not: the login vouched for it, and only the bars
+    // were asked to outlive the sign-in.
     expect(rows(claude)).toHaveLength(1);
-    expect(claude.querySelector('.tl-lim-plan')?.textContent).toBe('Max 5x');
+    expect(claude.querySelector('.tl-lim-plan')).toBeNull();
     // And the full trouble face is gone: its title is nowhere on the card.
     expect(claude.textContent).not.toContain('Sign-in unavailable');
     expect(claude.textContent).toContain(

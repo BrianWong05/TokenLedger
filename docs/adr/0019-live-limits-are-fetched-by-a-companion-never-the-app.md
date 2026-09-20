@@ -6,15 +6,16 @@ reads passively — a third channel for a Claude Reading beside this Companion
 and the statusline tap. The bounds below still bind the Companion.
 
 Codex writes Limit state into the logs the scan already reads, while Claude's
-lives with its vendor (and, since ADR-0027, in the desktop app's own history). A current gauge for either Source means presenting
-the Source CLI's stored OAuth token to its vendor. ADR-0013 forbids the app to
-handle credentials or fetch private usage remotely — its only remote calls
-today are unauthenticated public catalog fetches — so the fetch moves out of
-the app entirely, into a Companion: run because a person asked, it reads the
-credential document, asks the vendor, and writes an Export Artifact carrying
-live Limit state. Window observations are ingested as Limit Readings; current
-source-level state such as Codex's Usage Reset count is read from that same
-Artifact without becoming Reading history.
+lives with its vendor (and, since ADR-0027, in the desktop app's own history).
+A current gauge for either Source means presenting the Source CLI's stored
+OAuth token to its vendor. ADR-0013 forbids the app to handle credentials or
+fetch private usage remotely — its only remote calls today are unauthenticated
+public catalog fetches — so the fetch moves out of the app entirely, into a
+Companion: run because a person asked, it reads the credential document, asks
+the vendor, and writes an Export Artifact carrying live Limit state. Window
+observations are ingested as Limit Readings; current source-level state such
+as Codex's Usage Reset count is read from that same Artifact without becoming
+Reading history.
 
 This deliberately reaches further than ADR-0018's precedent, and says so
 rather than pretending otherwise: `antigravity-export` asks an

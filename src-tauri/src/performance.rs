@@ -462,6 +462,20 @@ fn performance_standard_limits_estimate() {
     let plan_label_plan = plan_of(&conn, queries::PLAN_LABEL_SQL);
     eprintln!("PERF limits_plan_label_plan {plan_label_plan}");
 
+    // Once per drawn window (a handful per page), and bounded by the band, not
+    // the table: it seeks the primary key's prefix (source, window_key,
+    // resets_at >= the band's floor) and sorts only that one epoch's Readings
+    // to keep a row. Pinned so a plan that stops seeking fails here.
+    let via_plan = plan_of(&conn, queries::DISPLAYED_VIA_SQL);
+    eprintln!("PERF limits_via_plan {via_plan}");
+    assert!(
+        via_plan.contains("SEARCH limit_readings")
+            && via_plan.contains("source=?")
+            && via_plan.contains("window_key=?")
+            && via_plan.contains("resets_at>?"),
+        "displayed_via must seek (source, window_key, resets_at) on the primary key, got: {via_plan}"
+    );
+
     // ── 1. page open: the first read of this data in this process ──
     let started = Instant::now();
     let cards = queries::limits(&conn, now, &std::env::temp_dir()).unwrap();

@@ -6,6 +6,7 @@ import {
   cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, panelCardOrder,
   panelCardRows, panelWindows, parsePanelCardPick, parsePanelPicks, planLabel,
   primaryWindows, tone, windowLabel, windowView,
+  resetLabel,
 } from './limits.derive';
 import type { ParsedWindow } from './limits.derive';
 
@@ -298,8 +299,16 @@ describe('card states', () => {
     expect(claude.state).toBe('live');
     expect(claude.note).toBe('signed-out');
     expect(claude.windows).toHaveLength(1);
-    expect(claude.plan).toBe('Team 5x');
-    expect(claude.usageResetsAvailable).toBe(2);
+    // Only the bars were asked for. The plan pill and the Usage Reset count
+    // are things the dead login vouched for, so they stay off the card.
+    expect(claude.plan).toBeNull();
+    expect(claude.usageResetsAvailable).toBeNull();
+  });
+
+  it('labels a reset once for every surface: unknown, counting down, or nothing', () => {
+    expect(resetLabel(windowView(win({ resetsAt: null }), 'left', NOW))).toBe('unknown');
+    expect(resetLabel(windowView(win({ resetsAt: NOW + 3600 }), 'left', NOW))).toBe(60);
+    expect(resetLabel(windowView(win({ resetsAt: NOW - 60 }), 'left', NOW))).toBeNull();
   });
 
   it('blanks a signed-out card whose every figure came through the login that failed', () => {

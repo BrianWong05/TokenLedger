@@ -99,23 +99,16 @@ describe('Source catalog', () => {
   it('derives metadata from the catalog and gives historical keys neutral fallback metadata', () => {
     expect(sourceMeta('claude')).toMatchObject({
       label: 'Claude', source: 'Claude Code', icon: 'claude', aliases: ['Claude Code'],
-      // Claude's transcripts plus the desktop app's own usage history, one
-      // entry per platform because each Electron user-data directory differs
-      // (ADR-0027). Matched the way every other Source's are, so adding a
-      // fifth artifact is not a test failure.
+      // Claude's transcripts plus the desktop app's own usage history
+      // (ADR-0027) — macOS only until the other platforms' Electron paths pass
+      // ADR-0012's validation gate. Matched the way every other Source's are,
+      // so a later platform entry is not a test failure.
       artifacts: expect.arrayContaining([
         expect.objectContaining({ id: 'projects', path: '.claude/projects', platforms: ['all'] }),
         expect.objectContaining({
           id: 'desktop-usage-macos',
           path: 'Library/Application Support/Claude/plan-usage-history.json',
-        }),
-        expect.objectContaining({
-          id: 'desktop-usage-windows',
-          path: 'AppData/Roaming/Claude/plan-usage-history.json',
-        }),
-        expect.objectContaining({
-          id: 'desktop-usage-linux',
-          path: '.config/Claude/plan-usage-history.json',
+          platforms: ['macos'],
         }),
       ]),
       platforms: ['all'], prerequisite: null,

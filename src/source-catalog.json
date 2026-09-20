@@ -9,9 +9,7 @@
       "icon": "claude",
       "artifacts": [
         { "id": "projects", "kind": "directory", "path": ".claude/projects", "environment": null, "suffix": null, "platforms": ["all"], "prerequisite": null },
-        { "id": "desktop-usage-macos", "kind": "file", "path": "Library/Application Support/Claude/plan-usage-history.json", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null },
-        { "id": "desktop-usage-windows", "kind": "file", "path": "AppData/Roaming/Claude/plan-usage-history.json", "environment": null, "suffix": null, "platforms": ["windows"], "prerequisite": null },
-        { "id": "desktop-usage-linux", "kind": "file", "path": ".config/Claude/plan-usage-history.json", "environment": null, "suffix": null, "platforms": ["linux"], "prerequisite": null }
+        { "id": "desktop-usage-macos", "kind": "file", "path": "Library/Application Support/Claude/plan-usage-history.json", "environment": null, "suffix": null, "platforms": ["macos"], "prerequisite": null }
       ],
       "capabilities": { "model": true, "project": true, "session": true, "tokenCategories": true, "context": true, "limits": "live" },
       "platforms": ["all"],

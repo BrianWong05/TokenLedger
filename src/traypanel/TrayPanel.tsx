@@ -28,6 +28,7 @@ import {
   cards, durationParts, panelCardOrder, panelWindows, parsePanelCardPick,
   parsePanelPicks, planLabel, windowLabel,
   type Mode as LimitsMode, type ParsedWindow, type WindowView,
+  resetLabel,
 } from '../limits/limits.derive';
 import { limits as limitStrings } from '../lib/strings/limits';
 import { windowText, type LimitT } from '../limits/limitLabel';
@@ -830,7 +831,7 @@ export default function TrayPanel({
                           </span>
                           <span className={'tp-limwin-pct tp-t-' + w.tone}>{w.pctShown}%</span>
                           <span className="tp-limwin-resets">
-                            {w.resetUnknown
+                            {resetLabel(w) === 'unknown'
                               ? 'reset unknown'
                               : w.resetsInMin !== null &&
                                 `resets in ${limitDuration(w.resetsInMin)}`}
@@ -848,7 +849,7 @@ export default function TrayPanel({
                           <span className="tp-limmeter-k">{windowText(EN, label).text}</span>
                           <span>
                             <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
-                            {w.resetUnknown ? (
+                            {resetLabel(w) === 'unknown' ? (
                               <span className="tp-limmeter-t">· reset unknown</span>
                             ) : (
                               w.resetsInMin !== null && (

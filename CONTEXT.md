@@ -522,6 +522,17 @@ not Codex's: any live Source's Companion may report a count, and the card
 shows what its Export Artifact proves.
 _Avoid_: Manual reset, reset credit, reset
 
+**Limit State Artifact**:
+The Artifact carrying one Source's current Limit state — the newest figure per
+window, with its reset where the Ledger could place that figure in a known
+epoch and unknown where it could not — written beside the Companion's Export
+Artifact by whoever can prove current state without proving history (today
+the scan, from the Claude desktop app's usage history, ADR-0027), and read by
+the Limits query as it assembles a card. State, not history: never a Limit
+Reading, replaced whole by the next write, and drawn only while newer than the
+Reading on the card and younger than its own window.
+_Avoid_: Cache, snapshot, sample
+
 **Update Notice**:
 The announcement that a release is available or that a relaunch applied one,
 made on exactly one surface (ADR-0026): the window's update card, dot, and

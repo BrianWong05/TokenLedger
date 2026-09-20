@@ -362,6 +362,13 @@ pub const STATE_SUFFIX: &str = ".tokenledger-limit-state.json";
 /// state rather than being guessed at.
 pub const STATE_SCHEMA: u32 = 1;
 
+/// How far a figure of unpublished window length may reach — when the desktop
+/// ingest looks for the epoch it belongs to, and when the Limits query decides
+/// whether a state figure is still current. Every named Claude window is
+/// weekly or shorter, so the weekly span is the widest an unknown one could
+/// plausibly be, and one number here keeps placement and freshness in step.
+pub const UNKNOWN_WINDOW_MINUTES: i64 = 10_080;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LimitState {
     pub schema: u32,

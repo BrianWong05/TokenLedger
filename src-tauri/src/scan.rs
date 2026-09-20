@@ -159,7 +159,7 @@ impl SourceRoots {
     /// stated in one data file that the frontend reads too. `None` on a
     /// platform the catalog names no path for.
     pub(crate) fn claude_desktop_history(&self, platform: &str) -> Option<PathBuf> {
-        // Exactly one of the three claims any given platform, so the first
+        // At most one catalog entry claims any given platform, so the first
         // match is the answer; an overlay wins, as it does everywhere else.
         CLAUDE_DESKTOP_USAGE_IDS.iter().find_map(|id| {
             let definition = source_catalog::artifact("claude", id)?;
@@ -467,16 +467,12 @@ impl SourceRoots {
 /// the editor Artifacts.
 const CLINE_CLI_ROOT_CHAIN: [&str; 3] = ["cli-data", "cli-sandbox", "cli-default-data"];
 
-/// The Claude desktop app's Electron userData path, per platform. The Windows
-/// and Linux spellings are Electron's documented defaults and are UNVERIFIED —
-/// nobody has seen the desktop app write either one; the macOS path is the one
-/// observed in the wild. A path that turns out wrong reads as a missing file,
-/// which is the same as not having the desktop app installed.
-const CLAUDE_DESKTOP_USAGE_IDS: [&str; 3] = [
-    "desktop-usage-macos",
-    "desktop-usage-windows",
-    "desktop-usage-linux",
-];
+/// The Claude desktop app's Electron userData path, per platform — macOS only
+/// today, the one path observed in the wild. Electron's defaults name the
+/// others (`AppData/Roaming/Claude` on Windows, `.config/Claude` on Linux), but
+/// a Source Catalog entry lands only behind ADR-0012's validation gate, so they
+/// join this list once someone has seen the desktop app write them.
+const CLAUDE_DESKTOP_USAGE_IDS: [&str; 1] = ["desktop-usage-macos"];
 
 fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
     let path = source_catalog::artifact(source, artifact)
@@ -1043,12 +1039,9 @@ mod tests {
             }).collect::<Vec<_>>(),
             [
                 ("claude", "projects", ".claude/projects"),
-                // The desktop app's own usage history (ADR-0027), one path per
-                // platform. Windows and Linux are Electron's defaults and are
-                // unverified; a wrong one reads as a missing file.
+                // The desktop app's own usage history (ADR-0027): macOS only
+                // until the other platforms' paths pass ADR-0012's gate.
                 ("claude", "desktop-usage-macos", "Library/Application Support/Claude/plan-usage-history.json"),
-                ("claude", "desktop-usage-windows", "AppData/Roaming/Claude/plan-usage-history.json"),
-                ("claude", "desktop-usage-linux", ".config/Claude/plan-usage-history.json"),
                 ("codex", "sessions", ".codex/sessions"),
                 ("copilot", "session-store", ".copilot/session-store.db"),
                 ("gemini", "tmp", ".gemini/tmp"),
