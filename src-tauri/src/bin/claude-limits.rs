@@ -1257,6 +1257,26 @@ mod tests {
     }
 
     #[test]
+    fn the_first_candidate_that_answers_is_the_document_not_a_later_one() {
+        // Two items both carrying a sign-in — the plain spelling and a hashed one
+        // left by an older Claude Code — are two logins, and the walk's ORDER is
+        // what picks the plain one. A walk that fell through to a later hit, or
+        // probed the spellings backwards, would present the other identity and
+        // read its Limits instead. This is the case the fall-through must not
+        // touch: only a BLANK item yields its place.
+        let later = r#"{"claudeAiOauth":{"accessToken":"sk-keystore-later"}}"#;
+        let found = resolve_credential_document(
+            &candidates(),
+            keystore(vec![
+                (CANDIDATES[0], Ok(Some(IN_KEYSTORE))),
+                (CANDIDATES[1], Ok(Some(later))),
+            ]),
+            || Some(IN_FILE.to_string()),
+        );
+        assert_eq!(found.as_deref(), Ok(IN_KEYSTORE), "the first spelling that answers wins");
+    }
+
+    #[test]
     fn with_no_file_to_fall_through_to_a_blank_item_is_a_signed_out_computer() {
         let trouble = resolve_credential_document(
             &candidates(),
