@@ -1,7 +1,12 @@
 # Live Limits are fetched by a Companion, never by the app
 
+**Amended by ADR-0027**: Claude's Limit state no longer lives only with its
+vendor. The Claude desktop app keeps a usage history on disk that the scan
+reads passively — a third channel for a Claude Reading beside this Companion
+and the statusline tap. The bounds below still bind the Companion.
+
 Codex writes Limit state into the logs the scan already reads, while Claude's
-lives only with its vendor. A current gauge for either Source means presenting
+lives with its vendor (and, since ADR-0027, in the desktop app's own history). A current gauge for either Source means presenting
 the Source CLI's stored OAuth token to its vendor. ADR-0013 forbids the app to
 handle credentials or fetch private usage remotely — its only remote calls
 today are unauthenticated public catalog fetches — so the fetch moves out of

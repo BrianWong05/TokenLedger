@@ -246,10 +246,15 @@ function Card({
           </span>
         )}
         {fresh && (
+          // Every key takes what it needs from the same two facts and ignores
+          // the rest: "checked just now" interpolates neither, the desktop copy
+          // names the Source, and the aged copies take the duration. Only the
+          // logs card's day-old figures go amber.
           <span className={'tl-lim-fresh' + (fresh.key === 'observedOld' ? ' old' : '')}>
-            {fresh.key === 'checkedNow'
-              ? t('limits.checkedNow')
-              : fill(t(`limits.${fresh.key}` as 'limits.checkedAgo'), { t: fmtDuration(t, fresh.ageMin) })}
+            {fill(t(`limits.${fresh.key}` as 'limits.checkedAgo'), {
+              t: fmtDuration(t, fresh.ageMin),
+              label: card.meta.label,
+            })}
           </span>
         )}
       </div>
@@ -260,6 +265,19 @@ function Card({
           empty there. */}
       {card.state !== 'live' && <Trouble card={card} t={t} onRetry={onRetry} />}
       {card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)}
+      {/* The one trouble that does NOT lead: a sign-in that died while the
+          desktop app's figures keep arriving. Those bars are still true, so
+          the verdict follows them as a single line, with the same way back. */}
+      {card.note === 'signed-out' && (
+        <div className="tl-lim-cardnote">
+          <span className="hint">
+            {fill(t('limits.liveUnavailableNote'), { cli: card.source, label: card.meta.label })}
+          </span>
+          <button type="button" className="tl-lim-ghost" onClick={onRetry}>
+            {t('limits.checkAgain')}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -297,8 +315,12 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
               </>
             )}
           </span>
+          {/* A figure with no reset says so in the same slot — its copy takes
+              no duration, because there is no instant to name. */}
           <span className={'tl-lim-resets' + (spent ? ' spent' : '')}>
-            {resets && fill(t(spent ? 'limits.spent' : 'limits.resetsIn'), { t: resets })}
+            {w.resetUnknown
+              ? t(spent ? 'limits.spentUnknown' : 'limits.resetUnknown')
+              : resets && fill(t(spent ? 'limits.spent' : 'limits.resetsIn'), { t: resets })}
           </span>
         </div>
         <div

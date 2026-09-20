@@ -464,8 +464,11 @@ _Avoid_: Rate limit, quota, allowance, cap, throttle
 
 **Limit Reading**:
 One observation of a Limit at a moment — how much of the window is used, and
-when it resets — parsed from a Source's own logs or fetched by a Companion
-(ADR-0019). Not a Usage Record: it holds no tokens, and the
+when it resets — parsed from a Source's own logs, fetched by a Companion
+(ADR-0019), or read from the usage history the Claude desktop app keeps on
+disk (ADR-0027), the last only when the epoch it belongs to is already known
+from another Reading; a desktop figure with no known reset is current state,
+shown but never stored. Not a Usage Record: it holds no tokens, and the
 Ledger holds Usage Records only, so Readings persist beside the Ledger —
 append-only, a new valid Reading never replacing an old one, with cards
 presenting the newest valid Reading and the stored series feeding the

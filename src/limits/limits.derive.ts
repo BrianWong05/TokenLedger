@@ -81,6 +81,15 @@ export interface WindowView {
   tickPct: number | null;
   /** The reading's epoch had already rolled when we read it. */
   expired: boolean;
+  /**
+   * Nobody named a reset for this figure — the desktop app's history carries
+   * none (ADR-0027). Distinct from `expired`, which is a reset that has been
+   * and gone: this one was never known, so the row says so rather than
+   * counting down to an instant or synthesising a full window.
+   */
+  resetUnknown: boolean;
+  /** The channel the figure this row draws came through. */
+  via: LimitWindow['via'];
   /** The evidence line's content, or null when the wire broke its own rule. */
   estimate: EstimateView | null;
 }
@@ -95,7 +104,18 @@ export interface CardView {
   usageResetsAvailable: number | null;
   /** Epoch seconds of the newest observation behind these windows, or null. */
   observedAt: number | null;
+  /**
+   * The channel that newest observation came through, or null when the card
+   * draws nothing. `observedAt` and this name the SAME window, so the one
+   * freshness line cannot date one fact and describe another.
+   */
+  freshVia: LimitWindow['via'] | null;
   windows: WindowView[];
+  /**
+   * A trouble the card carries as a line under its bars rather than as its
+   * whole face, because the figures above it are still true.
+   */
+  note?: 'signed-out';
   /** The Companion's own failure line, shown verbatim on an error card. */
   detail?: string;
 }
@@ -161,10 +181,16 @@ export function nextDueAt(stored: SourceLimits[], nowSec: number): number | null
  * to when its session started, so projecting `resets_at + n·duration` for it
  * would draw exactly the forecast that ticket removed. Drawing none is the
  * honest branch; the card's freshness line is what explains the age.
+ *
+ * A figure with no reset at all (ADR-0027: the desktop app's history names
+ * none) is neither current-epoch nor expired — nothing was ever proved about
+ * its epoch. It draws the figure it carries, says its reset is unknown, and
+ * gets no tick, because there is no axis and no instant to count down to.
  */
 export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowView {
   const durationMin = w.windowMinutes ?? null;
-  const expired = w.resetsAt <= nowSec;
+  const resetUnknown = w.resetsAt === null;
+  const expired = w.resetsAt !== null && w.resetsAt <= nowSec;
   const pctLeft = expired ? 100 : Math.max(0, Math.min(100, 100 - w.usedPct));
   // The spec's displayed percentage: the USED figure rounds, and Left is
   // 100 − that — never a rounding of the raw remainder, which lands one point
@@ -172,7 +198,7 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
   const usedShown = expired ? 0 : Math.round(Math.max(0, Math.min(100, w.usedPct)));
   const pctLeftShown = 100 - usedShown;
 
-  const resetsInMin = expired ? null : (w.resetsAt - nowSec) / 60;
+  const resetsInMin = w.resetsAt === null || expired ? null : (w.resetsAt - nowSec) / 60;
 
   const timeLeftPct =
     resetsInMin !== null && durationMin && durationMin > 0
@@ -189,6 +215,8 @@ export function windowView(w: LimitWindow, mode: Mode, nowSec: number): WindowVi
     resetsInMin,
     tickPct: timeLeftPct === null ? null : mode === 'left' ? timeLeftPct : 100 - timeLeftPct,
     expired,
+    resetUnknown,
+    via: w.via,
   };
 
   return { ...bar, estimate: estimateView(w.estimate, bar) };
@@ -356,13 +384,23 @@ export function cards(
     );
     const windows = shown.map((w) => windowView(w, mode, nowSec));
     // Dated by what it draws: a window the card hides cannot be the check the
-    // freshness line is reporting the age of.
-    const observedAt = shown.length ? Math.max(...shown.map((w) => w.observedAt)) : null;
+    // freshness line is reporting the age of. The channel comes off that same
+    // window, so the line can name the newest fact rather than the Source's
+    // catalogued acquisition mode.
+    const newest = shown.reduce<LimitWindow | null>(
+      (best, w) => (best === null || w.observedAt > best.observedAt ? w : best),
+      null,
+    );
     const failure = failures[meta.key];
+    // A desktop figure (ADR-0027) does not come from the sign-in the Companion
+    // reports dead, so a failed sign-in is no reason to doubt it.
+    const fromDesktop = shown.some((w) => w.via === 'desktop');
 
     const state: CardState =
       failure === 'signed-out'
-        ? 'signed-out'
+        ? fromDesktop
+          ? 'live'
+          : 'signed-out'
         : failure
           ? 'error'
           : windows.length
@@ -378,14 +416,19 @@ export function cards(
       state,
       plan: state === 'live' ? (held?.plan ?? null) : null,
       usageResetsAvailable: state === 'live' ? (held?.usageResetsAvailable ?? null) : null,
-      observedAt,
+      observedAt: newest?.observedAt ?? null,
+      freshVia: newest?.via ?? null,
       // An error card keeps its held windows: the failure line says why the
       // figures could not refresh, and the dated rows say what is still known —
       // a bare error card made a refused check look like having nothing at all.
-      // The other trouble states stay bare: signed-out figures could belong to
-      // a login that is gone (the same rule that keeps the Companion's cache
+      // The other trouble states stay bare: a live-channel figure could belong
+      // to a login that is gone (the same rule that keeps the Companion's cache
       // from answering a 401), and nothing-recorded has nothing to show.
       windows: state === 'live' || state === 'error' ? windows : [],
+      // A card that kept its bars through a dead sign-in still has to say the
+      // sign-in is dead — as a line under those bars rather than in place of
+      // them, because a desktop figure stays true while the login is broken.
+      ...(state === 'live' && failure === 'signed-out' ? { note: 'signed-out' as const } : {}),
       ...(failure && failure !== 'signed-out' ? { detail: failure.detail } : {}),
     };
   });
@@ -410,19 +453,31 @@ export function durationParts(minutes: number): { unit: 'd' | 'h' | 'm'; n: numb
 }
 
 /**
- * Per-card freshness. A `live` card reports the age of its fetch; a `logs` card
- * reports the age of the last request it read, turning amber past a day because
- * that is how old the figures themselves are. Staleness of a *bar* is judged
- * separately, per window, against that window's own reset.
+ * Per-card freshness: the age of the newest fact the card draws, described by
+ * the channel that fact came through — not by the Source's catalogued
+ * acquisition mode, which says how a Source *can* be read rather than how the
+ * figure on screen *was*. A fetch reports its own age, a desktop figure names
+ * the app it was read from, and a logs figure reports the age of the last
+ * request, turning amber past a day because that is how old the figures
+ * themselves are. Staleness of a *bar* is judged separately, per window,
+ * against that window's own reset.
  */
 export function freshness(
   card: CardView,
   nowSec: number,
-): { key: 'checkedNow' | 'checkedAgo' | 'observedAgo' | 'observedOld'; ageMin: number } | null {
+): {
+  key: 'checkedNow' | 'checkedAgo' | 'desktopNow' | 'desktopAgo' | 'observedAgo' | 'observedOld';
+  ageMin: number;
+} | null {
   if (card.observedAt === null) return null;
   const ageMin = Math.max(0, (nowSec - card.observedAt) / 60);
-  if (card.via === 'live') {
-    return { key: ageMin < 0.5 ? 'checkedNow' : 'checkedAgo', ageMin };
+  // Under half a minute reads as "just now" rather than rounding to "0m ago".
+  const justNow = ageMin < 0.5;
+  if (card.freshVia === 'live') {
+    return { key: justNow ? 'checkedNow' : 'checkedAgo', ageMin };
+  }
+  if (card.freshVia === 'desktop') {
+    return { key: justNow ? 'desktopNow' : 'desktopAgo', ageMin };
   }
   return { key: ageMin > 1440 ? 'observedOld' : 'observedAgo', ageMin };
 }

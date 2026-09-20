@@ -903,10 +903,22 @@ pub struct LimitWindow {
     pub window_minutes: Option<i64>,
     /// The vendor's own figure, unconverted.
     pub used_pct: f64,
-    #[ts(type = "number")]
-    pub resets_at: i64,
+    /// When this window next resets. Absent is "reset unknown", which only a
+    /// desktop state figure produces: the Claude desktop app's history names no
+    /// reset at all, so a figure the Ledger could not place in a known epoch
+    /// says so rather than naming an instant nobody proved. Every figure that
+    /// came from a stored Limit Reading carries its epoch.
+    #[ts(type = "number | null")]
+    pub resets_at: Option<i64>,
     #[ts(type = "number")]
     pub observed_at: i64,
+    /// The channel the figure shown here came through: `live` (a Companion's
+    /// fetch, ADR-0019), `logs` (an Artifact the scan already walks), or
+    /// `desktop` (the Claude desktop app's own usage history, ADR-0027). It
+    /// describes the NEWEST observation on this row, not the window's history —
+    /// a window whose Readings came from two channels names the one being drawn.
+    #[ts(type = "\"live\" | \"logs\" | \"desktop\"")]
+    pub via: String,
     /// Exactly one tagged evaluation, sharing this query's single
     /// `evaluatedAt` with every other window in the response.
     pub estimate: LimitEstimateEvaluation,
@@ -1081,6 +1093,23 @@ pub const DISPLAYED_WINDOWS_SQL: &str =
      GROUP BY r.source, r.window_key \
      ORDER BY r.source, MAX(r.window_minutes), r.window_key";
 
+/// Which channel a drawn window's newest observation came through. Separate
+/// from the statement above because that one aggregates each column
+/// independently — `MAX(used_pct)` and `MAX(observed_at)` need not come from
+/// one row — and a channel is not a figure to take a maximum of. `?3` is the
+/// bottom of the displayed epoch's jitter band, which is exactly
+/// `MAX(resets_at) - EPOCH_JITTER_SECS` of the row this answers for. Exported
+/// beside the others so a profile can `EXPLAIN` what the page issues.
+pub const DISPLAYED_VIA_SQL: &str = "SELECT via FROM limit_readings \
+     WHERE source = ?1 AND window_key = ?2 AND resets_at >= ?3 \
+     ORDER BY observed_at DESC, used_pct DESC LIMIT 1";
+
+/// How far a state figure may reach for a window whose length nobody has
+/// published: the widest any named Claude window is. Matches the bound the
+/// desktop ingest places an unplaceable entry by, so freshness and placement
+/// answer to one number.
+const UNKNOWN_STATE_WINDOW_MINUTES: i64 = 10_080;
+
 /// The current state of every Limit the Ledger holds Readings for: per
 /// (source, window_key) the newest epoch, and within it the highest `used_pct`
 /// — "the newest valid Reading" (CONTEXT.md). `used_pct` is effectively
@@ -1190,6 +1219,7 @@ pub fn limits(
     }
 
     let mut cards: Vec<SourceLimits> = Vec::new();
+    let mut via_stmt = conn.prepare(DISPLAYED_VIA_SQL)?;
     for (source, window_key, window_minutes, used_pct, resets_at, observed_at, current, evaluation) in
         evaluated
     {
@@ -1198,12 +1228,20 @@ pub fn limits(
         // twenty-two reasons there are, and a page that reported only the
         // estimator's would explain almost nothing.
         let refusals = evidence.refusals(&source, &window_key);
+        // The channel of the newest Reading inside the band this row is drawn
+        // from. The row exists because the band holds at least one Reading, so
+        // this always answers.
+        let via: String = via_stmt.query_row(
+            (&source, &window_key, resets_at - EPOCH_JITTER_SECS),
+            |r| r.get(0),
+        )?;
         let window = LimitWindow {
             window_key,
             window_minutes,
             used_pct,
-            resets_at,
+            resets_at: Some(resets_at),
             observed_at,
+            via,
             estimate: on_the_wire(evaluation, current, refusals)?,
         };
         match cards.last_mut() {
@@ -1241,6 +1279,7 @@ pub fn limits(
         }
     }
     drop(plan_stmt);
+    drop(via_stmt);
     drop(stmt);
     read.finish()?;
 
@@ -1266,9 +1305,131 @@ pub fn limits(
                 card.usage_resets_available = export.usage_resets_available;
             }
         }
+        overlay_state_figures(&mut cards, limit_exports, evaluated_at, &partitions, &evidence)?;
     }
 
     Ok(cards)
+}
+
+/// Overlay each live Source's CURRENT Limit state onto the cards the Readings
+/// built (glossary: Usage Reset — "current state, not a Reading", and this is
+/// the same status). The Claude desktop app's history is the one producer of a
+/// state Artifact today; nothing here names it, so the next Source that can
+/// prove current state without proving history is a catalog entry and a
+/// writer.
+///
+/// Read outside the database snapshot, exactly as the Usage Reset count is: a
+/// file was never part of the transaction's view, and pretending otherwise
+/// would buy consistency the filesystem cannot give.
+///
+/// One rule decides each window: the NEWEST observation wins, and a figure
+/// older than its own window's length is not drawn at all — a five-hour figure
+/// from yesterday describes an epoch that has since reset, and showing it would
+/// be worse than showing nothing. With one exception, which is the case this
+/// overlay exists for: where the newest stored Reading's epoch has already
+/// expired, a fresh state figure wins whatever their instants say, because the
+/// alternative is a card drawing a finished window as though it were the
+/// current one.
+fn overlay_state_figures(
+    cards: &mut Vec<SourceLimits>,
+    limit_exports: &std::path::Path,
+    evaluated_at: i64,
+    partitions: &[limits_evidence::PartitionEvidence],
+    evidence: &limits_evidence::Evidence,
+) -> Result<(), LimitsError> {
+    let mut added = false;
+    for source in crate::source_catalog::catalog()
+        .sources
+        .iter()
+        .filter(|s| s.capabilities.limits.as_deref() == Some("live"))
+    {
+        let Some(state) = crate::limits_artifact::read_state(limit_exports, &source.key) else {
+            continue;
+        };
+        let index = match cards.iter().position(|card| card.source == source.key) {
+            Some(index) => index,
+            None => {
+                // A Source whose Limits the Ledger holds no Reading of at all
+                // still has a card's worth to say when its desktop history is
+                // fresh — that is the whole first-run case: the app installed,
+                // no Companion ever run, and a month of the vendor's own
+                // figures sitting on disk.
+                added = true;
+                cards.push(SourceLimits {
+                    source: source.key.clone(),
+                    plan: None,
+                    usage_resets_available: None,
+                    windows: Vec::new(),
+                });
+                cards.len() - 1
+            }
+        };
+
+        for figure in &state.windows {
+            let minutes = figure.window_minutes.unwrap_or(UNKNOWN_STATE_WINDOW_MINUTES);
+            if evaluated_at - state.observed_at > minutes * 60 {
+                continue;
+            }
+            let card = &mut cards[index];
+            match card.windows.iter_mut().find(|w| w.window_key == figure.key) {
+                Some(window) => {
+                    // The newest observation wins, whichever channel made it.
+                    // A finished epoch is no exception: a state figure OLDER
+                    // than the Reading drawn from that epoch is an earlier look
+                    // at the same finished window, and drawing it would report
+                    // a spent window as current. Only a figure the desktop app
+                    // recorded AFTER that Reading says anything new — and that
+                    // is exactly the figure the page otherwise draws as unused.
+                    if state.observed_at <= window.observed_at {
+                        continue;
+                    }
+                    window.used_pct = figure.used_pct;
+                    window.resets_at = figure.resets_at;
+                    window.observed_at = state.observed_at;
+                    window.via = state.via.clone();
+                    // `window_minutes` is left alone: the key is the same
+                    // window, and the length a Reading of it carries came from
+                    // the vendor's own answer rather than from this side's map.
+                }
+                None => {
+                    // No Reading of this window has ever been stored, so there
+                    // is nothing to evaluate from: the readiness policy is
+                    // asked with no current Reading and answers Blocked,
+                    // naming the missing fact. That is the honest shape — an
+                    // estimate needs a Reading, and a state figure is not one.
+                    let evaluation =
+                        limits_readiness::evaluate(None, partitions, evaluated_at);
+                    let estimate = on_the_wire(
+                        evaluation,
+                        None,
+                        evidence.refusals(&source.key, &figure.key),
+                    )?;
+                    card.windows.push(LimitWindow {
+                        window_key: figure.key.clone(),
+                        window_minutes: figure.window_minutes,
+                        used_pct: figure.used_pct,
+                        resets_at: figure.resets_at,
+                        observed_at: state.observed_at,
+                        via: state.via.clone(),
+                        estimate,
+                    });
+                }
+            }
+        }
+    }
+
+    // The orders the Readings' own statement produced, restored over whatever
+    // the overlay appended: cards by Source, windows by length then key.
+    if added {
+        cards.retain(|card| !card.windows.is_empty());
+        cards.sort_by(|a, b| a.source.cmp(&b.source));
+    }
+    for card in cards.iter_mut() {
+        card.windows.sort_by(|a, b| {
+            (a.window_minutes, &a.window_key).cmp(&(b.window_minutes, &b.window_key))
+        });
+    }
+    Ok(())
 }
 
 /// An evaluation, reduced to what the page is allowed to see.
@@ -2674,7 +2835,7 @@ mod tests {
         );
         let weekly = &codex.windows[1];
         assert_eq!(weekly.used_pct, 44.0, "the newest epoch's highest fill, not the older 90%");
-        assert_eq!(weekly.resets_at, 1_786_879_487, "the epoch's own reset instant");
+        assert_eq!(weekly.resets_at, Some(1_786_879_487), "the epoch's own reset instant");
         assert_eq!(weekly.observed_at, 1_786_331_900, "and its newest observation");
     }
 
@@ -2691,5 +2852,337 @@ mod tests {
         let cards = limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap();
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].plan, None, "an absent plan is unknown, never guessed");
+    }
+
+    // ── Current Limit state overlaid on the cards (ADR-0027) ──
+
+    use crate::limits_artifact::{LimitState, LimitStateWindow, STATE_SCHEMA};
+
+    /// One Source's current state, as the desktop channel writes it.
+    fn state_of(
+        dir: &std::path::Path,
+        source: &str,
+        observed_at: i64,
+        windows: Vec<LimitStateWindow>,
+    ) {
+        crate::limits_artifact::write_state(
+            dir,
+            &LimitState {
+                schema: STATE_SCHEMA,
+                source: source.to_string(),
+                via: "desktop".to_string(),
+                observed_at,
+                windows,
+            },
+        )
+        .unwrap();
+    }
+
+    fn state_window(key: &str, minutes: Option<i64>, used_pct: f64, resets_at: Option<i64>) -> LimitStateWindow {
+        LimitStateWindow { key: key.to_string(), window_minutes: minutes, used_pct, resets_at }
+    }
+
+    #[test]
+    fn a_state_figure_newer_than_the_drawn_reading_is_what_the_card_shows() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 7_200, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+        // Newer than the Reading, and inside an epoch nobody has proven — so it
+        // says "reset unknown" rather than naming the Reading's instant.
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 600,
+            vec![state_window("w10080", Some(10_080), 47.0, None)],
+        );
+
+        let window = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows[0];
+        assert_eq!(window.used_pct, 47.0);
+        assert_eq!(window.observed_at, EVALUATED_AT - 600);
+        assert_eq!(window.via, "desktop");
+        assert_eq!(window.resets_at, None, "unknown, never the older Reading's epoch");
+    }
+
+    #[test]
+    fn a_state_figure_older_than_the_drawn_reading_is_ignored() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 7_200,
+            vec![state_window("w10080", Some(10_080), 12.0, None)],
+        );
+
+        let window = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows[0];
+        assert_eq!(window.used_pct, 40.0, "the newest observation wins, whichever channel it is");
+        assert_eq!(window.via, "live");
+        assert_eq!(window.resets_at, Some(EVALUATED_AT + 86_400));
+    }
+
+    #[test]
+    fn a_state_figure_older_than_its_own_window_is_not_drawn_at_all() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // One stored Reading of an epoch that has already finished — the case
+        // where a state figure is allowed to take a window over. Six hours old
+        // is inside a week and well past five hours, so one figure of the state
+        // document may and the other may not.
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 7 * 3_600, EVALUATED_AT - 3_600)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 6 * 3_600,
+            vec![
+                // A five-hour figure from six hours ago describes an epoch that
+                // has since reset; drawing it would be worse than drawing
+                // nothing, and no Reading of this window exists to fall back to.
+                state_window("w300", Some(300), 99.0, None),
+                state_window("w10080", Some(10_080), 21.0, None),
+            ],
+        );
+
+        let windows = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows;
+        assert!(
+            !windows.iter().any(|w| w.window_key == "w300"),
+            "a figure older than its own window is not a window the card has",
+        );
+        // Its weekly sibling, from the same instant, is still inside its window
+        // — so the bound is per window, not per document — and it takes over
+        // the finished epoch's row.
+        let weekly = windows.iter().find(|w| w.window_key == "w10080").unwrap();
+        assert_eq!((weekly.used_pct, weekly.via.as_str()), (21.0, "desktop"));
+    }
+
+    #[test]
+    fn a_state_figure_older_than_its_window_never_revives_a_finished_epoch() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // The expired-epoch override is not a licence to draw anything: the
+        // stored epoch is finished AND the state figure is older than its own
+        // window, so neither is current and the finished Reading still stands
+        // rather than being replaced by something even less current.
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 9 * 86_400, EVALUATED_AT - 86_400)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 8 * 86_400,
+            vec![state_window("w10080", Some(10_080), 77.0, None)],
+        );
+
+        let window = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows[0];
+        assert_eq!((window.used_pct, window.via.as_str()), (40.0, "live"));
+    }
+
+    #[test]
+    fn a_fresh_state_figure_beats_a_stored_epoch_that_has_already_reset() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // The stored epoch finished a minute ago and the desktop app has
+        // spoken since: drawing the finished Reading would report a spent
+        // window as the live one, so the newer figure wins even though the
+        // Ledger cannot yet name the epoch it belongs to.
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 120, EVALUATED_AT - 60)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 30,
+            vec![state_window("w10080", Some(10_080), 3.0, None)],
+        );
+
+        let window = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows[0];
+        assert_eq!(window.used_pct, 3.0, "the newer figure, not the finished epoch's");
+        assert_eq!(window.via, "desktop");
+        assert_eq!(window.resets_at, None);
+    }
+
+    #[test]
+    fn a_state_figure_older_than_a_finished_epochs_reading_does_not_replace_it() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // The epoch finished, but the desktop app's last word predates the
+        // Reading drawn from it: that figure is an earlier look at the same
+        // finished window, so the Reading stands (and the page draws the
+        // finished epoch as spent, which is what is known) rather than an
+        // older percentage wearing "reset unknown".
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 120, EVALUATED_AT - 60)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 900,
+            vec![state_window("w10080", Some(10_080), 3.0, None)],
+        );
+
+        let window = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows[0];
+        assert_eq!(
+            (window.used_pct, window.via.as_str(), window.resets_at),
+            (40.0, "live", Some(EVALUATED_AT - 60)),
+            "an older figure never outranks a newer Reading, finished epoch or not",
+        );
+    }
+
+    #[test]
+    fn a_window_no_reading_ever_named_appears_from_state_alone() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 300,
+            vec![state_window("w300", Some(300), 62.0, Some(EVALUATED_AT + 1_800))],
+        );
+
+        let windows = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows;
+        // Ordered by length, so the new session window precedes the weekly one.
+        assert_eq!(
+            windows.iter().map(|w| w.window_key.as_str()).collect::<Vec<_>>(),
+            ["w300", "w10080"],
+        );
+        let fresh = &windows[0];
+        assert_eq!(fresh.used_pct, 62.0);
+        assert_eq!(fresh.via, "desktop");
+        assert_eq!(fresh.resets_at, Some(EVALUATED_AT + 1_800));
+        // A state figure is not a Reading, so there is nothing to estimate
+        // from — and the evaluation says which fact is missing rather than
+        // being absent or half-built.
+        assert_eq!(fresh.estimate.outcome, LimitEstimateOutcome::Blocked);
+        assert_eq!(fresh.estimate.evaluated_at, EVALUATED_AT);
+        assert_eq!(fresh.estimate.policy_version, "limit-token-estimate-v1");
+        assert_eq!(
+            fresh.estimate.explanation.reason_codes,
+            vec![ReasonCode::NoCurrentReading],
+        );
+    }
+
+    #[test]
+    fn a_source_with_no_readings_at_all_still_gets_its_state_card() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // The first-run shape: a Companion has never run, so the Ledger holds
+        // no Claude Reading, and the desktop app's history is all there is.
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+        state_of(
+            &exports,
+            "claude",
+            EVALUATED_AT - 300,
+            vec![state_window("five_hour", Some(300), 18.0, None)],
+        );
+
+        let cards = limits(&conn, EVALUATED_AT, &exports).unwrap();
+        // Cards stay in Source order, whichever produced them.
+        assert_eq!(cards.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["claude", "codex"]);
+        assert_eq!(cards[0].plan, None, "state proves no plan, and unknown is never guessed");
+        assert_eq!(cards[0].windows[0].used_pct, 18.0);
+        assert_eq!(cards[0].windows[0].via, "desktop");
+    }
+
+    #[test]
+    fn a_window_of_unpublished_length_is_bounded_by_the_widest_one_there_is() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400)],
+        )
+        .unwrap();
+        // Six days old, and the vendor has never published this window's length.
+        // Bounded by the widest window it could be rather than drawn forever or
+        // refused outright.
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 6 * 86_400,
+            vec![state_window("promotional", None, 14.0, None)],
+        );
+        let windows = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows;
+        let promo = windows.iter().find(|w| w.window_key == "promotional").unwrap();
+        assert_eq!((promo.used_pct, promo.window_minutes), (14.0, None));
+
+        // Eight days old is past that bound, and it is not drawn.
+        state_of(
+            &exports,
+            "codex",
+            EVALUATED_AT - 8 * 86_400,
+            vec![state_window("promotional", None, 14.0, None)],
+        );
+        let windows = &limits(&conn, EVALUATED_AT, &exports).unwrap()[0].windows;
+        assert!(!windows.iter().any(|w| w.window_key == "promotional"));
+    }
+
+    #[test]
+    fn a_state_artifact_with_nothing_fresh_leaves_no_empty_card_behind() {
+        let dir = tempdir().unwrap();
+        let exports = dir.path().join("limit-exports");
+        let conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        state_of(
+            &exports,
+            "claude",
+            EVALUATED_AT - 30 * 86_400,
+            vec![state_window("five_hour", Some(300), 18.0, None)],
+        );
+        assert_eq!(limits(&conn, EVALUATED_AT, &exports).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn a_drawn_window_names_the_channel_of_its_newest_observation() {
+        let dir = tempdir().unwrap();
+        let mut conn = db::open_db(&dir.path().join("t.db")).unwrap();
+        // One epoch, two channels: the Companion's fetch, then a later log
+        // Reading of the same window. The row is drawn from the highest
+        // percentage; the channel is the latest observation's.
+        let mut logged = proven_reading(44.0, EVALUATED_AT - 60, EVALUATED_AT + 86_400);
+        logged.via = "logs".to_string();
+        db::insert_limit_readings(
+            &mut conn,
+            &[proven_reading(40.0, EVALUATED_AT - 600, EVALUATED_AT + 86_400), logged],
+        )
+        .unwrap();
+
+        let window = &limits(&conn, EVALUATED_AT, std::path::Path::new("")).unwrap()[0].windows[0];
+        assert_eq!(window.used_pct, 44.0);
+        assert_eq!(window.via, "logs", "the newest observation's channel, not the oldest");
     }
 }

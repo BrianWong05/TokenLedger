@@ -25,6 +25,7 @@ use crate::adapters::workbuddy::scan_workbuddy;
 use crate::adapters::zed::scan_zed;
 use crate::db::prune_missing_files;
 use crate::limits_artifact;
+use crate::limits_desktop;
 use crate::source_catalog;
 use crate::types::{ScanStatus, SourceScanResult, SourceStatus};
 
@@ -150,6 +151,24 @@ impl SourceRoots {
     fn artifact_path(&self, source: &str, id: &str) -> PathBuf {
         self.overlay_first(source, id)
             .unwrap_or_else(|| catalog_root(&self.home, source, id))
+    }
+
+    /// The Claude desktop app's own usage history on this platform, wherever
+    /// the catalog puts it — resolved through the catalog like every other
+    /// Artifact, never through a platform directory helper, so the path is
+    /// stated in one data file that the frontend reads too. `None` on a
+    /// platform the catalog names no path for.
+    pub(crate) fn claude_desktop_history(&self, platform: &str) -> Option<PathBuf> {
+        // Exactly one of the three claims any given platform, so the first
+        // match is the answer; an overlay wins, as it does everywhere else.
+        CLAUDE_DESKTOP_USAGE_IDS.iter().find_map(|id| {
+            let definition = source_catalog::artifact("claude", id)?;
+            if !artifact_on_platform(definition, platform) {
+                return None;
+            }
+            self.overlay_first("claude", id)
+                .or_else(|| definition.path.as_deref().map(|path| self.home.join(path)))
+        })
     }
 
     pub(crate) fn cline_roots(&self, platform: &str) -> Vec<PathBuf> {
@@ -448,6 +467,17 @@ impl SourceRoots {
 /// the editor Artifacts.
 const CLINE_CLI_ROOT_CHAIN: [&str; 3] = ["cli-data", "cli-sandbox", "cli-default-data"];
 
+/// The Claude desktop app's Electron userData path, per platform. The Windows
+/// and Linux spellings are Electron's documented defaults and are UNVERIFIED —
+/// nobody has seen the desktop app write either one; the macOS path is the one
+/// observed in the wild. A path that turns out wrong reads as a missing file,
+/// which is the same as not having the desktop app installed.
+const CLAUDE_DESKTOP_USAGE_IDS: [&str; 3] = [
+    "desktop-usage-macos",
+    "desktop-usage-windows",
+    "desktop-usage-linux",
+];
+
 fn catalog_root(home: &Path, source: &str, artifact: &str) -> PathBuf {
     let path = source_catalog::artifact(source, artifact)
         .and_then(|artifact| artifact.path.as_deref())
@@ -638,8 +668,25 @@ fn run_scan_sources(
         let status = match source_catalog::availability(source, target_platform) {
             Err(error) => unavailable_source_status(&source.key, error),
             Ok(()) => match source.key.as_str() {
+                // Claude alone has a second Artifact the scan reads for Limits:
+                // the desktop app's own usage history (ADR-0027). It is walked
+                // on the ordinary tick, inside the same panic guard as the
+                // transcripts, and its Readings join the Source's own count —
+                // which is what tells an open Limits page to reissue its query.
                 "claude" => run_one(&source.key, || {
-                    scan_claude(conn, &roots.artifact_path("claude", "projects"))
+                    let mut result = scan_claude(conn, &roots.artifact_path("claude", "projects"));
+                    if let Some(history) = roots.claude_desktop_history(target_platform) {
+                        match limits_desktop::ingest(conn, &history, &roots.limit_exports) {
+                            Ok(written) => result.limit_readings += written,
+                            Err(error) => {
+                                result.error = Some(match result.error {
+                                    Some(previous) => format!("{previous}; {error}"),
+                                    None => error,
+                                })
+                            }
+                        }
+                    }
+                    result
                 }),
                 "codex" => run_one(&source.key, || scan_codex(conn, &roots.codex_session_roots())),
                 "copilot" => run_one(&source.key, || scan_copilot(conn, &roots.copilot_db())),
@@ -830,6 +877,101 @@ mod tests {
         assert!(find(&again, "codex").error.as_deref().is_some_and(|e| e.contains("unreadable")));
         assert!(find(&again, "gemini").error.is_none());
     }
+    #[test]
+    fn an_ordinary_scan_reads_the_claude_desktop_apps_own_usage_history() {
+        // ADR-0027's route end to end, on the ordinary tick: the desktop app's
+        // history sits at the catalog's own per-platform path under home, the
+        // scan reads it like any other Artifact, the entries it can place land
+        // as Limit Readings, and what it cannot place rides the card as current
+        // state. Nothing signs in and nothing is fetched — ADR-0013 holds.
+        use crate::types::{LimitReading, ModelScope, ReadingProvenance};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path();
+        let exports = base.join("limits");
+        let roots = SourceRoots::at(base.join("home")).with_limit_exports(exports.clone());
+
+        // Planted where the catalog says this platform keeps it, resolved by
+        // the same helper the scan uses — so the test cannot pass against a
+        // path production never reads.
+        let history = roots
+            .claude_desktop_history(std::env::consts::OS)
+            .expect("every platform the app ships on names a desktop history path");
+        fs::create_dir_all(history.parent().unwrap()).unwrap();
+
+        let reset = 1_789_018_000;
+        let mut conn = open_db(&base.join("ledger.db")).unwrap();
+        // The epoch a Companion proved. Only entries inside it can be Readings.
+        crate::db::insert_limit_readings(
+            &mut conn,
+            &[LimitReading {
+                source: "claude".to_string(),
+                window_key: "five_hour".to_string(),
+                window_minutes: Some(300),
+                used_pct: 30.0,
+                resets_at: reset,
+                observed_at: reset - 7_200,
+                via: "live".to_string(),
+                plan: Some("Max 20x".to_string()),
+                provenance: ReadingProvenance {
+                    account_id: Some("acct-uuid".to_string()),
+                    metering_regime: Some(
+                        crate::limits_artifact::CLAUDE_METERING_REGIME.to_string(),
+                    ),
+                    limit_id: Some("session".to_string()),
+                    model_scope: Some(ModelScope::All),
+                    covered_from: Some(0),
+                    external_activity: None,
+                    source_order: None,
+                },
+            }],
+        )
+        .unwrap();
+
+        fs::write(
+            &history,
+            format!(
+                r#"{{"version":2,"samples":[
+                    {{"t":{}000,"org":"org-a","u":{{"fh":41,"sd":17}}}},
+                    {{"t":{}000,"org":"org-a","u":{{"fh":46,"sd":18}}}}]}}"#,
+                reset - 3_600,
+                reset - 600,
+            ),
+        )
+        .unwrap();
+
+        let status = run_scan(&mut conn, &roots);
+        assert!(find(&status, "claude").error.is_none());
+        // Two five-hour figures land inside the known epoch; the weekly ones
+        // have no epoch and are current state, not Readings.
+        assert_eq!(find(&status, "claude").limit_readings, 2);
+        // Idempotent on the next tick: the file's own state gates the re-read.
+        let again = run_scan(&mut conn, &roots);
+        assert_eq!(find(&again, "claude").limit_readings, 0);
+
+        // The state Artifact is beside the Companions' exports, under its own
+        // suffix, and carries the newest entry.
+        let state = crate::limits_artifact::read_state(&exports, "claude").unwrap();
+        assert_eq!(state.observed_at, reset - 600);
+        assert_eq!(state.via, "desktop");
+        assert_eq!(
+            state.windows.iter().map(|w| (w.key.as_str(), w.used_pct, w.resets_at)).collect::<Vec<_>>(),
+            [("five_hour", 46.0, Some(reset)), ("seven_day", 18.0, None)],
+        );
+
+        // And the card draws the desktop figures: the placed one as the newest
+        // Reading of the epoch, the unplaceable one as a window with no reset.
+        let cards = queries::limits(&conn, reset - 300, &exports).unwrap();
+        let claude = cards.iter().find(|c| c.source == "claude").unwrap();
+        assert_eq!(claude.plan.as_deref(), Some("Max 20x"), "the pill survives a plan-less channel");
+        let session = claude.windows.iter().find(|w| w.window_key == "five_hour").unwrap();
+        assert_eq!((session.used_pct, session.via.as_str()), (46.0, "desktop"));
+        assert_eq!(session.resets_at, Some(reset));
+        let weekly = claude.windows.iter().find(|w| w.window_key == "seven_day").unwrap();
+        assert_eq!((weekly.used_pct, weekly.via.as_str()), (18.0, "desktop"));
+        assert_eq!(weekly.resets_at, None, "no epoch was ever proven for it");
+    }
+
     const PI_SESSION: &str = include_str!("adapters/fixtures/pi/basic-session.jsonl");
 
     fn find<'a>(status: &'a ScanStatus, source: &str) -> &'a SourceStatus {
@@ -901,6 +1043,12 @@ mod tests {
             }).collect::<Vec<_>>(),
             [
                 ("claude", "projects", ".claude/projects"),
+                // The desktop app's own usage history (ADR-0027), one path per
+                // platform. Windows and Linux are Electron's defaults and are
+                // unverified; a wrong one reads as a missing file.
+                ("claude", "desktop-usage-macos", "Library/Application Support/Claude/plan-usage-history.json"),
+                ("claude", "desktop-usage-windows", "AppData/Roaming/Claude/plan-usage-history.json"),
+                ("claude", "desktop-usage-linux", ".config/Claude/plan-usage-history.json"),
                 ("codex", "sessions", ".codex/sessions"),
                 ("copilot", "session-store", ".copilot/session-store.db"),
                 ("gemini", "tmp", ".gemini/tmp"),

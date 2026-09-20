@@ -210,7 +210,7 @@ fn cached_local_bucketing_matches_sqlite_reference() {
 // ── the Limits page's estimate read ──
 //
 // `limit_readings` grows by a row per observation for as long as the app runs,
-// and three statements in `queries::limits` touch it. The specification's posture
+// and four statements in `queries::limits` touch it. The specification's posture
 // (Evaluation timing, final paragraph) is "start with direct indexed range
 // queries … do not scan unrelated Ledger history per row … add no cache until
 // profiling demonstrates a need", so this measures the paths a person pays for
