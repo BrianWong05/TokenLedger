@@ -887,12 +887,15 @@ mod tests {
         let exports = base.join("limits");
         let roots = SourceRoots::at(base.join("home")).with_limit_exports(exports.clone());
 
-        // Planted where the catalog says this platform keeps it, resolved by
-        // the same helper the scan uses — so the test cannot pass against a
-        // path production never reads.
+        // The catalog names this route on macOS alone until another platform's
+        // path passes ADR-0012's gate, so the scan runs against macOS whatever
+        // the host is: only the path is macOS-shaped, never the parsing, the
+        // epochs, or the card. Planted by the same helper the scan uses, so the
+        // test cannot pass against a path production never reads.
+        const PLATFORM: &str = "macos";
         let history = roots
-            .claude_desktop_history(std::env::consts::OS)
-            .expect("every platform the app ships on names a desktop history path");
+            .claude_desktop_history(PLATFORM)
+            .expect("the catalog names macOS's desktop history path");
         fs::create_dir_all(history.parent().unwrap()).unwrap();
 
         let reset = 1_789_018_000;
@@ -936,13 +939,14 @@ mod tests {
         )
         .unwrap();
 
-        let status = run_scan(&mut conn, &roots);
+        let sources = &source_catalog::catalog().sources;
+        let status = run_scan_sources(&mut conn, &roots, sources, PLATFORM);
         assert!(find(&status, "claude").error.is_none());
         // Two five-hour figures land inside the known epoch; the weekly ones
         // have no epoch and are current state, not Readings.
         assert_eq!(find(&status, "claude").limit_readings, 2);
         // Idempotent on the next tick: the file's own state gates the re-read.
-        let again = run_scan(&mut conn, &roots);
+        let again = run_scan_sources(&mut conn, &roots, sources, PLATFORM);
         assert_eq!(find(&again, "claude").limit_readings, 0);
 
         // The state Artifact is beside the Companions' exports, under its own
