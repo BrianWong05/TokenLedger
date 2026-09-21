@@ -464,8 +464,11 @@ _Avoid_: Rate limit, quota, allowance, cap, throttle
 
 **Limit Reading**:
 One observation of a Limit at a moment — how much of the window is used, and
-when it resets — parsed from a Source's own logs or fetched by a Companion
-(ADR-0019). Not a Usage Record: it holds no tokens, and the
+when it resets — parsed from a Source's own logs, fetched by a Companion
+(ADR-0019), or read from the usage history the Claude desktop app keeps on
+disk (ADR-0027), the last only when the epoch it belongs to is already known
+from another Reading; a desktop figure with no known reset is current state,
+shown but never stored. Not a Usage Record: it holds no tokens, and the
 Ledger holds Usage Records only, so Readings persist beside the Ledger —
 append-only, a new valid Reading never replacing an old one, with cards
 presenting the newest valid Reading and the stored series feeding the
@@ -518,6 +521,17 @@ never zero. Codex is the one Source reporting them today, but the concept is
 not Codex's: any live Source's Companion may report a count, and the card
 shows what its Export Artifact proves.
 _Avoid_: Manual reset, reset credit, reset
+
+**Limit State Artifact**:
+The Artifact carrying one Source's current Limit state — the newest figure per
+window, with its reset where the Ledger could place that figure in a known
+epoch and unknown where it could not — written beside the Companion's Export
+Artifact by whoever can prove current state without proving history (today
+the scan, from the Claude desktop app's usage history, ADR-0027), and read by
+the Limits query as it assembles a card. State, not history: never a Limit
+Reading, replaced whole by the next write, and drawn only while newer than the
+Reading on the card and younger than its own window.
+_Avoid_: Cache, snapshot, sample
 
 **Update Notice**:
 The announcement that a release is available or that a relaunch applied one,

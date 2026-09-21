@@ -47,15 +47,28 @@ export const limits = {
     'limits.resetsIn': 'Resets in {t}',
     'limits.tickTitle': 'now — {t} until reset',
     'limits.spent': 'used up · resets in {t}',
+    // A figure the desktop app's history carried (ADR-0027) names no reset at
+    // all, so the slot says the instant is unknown rather than counting down to
+    // one nobody proved.
+    'limits.resetUnknown': 'reset time unknown',
+    'limits.spentUnknown': 'used up · reset time unknown',
 
     'limits.checkedNow': 'checked just now',
     'limits.checkedAgo': 'checked {t} ago',
+    // The card's one freshness line names the channel of the newest figure it
+    // draws, and a desktop figure came from the app rather than from a check.
+    'limits.desktopNow': 'from the {label} desktop app · just now',
+    'limits.desktopAgo': 'from the {label} desktop app · {t} ago',
     'limits.observedAgo': 'from your logs · last request {t} ago',
     'limits.observedOld': 'no requests in {t} — figures are that old',
 
     'limits.signedOut': 'Sign-in unavailable',
     'limits.signedOutHint':
       'Run {cli} once to sign in or renew it, or check where {cli} stores its sign-in, then check again.',
+    // The same trouble, shrunk to one line, on a card whose bars are still
+    // drawing from the desktop app: the sign-in is broken, the figures are not.
+    'limits.liveUnavailableNote':
+      'Live check unavailable · run {cli} once to sign in, or keep using the {label} desktop app',
     'limits.checkAgain': 'Check again',
     'limits.error': "Couldn't check",
     'limits.retry': 'Retry',
@@ -143,15 +156,21 @@ export const limits = {
     'limits.resetsIn': '{t}後重置',
     'limits.tickTitle': '現在 — 距重置還有 {t}',
     'limits.spent': '已用盡 · {t}後重置',
+    'limits.resetUnknown': '重置時間未知',
+    'limits.spentUnknown': '已用盡 · 重置時間未知',
 
     'limits.checkedNow': '剛剛查詢',
     'limits.checkedAgo': '{t}前查詢',
+    'limits.desktopNow': '來自 {label} 桌面版 · 剛剛',
+    'limits.desktopAgo': '來自 {label} 桌面版 · {t}前',
     'limits.observedAgo': '來自本機日誌 · 最後請求於 {t}前',
     'limits.observedOld': '{t}沒有請求 — 數字也是那時的',
 
     'limits.signedOut': '無法使用登入',
     'limits.signedOutHint':
       '請執行一次 {cli} 以登入或更新登入狀態，或檢查 {cli} 將登入資料儲存在哪裡，然後再查詢一次。',
+    'limits.liveUnavailableNote':
+      '無法即時查詢 · 請執行一次 {cli} 登入，或繼續使用 {label} 桌面版',
     'limits.checkAgain': '再查詢',
     'limits.error': '查詢失敗',
     'limits.retry': '重試',

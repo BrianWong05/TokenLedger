@@ -126,7 +126,7 @@ const CODEX_WEEKLY: SourceLimits = {
   plan: 'plus',
   usageResetsAvailable: 1,
   windows: [
-    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, estimate: makeFakeEstimate() },
+    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, via: 'live', estimate: makeFakeEstimate() },
   ],
 };
 
@@ -135,9 +135,20 @@ const CLAUDE_LIVE: SourceLimits = {
   plan: 'Team 5x',
   usageResetsAvailable: null,
   windows: [
-    { windowKey: 'five_hour', windowMinutes: 300, usedPct: 18, resetsAt: NOW + 185 * 60, observedAt: NOW - 12, estimate: makeFakeEstimate() },
-    { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, estimate: makeFakeEstimate() },
-    { windowKey: 'seven_day_zephyr', windowMinutes: 10080, usedPct: 37, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, estimate: makeFakeEstimate() },
+    { windowKey: 'five_hour', windowMinutes: 300, usedPct: 18, resetsAt: NOW + 185 * 60, observedAt: NOW - 12, via: 'live', estimate: makeFakeEstimate() },
+    { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 59, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, via: 'live', estimate: makeFakeEstimate() },
+    { windowKey: 'seven_day_zephyr', windowMinutes: 10080, usedPct: 37, resetsAt: NOW + 4 * DAY, observedAt: NOW - 12, via: 'live', estimate: makeFakeEstimate() },
+  ],
+};
+
+// What the Claude desktop app's usage history yields (ADR-0027): a figure with
+// no reset instant at all, on the `desktop` channel.
+const CLAUDE_DESKTOP: SourceLimits = {
+  source: 'claude',
+  plan: 'default_claude_max_5x',
+  usageResetsAvailable: null,
+  windows: [
+    { windowKey: 'five_hour', windowMinutes: 300, usedPct: 18, resetsAt: null, observedAt: NOW - 4 * 60, via: 'desktop', estimate: makeFakeEstimate() },
   ],
 };
 
@@ -147,10 +158,10 @@ const ANTIGRAVITY_LIVE: SourceLimits = {
   plan: 'Pro',
   usageResetsAvailable: null,
   windows: [
-    { windowKey: '3p:w300', windowMinutes: 300, usedPct: 12, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, estimate: makeFakeEstimate() },
-    { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 58, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, estimate: makeFakeEstimate() },
-    { windowKey: '3p:w10080', windowMinutes: 10080, usedPct: 18, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, estimate: makeFakeEstimate() },
-    { windowKey: 'gemini:w10080', windowMinutes: 10080, usedPct: 31, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, estimate: makeFakeEstimate() },
+    { windowKey: '3p:w300', windowMinutes: 300, usedPct: 12, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, via: 'live', estimate: makeFakeEstimate() },
+    { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 58, resetsAt: NOW + 2 * HOUR, observedAt: NOW - 120, via: 'live', estimate: makeFakeEstimate() },
+    { windowKey: '3p:w10080', windowMinutes: 10080, usedPct: 18, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, via: 'live', estimate: makeFakeEstimate() },
+    { windowKey: 'gemini:w10080', windowMinutes: 10080, usedPct: 31, resetsAt: NOW + 4 * DAY, observedAt: NOW - 120, via: 'live', estimate: makeFakeEstimate() },
   ],
 };
 
@@ -159,7 +170,7 @@ const GROK_CREDITS: SourceLimits = {
   plan: 'SuperGrok',
   usageResetsAvailable: null,
   windows: [
-    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 16, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, estimate: makeFakeEstimate() },
+    { windowKey: 'w10080', windowMinutes: 10080, usedPct: 16, resetsAt: NOW + 4 * DAY, observedAt: NOW - 3 * HOUR, via: 'live', estimate: makeFakeEstimate() },
   ],
 };
 
@@ -591,7 +602,7 @@ describe('bars', () => {
         source: 'antigravity',
         plan: null,
         usageResetsAvailable: null,
-        windows: [{ windowKey: 'zephyr:w300', windowMinutes: 300, usedPct: 10, resetsAt: NOW + HOUR, observedAt: NOW, estimate: makeFakeEstimate() }],
+        windows: [{ windowKey: 'zephyr:w300', windowMinutes: 300, usedPct: 10, resetsAt: NOW + HOUR, observedAt: NOW, via: 'live', estimate: makeFakeEstimate() }],
       }]),
     }));
     expect(rows(cardFor(c, 'Antigravity'))[0].querySelector('.tl-lim-label')?.textContent)
@@ -619,7 +630,7 @@ describe('bars', () => {
       plan: 'plus',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW + HOUR, observedAt: NOW - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW + HOUR, observedAt: NOW - 60, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }));
@@ -638,13 +649,129 @@ describe('bars', () => {
       plan: 'plus',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW - HOUR, observedAt: NOW - 2 * HOUR, estimate: makeFakeEstimate() },
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 100, resetsAt: NOW - HOUR, observedAt: NOW - 2 * HOUR, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([stale]) }));
     const row = rows(cardFor(c, 'Codex'))[0];
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('100%');
     expect(row.querySelector('.tl-lim-num')?.className).toMatch(/ok/);
+  });
+});
+
+// ── figures read from the Claude desktop app (ADR-0027) ──
+
+describe('a figure whose reset nobody named', () => {
+  it('says the reset time is unknown, and draws no tick to an instant it lacks', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_DESKTOP]) }));
+    const row = rows(cardFor(c, 'Claude'))[0];
+
+    // The figure the desktop app carried, drawn as it stands — not the 100%
+    // an expired epoch synthesises, and not a countdown to nothing.
+    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('82%');
+    expect(row.querySelector('.tl-lim-resets')?.textContent).toBe('reset time unknown');
+    expect(row.textContent).not.toMatch(/Resets in/);
+    expect(row.querySelector('.tl-lim-bar .tick')).toBeNull();
+  });
+
+  it('replaces the figures of a used-up one without naming a reset either', async () => {
+    const dry: SourceLimits = {
+      ...CLAUDE_DESKTOP,
+      windows: [{ ...CLAUDE_DESKTOP.windows[0], usedPct: 100 }],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }));
+    const row = rows(cardFor(c, 'Claude'))[0];
+
+    const spent = row.querySelector('.tl-lim-resets')!;
+    expect(spent.textContent).toBe('used up · reset time unknown');
+    expect(spent.className).toMatch(/spent/);
+    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
+  });
+
+  it('dates the card by the channel the newest figure came through', async () => {
+    const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_DESKTOP]) }));
+    expect(cardFor(c, 'Claude').querySelector('.tl-lim-fresh')?.textContent).toBe(
+      'from the Claude desktop app · 4m ago',
+    );
+  });
+
+  it('names the newest channel on a card that mixes them, not the first it holds', async () => {
+    const mixed: SourceLimits = {
+      ...CLAUDE_LIVE,
+      windows: [
+        { ...CLAUDE_LIVE.windows[0], observedAt: NOW - 3 * HOUR },
+        { ...CLAUDE_LIVE.windows[1], resetsAt: null, observedAt: NOW - 60, via: 'desktop' },
+      ],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([mixed]) }));
+    const claude = cardFor(c, 'Claude');
+
+    // The live check is three hours old and the desktop figure is a minute
+    // old, so the one line reports the desktop one. Both bars still draw.
+    expect(claude.querySelector('.tl-lim-fresh')?.textContent).toBe(
+      'from the Claude desktop app · 1m ago',
+    );
+    expect(rows(claude)).toHaveLength(2);
+  });
+
+  it('keeps the bars and shrinks a dead sign-in to a note beneath them', async () => {
+    const liveCalls: string[] = [];
+    const port = fakePort({
+      list: () => Promise.resolve([CLAUDE_DESKTOP]),
+      checkLive: (source) => {
+        liveCalls.push(source);
+        return source === 'claude'
+          ? Promise.reject(new Error('not signed in: Claude rejected the saved sign-in (401/403)'))
+          : Promise.resolve();
+      },
+    });
+    const c = await mount(port);
+    const claude = cardFor(c, 'Claude');
+
+    // The figures survive the dead login, because they never came from it.
+    // The plan pill does not: the login vouched for it, and only the bars
+    // were asked to outlive the sign-in.
+    expect(rows(claude)).toHaveLength(1);
+    expect(claude.querySelector('.tl-lim-plan')).toBeNull();
+    // And the full trouble face is gone: its title is nowhere on the card.
+    expect(claude.textContent).not.toContain('Sign-in unavailable');
+    expect(claude.textContent).toContain(
+      'Live check unavailable · run claude once to sign in, or keep using the Claude desktop app',
+    );
+
+    // The note sits UNDER the bars — above them it would read as the verdict
+    // on the card rather than as a footnote to figures that are still true.
+    const note = Array.from(claude.querySelectorAll('span')).find((el) =>
+      el.textContent?.startsWith('Live check unavailable'),
+    )!;
+    expect(
+      rows(claude)[0].compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    // The way back is a working button, not a label: past the fetch floor it
+    // checks again.
+    const before = liveCalls.length;
+    clock = NOW_MS + 61_000;
+    await act(async () => btn(claude, 'Check again').click());
+    await settle();
+    expect(liveCalls.length).toBeGreaterThan(before);
+  });
+
+  it('still blanks a signed-out card whose figures all came from the live check', async () => {
+    // The rule above turns on the desktop channel alone. A stored live figure
+    // may belong to the login that just died, so this card keeps today's bare
+    // face — the full trouble, no bars, no note.
+    const c = await mount(fakePort({
+      list: () => Promise.resolve([CLAUDE_LIVE]),
+      checkLive: (source) => (source === 'claude'
+        ? Promise.reject(new Error('not signed in: Claude rejected the saved sign-in (401/403)'))
+        : Promise.resolve()),
+    }));
+    const claude = cardFor(c, 'Claude');
+
+    expect(rows(claude)).toHaveLength(0);
+    expect(claude.querySelector('.tl-lim-trouble .title')?.textContent).toBe('Sign-in unavailable');
+    expect(claude.textContent).not.toContain('Live check unavailable');
   });
 });
 
