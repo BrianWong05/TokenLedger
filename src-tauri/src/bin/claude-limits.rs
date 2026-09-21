@@ -299,27 +299,103 @@ fn credential() -> Result<Credential, String> {
 /// The credential document as stored, before parsing.
 ///
 /// The keystore route first where there is one, then the credential file — the
-/// sole source elsewhere, and on macOS a fallback that must lose to a valid
-/// keystore read.
+/// sole source elsewhere, and on macOS a fallback that loses to a keystore read
+/// that actually answers. "Answers" is the precise part (TOKL-35): a keystore
+/// hit is the document only when it parses AND carries a token. An item that
+/// exists but holds no sign-in answers nothing, and letting it speak for the
+/// computer is what hid a working file behind it.
 fn credential_document() -> Result<String, String> {
+    // Off macOS the keystore is not probed at all — there is none to probe, and
+    // the candidate names are never even built.
+    let services = if cfg!(target_os = "macos") { service_candidates() } else { Vec::new() };
+    resolve_credential_document(&services, keystore_read, || {
+        credential_file().and_then(|path| std::fs::read_to_string(path).ok())
+    })
+}
+
+/// The ordered walk behind `credential_document`, with both readers passed in
+/// so the precedence below can be proven without a real keystore (the process
+/// seam in `tests/` runs against this machine's own login keystore, which no
+/// test can stage).
+///
+/// The precedence, and why each rung is where it is:
+///
+/// - A keystore document carrying a token wins over the file. The keystore is
+///   Claude Code's source of truth on macOS and can leave a stale
+///   `.credentials.json` behind, so a valid keystore read must beat the file
+///   (openusage regressed on exactly this ordering).
+/// - A keystore document that parses but carries no access token is "this
+///   service name holds nothing" — the same verdict as an absent item (exit 44)
+///   — so the walk continues to the next candidate and then to the file.
+///   **TOKL-35**: Claude Code itself writes `{refreshToken: "", accessToken:
+///   "", expiresAt: 0}` into the item when a token refresh answers
+///   `invalid_grant`, so an emptied item is the routine residue of a dead
+///   refresh token, not a sign-in. Returning it as the document let it shadow a
+///   credential file whose token the vendor accepted (observed 2026-09-21: the
+///   Companion exited "not signed in" while that file's token answered 200).
+/// - A keystore document that is NOT JSON is still the document. Unreadable is
+///   a failure, never an absence, and falling through would silently swap which
+///   identity the fetch presents while hiding the corruption.
+/// - A read that FAILED (locked, refused, cancelled — any non-44 exit) is held
+///   and reported, and it outranks a blank document seen elsewhere in the walk:
+///   "something is wrong with the keystore" is the more actionable of the two,
+///   and it must never render as "not signed in" (that sends someone to
+///   re-authenticate a login they already have).
+///
+/// Nothing here writes or refreshes anything (ADR-0019 bound 1).
+fn resolve_credential_document(
+    services: &[String],
+    mut keystore: impl FnMut(&str) -> Result<Option<String>, String>,
+    file_document: impl FnOnce() -> Option<String>,
+) -> Result<String, String> {
     let mut trouble: Option<String> = None;
-    if cfg!(target_os = "macos") {
-        for service in service_candidates() {
-            match keystore_read(&service) {
-                Ok(Some(raw)) => return Ok(raw),
-                Ok(None) => {}
-                // Hold the failure: a later candidate may still be a clean hit,
-                // and if none is, this is what the card must say.
-                Err(err) => trouble = Some(err),
-            }
+    let mut blank = false;
+    for service in services {
+        match keystore(service.as_str()) {
+            // An item holding no sign-in: remember it for the wording below,
+            // then keep walking exactly as an absent item does.
+            Ok(Some(raw)) if carries_no_token(&raw) => blank = true,
+            Ok(Some(raw)) => return Ok(raw),
+            Ok(None) => {}
+            // Hold the failure: a later candidate may still be a clean hit,
+            // and if none is, this is what the card must say.
+            Err(err) => trouble = Some(err),
         }
     }
-    match credential_file().and_then(|path| std::fs::read_to_string(path).ok()) {
+    // Whatever the file holds, it is now the computer's answer — including a
+    // blank one, which `parse_credential` reports in its own words.
+    match file_document() {
         Some(raw) => Ok(raw),
         None => Err(trouble.unwrap_or_else(|| {
-            format!("{NOT_SIGNED_IN}: no Claude Code sign-in found on this computer")
+            if blank {
+                // The one sign-in on this computer was emptied. Same wording as
+                // a blank document reaching `parse_credential`, because it is
+                // the same state: signed out, re-run `claude`.
+                format!("{NOT_SIGNED_IN}: the stored sign-in carries no access token")
+            } else {
+                format!("{NOT_SIGNED_IN}: no Claude Code sign-in found on this computer")
+            }
         })),
     }
+}
+
+/// Whether a stored document holds no usable sign-in — the same question
+/// `parse_credential` asks, over the same two shapes (the `claudeAiOauth`
+/// object, or the top-level object where there is none), so the two can never
+/// disagree about what "blank" means.
+///
+/// A document that is not JSON is NOT blank: nothing was read, so nothing can
+/// be said to be missing, and it must surface as a failure rather than start a
+/// fall-through.
+fn carries_no_token(raw: &str) -> bool {
+    let Ok(document) = serde_json::from_str::<Value>(raw) else {
+        return false;
+    };
+    let oauth = document.get("claudeAiOauth").unwrap_or(&document);
+    !oauth
+        .get("accessToken")
+        .and_then(|t| t.as_str())
+        .is_some_and(|t| !t.trim().is_empty())
 }
 
 /// The credential document's structure, with **every value redacted**.
@@ -1105,6 +1181,155 @@ mod tests {
         // The app classifies on this prefix, so a malformed document must NOT
         // borrow it: an unreadable file is a failure, not an absence.
         assert!(!trouble("{{{").starts_with(NOT_SIGNED_IN));
+    }
+
+    // TOKL-35. Claude Code empties its own keystore item when a refresh answers
+    // `invalid_grant` — `{refreshToken: "", accessToken: "", expiresAt: 0}` — so
+    // an item that exists and holds nothing is a shape the field produces, not a
+    // hypothetical. These pin which store answers for the computer when it does.
+    //
+    // The real keystore cannot be staged from a test (the process seam in
+    // tests/ reads this machine's own login keystore, which is how the defect
+    // reached a developer's install in the first place), so the walk takes its
+    // two readers as arguments and they are faked here.
+    const BLANK: &str = r#"{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}"#;
+    const IN_KEYSTORE: &str = r#"{"claudeAiOauth":{"accessToken":"sk-keystore"}}"#;
+    const IN_FILE: &str = r#"{"claudeAiOauth":{"accessToken":"sk-file"}}"#;
+    const LOCKED: &str = "the login keystore is locked — unlock it and check again";
+
+    /// A keystore of canned verdicts by service name; anything unlisted holds
+    /// nothing, exactly as an unused candidate spelling does in the field.
+    fn keystore(
+        table: Vec<(&'static str, Result<Option<&'static str>, &'static str>)>,
+    ) -> impl FnMut(&str) -> Result<Option<String>, String> {
+        move |service| match table.iter().find(|(name, _)| *name == service) {
+            Some((_, Ok(Some(raw)))) => Ok(Some((*raw).to_string())),
+            Some((_, Ok(None))) | None => Ok(None),
+            Some((_, Err(reason))) => Err((*reason).to_string()),
+        }
+    }
+
+    const CANDIDATES: [&str; 2] = ["Claude Code-credentials", "Claude Code-credentials-0badc0de"];
+
+    fn candidates() -> Vec<String> {
+        CANDIDATES.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_keystore_item_holding_no_sign_in_falls_through_to_the_credential_file() {
+        // The defect: the emptied item existed, so it was taken for the
+        // document, and a file whose token the vendor accepted never got read.
+        let found = resolve_credential_document(
+            &candidates(),
+            keystore(vec![(CANDIDATES[0], Ok(Some(BLANK)))]),
+            || Some(IN_FILE.to_string()),
+        );
+        assert_eq!(found.as_deref(), Ok(IN_FILE), "the file must answer for the computer");
+    }
+
+    #[test]
+    fn a_keystore_item_that_holds_a_sign_in_still_beats_the_credential_file() {
+        // The other half of the rule, and the one a careless fall-through would
+        // break: the keystore is Claude Code's source of truth on macOS and the
+        // file beside it may be a stale leftover.
+        let found = resolve_credential_document(
+            &candidates(),
+            keystore(vec![(CANDIDATES[0], Ok(Some(IN_KEYSTORE)))]),
+            || Some(IN_FILE.to_string()),
+        );
+        assert_eq!(found.as_deref(), Ok(IN_KEYSTORE));
+    }
+
+    #[test]
+    fn a_blank_candidate_does_not_stop_the_walk_before_a_later_one_that_answers() {
+        // The fall-through reaches the remaining candidate spellings first, not
+        // just the file: #423 is a real machine whose live item sits under a
+        // hashed name with a dead one under the plain spelling.
+        let found = resolve_credential_document(
+            &candidates(),
+            keystore(vec![
+                (CANDIDATES[0], Ok(Some(BLANK))),
+                (CANDIDATES[1], Ok(Some(IN_KEYSTORE))),
+            ]),
+            || Some(IN_FILE.to_string()),
+        );
+        assert_eq!(found.as_deref(), Ok(IN_KEYSTORE), "a later candidate still wins over the file");
+    }
+
+    #[test]
+    fn the_first_candidate_that_answers_is_the_document_not_a_later_one() {
+        // Two items both carrying a sign-in — the plain spelling and a hashed one
+        // left by an older Claude Code — are two logins, and the walk's ORDER is
+        // what picks the plain one. A walk that fell through to a later hit, or
+        // probed the spellings backwards, would present the other identity and
+        // read its Limits instead. This is the case the fall-through must not
+        // touch: only a BLANK item yields its place.
+        let later = r#"{"claudeAiOauth":{"accessToken":"sk-keystore-later"}}"#;
+        let found = resolve_credential_document(
+            &candidates(),
+            keystore(vec![
+                (CANDIDATES[0], Ok(Some(IN_KEYSTORE))),
+                (CANDIDATES[1], Ok(Some(later))),
+            ]),
+            || Some(IN_FILE.to_string()),
+        );
+        assert_eq!(found.as_deref(), Ok(IN_KEYSTORE), "the first spelling that answers wins");
+    }
+
+    #[test]
+    fn with_no_file_to_fall_through_to_a_blank_item_is_a_signed_out_computer() {
+        let trouble = resolve_credential_document(
+            &candidates(),
+            keystore(vec![(CANDIDATES[0], Ok(Some(BLANK)))]),
+            || None,
+        )
+        .expect_err("a blank item and no file is no sign-in");
+        // The app classifies on this prefix, and the state is genuinely "signed
+        // out": the item was read, it was understood, and it held nothing.
+        assert!(trouble.starts_with(NOT_SIGNED_IN), "{trouble}");
+        assert!(trouble.contains("carries no access token"), "{trouble}");
+
+        // And a computer where nothing was found at all says exactly that
+        // instead — the two absences are not the same sentence.
+        let nothing = resolve_credential_document(&candidates(), keystore(vec![]), || None)
+            .expect_err("nothing anywhere is no sign-in either");
+        assert!(nothing.contains("no Claude Code sign-in found"), "{nothing}");
+    }
+
+    #[test]
+    fn a_keystore_read_that_failed_is_reported_as_a_failure_never_as_an_absence() {
+        let failed = resolve_credential_document(
+            &candidates(),
+            keystore(vec![(CANDIDATES[0], Err(LOCKED))]),
+            || None,
+        )
+        .expect_err("a locked keystore is a failure");
+        assert_eq!(failed, LOCKED);
+        assert!(!failed.starts_with(NOT_SIGNED_IN), "a locked keystore is not a signed-out one");
+
+        // A failure outranks a blank item seen elsewhere in the walk: one
+        // candidate could not be read at all, so "signed out" is not yet known.
+        let mixed = resolve_credential_document(
+            &candidates(),
+            keystore(vec![(CANDIDATES[0], Ok(Some(BLANK))), (CANDIDATES[1], Err(LOCKED))]),
+            || None,
+        )
+        .expect_err("an unreadable candidate is still unread");
+        assert_eq!(mixed, LOCKED, "the read failure wins over a blank document");
+    }
+
+    #[test]
+    fn a_keystore_document_that_is_not_json_is_still_the_document() {
+        // Unreadable is a failure, not an absence. Falling through here would
+        // swap which identity the fetch presents AND hide the corruption.
+        let found = resolve_credential_document(
+            &candidates(),
+            keystore(vec![(CANDIDATES[0], Ok(Some("{{{")))]),
+            || Some(IN_FILE.to_string()),
+        );
+        assert_eq!(found.as_deref(), Ok("{{{"), "a torn document must not be papered over");
+        let trouble = parse_credential("{{{").err().expect("must not parse");
+        assert!(!trouble.starts_with(NOT_SIGNED_IN), "{trouble}");
     }
 
     #[test]
