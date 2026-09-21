@@ -15,10 +15,7 @@ import { pluralSuffix, useT } from '../lib/i18n';
 import { fill, formatApproxTokens } from '../lib/format';
 import { sourceIcon } from '../overview/icons';
 import type { SourceLimits } from '../types';
-import {
-  cards, durationParts, freshness, nextDueAt, planLabel, windowLabel,
-  type CardView, type EstimateView, type Mode, type WindowView,
-} from './limits.derive';
+import { cards, durationParts, freshness, nextDueAt, planLabel, windowLabel, type CardView, type EstimateView, type Mode, type WindowView, resetLabel } from './limits.derive';
 import { tauriLimits, LIVE_ENABLED_KEY, MODE_KEY, type LimitsPort } from './limits';
 import { runDueLiveChecks, storedFailures, type LiveFailure } from './limits.live';
 
@@ -246,10 +243,15 @@ function Card({
           </span>
         )}
         {fresh && (
+          // Every key takes what it needs from the same two facts and ignores
+          // the rest: "checked just now" interpolates neither, the desktop copy
+          // names the Source, and the aged copies take the duration. Only the
+          // logs card's day-old figures go amber.
           <span className={'tl-lim-fresh' + (fresh.key === 'observedOld' ? ' old' : '')}>
-            {fresh.key === 'checkedNow'
-              ? t('limits.checkedNow')
-              : fill(t(`limits.${fresh.key}` as 'limits.checkedAgo'), { t: fmtDuration(t, fresh.ageMin) })}
+            {fill(t(`limits.${fresh.key}` as 'limits.checkedAgo'), {
+              t: fmtDuration(t, fresh.ageMin),
+              label: card.meta.label,
+            })}
           </span>
         )}
       </div>
@@ -260,13 +262,29 @@ function Card({
           empty there. */}
       {card.state !== 'live' && <Trouble card={card} t={t} onRetry={onRetry} />}
       {card.windows.map((w) => <Row key={w.key} w={w} source={card.source} mode={mode} t={t} />)}
+      {/* The one trouble that does NOT lead: a sign-in that died while the
+          desktop app's figures keep arriving. Those bars are still true, so
+          the verdict follows them as a single line, with the same way back. */}
+      {card.note === 'signed-out' && (
+        <div className="tl-lim-cardnote">
+          <span className="hint">
+            {fill(t('limits.liveUnavailableNote'), { cli: card.source, label: card.meta.label })}
+          </span>
+          <button type="button" className="tl-lim-ghost" onClick={onRetry}>
+            {t('limits.checkAgain')}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
 
 function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode; t: T }) {
   const label = windowLabel(w.key, source);
-  const resets = w.resetsInMin === null ? null : fmtDuration(t, w.resetsInMin);
+  const reset = resetLabel(w);
+  // The countdown as text, where there is one to count: the reset slot and
+  // the tick's title both read it.
+  const resets = typeof reset === 'number' ? fmtDuration(t, reset) : null;
   const spent = w.pctLeftShown <= 0;
 
   return (
@@ -297,8 +315,12 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
               </>
             )}
           </span>
+          {/* A figure with no reset says so in the same slot — its copy takes
+              no duration, because there is no instant to name. */}
           <span className={'tl-lim-resets' + (spent ? ' spent' : '')}>
-            {resets && fill(t(spent ? 'limits.spent' : 'limits.resetsIn'), { t: resets })}
+            {reset === 'unknown'
+              ? t(spent ? 'limits.spentUnknown' : 'limits.resetUnknown')
+              : resets && fill(t(spent ? 'limits.spent' : 'limits.resetsIn'), { t: resets })}
           </span>
         </div>
         <div

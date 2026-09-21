@@ -344,6 +344,24 @@
   border-color: var(--border-strong);
   color: var(--text-primary);
 }
+/* The trouble that kept its bars: one muted line under the rows with the way
+   back beside it, rather than the block that replaces a card's whole body.
+   (`.tl-lim-note` is the toolbar's, and means something else.) */
+.tl-lim-cardnote {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0 2px;
+}
+.tl-lim-cardnote .hint {
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+.tl-lim-cardnote .tl-lim-ghost {
+  align-self: auto;
+  margin-top: 0;
+  flex: none;
+}
 
 /* ── the opt-in disclosure ── */
 .tl-lim-optin {

@@ -15,6 +15,9 @@ pub mod limits_artifact;
 pub(crate) mod limits_estimator;
 pub(crate) mod limits_evidence;
 pub(crate) mod limits_readiness;
+// Crate-only for the same reason: the scan is the one producer of a desktop
+// Reading, and no companion binary reads the Claude desktop app's history.
+pub(crate) mod limits_desktop;
 mod pricing;
 pub mod proto;
 mod queries;

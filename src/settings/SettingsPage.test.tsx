@@ -683,9 +683,9 @@ function claudeStored(): SourceLimits {
     plan: 'default_claude_max_5x',
     usageResetsAvailable: null,
     windows: [
-      { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-      { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
-      { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + 3 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+      { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+      { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + 3 * 86400, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+      { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + 3 * 86400, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
     ],
   };
 }
@@ -697,8 +697,8 @@ function codexStored(): SourceLimits {
     plan: 'plus',
     usageResetsAvailable: null,
     windows: [
-      { windowKey: 'w300', windowMinutes: 300, usedPct: 10, resetsAt: now + 125 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-      { windowKey: 'w10080', windowMinutes: 10080, usedPct: 20, resetsAt: now + 5 * 86400, observedAt: now - 60, estimate: makeFakeEstimate() },
+      { windowKey: 'w300', windowMinutes: 300, usedPct: 10, resetsAt: now + 125 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+      { windowKey: 'w10080', windowMinutes: 10080, usedPct: 20, resetsAt: now + 5 * 86400, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
     ],
   };
 }

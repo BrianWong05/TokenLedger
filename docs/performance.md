@@ -41,7 +41,8 @@ npm run perf:limits
 It also asserts the access shape, not only the clock, and does so by running
 `EXPLAIN QUERY PLAN` over the **exported statement constants** the production
 code prepares (`limits_evidence::MATCHING_USAGE_SQL`,
-`limits_evidence::STORED_READINGS_SQL`, `queries::DISPLAYED_WINDOWS_SQL`). An
+`limits_evidence::STORED_READINGS_SQL`, `queries::DISPLAYED_WINDOWS_SQL`,
+`queries::DISPLAYED_VIA_SQL`). An
 earlier version EXPLAINed a copy typed into the test, which reported the index it
 expected while `account_id` had been deleted from the real clause. EXPLAIN a
 constant the code uses, never a copy of it.
@@ -293,6 +294,15 @@ Recorded so nobody optimizes them blind:
   | USE TEMP B-TREE FOR GROUP BY | USE TEMP B-TREE FOR ORDER BY`, 11.8 ms at
   201,300 rows. It is the one statement whose cost grows without bound as the
   table does.
+- `DISPLAYED_VIA_SQL` (ADR-0027) runs once per drawn window — a handful per
+  page — to name the channel of the newest Reading in the drawn epoch's band:
+  `SEARCH limit_readings USING INDEX sqlite_autoindex_limit_readings_1
+  (source=? AND window_key=? AND resets_at>?) | USE TEMP B-TREE FOR ORDER BY`.
+  The sort is over one epoch's Readings, bounded by the band, not the table.
+  The state overlay that follows it reads one small file per live Source
+  outside the snapshot, as the Usage Reset count does. Neither has been
+  measured against the standard's Ledger; the gate pins the seek, and the
+  page-open budget stands as written until the numbers are taken again.
 - The read takes one horizon from the longest window on the page, so a weekly
   window drags 84 days of session Readings through a derivation whose answer
   cannot depend on more than 14 — most of those 20,960 rows. Per-Series horizons

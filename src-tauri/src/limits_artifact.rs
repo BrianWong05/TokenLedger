@@ -317,20 +317,112 @@ pub fn shape(node: &serde_json::Value) -> String {
     out
 }
 
-/// Rename-write one Source's export (ADR-0018): a reader never sees half a
-/// document, and a crash mid-write leaves the previous Artifact intact. Shared
-/// by every Companion, so the write discipline cannot drift between them.
-pub fn write(dir: &Path, export: &LimitsExport) -> std::io::Result<()> {
+/// Rename-write one document into this directory (ADR-0018): a reader never
+/// sees half a file, and a crash mid-write leaves the previous one intact.
+/// Shared by every producer and by both Artifact shapes, so the write
+/// discipline cannot drift between them.
+fn rename_write(final_path: &Path, body: &str) -> std::io::Result<()> {
     use std::io::Write;
-    std::fs::create_dir_all(dir)?;
-    let final_path = path_in(dir, &export.source);
+    if let Some(dir) = final_path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     let staging = final_path.with_extension("json.part");
     {
         let mut file = std::fs::File::create(&staging)?;
-        file.write_all(serde_json::to_string(export)?.as_bytes())?;
+        file.write_all(body.as_bytes())?;
         file.sync_all()?;
     }
-    std::fs::rename(&staging, &final_path)
+    std::fs::rename(&staging, final_path)
+}
+
+/// Rename-write one Source's export (ADR-0018). Shared by every Companion, so
+/// the write discipline cannot drift between them.
+pub fn write(dir: &Path, export: &LimitsExport) -> std::io::Result<()> {
+    rename_write(&path_in(dir, &export.source), &serde_json::to_string(export)?)
+}
+
+// ── The Limit State Artifact ──
+//
+// A second, deliberately separate Artifact in the same directory, carrying one
+// Source's CURRENT Limit state rather than Reading history — the same status as
+// Codex's Usage Reset count (glossary: Usage Reset), and for the same reason: a
+// figure the app can see now but cannot place in an epoch is not a Limit
+// Reading, and storing it as one would mean inventing the reset instant the
+// Ledger keys Readings by. Written by whoever can prove current state without
+// proving history; read by the Limits query when it assembles a card.
+//
+// Its suffix MUST differ from `SUFFIX`: the export reader is addressed by name
+// (`path_in`), and a state file answering to `source_key` would be ingested as
+// an export and file its figures as Readings, which is exactly what this shape
+// exists to avoid.
+
+pub const STATE_SUFFIX: &str = ".tokenledger-limit-state.json";
+
+/// Bump when the state shape changes. An unknown schema reports no current
+/// state rather than being guessed at.
+pub const STATE_SCHEMA: u32 = 1;
+
+/// How far a figure of unpublished window length may reach — when the desktop
+/// ingest looks for the epoch it belongs to, and when the Limits query decides
+/// whether a state figure is still current. Every named Claude window is
+/// weekly or shorter, so the weekly span is the widest an unknown one could
+/// plausibly be, and one number here keeps placement and freshness in step.
+pub const UNKNOWN_WINDOW_MINUTES: i64 = 10_080;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LimitState {
+    pub schema: u32,
+    /// The Source these figures describe — the catalog key, e.g. `claude`.
+    pub source: String,
+    /// The channel the figures came through, in the `LimitReading::via`
+    /// vocabulary — `desktop` for the Claude desktop app's own usage history.
+    pub via: String,
+    /// When the Source last stated these figures, epoch seconds. One instant
+    /// for the whole document: one read of one file answers for every window.
+    pub observed_at: i64,
+    #[serde(default)]
+    pub windows: Vec<LimitStateWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LimitStateWindow {
+    /// The vendor's own window key, the same grammar a Reading is stored under,
+    /// so a state figure and a stored Reading of one window meet on the card.
+    pub key: String,
+    /// The window's length, where the key names one. Absent means unknown.
+    #[serde(default)]
+    pub window_minutes: Option<i64>,
+    /// The vendor's own utilization figure, unconverted.
+    pub used_pct: f64,
+    /// The epoch this figure was placed in, where the producer could resolve
+    /// one against the Readings already stored. Absent is "reset unknown" —
+    /// never a zero, and never a guessed instant.
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+}
+
+/// The Artifact that carries one Source's current Limit state.
+pub fn state_file_name(source: &str) -> String {
+    format!("{source}{STATE_SUFFIX}")
+}
+
+pub fn state_path_in(dir: &Path, source: &str) -> PathBuf {
+    dir.join(state_file_name(source))
+}
+
+/// Read one Source's current Limit state. Missing, invalid, unknown-schema, or
+/// mismatched files simply report no current state — a card drawn without it is
+/// a card that knows less, never a card that fails.
+pub fn read_state(dir: &Path, source: &str) -> Option<LimitState> {
+    let raw = std::fs::read_to_string(state_path_in(dir, source)).ok()?;
+    let state = serde_json::from_str::<LimitState>(&raw).ok()?;
+    (state.schema == STATE_SCHEMA && state.source == source).then_some(state)
+}
+
+/// Rename-write one Source's current Limit state, through the same discipline
+/// the export takes.
+pub fn write_state(dir: &Path, state: &LimitState) -> std::io::Result<()> {
+    rename_write(&state_path_in(dir, &state.source), &serde_json::to_string(state)?)
 }
 
 /// Read one Source's Limits export out of `dir` and append its Readings,

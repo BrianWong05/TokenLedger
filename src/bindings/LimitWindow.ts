@@ -15,7 +15,23 @@ windowMinutes: number | null,
 /**
  * The vendor's own figure, unconverted.
  */
-usedPct: number, resetsAt: number, observedAt: number, 
+usedPct: number, 
+/**
+ * When this window next resets. Absent is "reset unknown", which only a
+ * desktop state figure produces: the Claude desktop app's history names no
+ * reset at all, so a figure the Ledger could not place in a known epoch
+ * says so rather than naming an instant nobody proved. Every figure that
+ * came from a stored Limit Reading carries its epoch.
+ */
+resetsAt: number | null, observedAt: number, 
+/**
+ * The channel the figure shown here came through: `live` (a Companion's
+ * fetch, ADR-0019), `logs` (an Artifact the scan already walks), or
+ * `desktop` (the Claude desktop app's own usage history, ADR-0027). It
+ * describes the NEWEST observation on this row, not the window's history —
+ * a window whose Readings came from two channels names the one being drawn.
+ */
+via: "live" | "logs" | "desktop", 
 /**
  * Exactly one tagged evaluation, sharing this query's single
  * `evaluatedAt` with every other window in the response.

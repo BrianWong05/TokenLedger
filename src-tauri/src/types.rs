@@ -51,7 +51,8 @@ pub struct LimitReading {
     pub resets_at: i64,
     pub observed_at: i64,
     /// 'logs' (read from an Artifact the scan already walks) | 'live' (fetched
-    /// by a Companion, ADR-0019).
+    /// by a Companion, ADR-0019) | 'desktop' (read from the Claude desktop
+    /// app's own usage history, ADR-0027).
     pub via: String,
     /// The vendor's own plan value, raw — `rateLimitTier`, `plan_type`,
     /// `subscriptionTier`. It is the plan identity the evidence contract requires

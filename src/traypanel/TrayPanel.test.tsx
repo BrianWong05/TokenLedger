@@ -1031,9 +1031,9 @@ describe('TrayPanel limits', () => {
       plan: 'default_claude_max_5x',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + (2 * 1440 + 245) * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + (2 * 1440 + 245) * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: now + 190 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+        { windowKey: 'seven_day', windowMinutes: 10080, usedPct: 69, resetsAt: now + (2 * 1440 + 245) * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+        { windowKey: 'seven_day_fable', windowMinutes: 10080, usedPct: 46, resetsAt: now + (2 * 1440 + 245) * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
   }
@@ -1045,8 +1045,8 @@ describe('TrayPanel limits', () => {
       plan: 'pro',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'w300', windowMinutes: 300, usedPct: 29, resetsAt: now + 125 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'w10080', windowMinutes: 10080, usedPct: 86, resetsAt: now + (5 * 1440 + 725) * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'w300', windowMinutes: 300, usedPct: 29, resetsAt: now + 125 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+        { windowKey: 'w10080', windowMinutes: 10080, usedPct: 86, resetsAt: now + (5 * 1440 + 725) * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
   }
@@ -1196,6 +1196,33 @@ describe('TrayPanel limits', () => {
     ).toEqual(['Codex']);
   });
 
+  it('says the reset is unknown for a desktop figure, collapsed and expanded', async () => {
+    // ADR-0027: the Claude desktop app's history names no reset, so the panel
+    // says so in the slot that otherwise counts down. It must not fall back to
+    // a blank, which reads as a window with nothing to report.
+    const now = Math.floor(Date.now() / 1000);
+    const desktopOnly: SourceLimits = {
+      source: 'claude',
+      plan: 'default_claude_max_5x',
+      usageResetsAvailable: null,
+      windows: [
+        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: null, observedAt: now - 60, via: 'desktop', estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(makeFakeLimits([desktopOnly]));
+
+    const meter = container.querySelector('.tp-limmeter')!;
+    expect(meter.querySelector('.tp-limmeter-v')?.textContent).toBe('62%');
+    expect(meter.querySelector('.tp-limmeter-t')?.textContent).toBe('· reset unknown');
+    expect(meter.textContent).not.toMatch(/\dh|\dm|\dd/);
+
+    const head = container.querySelector('.tp-limcard-head') as HTMLButtonElement;
+    await act(async () => head.click());
+    const row = container.querySelector('.tp-limwin')!;
+    expect(row.querySelector('.tp-limwin-resets')?.textContent).toBe('reset unknown');
+    expect(row.textContent).not.toMatch(/resets in/);
+  });
+
   it('shows no meters for a Source whose every window was switched off', async () => {
     const container = await mountWithLimits(
       makeFakeLimits([claudeStored()], { [PANEL_WINDOWS_KEY]: '{"claude":[]}' }),
@@ -1250,8 +1277,8 @@ describe('TrayPanel limits', () => {
       usageResetsAvailable: null,
       windows: [
         // Stored order, alphabetical by key: 3p first, with plenty left.
-        { windowKey: '3p:w300', windowMinutes: 300, usedPct: 20, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 90, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: '3p:w300', windowMinutes: 300, usedPct: 20, resetsAt: now + 90 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+        { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 90, resetsAt: now + 90 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
     const container = await mountWithLimits(makeFakeLimits([twoPools]));
@@ -1270,8 +1297,8 @@ describe('TrayPanel limits', () => {
       plan: null,
       usageResetsAvailable: null,
       windows: [
-        { windowKey: '3p:w300', windowMinutes: 300, usedPct: 20.1, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
-        { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 20.4, resetsAt: now + 90 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: '3p:w300', windowMinutes: 300, usedPct: 20.1, resetsAt: now + 90 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
+        { windowKey: 'gemini:w300', windowMinutes: 300, usedPct: 20.4, resetsAt: now + 90 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
     const container = await mountWithLimits(makeFakeLimits([hairsBreadth]));
@@ -1292,7 +1319,7 @@ describe('TrayPanel limits', () => {
       plan: 'super',
       usageResetsAvailable: null,
       windows: [
-        { windowKey: 'w43200', windowMinutes: 43200, usedPct: 41, resetsAt: now + 9 * 1440 * 60, observedAt: now - 60, estimate: makeFakeEstimate() },
+        { windowKey: 'w43200', windowMinutes: 43200, usedPct: 41, resetsAt: now + 9 * 1440 * 60, observedAt: now - 60, via: 'live', estimate: makeFakeEstimate() },
       ],
     };
     const container = await mountWithLimits(makeFakeLimits([creditsOnly]));

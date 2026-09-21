@@ -210,7 +210,7 @@ fn cached_local_bucketing_matches_sqlite_reference() {
 // ── the Limits page's estimate read ──
 //
 // `limit_readings` grows by a row per observation for as long as the app runs,
-// and three statements in `queries::limits` touch it. The specification's posture
+// and four statements in `queries::limits` touch it. The specification's posture
 // (Evaluation timing, final paragraph) is "start with direct indexed range
 // queries … do not scan unrelated Ledger history per row … add no cache until
 // profiling demonstrates a need", so this measures the paths a person pays for
@@ -461,6 +461,20 @@ fn performance_standard_limits_estimate() {
     eprintln!("PERF limits_displayed_plan {displayed_plan}");
     let plan_label_plan = plan_of(&conn, queries::PLAN_LABEL_SQL);
     eprintln!("PERF limits_plan_label_plan {plan_label_plan}");
+
+    // Once per drawn window (a handful per page), and bounded by the band, not
+    // the table: it seeks the primary key's prefix (source, window_key,
+    // resets_at >= the band's floor) and sorts only that one epoch's Readings
+    // to keep a row. Pinned so a plan that stops seeking fails here.
+    let via_plan = plan_of(&conn, queries::DISPLAYED_VIA_SQL);
+    eprintln!("PERF limits_via_plan {via_plan}");
+    assert!(
+        via_plan.contains("SEARCH limit_readings")
+            && via_plan.contains("source=?")
+            && via_plan.contains("window_key=?")
+            && via_plan.contains("resets_at>?"),
+        "displayed_via must seek (source, window_key, resets_at) on the primary key, got: {via_plan}"
+    );
 
     // ── 1. page open: the first read of this data in this process ──
     let started = Instant::now();

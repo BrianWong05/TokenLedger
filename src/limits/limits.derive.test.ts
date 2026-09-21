@@ -6,6 +6,7 @@ import {
   cards, durationParts, framedPct, freshness, limitsSources, nextDueAt, panelCardOrder,
   panelCardRows, panelWindows, parsePanelCardPick, parsePanelPicks, planLabel,
   primaryWindows, tone, windowLabel, windowView,
+  resetLabel,
 } from './limits.derive';
 import type { ParsedWindow } from './limits.derive';
 
@@ -21,6 +22,7 @@ function win(over: Partial<LimitWindow> = {}): LimitWindow {
     usedPct: 59,
     resetsAt: NOW + 4 * DAY,
     observedAt: NOW - 60,
+    via: 'live',
     estimate: makeFakeEstimate(),
     ...over,
   };
@@ -118,6 +120,34 @@ describe('an expired epoch', () => {
     const w = windowView(win({ windowMinutes: null, resetsAt: NOW - HOUR }), 'left', NOW);
     expect(w.resetsInMin).toBeNull();
     expect(w.tickPct).toBeNull();
+  });
+});
+
+describe('a figure whose reset nobody named', () => {
+  // ADR-0027: the desktop app's history carries a utilisation percentage and
+  // no reset instant. That is not an expired epoch — nothing was ever proved
+  // about the epoch — so the figure draws as it stands.
+  it('draws its own figure, unexpired, with no countdown and no tick', () => {
+    const w = windowView(win({ usedPct: 37, resetsAt: null }), 'left', NOW);
+
+    expect(w.resetUnknown).toBe(true);
+    expect(w.expired).toBe(false);
+    expect(w.resetsInMin).toBeNull();
+    expect(w.tickPct).toBeNull();
+    // The percentage is the vendor's own, never the 100 an expired epoch
+    // synthesises.
+    expect(w.pctLeft).toBe(63);
+    expect(w.pctShown).toBe(63);
+    expect(w.tone).toBe('ok');
+  });
+
+  it('leaves a reset the vendor did name expiring exactly as before', () => {
+    const w = windowView(win({ usedPct: 37, resetsAt: NOW - HOUR }), 'left', NOW);
+
+    expect(w.resetUnknown).toBe(false);
+    expect(w.expired).toBe(true);
+    expect(w.pctLeft).toBe(100);
+    expect(w.resetsInMin).toBeNull();
   });
 });
 
@@ -255,6 +285,55 @@ describe('card states', () => {
     });
     expect(claude.plan).toBeNull();
     expect(claude.windows).toEqual([]);
+    expect(claude.note).toBeUndefined();
+  });
+
+  it('keeps drawing a signed-out card that holds a desktop figure, trouble demoted to a note', () => {
+    // A desktop figure (ADR-0027) did not come from the sign-in the Companion
+    // reports dead — the reasoning that blanks the card above does not reach
+    // it, so the bars stay and the trouble shrinks to a line beneath them.
+    const [claude] = cards([held('claude', [win({ via: 'desktop' })], 'Team 5x', 2)], NOW, 'left', {
+      claude: 'signed-out',
+    });
+
+    expect(claude.state).toBe('live');
+    expect(claude.note).toBe('signed-out');
+    expect(claude.windows).toHaveLength(1);
+    // Only the bars were asked for. The plan pill and the Usage Reset count
+    // are things the dead login vouched for, so they stay off the card.
+    expect(claude.plan).toBeNull();
+    expect(claude.usageResetsAvailable).toBeNull();
+  });
+
+  it('labels a reset once for every surface: unknown, counting down, or nothing', () => {
+    expect(resetLabel(windowView(win({ resetsAt: null }), 'left', NOW))).toBe('unknown');
+    expect(resetLabel(windowView(win({ resetsAt: NOW + 3600 }), 'left', NOW))).toBe(60);
+    expect(resetLabel(windowView(win({ resetsAt: NOW - 60 }), 'left', NOW))).toBeNull();
+  });
+
+  it('blanks a signed-out card whose every figure came through the login that failed', () => {
+    const [claude] = cards([held('claude', [win({ via: 'live' })], 'Team 5x')], NOW, 'left', {
+      claude: 'signed-out',
+    });
+
+    expect(claude.state).toBe('signed-out');
+    expect(claude.windows).toEqual([]);
+    expect(claude.note).toBeUndefined();
+    expect(claude.plan).toBeNull();
+  });
+
+  it('leaves an error card exactly as it was, desktop figure or not', () => {
+    // Only the signed-out verdict is about a credential. A failure is a
+    // failure: the error face leads and the held rows stay under it.
+    const [claude] = cards([held('claude', [win({ via: 'desktop' })], 'Team 5x')], NOW, 'left', {
+      claude: { detail: 'network unreachable' },
+    });
+
+    expect(claude.state).toBe('error');
+    expect(claude.note).toBeUndefined();
+    expect(claude.detail).toBe('network unreachable');
+    expect(claude.plan).toBeNull();
+    expect(claude.windows).toHaveLength(1);
   });
 });
 
@@ -314,15 +393,60 @@ describe('freshness', () => {
   });
 
   it('reports the age of the last request for a logs Source, amber past a day', () => {
+    // The channel the figure came through, not the Source's catalogued mode:
+    // a `logs` Source's Readings are read out of the logs it already writes.
     const logsCard = (observedAt: number) =>
-      cards([held('faketool', [win({ observedAt })])], NOW, 'left', {}, [LOGS_SOURCE])[0];
+      cards([held('faketool', [win({ observedAt, via: 'logs' })])], NOW, 'left', {}, [LOGS_SOURCE])[0];
     expect(freshness(logsCard(NOW - 3 * HOUR), NOW)?.key).toBe('observedAgo');
     expect(freshness(logsCard(NOW - 3 * DAY), NOW)?.key).toBe('observedOld');
+  });
+
+  it('names the desktop app when the newest figure came from it', () => {
+    const desktopCard = (observedAt: number) =>
+      cards([held('claude', [win({ via: 'desktop', observedAt })])], NOW, 'left')[0];
+
+    expect(freshness(desktopCard(NOW - 12), NOW)?.key).toBe('desktopNow');
+    expect(freshness(desktopCard(NOW - 4 * 60), NOW)).toEqual({ key: 'desktopAgo', ageMin: 4 });
+    // It never goes amber: the `old` warning belongs to a logs card, where the
+    // age of the last request IS the age of the figures.
+    expect(freshness(desktopCard(NOW - 3 * DAY), NOW)?.key).toBe('desktopAgo');
+  });
+
+  it('splits at half a minute for every channel that reports an age', () => {
+    const at = (via: LimitWindow['via'], ageSec: number) =>
+      cards([held('claude', [win({ via, observedAt: NOW - ageSec })])], NOW, 'left')[0];
+
+    expect(freshness(at('live', 29), NOW)?.key).toBe('checkedNow');
+    expect(freshness(at('live', 30), NOW)?.key).toBe('checkedAgo');
+    expect(freshness(at('desktop', 29), NOW)?.key).toBe('desktopNow');
+    expect(freshness(at('desktop', 30), NOW)?.key).toBe('desktopAgo');
+  });
+
+  it('describes the newest window shown, not the first or the last', () => {
+    // One card, two channels. The line reports one fact, so it has to be the
+    // newest one — whichever order the windows arrived in.
+    const mixed = (older: LimitWindow['via'], newer: LimitWindow['via']) =>
+      cards(
+        [held('claude', [
+          win({ windowKey: 'five_hour', via: older, observedAt: NOW - 3 * HOUR }),
+          win({ windowKey: 'seven_day', via: newer, observedAt: NOW - 60 }),
+        ])],
+        NOW,
+        'left',
+      )[0];
+
+    expect(mixed('desktop', 'live').freshVia).toBe('live');
+    expect(mixed('live', 'desktop').freshVia).toBe('desktop');
+    // And the stamp comes off that same window, so the line cannot date one
+    // fact while describing another.
+    expect(mixed('desktop', 'live').observedAt).toBe(NOW - 60);
+    expect(freshness(mixed('live', 'desktop'), NOW)?.key).toBe('desktopAgo');
   });
 
   it('has nothing to say without a reading', () => {
     const [claude] = cards([], NOW, 'left');
     expect(freshness(claude, NOW)).toBeNull();
+    expect(claude.freshVia).toBeNull();
   });
 });
 
