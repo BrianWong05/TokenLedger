@@ -10,11 +10,22 @@ export function isPending(status: UpdateStatus | null): boolean {
   return status?.state === 'available' || status?.state === 'downloaded';
 }
 
-// Staged and waiting for a restart — the one state whose affordance must
-// outlive a visit to Settings, because a re-check there reports the staged
-// update as merely 'available' again and loses the restart.
+// Downloaded, verified, and one relaunch from running. Rust remembers what it
+// staged, so a later check reports the download rather than demoting it back
+// to 'available' and taking the restart with it.
 export function isStaged(status: UpdateStatus | null): boolean {
   return status?.state === 'downloaded';
+}
+
+/** What the action button's click will actually do. */
+export type UpdateAction = 'download' | 'downloading' | 'restart';
+
+// Decided once for both surfaces: the shell's card and the Settings banner ask
+// here rather than each re-deriving the same three cases from `status`. Each
+// then names the three in its own dictionary — same decision, own words.
+export function updateAction(status: UpdateStatus | null, acting: boolean): UpdateAction {
+  if (acting) return 'downloading';
+  return isStaged(status) ? 'restart' : 'download';
 }
 
 /** The running app version, or null until it arrives. */
@@ -61,17 +72,18 @@ export function useUpdateFlow(port: SettingsPort): UpdateFlow {
   }, [port]);
 
   const act = useCallback(() => {
-    if (status?.state === 'available') {
-      setActing(true);
-      port
-        .downloadUpdate()
-        .then(setStatus)
-        .catch(() => {})
-        .finally(() => setActing(false));
-    } else if (status?.state === 'downloaded') {
+    if (!isPending(status)) return;
+    if (isStaged(status)) {
       port.restartApp().catch(() => {});
+      return;
     }
-  }, [status?.state, port]);
+    setActing(true);
+    port
+      .downloadUpdate()
+      .then(setStatus)
+      .catch(() => {})
+      .finally(() => setActing(false));
+  }, [status, port]);
 
   return { status, checking, acting, check, act };
 }

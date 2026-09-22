@@ -48,7 +48,14 @@ import { windowText } from '../limits/limitLabel';
 import { fill } from '../lib/format';
 import type { Platform } from '../lib/platform';
 import type { SourceLimits } from '../types';
-import { isPending, useAppVersion, useUpdateFlow } from './updateFlow';
+import {
+  isPending,
+  isStaged,
+  updateAction,
+  useAppVersion,
+  useUpdateFlow,
+  type UpdateAction,
+} from './updateFlow';
 import type { Settings } from '../types';
 import './settings.css';
 
@@ -584,6 +591,14 @@ function CustomIntervalRow({ sec, onCommit }: { sec: number; onCommit: (n: numbe
   );
 }
 
+// The banner's own words for the three actions (the shell's card names the
+// same decision from its own `update.*` keys).
+const BANNER_LABEL: Record<UpdateAction, StringKey> = {
+  download: 'settings.updates.action',
+  downloading: 'settings.updates.downloading',
+  restart: 'settings.updates.restart',
+};
+
 function UpdatesGroup({ port }: { port: SettingsPort }) {
   const { t } = useT();
   const { settings, update } = useSettings();
@@ -598,6 +613,11 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
   }, [check]);
 
   const showBanner = isPending(status);
+  // The banner serves both actionable states, so every line of it has to follow
+  // the one it is actually on. Saying "Restart to update" over an 'available'
+  // status made the button start a silent download instead — no label change,
+  // no visible answer, a click that read as nothing happening.
+  const staged = isStaged(status);
 
   let caption: ReactNode = null;
   if (status?.state === 'not-configured') {
@@ -619,10 +639,11 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
           <span className="set-banner-dot" aria-hidden="true" />
           <div className="set-banner-text">
             <div className="set-banner-title">
-              TokenLedger {status?.version} {t('settings.updates.isReady')}
+              TokenLedger {status?.version}{' '}
+              {t(staged ? 'settings.updates.isReady' : 'settings.updates.isAvailable')}
             </div>
             <div className="set-banner-sub">
-              {t('settings.updates.downloadedBg')} ·{' '}
+              {staged && <>{t('settings.updates.downloadedBg')} · </>}
               <span className="set-link">{t('settings.updates.releaseNotes')}</span>
             </div>
           </div>
@@ -632,7 +653,7 @@ function UpdatesGroup({ port }: { port: SettingsPort }) {
             onClick={act}
             disabled={acting}
           >
-            {t('settings.updates.restart')}
+            {t(BANNER_LABEL[updateAction(status, acting)])}
           </button>
         </div>
       )}
