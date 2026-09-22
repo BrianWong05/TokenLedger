@@ -637,12 +637,23 @@ describe('bars', () => {
     };
     const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }));
     const row = rows(cardFor(c, 'Codex'))[0];
-    // The figures are REPLACED, not annotated: no "0% left" anywhere on the row.
-    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
-    expect(row.textContent).not.toMatch(/0\s*%/);
+    // The figure is ANNOTATED, not replaced. The page defaults to Left, so the
+    // number here is the one the blank was introduced to suppress — a used-up
+    // window has 0% left, and saying so is the point rather than the hazard.
+    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('0%');
+    // Red, like the "used up" line beside it: 0% left is the driest tone there
+    // is, and a neutral numeral would read as an ordinary figure.
+    expect(row.querySelector('.tl-lim-num')?.className).toMatch(/dry/);
     const spent = row.querySelector('.tl-lim-resets')!;
     expect(spent.textContent).toBe('used up · resets in 1h');
     expect(spent.className).toMatch(/spent/);
+
+    // The other framing of the same window, where the figure is 100% used. Both
+    // are asserted because a blank passes neither, and one mode alone would let
+    // a mode-conditional blank survive.
+    await act(async () => btn(c, 'Used').click());
+    await settle();
+    expect(rows(cardFor(c, 'Codex'))[0].querySelector('.tl-lim-num')?.textContent).toBe('100%');
   });
 
   it('renders an expired epoch as full and unused', async () => {
@@ -684,7 +695,7 @@ describe('a figure whose reset nobody named', () => {
     expect(row.querySelector('.tl-lim-bar .tick')).toBeNull();
   });
 
-  it('replaces the figures of a used-up one without naming a reset either', async () => {
+  it('keeps the figure of a used-up one that names no reset either', async () => {
     const dry: SourceLimits = {
       ...CLAUDE_DESKTOP,
       windows: [{ ...CLAUDE_DESKTOP.windows[0], usedPct: 100 }],
@@ -699,7 +710,9 @@ describe('a figure whose reset nobody named', () => {
       }),
     );
     expect(spent.className).toMatch(/spent/);
-    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
+    // An absent reset withholds the COUNTDOWN, never the figure: how much is
+    // gone is known here even though when it comes back is not.
+    expect(row.querySelector('.tl-lim-num')?.textContent).toBe('0%');
   });
 
   // The twin above can only prove the VALUE matches; every locale spells the

@@ -289,16 +289,16 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
 
   return (
     <div className="tl-lim-row">
-      {/* A used-up window replaces its figures rather than reading "0% left" —
-          the column keeps its width so the bars below stay aligned. */}
-      {spent ? (
-        <span className="tl-lim-num" aria-hidden="true" />
-      ) : (
-        <span className={'tl-lim-num ' + w.tone}>
-          {w.pctShown}
-          <span className="pct">%</span>
-        </span>
-      )}
+      {/* A used-up window prints its figure like every other row: 100% used,
+          0% left. Blanking it was meant to keep "0% left" off the row, but it
+          took the number off the one window whose number matters most, beside
+          neighbours that all had one — and the bar's own `aria-label` said
+          "0% left" regardless, so the figure was withheld from the eye only.
+          The tray panel never blanked it, so one window read two ways. */}
+      <span className={'tl-lim-num ' + w.tone}>
+        {w.pctShown}
+        <span className="pct">%</span>
+      </span>
       <div className="tl-lim-body">
         <div className="tl-lim-labels">
           <span className="tl-lim-label">
