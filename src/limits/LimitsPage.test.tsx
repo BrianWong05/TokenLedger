@@ -8,6 +8,7 @@ import { LIVE_ENABLED_KEY, MODE_KEY, lastCheckKey, lastFailureKey, type LimitsPo
 import type { SourceLimits } from '../types';
 import { I18nProvider, type Lang } from '../lib/i18n';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
+import { limits as limitStrings } from '../lib/strings/limits';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -662,14 +663,19 @@ describe('bars', () => {
 // ── figures read from the Claude desktop app (ADR-0027) ──
 
 describe('a figure whose reset nobody named', () => {
-  it('marks the unknown reset 0, and draws no tick to an instant it lacks', async () => {
+  it('marks the unknown reset, and draws no tick to an instant it lacks', async () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_DESKTOP]) }));
     const row = rows(cardFor(c, 'Claude'))[0];
 
     // The figure the desktop app carried, drawn as it stands — not the 100%
-    // an expired epoch synthesises, and not a countdown to nothing.
+    // an expired epoch synthesises, and not a countdown to nothing. The mark
+    // comes off `limits.resetUnknown` rather than a literal, for the reason
+    // the tray panel's twin states: a hardcoded copy passes while silently
+    // drifting from the key both surfaces are supposed to share.
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('82%');
-    expect(row.querySelector('.tl-lim-resets')?.textContent).toBe('0');
+    expect(row.querySelector('.tl-lim-resets')?.textContent).toBe(
+      limitStrings.en['limits.resetUnknown'],
+    );
     expect(row.textContent).not.toMatch(/Resets in/);
     expect(row.querySelector('.tl-lim-bar .tick')).toBeNull();
   });
@@ -683,7 +689,7 @@ describe('a figure whose reset nobody named', () => {
     const row = rows(cardFor(c, 'Claude'))[0];
 
     const spent = row.querySelector('.tl-lim-resets')!;
-    expect(spent.textContent).toBe('used up · 0');
+    expect(spent.textContent).toBe(limitStrings.en['limits.spentUnknown']);
     expect(spent.className).toMatch(/spent/);
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
   });

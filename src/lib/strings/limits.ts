@@ -48,12 +48,13 @@ export const limits = {
     'limits.tickTitle': 'now — {t} until reset',
     'limits.spent': 'used up · resets in {t}',
     // A figure the desktop app's history carried (ADR-0027) names no reset at
-    // all. The slot shows `0` there: the same mark on every surface, so the
-    // page and the tray panel never answer one window two ways. The key still
-    // names the state — the reset is unknown — and only the mark it renders is
-    // a digit.
-    'limits.resetUnknown': '0',
-    'limits.spentUnknown': 'used up · 0',
+    // all. The slot shows `-` there: the same mark on every surface, so the
+    // page and the tray panel never answer one window two ways. A dash and not
+    // a digit, because the slot it fills otherwise reads "Resets in 5d 2h" —
+    // a numeral there reads as a countdown that reached zero rather than as
+    // the absence of one.
+    'limits.resetUnknown': '-',
+    'limits.spentUnknown': 'used up · -',
 
     'limits.checkedNow': 'checked just now',
     'limits.checkedAgo': 'checked {t} ago',
@@ -158,8 +159,8 @@ export const limits = {
     'limits.resetsIn': '{t}後重置',
     'limits.tickTitle': '現在 — 距重置還有 {t}',
     'limits.spent': '已用盡 · {t}後重置',
-    'limits.resetUnknown': '0',
-    'limits.spentUnknown': '已用盡 · 0',
+    'limits.resetUnknown': '-',
+    'limits.spentUnknown': '已用盡 · -',
 
     'limits.checkedNow': '剛剛查詢',
     'limits.checkedAgo': '{t}前查詢',
