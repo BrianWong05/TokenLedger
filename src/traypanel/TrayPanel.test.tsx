@@ -1198,10 +1198,10 @@ describe('TrayPanel limits', () => {
   });
 
   it('draws the unknown reset from the shared key, collapsed and expanded', async () => {
-    // ADR-0027: a reset nobody proved is marked `0`. The mark is read off
+    // ADR-0027: a reset nobody proved is marked `-`. The mark is read off
     // `limits.resetUnknown`, the same key the Limits page renders, so asserting
     // against the dictionary rather than a literal is the point — a hardcoded
-    // '0' here would pass a literal check while drifting the moment the key
+    // copy here would pass a literal check while drifting the moment the key
     // changes. Only the reset slot is affected; the reported usage stays whole.
     const unknownMark = limitStrings.en['limits.resetUnknown'];
     const now = Math.floor(Date.now() / 1000);

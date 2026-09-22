@@ -6,6 +6,11 @@
 // keeps the language server outside the scan (ADR-0018), while the Limits
 // companions keep vendor credentials outside the always-running app (ADR-0019).
 // That property is checkable by grep only while these live out here.
+//
+// `claude-statusline-tap` is bundled for a different reason: the app never
+// spawns it. Claude Code does, from its own `statusLine` setting, which is why
+// it alone has no entry in `capabilities/default.json`. It ships here because
+// a binary a person must build from source is not a feature they have.
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
@@ -21,7 +26,15 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const COMPANIONS = ['antigravity-export', 'antigravity-limits', 'claude-limits', 'codex-limits', 'copilot-limits', 'grok-limits'];
+export const COMPANIONS = [
+  'antigravity-export',
+  'antigravity-limits',
+  'claude-limits',
+  'claude-statusline-tap',
+  'codex-limits',
+  'copilot-limits',
+  'grok-limits',
+];
 const CACHE_VERSION = 1;
 const DEFAULT_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 

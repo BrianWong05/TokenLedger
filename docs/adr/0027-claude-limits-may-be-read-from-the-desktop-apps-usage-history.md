@@ -36,11 +36,16 @@ known epoch is not a Reading and is not stored. The newest one is written as
 current state beside the Companion's Export Artifact — a Limit State Artifact,
 on the same footing as Codex's Usage Reset count in ADR-0019 — and the card
 shows it as the current figure with its reset unknown. A reset nobody proved
-is drawn as the mark `0`, decided once in the dictionary under
+is drawn as the mark `-`, decided once in the dictionary under
 `limits.resetUnknown` and rendered from that one key by every surface, so the
-Limits page and the tray panel never answer one window two ways. The stored
-value stays absent: `0` is what the slot draws for an unknown reset, never a
-reset instant the Ledger claims to know.
+Limits page and the tray panel never answer one window two ways. A used-up
+window names the same absence in a longer line; that line templates the mark as
+`{mark}` rather than spelling it again, so the one key stays the only place the
+glyph appears. The mark is a dash and not a digit: the slot it fills otherwise
+reads `Resets in 5d 2h`, and a numeral there is read as a countdown that
+reached zero rather than as the absence of one. The stored value stays absent:
+the mark is what the slot draws for an unknown reset, never a reset instant the
+Ledger claims to know.
 
 A file this version cannot read — an unknown `version`, a shape nobody has
 mapped — is a malformed instance of a supported shape and reports as the

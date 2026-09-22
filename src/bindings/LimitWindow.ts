@@ -22,8 +22,10 @@ usedPct: number,
  * names no reset at all, so the Ledger could not place the figure in a
  * known epoch. Every figure that came from a stored Limit Reading carries
  * its epoch. Absent is never a zero here — it is the absence of an
- * instant, and the surfaces render that absence as the mark `0`
- * (ADR-0027), which is a display choice and not a measured value.
+ * instant, and the surfaces render it as a mark the dictionary decides
+ * (ADR-0027, `limits.resetUnknown`). Which glyph that is stays over
+ * there: it is a display choice, not a measured value, and naming it
+ * here only gives it a second place to go stale.
  */
 resetsAt: number | null, observedAt: number, 
 /**

@@ -1,13 +1,12 @@
 // Kept outside Vitest's filename pattern; this exercises the Node build script.
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { buildSidecars } from './build-sidecar.mjs';
-
-const COMPANIONS = ['antigravity-export', 'antigravity-limits', 'claude-limits', 'codex-limits', 'copilot-limits', 'grok-limits'];
+import { COMPANIONS, buildSidecars } from './build-sidecar.mjs';
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'tokenledger-sidecars-'));
@@ -56,6 +55,8 @@ test('dev builds all companions once, then skips an unchanged build', (t) => {
     '--bin',
     'claude-limits',
     '--bin',
+    'claude-statusline-tap',
+    '--bin',
     'codex-limits',
     '--bin',
     'copilot-limits',
@@ -86,4 +87,23 @@ test('production builds even when the cache is current', (t) => {
   buildSidecars({ root, ifNeeded: false, run, log: () => {} });
 
   assert.equal(cargoCalls.length, 2);
+});
+
+// Compiling a companion and BUNDLING it are two lists, and nothing tied them
+// together: `claude-statusline-tap` existed as a buildable bin for a month
+// while shipping in no release, because only one list ever named it. A binary
+// this script builds but the bundle omits is a binary a person must compile
+// from source, which is the failure this pins shut. Read off the real manifest,
+// not a fixture: a fixture would pass while the shipped app disagreed.
+test('every companion the script builds is bundled by tauri.conf.json', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const conf = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  // Membership, not order: the lists must name the same binaries, but a
+  // companion added out of alphabetical order to one of them is bundled
+  // correctly and must not fail here.
+  assert.deepEqual(
+    [...conf.bundle.externalBin].sort(),
+    COMPANIONS.map((name) => `binaries/${name}`).sort(),
+    'tauri.conf.json externalBin has drifted from the build script COMPANIONS list',
+  );
 });

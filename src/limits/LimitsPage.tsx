@@ -315,12 +315,15 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
               </>
             )}
           </span>
-          {/* A figure with no reset shows `0` in the same slot — the mark takes
-              no duration, because there is no instant to name. The tray panel
-              draws the same key, so one window never reads two ways. */}
+          {/* A figure with no reset shows the unknown mark in the same slot —
+              it takes no duration, because there is no instant to name. Both
+              branches spell the mark from `limits.resetUnknown`, and the tray
+              panel draws that same key, so one window never reads two ways. */}
           <span className={'tl-lim-resets' + (spent ? ' spent' : '')}>
             {reset === 'unknown'
-              ? t(spent ? 'limits.spentUnknown' : 'limits.resetUnknown')
+              ? spent
+                ? fill(t('limits.spentUnknown'), { mark: t('limits.resetUnknown') })
+                : t('limits.resetUnknown')
               : resets && fill(t(spent ? 'limits.spent' : 'limits.resetsIn'), { t: resets })}
           </span>
         </div>
