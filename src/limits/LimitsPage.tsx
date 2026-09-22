@@ -315,8 +315,9 @@ function Row({ w, source, mode, t }: { w: WindowView; source: string; mode: Mode
               </>
             )}
           </span>
-          {/* A figure with no reset says so in the same slot — its copy takes
-              no duration, because there is no instant to name. */}
+          {/* A figure with no reset shows `0` in the same slot — the mark takes
+              no duration, because there is no instant to name. The tray panel
+              draws the same key, so one window never reads two ways. */}
           <span className={'tl-lim-resets' + (spent ? ' spent' : '')}>
             {reset === 'unknown'
               ? t(spent ? 'limits.spentUnknown' : 'limits.resetUnknown')

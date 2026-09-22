@@ -17,11 +17,13 @@ windowMinutes: number | null,
  */
 usedPct: number, 
 /**
- * When this window next resets. Absent is "reset unknown", which only a
- * desktop state figure produces: the Claude desktop app's history names no
- * reset at all, so a figure the Ledger could not place in a known epoch
- * says so rather than naming an instant nobody proved. Every figure that
- * came from a stored Limit Reading carries its epoch.
+ * When this window next resets. Absent means the reset is unknown, which
+ * only a desktop state figure produces: the Claude desktop app's history
+ * names no reset at all, so the Ledger could not place the figure in a
+ * known epoch. Every figure that came from a stored Limit Reading carries
+ * its epoch. Absent is never a zero here — it is the absence of an
+ * instant, and the surfaces render that absence as the mark `0`
+ * (ADR-0027), which is a display choice and not a measured value.
  */
 resetsAt: number | null, observedAt: number, 
 /**

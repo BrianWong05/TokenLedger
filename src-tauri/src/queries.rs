@@ -903,11 +903,13 @@ pub struct LimitWindow {
     pub window_minutes: Option<i64>,
     /// The vendor's own figure, unconverted.
     pub used_pct: f64,
-    /// When this window next resets. Absent is "reset unknown", which only a
-    /// desktop state figure produces: the Claude desktop app's history names no
-    /// reset at all, so a figure the Ledger could not place in a known epoch
-    /// says so rather than naming an instant nobody proved. Every figure that
-    /// came from a stored Limit Reading carries its epoch.
+    /// When this window next resets. Absent means the reset is unknown, which
+    /// only a desktop state figure produces: the Claude desktop app's history
+    /// names no reset at all, so the Ledger could not place the figure in a
+    /// known epoch. Every figure that came from a stored Limit Reading carries
+    /// its epoch. Absent is never a zero here — it is the absence of an
+    /// instant, and the surfaces render that absence as the mark `0`
+    /// (ADR-0027), which is a display choice and not a measured value.
     #[ts(type = "number | null")]
     pub resets_at: Option<i64>,
     #[ts(type = "number")]
@@ -2897,7 +2899,7 @@ mod tests {
         )
         .unwrap();
         // Newer than the Reading, and inside an epoch nobody has proven — so it
-        // says "reset unknown" rather than naming the Reading's instant.
+        // leaves the reset unknown rather than naming the Reading's instant.
         state_of(
             &exports,
             "codex",
@@ -3035,7 +3037,7 @@ mod tests {
         // Reading drawn from it: that figure is an earlier look at the same
         // finished window, so the Reading stands (and the page draws the
         // finished epoch as spent, which is what is known) rather than an
-        // older percentage wearing "reset unknown".
+        // older percentage with its reset left unknown.
         db::insert_limit_readings(
             &mut conn,
             &[proven_reading(40.0, EVALUATED_AT - 120, EVALUATED_AT - 60)],

@@ -288,19 +288,35 @@ describe('card states', () => {
     expect(claude.note).toBeUndefined();
   });
 
-  it('keeps drawing a signed-out card that holds a desktop figure, trouble demoted to a note', () => {
-    // A desktop figure (ADR-0027) did not come from the sign-in the Companion
-    // reports dead — the reasoning that blanks the card above does not reach
-    // it, so the bars stay and the trouble shrinks to a line beneath them.
-    const [claude] = cards([held('claude', [win({ via: 'desktop' })], 'Team 5x', 2)], NOW, 'left', {
+  it.each(['default_claude_pro', 'default_claude_max_5x', 'default_claude_max_20x'])(
+    'keeps the reported plan %s on a desktop card when the live sign-in fails',
+    (plan) => {
+      // A desktop figure (ADR-0027) did not come from the sign-in the Companion
+      // reports dead, so the card still draws. The tier the Source last
+      // reported draws with it: a failed check does not disprove a
+      // subscription. The two gates part here — the redeemable Usage Reset
+      // count is exactly what the dead sign-in fails to confirm, so a non-null
+      // 2 goes to unknown on the same card that keeps its plan.
+      const [claude] = cards([held('claude', [win({ via: 'desktop' })], plan, 2)], NOW, 'left', {
+        claude: 'signed-out',
+      });
+
+      expect(claude.state).toBe('live');
+      expect(claude.note).toBe('signed-out');
+      expect(claude.windows).toHaveLength(1);
+      expect(claude.plan).toBe(plan);
+      expect(claude.usageResetsAvailable).toBeNull();
+    },
+  );
+
+  it('reports no plan on a desktop card the Source never named a plan for', () => {
+    // The gate keeps what was reported; it does not invent one where nothing
+    // was. Held plan and Usage Reset count both absent, so both stay absent.
+    const [claude] = cards([held('claude', [win({ via: 'desktop' })], null, null)], NOW, 'left', {
       claude: 'signed-out',
     });
 
     expect(claude.state).toBe('live');
-    expect(claude.note).toBe('signed-out');
-    expect(claude.windows).toHaveLength(1);
-    // Only the bars were asked for. The plan pill and the Usage Reset count
-    // are things the dead login vouched for, so they stay off the card.
     expect(claude.plan).toBeNull();
     expect(claude.usageResetsAvailable).toBeNull();
   });

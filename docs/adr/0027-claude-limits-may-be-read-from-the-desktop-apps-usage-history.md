@@ -35,7 +35,12 @@ far as the evidence rules admit it, which today is not at all. An entry with no
 known epoch is not a Reading and is not stored. The newest one is written as
 current state beside the Companion's Export Artifact — a Limit State Artifact,
 on the same footing as Codex's Usage Reset count in ADR-0019 — and the card
-shows it as the current figure with its reset unknown.
+shows it as the current figure with its reset unknown. A reset nobody proved
+is drawn as the mark `0`, decided once in the dictionary under
+`limits.resetUnknown` and rendered from that one key by every surface, so the
+Limits page and the tray panel never answer one window two ways. The stored
+value stays absent: `0` is what the slot draws for an unknown reset, never a
+reset instant the Ledger claims to know.
 
 A file this version cannot read — an unknown `version`, a shape nobody has
 mapped — is a malformed instance of a supported shape and reports as the
@@ -52,7 +57,13 @@ a stored epoch that has expired, which the page would otherwise draw as
 unused. The card's one freshness line names the channel and the age of the
 newest fact. When the Companion reports a dead sign-in while a desktop figure
 exists, the bars still draw and the sign-in trouble shrinks to a note beneath
-them. The five-hour window is never projected forward from an earlier reset;
+them. The plan the Source last reported stays on the card with them: a
+subscription tier is not something the failed check disproves, and a card that
+forgot its tier on every dead sign-in would flicker between naming the plan and
+denying one. The redeemable Usage Reset count does not stay: it is a live
+entitlement whose value the dead sign-in is precisely what fails to confirm, so
+it goes to unknown rather than standing on an old answer. The five-hour window
+is never projected forward from an earlier reset;
 the rule that removed that forecast stands.
 
 Deliberately not done: TokenLedger does not read the desktop app's own OAuth

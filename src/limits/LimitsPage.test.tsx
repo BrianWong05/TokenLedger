@@ -662,14 +662,14 @@ describe('bars', () => {
 // ── figures read from the Claude desktop app (ADR-0027) ──
 
 describe('a figure whose reset nobody named', () => {
-  it('says the reset time is unknown, and draws no tick to an instant it lacks', async () => {
+  it('marks the unknown reset 0, and draws no tick to an instant it lacks', async () => {
     const c = await mount(fakePort({ list: () => Promise.resolve([CLAUDE_DESKTOP]) }));
     const row = rows(cardFor(c, 'Claude'))[0];
 
     // The figure the desktop app carried, drawn as it stands — not the 100%
     // an expired epoch synthesises, and not a countdown to nothing.
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('82%');
-    expect(row.querySelector('.tl-lim-resets')?.textContent).toBe('reset time unknown');
+    expect(row.querySelector('.tl-lim-resets')?.textContent).toBe('0');
     expect(row.textContent).not.toMatch(/Resets in/);
     expect(row.querySelector('.tl-lim-bar .tick')).toBeNull();
   });
@@ -683,7 +683,7 @@ describe('a figure whose reset nobody named', () => {
     const row = rows(cardFor(c, 'Claude'))[0];
 
     const spent = row.querySelector('.tl-lim-resets')!;
-    expect(spent.textContent).toBe('used up · reset time unknown');
+    expect(spent.textContent).toBe('used up · 0');
     expect(spent.className).toMatch(/spent/);
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
   });
@@ -714,7 +714,7 @@ describe('a figure whose reset nobody named', () => {
     expect(rows(claude)).toHaveLength(2);
   });
 
-  it('keeps the bars and shrinks a dead sign-in to a note beneath them', async () => {
+  it('keeps the bars and known plan, with a dead sign-in noted beneath them', async () => {
     const liveCalls: string[] = [];
     const port = fakePort({
       list: () => Promise.resolve([CLAUDE_DESKTOP]),
@@ -728,11 +728,9 @@ describe('a figure whose reset nobody named', () => {
     const c = await mount(port);
     const claude = cardFor(c, 'Claude');
 
-    // The figures survive the dead login, because they never came from it.
-    // The plan pill does not: the login vouched for it, and only the bars
-    // were asked to outlive the sign-in.
+    // Desktop figures and the last reported plan survive a failed live check.
     expect(rows(claude)).toHaveLength(1);
-    expect(claude.querySelector('.tl-lim-plan')).toBeNull();
+    expect(claude.querySelector('.tl-lim-plan')?.textContent).toBe('Max 5x');
     // And the full trouble face is gone: its title is nowhere on the card.
     expect(claude.textContent).not.toContain('Sign-in unavailable');
     expect(claude.textContent).toContain(

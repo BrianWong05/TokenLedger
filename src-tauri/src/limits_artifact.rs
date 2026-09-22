@@ -395,8 +395,9 @@ pub struct LimitStateWindow {
     /// The vendor's own utilization figure, unconverted.
     pub used_pct: f64,
     /// The epoch this figure was placed in, where the producer could resolve
-    /// one against the Readings already stored. Absent is "reset unknown" —
-    /// never a zero, and never a guessed instant.
+    /// one against the Readings already stored. Absent means the reset is
+    /// unknown — never a stored zero, and never a guessed instant. What the
+    /// surfaces draw for that absence is theirs to decide (ADR-0027).
     #[serde(default)]
     pub resets_at: Option<i64>,
 }

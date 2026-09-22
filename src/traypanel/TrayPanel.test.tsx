@@ -9,6 +9,7 @@ import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
 import { makeFakeSettings } from '../settings/settings.fake';
 import { makeFakeEstimate } from '../limits/limits.fake';
+import { limits as limitStrings } from '../lib/strings/limits';
 import {
   LIVE_ENABLED_KEY,
   lastCheckKey,
@@ -1196,10 +1197,13 @@ describe('TrayPanel limits', () => {
     ).toEqual(['Codex']);
   });
 
-  it('says the reset is unknown for a desktop figure, collapsed and expanded', async () => {
-    // ADR-0027: the Claude desktop app's history names no reset, so the panel
-    // says so in the slot that otherwise counts down. It must not fall back to
-    // a blank, which reads as a window with nothing to report.
+  it('draws the unknown reset from the shared key, collapsed and expanded', async () => {
+    // ADR-0027: a reset nobody proved is marked `0`. The mark is read off
+    // `limits.resetUnknown`, the same key the Limits page renders, so asserting
+    // against the dictionary rather than a literal is the point — a hardcoded
+    // '0' here would pass a literal check while drifting the moment the key
+    // changes. Only the reset slot is affected; the reported usage stays whole.
+    const unknownMark = limitStrings.en['limits.resetUnknown'];
     const now = Math.floor(Date.now() / 1000);
     const desktopOnly: SourceLimits = {
       source: 'claude',
@@ -1213,13 +1217,13 @@ describe('TrayPanel limits', () => {
 
     const meter = container.querySelector('.tp-limmeter')!;
     expect(meter.querySelector('.tp-limmeter-v')?.textContent).toBe('62%');
-    expect(meter.querySelector('.tp-limmeter-t')?.textContent).toBe('· reset unknown');
+    expect(meter.querySelector('.tp-limmeter-t')?.textContent).toBe('· ' + unknownMark);
     expect(meter.textContent).not.toMatch(/\dh|\dm|\dd/);
 
     const head = container.querySelector('.tp-limcard-head') as HTMLButtonElement;
     await act(async () => head.click());
     const row = container.querySelector('.tp-limwin')!;
-    expect(row.querySelector('.tp-limwin-resets')?.textContent).toBe('reset unknown');
+    expect(row.querySelector('.tp-limwin-resets')?.textContent).toBe(unknownMark);
     expect(row.textContent).not.toMatch(/resets in/);
   });
 
@@ -1331,6 +1335,33 @@ describe('TrayPanel limits', () => {
     );
     expect(container.querySelector('.tp-limwin-k')?.textContent).toBe('Monthly credits');
     expect(container.querySelector('.tp-limwin-pct')?.textContent).toBe('59%');
+  });
+
+  it('keeps the plan pill on a desktop card whose live sign-in is dead', async () => {
+    // ADR-0027: the desktop figure did not come from the dead sign-in, so the
+    // card draws — and the tier the Source last reported draws with it, because
+    // a failed check does not disprove a subscription. The panel reads the same
+    // cards() as the page, so the gate is proven on both surfaces, not one.
+    const now = Math.floor(Date.now() / 1000);
+    const desktopOnly: SourceLimits = {
+      source: 'claude',
+      plan: 'default_claude_max_5x',
+      usageResetsAvailable: 2,
+      windows: [
+        { windowKey: 'five_hour', windowMinutes: 300, usedPct: 38, resetsAt: null, observedAt: now - 60, via: 'desktop', estimate: makeFakeEstimate() },
+      ],
+    };
+    const container = await mountWithLimits(
+      makeFakeLimits([desktopOnly], {
+        [lastFailureKey('claude')]: 'signed-out',
+        [lastCheckKey('claude')]: String(Date.now()),
+      }),
+    );
+
+    expect(
+      Array.from(container.querySelectorAll('.tp-limcard-name')).map((e) => e.textContent),
+    ).toEqual(['Claude']);
+    expect(container.querySelector('.tp-limcard-plan')?.textContent).toBe('Max 5x');
   });
 
   it('keeps a Source with a stored failure verdict off the panel while the floor holds it', async () => {

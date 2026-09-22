@@ -408,17 +408,19 @@ export function cards(
               ? 'signed-out'
               : 'nothing-recorded';
 
-    // The plan pill and the Usage Reset count come from the Companion's own
-    // login. On a card kept alive only by a desktop figure, that login is the
-    // thing reported dead, so they stay off: the bars were asked for, nothing
-    // else that the dead sign-in vouched for.
-    const trusted = state === 'live' && failure !== 'signed-out';
+    // Two different questions, so two gates (ADR-0027). A subscription tier is
+    // not something a failed check disproves, so a drawable card keeps the plan
+    // the Source last reported. A redeemable Usage Reset count is a live
+    // entitlement, and a dead sign-in is precisely what fails to confirm it, so
+    // it needs the sign-in alive and goes to unknown without one.
+    const planKnown = state === 'live';
+    const liveSignIn = state === 'live' && failure !== 'signed-out';
     return {
       source: meta.key,
       meta,
       state,
-      plan: trusted ? (held?.plan ?? null) : null,
-      usageResetsAvailable: trusted ? (held?.usageResetsAvailable ?? null) : null,
+      plan: planKnown ? (held?.plan ?? null) : null,
+      usageResetsAvailable: liveSignIn ? (held?.usageResetsAvailable ?? null) : null,
       observedAt: newest?.observedAt ?? null,
       freshVia: newest?.via ?? null,
       // An error card keeps its held windows: the failure line says why the

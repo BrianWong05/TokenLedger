@@ -832,7 +832,7 @@ export default function TrayPanel({
                           <span className={'tp-limwin-pct tp-t-' + w.tone}>{w.pctShown}%</span>
                           <span className="tp-limwin-resets">
                             {resetLabel(w) === 'unknown'
-                              ? 'reset unknown'
+                              ? EN('limits.resetUnknown')
                               : w.resetsInMin !== null &&
                                 `resets in ${limitDuration(w.resetsInMin)}`}
                           </span>
@@ -850,7 +850,7 @@ export default function TrayPanel({
                           <span>
                             <span className={'tp-limmeter-v tp-t-' + w.tone}>{w.pctShown}%</span>
                             {resetLabel(w) === 'unknown' ? (
-                              <span className="tp-limmeter-t">· reset unknown</span>
+                              <span className="tp-limmeter-t">· {EN('limits.resetUnknown')}</span>
                             ) : (
                               w.resetsInMin !== null && (
                                 <span className="tp-limmeter-t">· {limitDuration(w.resetsInMin)}</span>
