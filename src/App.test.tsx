@@ -372,12 +372,14 @@ describe('App shell', () => {
     expect(visited.querySelector('.tl-update-card')).toBeNull();
   });
 
-  // A staged update is the exception: the Settings banner re-checks and reports
-  // it as merely 'available' again, so retiring the card there would take the
-  // only "Restart to update" on screen with it.
+  // A staged update is the exception: the restart is the only step left before
+  // the new version runs, so the card keeps offering it rather than sending the
+  // reader back to Settings for the same one click.
   it('keeps a staged update card through a visit to Settings', async () => {
     const port = makeFakeSettings({}, AVAILABLE);
     const card = await mountApp(port);
+    // The card's button names the step it is on, so the download comes first.
+    expect(card.querySelector('.tl-update-card-btn')!.textContent).toBe('Update');
     await act(async () => (card.querySelector('.tl-update-card-btn') as HTMLButtonElement).click());
     await settle();
     expect(port.calls.downloadUpdate).toBe(1);
@@ -386,6 +388,7 @@ describe('App shell', () => {
     await settle();
     const btn = card.querySelector('.tl-update-card-btn') as HTMLButtonElement | null;
     expect(btn).not.toBeNull();
+    expect(btn!.textContent).toBe('Restart to update');
     await act(async () => btn!.click());
     expect(port.calls.restartApp).toBe(1);
   });

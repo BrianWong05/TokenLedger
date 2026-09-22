@@ -98,9 +98,14 @@ export const settings = {
     'settings.updates.unconfigured': 'Update checks arrive with signed releases',
     'settings.updates.upToDate': 'Up to date',
     'settings.updates.isReady': 'is ready',
+    'settings.updates.isAvailable': 'is available',
     'settings.updates.downloadedBg': 'Downloaded in the background',
     'settings.updates.releaseNotes': 'Release notes',
     'settings.updates.restart': 'Restart to update',
+    // The banner's button says what the click actually does: an available
+    // release is downloaded first, and only a staged one restarts.
+    'settings.updates.action': 'Update',
+    'settings.updates.downloading': 'Downloading…',
     'settings.updates.downloadedNote': 'downloaded · restart to install',
     'settings.updates.availableNote': 'available',
 
@@ -183,9 +188,12 @@ export const settings = {
     'settings.updates.unconfigured': '簽署版本推出後即可檢查更新',
     'settings.updates.upToDate': '已是最新版本',
     'settings.updates.isReady': '已就緒',
+    'settings.updates.isAvailable': '可更新',
     'settings.updates.downloadedBg': '已在背景下載',
     'settings.updates.releaseNotes': '版本說明',
     'settings.updates.restart': '重新啟動以更新',
+    'settings.updates.action': '更新',
+    'settings.updates.downloading': '下載中…',
     'settings.updates.downloadedNote': '已下載 · 重新啟動以安裝',
     'settings.updates.availableNote': '可更新',
 

@@ -13,11 +13,45 @@ use tauri_plugin_updater::UpdaterExt;
 
 use crate::settings::{AppliedUpdate, UpdateStatus};
 
+/// The version this run downloaded and staged. The endpoint is re-asked on
+/// every check and cannot know what this machine already has on disk, so
+/// without a memory here a second check demotes a staged update back to
+/// merely "available" and the Settings banner loses its restart — the button
+/// still says "Restart to update" and downloads all over again.
+///
+/// Process-wide rather than managed state, because there is nothing to
+/// register and so nothing to forget: a missing `app.manage` would have made
+/// the write a silent no-op, which is the very failure this memory exists to
+/// stop. Its life is the process's own — the relaunch that consumes the
+/// staged update is what clears it, and the process that comes back *is* that
+/// version.
+static STAGED: Mutex<Option<String>> = Mutex::new(None);
+
+fn staged() -> Option<String> {
+    STAGED.lock().unwrap().clone()
+}
+
+/// Records a finished download *and* reports it, in one step — so `download`
+/// cannot answer "downloaded" without the memory being written. Called on the
+/// one path where the release is verified and on disk.
+fn stage(version: String) -> UpdateStatus {
+    *STAGED.lock().unwrap() = Some(version.clone());
+    UpdateStatus::downloaded(version)
+}
+
 /// Maps the plugin's check outcome to an honest UpdateStatus. A config failure
 /// (bad/empty endpoint or pubkey) or an endpoint/network failure both become
 /// "not-configured"; only a reachable, well-formed response yields up-to-date
-/// or available.
+/// or available. What this run staged then outranks that answer (`reconcile`).
 pub async fn check(app: &AppHandle) -> UpdateStatus {
+    reconcile(staged(), ask_endpoint(app).await)
+}
+
+/// The endpoint's own answer, with no memory of this run's downloads laid over
+/// it. The window's surfaces want `check`; the resident notifier wants this,
+/// so ADR-0026's daily check keeps announcing exactly what it announced before
+/// a staged download existed.
+async fn ask_endpoint(app: &AppHandle) -> UpdateStatus {
     let updater = match app.updater() {
         Ok(u) => u,
         Err(_) => return UpdateStatus::not_configured(),
@@ -26,6 +60,21 @@ pub async fn check(app: &AppHandle) -> UpdateStatus {
         Ok(Some(update)) => UpdateStatus::available(update.version),
         Ok(None) => UpdateStatus::up_to_date(),
         Err(_) => UpdateStatus::not_configured(),
+    }
+}
+
+/// A staged download is local knowledge, so it outranks whatever the endpoint
+/// says: the release is on disk whether or not the network answered this time,
+/// and every surface keeps the restart it is asking for. Nothing staged and
+/// the endpoint's answer stands untouched.
+///
+/// ponytail: a release published *after* this run's download stays hidden
+/// until the restart. Compare the two versions here if a newer release ever
+/// needs to overtake a staged one.
+fn reconcile(staged: Option<String>, found: UpdateStatus) -> UpdateStatus {
+    match staged {
+        Some(version) => UpdateStatus::downloaded(version),
+        None => found,
     }
 }
 
@@ -45,7 +94,7 @@ pub async fn download(app: &AppHandle) -> Result<UpdateStatus, String> {
         .download_and_install(|_, _| {}, || {})
         .await
         .map_err(|e| e.to_string())?;
-    Ok(UpdateStatus::downloaded(version))
+    Ok(stage(version))
 }
 
 /// The resident update check, run from the capture thread's daily tick
@@ -69,7 +118,7 @@ pub async fn resident_check(app: &AppHandle, notified: &Mutex<Option<String>>) {
     {
         return;
     }
-    let status = check(app).await;
+    let status = ask_endpoint(app).await;
     if status.state != "available" {
         return;
     }
@@ -205,6 +254,51 @@ mod tests {
         std::fs::write(&record, "").unwrap();
         assert_eq!(advance_version_record(&record, "0.4.0"), None);
         assert_eq!(std::fs::read_to_string(&record).unwrap(), "0.4.0");
+    }
+
+    /// Both ends of the memory, on the real functions the app calls: `stage` is
+    /// what `download` returns through, and a later check reads back what it
+    /// wrote. The one test that touches the process memory, so it restores it
+    /// before leaving.
+    #[test]
+    fn staging_a_download_both_reports_it_and_is_remembered() {
+        assert_eq!(staged(), None, "no download, no memory");
+
+        // What `download` returns on a verified download.
+        assert_eq!(stage("0.4.2".to_string()), UpdateStatus::downloaded("0.4.2".to_string()));
+        assert_eq!(staged(), Some("0.4.2".to_string()), "reporting it must also remember it");
+        assert_eq!(
+            reconcile(staged(), UpdateStatus::available("0.4.2".into())),
+            UpdateStatus::downloaded("0.4.2".to_string()),
+            "and that is what the next check reports"
+        );
+
+        *STAGED.lock().unwrap() = None;
+    }
+
+    /// The staged download is the app's own knowledge and survives every
+    /// answer the endpoint can give — including the one it gives most often
+    /// here, "available", which is what used to overwrite the restart.
+    #[test]
+    fn a_staged_version_outranks_whatever_the_endpoint_answers() {
+        let staged = || Some("0.4.2".to_string());
+        let downloaded = || UpdateStatus::downloaded("0.4.2".to_string());
+        assert_eq!(reconcile(staged(), UpdateStatus::available("0.4.2".into())), downloaded());
+        // Offline, or a release yanked mid-run: it is on disk either way.
+        assert_eq!(reconcile(staged(), UpdateStatus::not_configured()), downloaded());
+        assert_eq!(reconcile(staged(), UpdateStatus::up_to_date()), downloaded());
+    }
+
+    /// And it is the *staged* version that decides, not the call itself: with
+    /// nothing downloaded the endpoint's answer passes through untouched.
+    #[test]
+    fn nothing_staged_leaves_the_endpoints_answer_alone() {
+        assert_eq!(
+            reconcile(None, UpdateStatus::available("0.4.2".into())),
+            UpdateStatus::available("0.4.2".into())
+        );
+        assert_eq!(reconcile(None, UpdateStatus::up_to_date()), UpdateStatus::up_to_date());
+        assert_eq!(reconcile(None, UpdateStatus::not_configured()), UpdateStatus::not_configured());
     }
 
     /// One applied update announces exactly once: over the OS notification on

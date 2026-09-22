@@ -10,20 +10,34 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'rea
 import Overview from './overview/Overview';
 import FirstRunDialog from './settings/FirstRunDialog';
 import { SettingsProvider, useSettings } from './settings/SettingsContext';
-import { I18nProvider, useT } from './lib/i18n';
+import { I18nProvider, useT, type StringKey } from './lib/i18n';
 import { Mark } from './lib/Mark';
 import { detectPlatform, type Platform } from './lib/platform';
 import { hotkeyHint, isHotkey } from './lib/hotkeys';
 import { tauriLedger, type LedgerPort } from './overview/ledger';
 import type { ClockPort } from './overview/overviewStore';
 import { tauriSettings, type AppliedUpdate, type SettingsPort } from './settings/settings';
-import { isPending, isStaged, useUpdateFlow } from './settings/updateFlow';
+import {
+  isPending,
+  isStaged,
+  updateAction,
+  useUpdateFlow,
+  type UpdateAction,
+} from './settings/updateFlow';
 import type { PricingPort } from './pricing/pricing';
 import type { LimitsPort } from './limits/limits';
 import './App.css';
 
 // The shortest gap between two update checks in one window's lifetime.
 const CHECK_FLOOR_MS = 6 * 60 * 60 * 1000;
+
+// The card's own words for the three actions. The shell keeps its `update.*`
+// keys rather than reading the Settings dictionary — same decision, own words.
+const CARD_LABEL: Record<UpdateAction, StringKey> = {
+  download: 'update.action',
+  downloading: 'update.downloading',
+  restart: 'update.restart',
+};
 
 const PricingPage = lazy(() => import('./pricing/PricingPage'));
 const LimitsPage = lazy(() => import('./limits/LimitsPage'));
@@ -185,10 +199,9 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
     return () => document.removeEventListener('keydown', onKey);
   }, [platform]);
 
-  // A staged update keeps its card even after a visit to Settings: the banner
-  // there re-checks and reports the staged update as merely 'available' again,
-  // so retiring the card would take the only "Restart to update" on screen with
-  // it.
+  // A staged update keeps its card even after a visit to Settings: the restart
+  // is the only step left before the new version runs, so it stays one click
+  // away wherever the reader happens to be.
   const staged = isStaged(updateStatus);
   const showDot = isPending(updateStatus) && !settingsSeen;
   const showCard = isPending(updateStatus) && !cardDismissed && (!settingsSeen || staged);
@@ -295,11 +308,7 @@ function Shell({ ports, platform }: { ports?: AppPorts; platform: Platform }) {
                 disabled={updating}
                 onClick={act}
               >
-                {updating
-                  ? t('update.downloading')
-                  : staged
-                    ? t('update.restart')
-                    : t('update.action')}
+                {t(CARD_LABEL[updateAction(updateStatus, updating)])}
               </button>
             </div>
           )}

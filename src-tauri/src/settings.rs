@@ -90,7 +90,7 @@ pub fn set_settings(conn: &Connection, s: &Settings) -> rusqlite::Result<()> {
 /// in `updater.rs`, which keeps the honest-degradation rule: any config,
 /// endpoint, or signature failure becomes "not-configured", never a fake
 /// "up-to-date".
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../src/bindings/")]
 pub struct UpdateStatus {

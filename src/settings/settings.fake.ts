@@ -48,6 +48,9 @@ export function makeFakeSettings(
   const openSettingsCbs = new Set<() => void>();
   // download stages the checked update: same version, state 'downloaded'.
   const downloaded: UpdateStatus = { state: 'downloaded', version: update.version };
+  // Mirrors updater.rs's `reconcile`: once this run has staged a download, a
+  // later check reports it rather than demoting it back to merely available.
+  let hasStaged = false;
 
   const guard = <T>(method: string, produce: () => T): Promise<T> => {
     if (fails.has(method)) {
@@ -63,7 +66,11 @@ export function makeFakeSettings(
     calls,
     get: () => guard('get', () => { calls.get++; return { ...value }; }),
     set: (s) => guard('set', () => { calls.set.push(s); value = { ...s }; }),
-    checkUpdates: () => guard('checkUpdates', () => { calls.checkUpdates++; return update; }),
+    checkUpdates: () =>
+      guard('checkUpdates', () => {
+        calls.checkUpdates++;
+        return hasStaged ? downloaded : update;
+      }),
     version: () => guard('version', () => { calls.version++; return version; }),
     appliedUpdate: () =>
       guard('appliedUpdate', () => {
@@ -72,7 +79,12 @@ export function makeFakeSettings(
         pendingApplied = null;
         return a;
       }),
-    downloadUpdate: () => guard('downloadUpdate', () => { calls.downloadUpdate++; return downloaded; }),
+    downloadUpdate: () =>
+      guard('downloadUpdate', () => {
+        calls.downloadUpdate++;
+        hasStaged = true;
+        return downloaded;
+      }),
     restartApp: () => guard('restartApp', () => { calls.restartApp++; }),
     failNext: (method, err) => fails.set(method, err),
     onOpenSettings: (cb: () => void) => {

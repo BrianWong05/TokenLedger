@@ -636,6 +636,56 @@ describe('SettingsPage', () => {
     expect(text).toContain('1.5.0 downloaded · restart to install');
   });
 
+  // The banner serves 'available' too, and that is the state the released
+  // build sat in: it offered "Restart to update" over an undownloaded release,
+  // so the click started a silent download and the button never said a word
+  // about it.
+  it('offers a download, not a restart, while the release is only available', async () => {
+    const available: UpdateStatus = { state: 'available', version: '1.5.0' };
+    const port = makeFakeSettings({ firstRunDone: true }, available);
+    const c = await mount(port);
+
+    const banner = q<HTMLElement>(c, '.set-banner');
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).not.toContain('Restart to update');
+    expect(banner!.textContent).not.toContain('Downloaded in the background');
+    // The headline follows the state too: nothing is "ready" until it is staged.
+    expect(banner!.textContent).toContain('TokenLedger 1.5.0 is available');
+    const button = q<HTMLButtonElement>(banner!, '.set-primary-btn');
+    expect(button!.textContent).toBe('Update');
+
+    // And the click stages it rather than relaunching into nothing.
+    await click(button!);
+    await settle();
+    expect(port.calls.downloadUpdate).toBe(1);
+    expect(port.calls.restartApp).toBe(0);
+    expect(q<HTMLElement>(c, '.set-banner')!.textContent).toContain('Restart to update');
+  });
+
+  // The banner's half of the staged contract: given a port that reports a
+  // staged download (what updater.rs's `reconcile` guarantees, pinned on the
+  // Rust side), a re-check must not take the restart away. This exercises the
+  // fake's mirror of that rule, not the Rust — the two meet at SettingsPort.
+  it('keeps the restart when the port reports a staged update through a re-check', async () => {
+    const available: UpdateStatus = { state: 'available', version: '1.5.0' };
+    const port = makeFakeSettings({ firstRunDone: true }, available);
+    const c = await mount(port);
+
+    await click(q<HTMLButtonElement>(c, '.set-banner .set-primary-btn')!);
+    await settle();
+    expect(q<HTMLElement>(c, '.set-banner')!.textContent).toContain('Restart to update');
+
+    const checkNow = [...c.querySelectorAll('button')].find(
+      (b) => b.textContent === 'Check for updates',
+    );
+    await click(checkNow!);
+    await settle();
+
+    expect(q<HTMLElement>(c, '.set-banner')!.textContent).toContain('Restart to update');
+    await click(q<HTMLButtonElement>(c, '.set-banner .set-primary-btn')!);
+    expect(port.calls.restartApp).toBe(1);
+  });
+
   it('shows the first-run dialog when firstRunDone is false, and OK persists the choice once', async () => {
     const port = makeFakeSettings({ firstRunDone: false, launchAtLogin: true });
     const c = await mount(port);
