@@ -9,6 +9,7 @@ import type { SourceLimits } from '../types';
 import { I18nProvider, type Lang } from '../lib/i18n';
 import { makeFakeEstimate, makeReadyEstimate } from './limits.fake';
 import { limits as limitStrings } from '../lib/strings/limits';
+import { fill } from '../lib/format';
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -668,10 +669,13 @@ describe('a figure whose reset nobody named', () => {
     const row = rows(cardFor(c, 'Claude'))[0];
 
     // The figure the desktop app carried, drawn as it stands — not the 100%
-    // an expired epoch synthesises, and not a countdown to nothing. The mark
-    // comes off `limits.resetUnknown` rather than a literal, for the reason
-    // the tray panel's twin states: a hardcoded copy passes while silently
-    // drifting from the key both surfaces are supposed to share.
+    // an expired epoch synthesises, and not a countdown to nothing.
+    //
+    // The mark is compared against the dictionary so that changing the key's
+    // value moves this test with it. That is drift protection and nothing
+    // more: this row's mark reads the same in every locale, so no assertion
+    // here can tell a read of the key from a hardcoded copy of its value.
+    // The used-up case below is where that distinction is actually provable.
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('82%');
     expect(row.querySelector('.tl-lim-resets')?.textContent).toBe(
       limitStrings.en['limits.resetUnknown'],
@@ -689,9 +693,38 @@ describe('a figure whose reset nobody named', () => {
     const row = rows(cardFor(c, 'Claude'))[0];
 
     const spent = row.querySelector('.tl-lim-resets')!;
-    expect(spent.textContent).toBe(limitStrings.en['limits.spentUnknown']);
+    expect(spent.textContent).toBe(
+      fill(limitStrings.en['limits.spentUnknown'], {
+        mark: limitStrings.en['limits.resetUnknown'],
+      }),
+    );
     expect(spent.className).toMatch(/spent/);
     expect(row.querySelector('.tl-lim-num')?.textContent).toBe('');
+  });
+
+  // The twin above can only prove the VALUE matches; every locale spells the
+  // bare mark the same way, so a hardcoded copy of it passes there. The
+  // used-up line does not: zh-Hant spells it `已用盡 · {mark}`. Rendering it
+  // in zh-Hant is therefore the one assertion in this file that fails when a
+  // surface stops reading the dictionary and hardcodes English instead.
+  it('spells the used-up line from the dictionary of the language in use', async () => {
+    const dry: SourceLimits = {
+      ...CLAUDE_DESKTOP,
+      windows: [{ ...CLAUDE_DESKTOP.windows[0], usedPct: 100 }],
+    };
+    const c = await mount(fakePort({ list: () => Promise.resolve([dry]) }), NOW_MS, 'zh-Hant');
+    const spent = rows(cardFor(c, 'Claude'))[0].querySelector('.tl-lim-resets')!;
+
+    expect(spent.textContent).toBe(
+      fill(limitStrings['zh-Hant']['limits.spentUnknown'], {
+        mark: limitStrings['zh-Hant']['limits.resetUnknown'],
+      }),
+    );
+    expect(spent.textContent).not.toBe(
+      fill(limitStrings.en['limits.spentUnknown'], {
+        mark: limitStrings.en['limits.resetUnknown'],
+      }),
+    );
   });
 
   it('dates the card by the channel the newest figure came through', async () => {

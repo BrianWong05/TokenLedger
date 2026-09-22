@@ -98,9 +98,12 @@ test('production builds even when the cache is current', (t) => {
 test('every companion the script builds is bundled by tauri.conf.json', () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const conf = JSON.parse(readFileSync(join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'));
+  // Membership, not order: the lists must name the same binaries, but a
+  // companion added out of alphabetical order to one of them is bundled
+  // correctly and must not fail here.
   assert.deepEqual(
-    conf.bundle.externalBin,
-    COMPANIONS.map((name) => `binaries/${name}`),
+    [...conf.bundle.externalBin].sort(),
+    COMPANIONS.map((name) => `binaries/${name}`).sort(),
     'tauri.conf.json externalBin has drifted from the build script COMPANIONS list',
   );
 });

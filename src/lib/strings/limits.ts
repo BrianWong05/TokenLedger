@@ -53,8 +53,12 @@ export const limits = {
     // a digit, because the slot it fills otherwise reads "Resets in 5d 2h" —
     // a numeral there reads as a countdown that reached zero rather than as
     // the absence of one.
+    //
+    // `resetUnknown` is the ONLY place the mark is spelt. The used-up line
+    // takes it as `{mark}` rather than repeating the glyph, so changing the
+    // mark stays a one-line edit per locale and the two can never disagree.
     'limits.resetUnknown': '-',
-    'limits.spentUnknown': 'used up · -',
+    'limits.spentUnknown': 'used up · {mark}',
 
     'limits.checkedNow': 'checked just now',
     'limits.checkedAgo': 'checked {t} ago',
@@ -160,7 +164,7 @@ export const limits = {
     'limits.tickTitle': '現在 — 距重置還有 {t}',
     'limits.spent': '已用盡 · {t}後重置',
     'limits.resetUnknown': '-',
-    'limits.spentUnknown': '已用盡 · -',
+    'limits.spentUnknown': '已用盡 · {mark}',
 
     'limits.checkedNow': '剛剛查詢',
     'limits.checkedAgo': '{t}前查詢',
