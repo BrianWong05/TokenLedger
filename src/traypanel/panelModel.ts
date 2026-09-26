@@ -67,6 +67,7 @@ export interface PanelModel {
   fmtCost(v: number): string;
   fmtTokens(v: number): string;
   chart: PanelChart | null; // null hides the chart
+  chartCost: PanelChart | null; // PROTOTYPE (panel-metric switch): the Cost side
   models: PanelRow[];
   modelsOverflow: number; // Models the cap hid, 0 when none
   stats: PanelStats | null;
@@ -206,6 +207,47 @@ function tokenChart(extras: PanelExtras, settings: CostSettings, lang: Lang): Pa
   };
 }
 
+// PROTOTYPE (panel-metric switch, branch prototype/panel-chart-metric-switch).
+// Throwaway: the Cost-per-bucket chart as it was before 61f2bcc, so a Tokens /
+// Cost switch has a Cost side to show. The winning design gets a real rewrite.
+function prototypeCostChart(
+  current: Summary,
+  extras: PanelExtras,
+  settings: CostSettings,
+  lang: Lang,
+): PanelChart | null {
+  if (current.cost === null) return null;
+  const cells = new Map<string, Cell>();
+  for (const p of extras.series) {
+    const c = cells.get(p.bucket) ?? emptyCell();
+    c.cost += p.cost;
+    c.totalTokens += p.totalTokens;
+    c.hasUnpriced ||= p.hasUnpriced;
+    c.unattributedTokens += p.unattributedTokens;
+    cells.set(p.bucket, c);
+  }
+  const keys = bucketKeys(extras.period, extras.now);
+  const row = keys.map((k) => cells.get(k) ?? emptyCell());
+  if (!row.some((c) => c.totalTokens > 0)) return null;
+  const peak = row.reduce((a, b) => (b.cost > a.cost ? b : a), row[0]);
+  if (peak.cost <= 0) return null;
+  const at = [...new Set([0, Math.floor((keys.length - 1) / 2), keys.length - 1])];
+  const peakIndex = row.indexOf(peak);
+  const per = seriesBucket(extras.period);
+  return {
+    points: row.map((c) => c.cost / peak.cost),
+    ticks: at.map((i) => tickLabel(keys[i])),
+    peak: `peak ${tickLabel(keys[peakIndex])} · ${cost(peak, settings, lang)}`,
+    peakIndex,
+    details: row.map((c, i) => {
+      const cell = c.cost === 0 && (c.hasUnpriced || c.unattributedTokens > 0) ? { ...c, cost: null } : c;
+      const floor = tokenFloor(extras.unreadable, bucketFilters(keys[i], per).startTs ?? null, lang);
+      const tok = `${markedTokenFigure(formatCompactTokenTotal(c.totalTokens), floor)} tok`;
+      return `${tickLabel(keys[i])} · ${cost(cell, settings, lang)} · ${tok}`;
+    }),
+  };
+}
+
 // "8 min ago" since the last scan. Computed at render from the timestamp the
 // panel fetched: it refetches on every open and after a Rescan, which is
 // exactly when this string can change, so no ticking timer is needed.
@@ -284,6 +326,7 @@ export function panelModel(
     legendOverflow: Math.max(0, rows.length - SOURCE_CAP),
     empty: today.totalTokens === 0,
     chart: extras ? tokenChart(extras, settings, lang) : null,
+    chartCost: extras ? prototypeCostChart(today, extras, settings, lang) : null, // PROTOTYPE
     models,
     modelsOverflow: Math.max(0, usedModels.length - models.length),
     stats: extras

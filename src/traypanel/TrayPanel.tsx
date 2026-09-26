@@ -165,6 +165,46 @@ function ChartDrawingToggle({
   );
 }
 
+// PROTOTYPE (panel-metric switch, branch prototype/panel-chart-metric-switch).
+// Throwaway: which Tokens / Cost switch design the harness shows. Production
+// never passes it, so the panel renders exactly as shipped.
+export type ChartMetric = 'tokens' | 'cost';
+export interface MetricPrototype {
+  variant: 'A' | 'B' | 'C' | 'D';
+  metric: ChartMetric;
+  onMetric: (m: ChartMetric) => void;
+}
+
+// PROTOTYPE (variant A): the measure as a second pair beside Columns/Line.
+function PrototypeMetricToggle({ value, onChange }: { value: ChartMetric; onChange: (m: ChartMetric) => void }) {
+  return (
+    <div className="tp-chart-styles tpp-metric" role="radiogroup" aria-label="Chart measure">
+      {(['tokens', 'cost'] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          role="radio"
+          aria-checked={value === m}
+          aria-label={m === 'tokens' ? 'Tokens' : 'Cost'}
+          className={value === m ? 'tp-chart-style on' : 'tp-chart-style'}
+          onClick={() => onChange(m)}
+        >
+          {m === 'tokens' ? 'tok' : '$'}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// PROTOTYPE (variant D): a line through the column tops' centres, so the Cost
+// series can ride over the token columns.
+function prototypeCenterPath(points: number[]): string {
+  const slot = CHART_W / points.length;
+  return points
+    .map((p, i) => `${i ? 'L' : 'M'}${(i * slot + slot / 2).toFixed(1)} ${(CHART_H - 2 - p * (CHART_H - 6)).toFixed(1)}`)
+    .join(' ');
+}
+
 // Fire-and-forget IPC for the actions; harmless outside Tauri (tests).
 function ipc(cmd: string) {
   Promise.resolve()
@@ -241,7 +281,8 @@ function useCountUp(target: number, duration = 600): number {
 export default function TrayPanel({
   ports,
   platform = detectPlatform(),
-}: { ports?: TrayPanelPorts; platform?: Platform } = {}) {
+  prototype,
+}: { ports?: TrayPanelPorts; platform?: Platform; prototype?: MetricPrototype } = {}) {
   // The panel opens wherever the tray delivers a click — macOS and Windows
   // (ADR-0010) — and the two spell a modifier differently. Hint and chord come
   // from one table, so what is printed is what fires.
@@ -287,6 +328,14 @@ export default function TrayPanel({
   // Count-up for the two headline figures; unpriced (null) doesn't animate.
   const animCost = useCountUp(model?.costValue ?? 0);
   const animTokens = useCountUp(model?.tokensValue ?? 0);
+  // PROTOTYPE: the chart the switch selects. D draws both, led by tokens.
+  const chart =
+    prototype && prototype.variant !== 'D' && prototype.metric === 'cost'
+      ? (model?.chartCost ?? null)
+      : (model?.chart ?? null);
+  const pick = (m: ChartMetric) => (prototype?.variant === 'B' ? () => prototype.onMetric(m) : undefined);
+  const pickClass = (base: string, m: ChartMetric) =>
+    prototype?.variant === 'B' ? `${base} tpp-pick${prototype.metric === m ? ' on' : ''}` : base;
 
   // On panel open the skeleton stays up at least this long, so the load
   // reads as a deliberate beat instead of a flash. Zero under
@@ -488,7 +537,6 @@ export default function TrayPanel({
   // Hit-testing: the svg stretches (preserveAspectRatio none), so box x is
   // proportional to viewBox x, and each bucket owns an equal slot of it.
   const onChartMove = (e: ReactMouseEvent<SVGSVGElement>) => {
-    const chart = model?.chart;
     const rect = e.currentTarget.getBoundingClientRect();
     if (!chart || !rect.width) return;
     const vx = ((e.clientX - rect.left) / rect.width) * CHART_W;
@@ -514,12 +562,12 @@ export default function TrayPanel({
   // this restores marks "now" (the last bucket), not the peak — the peak
   // lives in the caption.
   const lineHoverXY =
-    drawing === 'line' && model?.chart && chartHover != null
-      ? sparkXY(model.chart.points, chartHover)
+    drawing === 'line' && chart && chartHover != null
+      ? sparkXY(chart.points, chartHover)
       : null;
   const lineNowXY =
-    drawing === 'line' && model?.chart
-      ? sparkXY(model.chart.points, model.chart.points.length - 1)
+    drawing === 'line' && chart
+      ? sparkXY(chart.points, chart.points.length - 1)
       : null;
 
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
@@ -616,14 +664,18 @@ export default function TrayPanel({
       ) : (
         <div className={scanning ? 'tp-figures tp-pulse' : 'tp-figures'}>
           <div className="tp-cost-row">
-            <span className="tp-cost">
+            <span className={pickClass('tp-cost', 'cost')} onClick={pick('cost')}>
               {model ? (model.costValue === null ? model.cost : model.fmtCost(animCost)) : '…'}
             </span>
             {model?.delta && (
               <span className={model.deltaUp ? 'tp-delta up' : 'tp-delta down'}>{model.delta}</span>
             )}
           </div>
-          <span className="tp-sub" title={tokensFloor.reason || undefined}>
+          <span
+            className={pickClass('tp-sub', 'tokens')}
+            onClick={pick('tokens')}
+            title={tokensFloor.reason || undefined}
+          >
             {/* Tokens only — the requests figure lives in its stat tile, and
                 saying it twice two lines apart bought nothing. */}
             {model ? `${markedTokenFigure(model.fmtTokens(animTokens), tokensFloor)} tokens` : ''}
@@ -671,19 +723,50 @@ export default function TrayPanel({
         </div>
       )}
 
-      {!loading && !model?.empty && model?.chart && (
+      {!loading && !model?.empty && model && chart && (
         <div className="tp-chart">
+          {/* PROTOTYPE (variant C): the measure as tabs heading the chart. */}
+          {prototype?.variant === 'C' && (
+            <div className="tpp-tabs" role="tablist" aria-label="Chart measure">
+              {(['tokens', 'cost'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={prototype.metric === m}
+                  className={prototype.metric === m ? 'tp-seg-btn active' : 'tp-seg-btn'}
+                  onClick={() => prototype.onMetric(m)}
+                >
+                  {m === 'tokens' ? 'Tokens' : 'Cost'}
+                </button>
+              ))}
+              <span className="tpp-tabs-unit">per {seriesBucket(period) === 'hour' ? 'hour' : 'day'}</span>
+            </div>
+          )}
           {/* The hover inspector's read-out row. Reserved so inspecting never
               shifts the layout (the window is sized to the content); the peak
               caption holds the row when idle and yields it to the inspected
               bucket while hovering — side by side they squeezed the read-out
               into an ellipsis. The Columns/Line toggle stays on the right. */}
           <div className="tp-chart-cap-row">
-            {chartHover == null && <span className="tp-chart-peak">{model.chart.peak}</span>}
+            {chartHover == null &&
+              (prototype?.variant === 'D' && model.chartCost ? (
+                <span className="tp-chart-peak tpp-dual">
+                  <i className="tpp-key tok" />
+                  {chart.peak.replace(/^peak /, '')}
+                  <i className="tpp-key cost" />
+                  {model.chartCost.peak.replace(/^peak /, '')}
+                </span>
+              ) : (
+                <span className="tp-chart-peak">{chart.peak}</span>
+              ))}
             <span className="tp-chart-read">
-              {chartHover != null ? model.chart.details[chartHover] : ''}
+              {chartHover != null ? chart.details[chartHover] : ''}
             </span>
             <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
+            {prototype?.variant === 'A' && (
+              <PrototypeMetricToggle value={prototype.metric} onChange={prototype.onMetric} />
+            )}
           </div>
           <svg
             className="tp-chart-plot"
@@ -698,28 +781,42 @@ export default function TrayPanel({
             {drawing === 'columns' && (
               <>
                 {chartHover != null && (
-                  <path className="tp-chart-hover" d={slotRect(model.chart.points, chartHover)} />
+                  <path className="tp-chart-hover" d={slotRect(chart.points, chartHover)} />
                 )}
                 {/* The peak bucket wears the brighter fill — the same bucket the
                     model's peak caption names. */}
-                <path className="tp-bars" d={barsPath(model.chart.points, model.chart.peakIndex)} />
-                <path className="tp-bar-peak" d={barRect(model.chart.points, model.chart.peakIndex)} />
+                <path className="tp-bars" d={barsPath(chart.points, chart.peakIndex)} />
+                <path className="tp-bar-peak" d={barRect(chart.points, chart.peakIndex)} />
+                {prototype?.variant === 'D' && model.chartCost && (
+                  <path
+                    className="tpp-cost-line"
+                    d={prototypeCenterPath(model.chartCost.points)}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
               </>
             )}
             {drawing === 'line' && (
               <>
-                {model.chart.points.length > 1 && (
+                {chart.points.length > 1 && (
                   <>
                     <path
                       className="tp-line-area"
-                      d={`${sparkPath(model.chart.points)} L${CHART_W - SPARK_PAD} ${CHART_H} L${SPARK_PAD} ${CHART_H} Z`}
+                      d={`${sparkPath(chart.points)} L${CHART_W - SPARK_PAD} ${CHART_H} L${SPARK_PAD} ${CHART_H} Z`}
                     />
                     <path
                       className="tp-line"
-                      d={sparkPath(model.chart.points)}
+                      d={sparkPath(chart.points)}
                       vectorEffect="non-scaling-stroke"
                     />
                   </>
+                )}
+                {prototype?.variant === 'D' && model.chartCost && model.chartCost.points.length > 1 && (
+                  <path
+                    className="tpp-cost-line dash"
+                    d={sparkPath(model.chartCost.points)}
+                    vectorEffect="non-scaling-stroke"
+                  />
                 )}
                 {lineNowXY && (
                   <circle className="tp-line-now" cx={lineNowXY[0]} cy={lineNowXY[1]} r="2.5" />
@@ -748,7 +845,7 @@ export default function TrayPanel({
           {/* The axis: first tick sits at the left edge, last at the right,
               middle between them — space-between puts each where its bucket is. */}
           <div className="tp-chart-cap">
-            {model.chart.ticks.map((t) => (
+            {chart.ticks.map((t) => (
               <span key={t}>{t}</span>
             ))}
           </div>

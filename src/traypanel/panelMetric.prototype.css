@@ -1,0 +1,36 @@
+/* PROTOTYPE (panel-metric switch): throwaway styles for the four designs. */
+
+/* A: the measure pair sits just after Columns/Line. */
+.tpp-metric { margin-left: 4px; }
+.tpp-metric .tp-chart-style {
+  width: auto;
+  min-width: 18px;
+  padding: 0 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+/* B: the headline figure the chart follows is underlined in the chart's violet. */
+.tpp-pick {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
+  text-decoration-color: transparent;
+}
+.tpp-pick:hover { text-decoration-color: rgba(124, 107, 242, 0.45); }
+.tpp-pick.on { text-decoration-color: #7c6bf2; }
+
+/* C: tabs heading the chart, in the period tabs' type. */
+.tpp-tabs { display: flex; gap: 12px; align-items: baseline; margin-bottom: 2px; }
+.tpp-tabs .tp-seg-btn { cursor: pointer; }
+.tpp-tabs-unit { font-size: 10.5px; color: var(--tp-faint); }
+
+/* D: the Cost line over the token columns, and the caption's keys. */
+.tpp-cost-line { fill: none; stroke: #f0a35e; stroke-width: 1.5; }
+.tpp-cost-line.dash { stroke-dasharray: 3 2; }
+.tpp-dual { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tpp-key { display: inline-block; vertical-align: middle; margin-right: 4px; }
+.tpp-key.tok { width: 7px; height: 7px; border-radius: 1.5px; background: #7c6bf2; }
+.tpp-key.cost { width: 10px; height: 0; border-top: 2px solid #f0a35e; margin-left: 10px; }
