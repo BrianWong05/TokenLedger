@@ -22,8 +22,17 @@
 .tpp-pick:hover { text-decoration-color: rgba(124, 107, 242, 0.45); }
 .tpp-pick.on { text-decoration-color: #7c6bf2; }
 
-/* C: tabs heading the chart, in the period tabs' type. */
-.tpp-tabs { display: flex; gap: 12px; align-items: baseline; margin-bottom: 2px; }
+/* F: the same pair, in C's words. */
+.tpp-metric.words .tp-chart-style {
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 0 4px;
+}
+
+/* C and E: tabs heading the chart, in the period tabs' type. E also carries
+   Columns/Line at the row's right end (its margin-left: auto). */
+.tpp-tabs { display: flex; gap: 12px; align-items: center; margin-bottom: 2px; }
 .tpp-tabs .tp-seg-btn { cursor: pointer; }
 .tpp-tabs-unit { font-size: 10.5px; color: var(--tp-faint); }
 

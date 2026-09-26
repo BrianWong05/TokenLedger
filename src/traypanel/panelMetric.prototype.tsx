@@ -12,12 +12,20 @@ import type { BreakdownRow, Summary } from '../types';
 import type { LimitsPort } from '../limits/limits';
 import './panelMetric.prototype.css';
 
+// The rotation after the first round: A and C, and two ways to merge them.
+// B and D left it but still open by URL (?variant=B or D), which puts all
+// six back in the rotation.
 const VARIANTS = [
   { key: 'A', name: 'Second toggle beside Columns/Line' },
-  { key: 'B', name: 'Headline figures pick the chart' },
   { key: 'C', name: 'Tabs heading the chart' },
+  { key: 'E', name: 'A + C: tabs, with Columns/Line in their row' },
+  { key: 'F', name: "A + C: C's words beside Columns/Line" },
+];
+const RETIRED = [
+  { key: 'B', name: 'Headline figures pick the chart' },
   { key: 'D', name: 'Both at once, no switch' },
 ];
+const ALL = [...VARIANTS, ...RETIRED];
 
 // The demo runs on a pinned clock: 21:30 on the day the page opens. The real
 // clock let the panel refresh into a new, empty day at midnight, and a Today
@@ -125,7 +133,7 @@ type Variant = MetricPrototype['variant'];
 export default function PanelMetricPrototype() {
   const [variant, setVariant] = useState<Variant>(() => {
     const v = new URLSearchParams(window.location.search).get('variant');
-    return (VARIANTS.some((x) => x.key === v) ? v : 'A') as Variant;
+    return (ALL.some((x) => x.key === v) ? v : 'A') as Variant;
   });
   const [metric, setMetric] = useState<ChartMetric>('tokens');
   const choose = (key: string) => {
@@ -142,7 +150,7 @@ export default function PanelMetricPrototype() {
         prototype={{ variant, metric, onMetric: setMetric, now: DEMO_NOW }}
       />
       <PrototypeSwitcher
-        variants={VARIANTS}
+        variants={VARIANTS.some((x) => x.key === variant) ? VARIANTS : ALL}
         current={variant}
         onChange={choose}
         status={variant === 'D' ? 'chart: tokens + $ line' : `chart: ${metric}`}

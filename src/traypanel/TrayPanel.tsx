@@ -170,16 +170,25 @@ function ChartDrawingToggle({
 // never passes it, so the panel renders exactly as shipped.
 export type ChartMetric = 'tokens' | 'cost';
 export interface MetricPrototype {
-  variant: 'A' | 'B' | 'C' | 'D';
+  variant: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
   metric: ChartMetric;
   onMetric: (m: ChartMetric) => void;
   now: Date; // a pinned demo clock, so the demo day never rolls over at midnight
 }
 
-// PROTOTYPE (variant A): the measure as a second pair beside Columns/Line.
-function PrototypeMetricToggle({ value, onChange }: { value: ChartMetric; onChange: (m: ChartMetric) => void }) {
+// PROTOTYPE (variants A and F): the measure as a second pair beside
+// Columns/Line, as glyphs (A) or as C's words (F).
+function PrototypeMetricToggle({
+  value,
+  onChange,
+  words = false,
+}: {
+  value: ChartMetric;
+  onChange: (m: ChartMetric) => void;
+  words?: boolean;
+}) {
   return (
-    <div className="tp-chart-styles tpp-metric" role="radiogroup" aria-label="Chart measure">
+    <div className={words ? 'tp-chart-styles tpp-metric words' : 'tp-chart-styles tpp-metric'} role="radiogroup" aria-label="Chart measure">
       {(['tokens', 'cost'] as const).map((m) => (
         <button
           key={m}
@@ -190,7 +199,7 @@ function PrototypeMetricToggle({ value, onChange }: { value: ChartMetric; onChan
           className={value === m ? 'tp-chart-style on' : 'tp-chart-style'}
           onClick={() => onChange(m)}
         >
-          {m === 'tokens' ? 'tok' : '$'}
+          {words ? (m === 'tokens' ? 'Tokens' : 'Cost') : m === 'tokens' ? 'tok' : '$'}
         </button>
       ))}
     </div>
@@ -726,8 +735,10 @@ export default function TrayPanel({
 
       {!loading && !model?.empty && model && chart && (
         <div className="tp-chart">
-          {/* PROTOTYPE (variant C): the measure as tabs heading the chart. */}
-          {prototype?.variant === 'C' && (
+          {/* PROTOTYPE (variants C and E): the measure as tabs heading the
+              chart. E moves Columns/Line up into this row, so the caption row
+              below keeps its whole width for the peak and the read-out. */}
+          {(prototype?.variant === 'C' || prototype?.variant === 'E') && (
             <div className="tpp-tabs" role="tablist" aria-label="Chart measure">
               {(['tokens', 'cost'] as const).map((m) => (
                 <button
@@ -742,6 +753,9 @@ export default function TrayPanel({
                 </button>
               ))}
               <span className="tpp-tabs-unit">per {seriesBucket(period) === 'hour' ? 'hour' : 'day'}</span>
+              {prototype.variant === 'E' && (
+                <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
+              )}
             </div>
           )}
           {/* The hover inspector's read-out row. Reserved so inspecting never
@@ -764,9 +778,15 @@ export default function TrayPanel({
             <span className="tp-chart-read">
               {chartHover != null ? chart.details[chartHover] : ''}
             </span>
-            <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
-            {prototype?.variant === 'A' && (
-              <PrototypeMetricToggle value={prototype.metric} onChange={prototype.onMetric} />
+            {prototype?.variant !== 'E' && (
+              <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
+            )}
+            {(prototype?.variant === 'A' || prototype?.variant === 'F') && (
+              <PrototypeMetricToggle
+                value={prototype.metric}
+                onChange={prototype.onMetric}
+                words={prototype.variant === 'F'}
+              />
             )}
           </div>
           <svg
