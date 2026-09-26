@@ -309,6 +309,7 @@ describe('panelModel tokens per bucket', () => {
     expect(m.chart?.details[0]).toBe('00:00 · ≥ 0 tok · $0.00'); // idle, but reachable
     expect(m.chart?.details[5]).toBe('05:00 · ≥ 4K tok · $1.00'); // Cost is never a floor
     expect(m.chart?.details[6]).toBe('06:00 · 1K tok · $1.00'); // starts after the last write
+    expect(m.costChart?.details[5]).toBe('05:00 · $1.00 · ≥ 4K tok'); // the Cost view's too
   });
 
   it('marks day buckets against the day each one starts', () => {
@@ -353,6 +354,56 @@ describe('panelModel tokens per bucket', () => {
     expect(seriesBucket('today')).toBe('hour');
     expect(seriesBucket('yesterday')).toBe('hour');
     expect(seriesBucket('days30')).toBe('day');
+  });
+});
+
+describe('panelModel Cost per bucket', () => {
+  it('draws Cost per bucket, the peak picked by Cost', () => {
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
+      series: [
+        spt('2026-06-15 02:00', 9, 100_000), // the costliest hour
+        spt('2026-06-15 07:00', 1, 400_000), // the busiest hour
+        spt('2026-06-15 07:00', 0.5, 50_000), // a second Source in the same bucket
+      ],
+    }));
+    expect(m.costChart?.peakIndex).toBe(2);
+    expect(m.costChart?.peak).toBe('peak 02:00 · $9.00');
+    expect(m.costChart?.points[2]).toBe(1);
+    expect(m.costChart?.points[7]).toBe(1.5 / 9); // summed across Sources, against the Cost peak
+    expect(m.costChart?.ticks).toEqual(m.chart?.ticks); // one axis for both measures
+  });
+
+  it('marks the Cost peak Partial when that bucket holds Unpriced Models', () => {
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
+      series: [spt('2026-06-15 01:00', 1), spt('2026-06-15 09:00', 3, 1_000, true)],
+    }));
+    expect(m.costChart?.peak).toBe('peak 09:00 · ≥ $3.00');
+  });
+
+  it('reads each bucket Cost first, never $0 for usage it cannot price', () => {
+    const m = panelModel(sum(1_000, 8), sum(0, null), [], S, 'en', extras({
+      series: [
+        spt('2026-06-15 00:00', 1, 500_000),
+        spt('2026-06-15 04:00', 0, 700, true), // all-Unpriced hour
+        spt('2026-06-15 05:00', 4, 1_200_000, true),
+      ],
+    }));
+    expect(m.costChart?.details[0]).toBe('00:00 · $1.00 · 500K tok');
+    expect(m.costChart?.details[1]).toBe('01:00 · $0.00 · 0 tok'); // an idle hour reads zero
+    expect(m.costChart?.details[4]).toBe('04:00 · unpriced · 700 tok');
+    expect(m.costChart?.details[5]).toBe('05:00 · ≥ $4.00 · 1.2M tok');
+  });
+
+  it('has no Cost view when the period has no Cost to shape, while tokens still draw', () => {
+    const unattributed = panelModel(sum(50, null, false, 0, 50), sum(0, null), [], S, 'en', extras({
+      series: [{ ...spt('2026-06-15 01:00', 0, 50), unattributedTokens: 50 }],
+    }));
+    expect(unattributed.costChart).toBeNull(); // a flat zero line would say the usage was free
+    expect(unattributed.chart).not.toBeNull();
+    const free = panelModel(sum(50, 0), sum(0, null), [], S, 'en', extras({
+      series: [spt('2026-06-15 01:00', 0, 50)],
+    }));
+    expect(free.costChart).toBeNull(); // every bucket at $0: nothing to normalise against
   });
 });
 

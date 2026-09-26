@@ -169,7 +169,7 @@ body.tp-macos .tp {
 .tp-leg-name img { display: block; }
 .tp-leg-cost { font-family: ui-monospace, monospace; font-size: 12px; color: var(--tp-quiet); padding-left: 17px; }
 
-/* Tokens per bucket: columns by default, or the sparkline the redesign
+/* Tokens or Cost per bucket: columns by default, or the sparkline the redesign
    replaced. Same 56px box so switching never resizes the window. The peak
    bucket wears the brighter fill; the line marks now (the latest bucket). */
 .tp-chart { margin-top: 12px; }
@@ -228,6 +228,20 @@ body.tp-macos .tp {
 .tp-chart-style.on { color: #a99dff; }
 .tp-chart-style.on:hover { color: #c4bbff; }
 .tp-chart-style svg { display: block; }
+/* The measure pair beside Columns/Line: text glyphs (tok, $) in the caption's
+   monospace, sized to their words rather than to an icon's square. $ dims
+   while the window has no Cost to chart. */
+.tp-chart-measure { margin-left: 4px; }
+.tp-chart-measure .tp-chart-style {
+  width: auto;
+  min-width: 18px;
+  padding: 0 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+}
+.tp-chart-style:disabled,
+.tp-chart-style:disabled:hover { opacity: 0.35; background: none; color: var(--tp-quiet); }
 
 /* Models: the Source rows' idiom, led by the owning Source's mark. Long
    Model names ellipsize so the columns stay aligned. */

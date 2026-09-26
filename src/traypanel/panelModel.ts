@@ -22,14 +22,15 @@ export interface PanelRow {
   cost: string;
 }
 
-// The period's tokens per bucket, normalised for the view: geometry (viewBox,
-// stroke) stays in the panel, the shape and the read-out are decided here.
+// One measure per bucket (tokens, or Cost), normalised for the view: geometry
+// (viewBox, stroke) stays in the panel, the shape and the read-out are decided
+// here.
 export interface PanelChart {
   points: number[]; // 0..1 of the period's peak, one per bucket, gaps zero-filled
   ticks: string[]; // sparse x labels — first, middle, last — spread across the points
-  peak: string; // "peak 14:00 · 12.4M tok"
+  peak: string; // "peak 14:00 · 12.4M tok" | "peak 14:00 · $3.12"
   peakIndex: number; // which bucket the peak caption names — the view brightens it
-  details: string[]; // hover read-out per bucket — "14:00 · 1.2M tok · $3.12"
+  details: string[]; // hover read-out per bucket, the drawn measure first — "14:00 · 1.2M tok · $3.12"
 }
 
 export interface PanelStats {
@@ -66,7 +67,8 @@ export interface PanelModel {
   requestsText: string; // "1,912" — not animated, appended to the sub line
   fmtCost(v: number): string;
   fmtTokens(v: number): string;
-  chart: PanelChart | null; // null hides the chart
+  chart: PanelChart | null; // tokens per bucket; null hides the chart
+  costChart: PanelChart | null; // Cost per bucket; null when the period has none to draw
   models: PanelRow[];
   modelsOverflow: number; // Models the cap hid, 0 when none
   stats: PanelStats | null;
@@ -150,9 +152,19 @@ const emptyCell = (): Cell => ({ cost: 0, totalTokens: 0, hasUnpriced: false, un
 // A bucket key as the axis says it: "2026-06-15 14:00" → "14:00"; "2026-06-15" → "06-15".
 const tickLabel = (key: string) => (key.includes(' ') ? key.slice(11) : key.slice(5));
 
-// The period's tokens per bucket. Series points arrive per (bucket, Source), so
-// a bucket's figure is the sum across the Sources that ran in it.
-function tokenChart(extras: PanelExtras, settings: CostSettings, lang: Lang): PanelChart | null {
+// The period's buckets, read once for both measures the chart can draw. Series
+// points arrive per (bucket, Source), so a bucket's figures are the sums across
+// the Sources that ran in it; each bucket's two read-out figures are formatted
+// here, so the drawings differ only in which one leads.
+interface Buckets {
+  keys: string[];
+  row: Cell[];
+  ticks: string[];
+  tokenFigures: string[]; // "1.2M tok" | "≥ 1.2M tok"
+  costFigures: string[]; // "$3.12" | "≥ $3.12" | "unpriced" | "unavailable"
+}
+
+function periodBuckets(extras: PanelExtras, settings: CostSettings, lang: Lang): Buckets {
   const cells = new Map<string, Cell>();
   for (const p of extras.series) {
     const c = cells.get(p.bucket) ?? emptyCell();
@@ -165,44 +177,70 @@ function tokenChart(extras: PanelExtras, settings: CostSettings, lang: Lang): Pa
 
   const keys = bucketKeys(extras.period, extras.now);
   const row = keys.map((k) => cells.get(k) ?? emptyCell());
-  // Usage somewhere is enough to draw: a day 40 minutes old has one hour slot,
-  // and hiding its chart reads as breakage rather than as a young day. The
-  // view draws a lone bucket as one column. Tokens need no price, so a period
-  // with no Cost at all (all-Unpriced, all-Unattributed) draws like any other.
-  if (!row.some((c) => c.totalTokens > 0)) return null;
-  const peak = row.reduce((a, b) => (b.totalTokens > a.totalTokens ? b : a), row[0]);
-
   // Three labels at most — ends and middle. They read as the axis, and they
   // say the bucket size on their own ("14:00" is an hour, "06-15" a day), so
   // no separate hourly/daily caption is needed. A short window collapses to
   // the labels it actually has.
   const at = [...new Set([0, Math.floor((keys.length - 1) / 2), keys.length - 1])];
-  const peakIndex = row.indexOf(peak);
   // Each bucket's token figure, a floor (≥) when unreadable content could fall
   // in it (ADR-0017). Judged against the bucket's own start, as the Trend
   // inspector judges its bucket: only buckets that start before an Unreadable
   // Artifact's last write can hold its content.
   const per = seriesBucket(extras.period);
-  const tokenFigures = row.map((c, i) => {
-    const floor = tokenFloor(extras.unreadable, bucketFilters(keys[i], per).startTs ?? null, lang);
-    return `${markedTokenFigure(formatCompactTokenTotal(c.totalTokens), floor)} tok`;
-  });
   return {
-    points: row.map((c) => c.totalTokens / peak.totalTokens),
+    keys,
+    row,
     ticks: at.map((i) => tickLabel(keys[i])),
-    peak: `peak ${tickLabel(keys[peakIndex])} · ${tokenFigures[peakIndex]}`,
+    tokenFigures: row.map((c, i) => {
+      const floor = tokenFloor(extras.unreadable, bucketFilters(keys[i], per).startTs ?? null, lang);
+      return `${markedTokenFigure(formatCompactTokenTotal(c.totalTokens), floor)} tok`;
+    }),
+    // Series Cost is a sum of priced usage, so a bucket holding only Unpriced
+    // or Unattributed usage sums to 0 — which cost() must read as the absence
+    // it is ("unpriced"/"unavailable"), never as $0. An idle bucket honestly
+    // reads $0.00: no usage, no Cost.
+    costFigures: row.map((c) =>
+      cost(c.cost === 0 && (c.hasUnpriced || c.unattributedTokens > 0) ? { ...c, cost: null } : c, settings, lang),
+    ),
+  };
+}
+
+// The period's tokens per bucket, the chart's default measure.
+function tokenChart(b: Buckets): PanelChart | null {
+  // Usage somewhere is enough to draw: a day 40 minutes old has one hour slot,
+  // and hiding its chart reads as breakage rather than as a young day. The
+  // view draws a lone bucket as one column. Tokens need no price, so a period
+  // with no Cost at all (all-Unpriced, all-Unattributed) draws like any other.
+  if (!b.row.some((c) => c.totalTokens > 0)) return null;
+  const peak = b.row.reduce((a, c) => (c.totalTokens > a.totalTokens ? c : a), b.row[0]);
+  const peakIndex = b.row.indexOf(peak);
+  return {
+    points: b.row.map((c) => c.totalTokens / peak.totalTokens),
+    ticks: b.ticks,
+    peak: `peak ${tickLabel(b.keys[peakIndex])} · ${b.tokenFigures[peakIndex]}`,
     peakIndex,
     // One read-out per bucket for the hover inspector, preformatted like the
     // peak line so the view stays display-only. Tokens lead, as they lead the
-    // drawing, and the bucket's Cost follows. An idle bucket honestly reads
-    // 0 tok · $0.00 — no usage, no Cost.
-    details: row.map((c, i) => {
-      // Series Cost is a sum of priced usage, so a bucket holding only
-      // Unpriced or Unattributed usage sums to 0 — which cost() must read as
-      // the absence it is ("unpriced"/"unavailable"), never as $0.
-      const cell = c.cost === 0 && (c.hasUnpriced || c.unattributedTokens > 0) ? { ...c, cost: null } : c;
-      return `${tickLabel(keys[i])} · ${tokenFigures[i]} · ${cost(cell, settings, lang)}`;
-    }),
+    // drawing, and the bucket's Cost follows.
+    details: b.keys.map((k, i) => `${tickLabel(k)} · ${b.tokenFigures[i]} · ${b.costFigures[i]}`),
+  };
+}
+
+// The period's Cost per bucket, the measure the switch beside Columns/Line
+// offers. Its read-out leads with the Cost, as its drawing does.
+function costChart(b: Buckets): PanelChart | null {
+  // No Cost to shape (all-Unpriced, all-Unattributed, or every bucket at
+  // $0.00): a flat line along zero would assert usage was free, so there is no
+  // Cost chart and the view keeps drawing tokens.
+  if (!b.row.some((c) => c.cost > 0)) return null;
+  const peak = b.row.reduce((a, c) => (c.cost > a.cost ? c : a), b.row[0]);
+  const peakIndex = b.row.indexOf(peak);
+  return {
+    points: b.row.map((c) => c.cost / peak.cost),
+    ticks: b.ticks,
+    peak: `peak ${tickLabel(b.keys[peakIndex])} · ${b.costFigures[peakIndex]}`,
+    peakIndex,
+    details: b.keys.map((k, i) => `${tickLabel(k)} · ${b.costFigures[i]} · ${b.tokenFigures[i]}`),
   };
 }
 
@@ -254,6 +292,7 @@ export function panelModel(
   // is null (all-Unpriced or all-Unattributed) has no slice to claim.
   const pricedTotal = used.reduce((a, r) => a + (r.cost ?? 0), 0);
 
+  const buckets = extras ? periodBuckets(extras, settings, lang) : null;
   const requestsText = today.requests.toLocaleString('en-US');
   const rows: PanelRow[] = used.map((r) => {
     const key = r.key ?? 'unknown';
@@ -283,7 +322,8 @@ export function panelModel(
     legend: rows.slice(0, SOURCE_CAP),
     legendOverflow: Math.max(0, rows.length - SOURCE_CAP),
     empty: today.totalTokens === 0,
-    chart: extras ? tokenChart(extras, settings, lang) : null,
+    chart: buckets ? tokenChart(buckets) : null,
+    costChart: buckets ? costChart(buckets) : null,
     models,
     modelsOverflow: Math.max(0, usedModels.length - models.length),
     stats: extras
