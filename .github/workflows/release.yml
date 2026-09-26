@@ -20,9 +20,22 @@
 # One-time setup: `gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/tokenledger.key`
 # (the key has no password, so TAURI_SIGNING_PRIVATE_KEY_PASSWORD stays empty).
 #
-# Cut a release:
-#   1. bump "version" in src-tauri/tauri.conf.json
-#   2. git tag vX.Y.Z && git push origin vX.Y.Z
+# Cut a release once the PRs it ships have merged to main:
+#   1. Bump the version in one commit on main, "Bump the release version to
+#      X.Y.Z". It appears in six files: src-tauri/tauri.conf.json (the one the
+#      updater and this workflow read), src-tauri/Cargo.toml, package.json,
+#      README.md's Status line, and the app's own entries in the two lockfiles
+#      ("tokenledger" in src-tauri/Cargo.lock; the root and packages[""] in
+#      package-lock.json). Edit the lockfiles by hand rather than by search and
+#      replace, because other packages in them can share the old version number.
+#      In src-tauri, `cargo metadata --locked --offline --format-version 1
+#      >/dev/null` fails while Cargo.lock still disagrees with Cargo.toml.
+#   2. Tag that commit by its SHA: `git tag vX.Y.Z <sha>`. A bare
+#      `git tag vX.Y.Z` tags the calling checkout's HEAD, which in a worktree is
+#      not main; v0.4.1 was first tagged on a stale worktree branch that way.
+#   3. Check `git show vX.Y.Z:src-tauri/tauri.conf.json` shows the new version
+#      before pushing, since the push is what starts this workflow.
+#   4. `git push origin vX.Y.Z`: that one tag, not --tags.
 name: release
 
 on:
