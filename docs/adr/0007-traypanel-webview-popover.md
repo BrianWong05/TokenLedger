@@ -115,3 +115,20 @@ control on the caption row. Same series, same peak caption, same hover
 read-out — only the drawing changes. The sparkline still marks now (the
 latest bucket) with a dot; the peak stays in the caption. The choice lives
 in web storage so it survives the panel being destroyed on dismiss.
+
+## Amendment (2026-09-26)
+
+The per-bucket drawing charts tokens, not Cost, at the user's request. The
+columns, the line and the peak caption all follow each bucket's token total;
+the hover read-out leads with the bucket's tokens and keeps its Cost second,
+with the same Partial and Unpriced wording as before. A window with no Cost at
+all (all-Unpriced or all-Unattributed) now draws too. It was hidden only
+because a flat zero line of Cost would have said the usage was free, and a
+token count has no such problem.
+
+The chart's token figures take ADR-0017's floor bucket by bucket, as the Trend
+inspector's do: a bucket that starts before an Unreadable Artifact's last write
+reads "≥" in the peak caption and the hover read-out, and its Cost stays
+unmarked, since ADR-0017 marks token totals only. The control is now named
+"Tokens per bucket drawing". Its stored key keeps the name
+`tokenledger.panelCostDrawing`, so a saved choice survives the switch.
