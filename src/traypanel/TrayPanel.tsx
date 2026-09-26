@@ -2,7 +2,7 @@
 // (TOKL-19 added the Limits, and the ADR's second amendment capped the panel):
 // period tabs top-left double as the window's label, the last-scan time and
 // Rescan sit top-right, and beneath the hero Cost sit the stacked source bar
-// with its legend, the Cost-per-bucket drawing (columns by default, a
+// with its legend, the tokens-per-bucket drawing (columns by default, a
 // line-and-peak sparkline behind a toggle on the caption row), the Model
 // rows (led by their Source's mark), one Limits card per live Source
 // (collapsed to its Session + Weekly meters, expandable to every window),
@@ -98,33 +98,34 @@ function sparkPath(points: number[]): string {
 }
 
 // Columns vs the sparkline the redesign replaced. Stored so the choice
-// survives the panel being destroyed on dismiss (ADR-0007).
-type CostDrawing = 'columns' | 'line';
-export const PANEL_COST_DRAWING_KEY = 'tokenledger.panelCostDrawing';
-function loadCostDrawing(): CostDrawing {
+// survives the panel being destroyed on dismiss (ADR-0007). The key keeps the
+// name it had while the chart drew Cost, so a saved choice survives that too.
+type ChartDrawing = 'columns' | 'line';
+export const PANEL_CHART_DRAWING_KEY = 'tokenledger.panelCostDrawing';
+function loadChartDrawing(): ChartDrawing {
   try {
-    return localStorage.getItem(PANEL_COST_DRAWING_KEY) === 'line' ? 'line' : 'columns';
+    return localStorage.getItem(PANEL_CHART_DRAWING_KEY) === 'line' ? 'line' : 'columns';
   } catch {
     return 'columns';
   }
 }
-function saveCostDrawing(drawing: CostDrawing) {
+function saveChartDrawing(drawing: ChartDrawing) {
   try {
-    localStorage.setItem(PANEL_COST_DRAWING_KEY, drawing);
+    localStorage.setItem(PANEL_CHART_DRAWING_KEY, drawing);
   } catch {
     /* storage disabled: the choice does not survive dismiss */
   }
 }
 
-function CostDrawingToggle({
+function ChartDrawingToggle({
   value,
   onChange,
 }: {
-  value: CostDrawing;
-  onChange: (d: CostDrawing) => void;
+  value: ChartDrawing;
+  onChange: (d: ChartDrawing) => void;
 }) {
   return (
-    <div className="tp-chart-styles" role="radiogroup" aria-label="Cost per bucket drawing">
+    <div className="tp-chart-styles" role="radiogroup" aria-label="Tokens per bucket drawing">
       <button
         type="button"
         role="radio"
@@ -277,7 +278,7 @@ export default function TrayPanel({
   const [chartHover, setChartHover] = useState<number | null>(null);
   // Columns vs line — loaded once; the panel is destroyed on dismiss, so a
   // later open re-reads storage. Invalid or missing values stay columns.
-  const [drawing, setDrawing] = useState<CostDrawing>(loadCostDrawing);
+  const [drawing, setDrawing] = useState<ChartDrawing>(loadChartDrawing);
   // refresh() reads the ref so its identity doesn't churn on period change
   // (the mount effect re-registering listeners on every switch would be
   // wasteful); pickPeriod keeps ref and state in step.
@@ -348,6 +349,7 @@ export default function TrayPanel({
           models,
           series,
           scannedAt,
+          unreadable: sources,
         }),
       );
       // A fresh model can hold fewer buckets than the inspected index (period
@@ -501,10 +503,10 @@ export default function TrayPanel({
     void refresh(); // no skeleton beat on a switch — it should feel snappy
   };
 
-  const pickCostDrawing = (d: CostDrawing) => {
+  const pickChartDrawing = (d: ChartDrawing) => {
     if (d === drawing) return;
     setDrawing(d);
-    saveCostDrawing(d);
+    saveChartDrawing(d);
   };
 
   // The inspected bucket and the latest bucket's line positions; null while
@@ -681,7 +683,7 @@ export default function TrayPanel({
             <span className="tp-chart-read">
               {chartHover != null ? model.chart.details[chartHover] : ''}
             </span>
-            <CostDrawingToggle value={drawing} onChange={pickCostDrawing} />
+            <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
           </div>
           <svg
             className="tp-chart-plot"

@@ -169,7 +169,7 @@ body.tp-macos .tp {
 .tp-leg-name img { display: block; }
 .tp-leg-cost { font-family: ui-monospace, monospace; font-size: 12px; color: var(--tp-quiet); padding-left: 17px; }
 
-/* Cost per bucket: columns by default, or the sparkline the redesign
+/* Tokens per bucket: columns by default, or the sparkline the redesign
    replaced. Same 56px box so switching never resizes the window. The peak
    bucket wears the brighter fill; the line marks now (the latest bucket). */
 .tp-chart { margin-top: 12px; }

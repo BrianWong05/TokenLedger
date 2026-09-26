@@ -146,7 +146,7 @@ The application's resident presence in the system's status area — the one
 name for that presence on every platform, however the platform presents it.
 Its fullest form is an icon with Today's token total and Cost beside it, and
 the panel that icon toggles, presenting a selected window of the Ledger —
-headline Cost, tokens, Requests, pace against the window before it, Cost per
+headline Cost, tokens, Requests, pace against the window before it, tokens per
 bucket across the window, per-Source and per-Model figures, Cache Hit Rate,
 and how long ago the last scan ran — plus the app actions. Where the platform cannot show text beside the icon, Today's figures
 move to the icon's hover text; where the platform delivers no icon clicks,

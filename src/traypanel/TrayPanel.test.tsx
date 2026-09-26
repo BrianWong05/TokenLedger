@@ -3,7 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import TrayPanel, { barRect, sparkXY, PANEL_COST_DRAWING_KEY } from './TrayPanel';
+import TrayPanel, { barRect, sparkXY, PANEL_CHART_DRAWING_KEY } from './TrayPanel';
 import { SOURCE_ICONS } from '../overview/icons';
 import type { Platform } from '../lib/platform';
 import { makeFakeLedger } from '../overview/ledger.fake';
@@ -71,7 +71,8 @@ const day = (back: number) => {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
-const point = (bucket: string, cost: number) => seriesPoint({ bucket, cost, totalTokens: 1_000 });
+const point = (bucket: string, cost: number, totalTokens: number) =>
+  seriesPoint({ bucket, cost, totalTokens });
 
 // A silent limits port: tests that are not about the Limit cards pass one so the
 // default port's IPC read never lands in `invoked`, and the limits tests seed
@@ -109,10 +110,10 @@ async function settle(times = 4) {
   }
 }
 
-// Shared seam for Cost-per-bucket drawing tests: paint Today, switch to
+// Shared seam for tokens-per-bucket drawing tests: paint Today, switch to
 // 30 days (daily buckets), and size the plot so hover hit-testing has
 // geometry. jsdom boxes are 0×0 without the stub.
-async function mountCostDrawing(dayPoints = [point(day(1), 3), point(day(0), 9)]) {
+async function mountChartDrawing(dayPoints = [point(day(1), 3, 3_000), point(day(0), 9, 9_000)]) {
   const ledger = makeFakeLedger({ summary, sourceRows, dayPoints });
   const container = document.createElement('div');
   document.body.append(container);
@@ -140,7 +141,7 @@ afterEach(() => {
   for (const root of mountedRoots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
   invoked.length = 0;
-  localStorage.removeItem(PANEL_COST_DRAWING_KEY);
+  localStorage.removeItem(PANEL_CHART_DRAWING_KEY);
 });
 
 describe('TrayPanel', () => {
@@ -230,6 +231,27 @@ describe('TrayPanel', () => {
     const sub = container.querySelector('.tp-sub')!;
     expect(sub.textContent).toBe('≥ 3.4M tokens');
     expect(sub.getAttribute('title')).toBe('Antigravity: 100 sessions unreadable');
+  });
+
+  // The chart's token figures carry the same floor, judged bucket by bucket
+  // from the state the panel already fetched (the model pins the rule).
+  it('marks the chart peak ≥ when an Unreadable Artifact could touch that bucket', async () => {
+    const ledger = makeFakeLedger({
+      summary,
+      sourceRows,
+      hourPoints: [point(`${day(0)} 00:00`, 1, 5_000)],
+      unreadableArtifacts: [
+        { source: 'antigravity', artifactsUnreadable: 1, unreadableMaxMtime: Math.floor(Date.now() / 1000) },
+      ],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push(root);
+    await act(async () => root.render(<TrayPanel ports={{ ledger, settings: makeFakeSettings() }} />));
+    await settle();
+
+    expect(container.querySelector('.tp-chart-peak')?.textContent).toBe('peak 00:00 · ≥ 5K tok');
   });
 
   // TOKL-25's settled shape: Unbooked Requests mark NOTHING here — the panel
@@ -345,7 +367,7 @@ describe('TrayPanel', () => {
     const ledger = makeFakeLedger({
       summary,
       sourceRows,
-      dayPoints: [point(day(1), 3), point(day(0), 9)],
+      dayPoints: [point(day(1), 3, 3_000), point(day(0), 9, 9_000)],
     });
     const container = document.createElement('div');
     document.body.append(container);
@@ -364,8 +386,8 @@ describe('TrayPanel', () => {
     expect(lastSeries?.[1]).toBe('day'); // 30 days buckets daily
     const ticks = Array.from(container.querySelectorAll('.tp-chart-cap span')).map((s) => s.textContent);
     expect(ticks).toEqual([day(29).slice(5), day(15).slice(5), day(0).slice(5)]); // the axis
-    expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(`peak ${day(0).slice(5)} · $9.00`);
-    // Two buckets carry Cost: the peak bucket wears the brighter fill, the
+    expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(`peak ${day(0).slice(5)} · 9K tok`);
+    // Two buckets carry tokens: the peak bucket wears the brighter fill, the
     // other draws in the base one — one column each.
     expect(container.querySelector('.tp-bars')?.getAttribute('d')).toMatch(/^M\d/);
     expect((container.querySelector('.tp-bars')?.getAttribute('d')?.match(/M/g) ?? []).length).toBe(1);
@@ -387,8 +409,8 @@ describe('TrayPanel', () => {
     expect(sparkXY([0], 0)[1]).toBe(52); // idle sits on the baseline
   });
 
-  it('switches Cost per bucket to the line and remembers it across a remount', async () => {
-    const { container, root, pick } = await mountCostDrawing();
+  it('switches tokens per bucket to the line and remembers it across a remount', async () => {
+    const { container, root, pick } = await mountChartDrawing();
 
     // Default is columns, the drawing the redesign shipped.
     expect(container.querySelector('.tp-bars')).not.toBeNull();
@@ -407,60 +429,69 @@ describe('TrayPanel', () => {
     expect(container.querySelector('.tp-line-area')).not.toBeNull();
     expect(container.querySelector('.tp-line-now')).not.toBeNull();
     expect(container.querySelector('[aria-label="Line"]')?.getAttribute('aria-checked')).toBe('true');
-    expect(localStorage.getItem(PANEL_COST_DRAWING_KEY)).toBe('line');
+    expect(localStorage.getItem(PANEL_CHART_DRAWING_KEY)).toBe('line');
     // The peak caption and the axis survive the switch — only the drawing
     // changed.
     expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(
-      `peak ${day(0).slice(5)} · $9.00`,
+      `peak ${day(0).slice(5)} · 9K tok`,
     );
 
     await pick('Columns');
     expect(container.querySelector('.tp-bars')).not.toBeNull();
     expect(container.querySelector('.tp-line')).toBeNull();
-    expect(localStorage.getItem(PANEL_COST_DRAWING_KEY)).toBe('columns');
+    expect(localStorage.getItem(PANEL_CHART_DRAWING_KEY)).toBe('columns');
     await pick('Line');
 
     // The panel is destroyed on dismiss (ADR-0007); a later open re-reads.
     act(() => root.unmount());
     mountedRoots.length = 0;
-    const { container: again } = await mountCostDrawing();
+    const { container: again } = await mountChartDrawing();
     expect(again.querySelector('.tp-line')).not.toBeNull();
     expect(again.querySelector('.tp-bars')).toBeNull();
     expect(again.querySelector('[aria-label="Line"]')?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('marks the latest bucket on the line, not the peak', async () => {
-    const { container, pick } = await mountCostDrawing([point(day(15), 12), point(day(0), 3)]);
+    const { container, pick } = await mountChartDrawing([
+      point(day(15), 12, 12_000),
+      point(day(0), 3, 3_000),
+    ]);
     await pick('Line');
 
     expect(container.querySelector('.tp-chart-peak')?.textContent).toBe(
-      `peak ${day(15).slice(5)} · $12.00`,
+      `peak ${day(15).slice(5)} · 12K tok`,
     );
     const cx = Number(container.querySelector('.tp-line-now')?.getAttribute('cx'));
     expect(cx).toBe(285); // SPARK_PAD + (W - 2·pad) — the right edge, today
   });
 
+  // The key predates the chart moving to tokens. Renaming it would drop every
+  // saved choice back to columns.
+  it('keeps the drawing under the key it was first saved with', () => {
+    expect(PANEL_CHART_DRAWING_KEY).toBe('tokenledger.panelCostDrawing');
+  });
+
   it('falls back to columns when stored drawing is junk', async () => {
-    localStorage.setItem(PANEL_COST_DRAWING_KEY, 'spaghetti');
-    const { container } = await mountCostDrawing();
+    localStorage.setItem(PANEL_CHART_DRAWING_KEY, 'spaghetti');
+    const { container } = await mountChartDrawing();
     expect(container.querySelector('.tp-bars')).not.toBeNull();
     expect(container.querySelector('.tp-line')).toBeNull();
   });
 
   it('hovering the chart reads out that bucket; leaving clears the read-out', async () => {
-    const { container, plot } = await mountCostDrawing();
+    const { container, plot } = await mountChartDrawing();
 
     // Idle: the reserved line stays empty; the peak caption holds the row.
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe('');
     expect(container.querySelector('.tp-chart-hover')).toBeNull();
 
     const svg = plot();
-    // The right edge is the latest bucket (today, $9); the left edge day 29.
+    // The right edge is the latest bucket (today, 9K tok); the left edge day 29.
     await act(async () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 287 }));
     });
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
-      `${day(0).slice(5)} · $9.00 · 1K tok`,
+      `${day(0).slice(5)} · 9K tok · $9.00`,
     );
     // The peak caption yields the row to the read-out — side by side it
     // squeezed the detail into an ellipsis.
@@ -470,7 +501,7 @@ describe('TrayPanel', () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 3 }));
     });
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
-      `${day(29).slice(5)} · $0.00 · 0 tok`, // an idle day reads its zero
+      `${day(29).slice(5)} · 0 tok · $0.00`, // an idle day reads its zero
     );
 
     // React synthesizes onMouseLeave from bubbling mouseout whose
@@ -486,7 +517,7 @@ describe('TrayPanel', () => {
   });
 
   it('hovering the line drawing reads out that bucket with a guide, toggle stays', async () => {
-    const { container, plot, pick } = await mountCostDrawing();
+    const { container, plot, pick } = await mountChartDrawing();
     await pick('Line');
 
     const svg = plot();
@@ -494,7 +525,7 @@ describe('TrayPanel', () => {
       svg.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 287 }));
     });
     expect(container.querySelector('.tp-chart-read')?.textContent).toBe(
-      `${day(0).slice(5)} · $9.00 · 1K tok`,
+      `${day(0).slice(5)} · 9K tok · $9.00`,
     );
     expect(container.querySelector('.tp-chart-peak')).toBeNull();
     expect(container.querySelector('.tp-chart-hover')).toBeNull(); // slot fill is columns-only
