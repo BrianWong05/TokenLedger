@@ -346,6 +346,7 @@ export default function TrayPanel({
   const pick = (m: ChartMetric) => (prototype?.variant === 'B' ? () => prototype.onMetric(m) : undefined);
   const pickClass = (base: string, m: ChartMetric) =>
     prototype?.variant === 'B' ? `${base} tpp-pick${prototype.metric === m ? ' on' : ''}` : base;
+  const twoControls = prototype?.variant === 'A' || prototype?.variant === 'F';
 
   // On panel open the skeleton stays up at least this long, so the load
   // reads as a deliberate beat instead of a flash. Zero under
@@ -778,10 +779,14 @@ export default function TrayPanel({
             <span className="tp-chart-read">
               {chartHover != null ? chart.details[chartHover] : ''}
             </span>
-            {prototype?.variant !== 'E' && (
+            {/* PROTOTYPE (A and F): two controls leave the read-out too little
+                of the row, so while a bucket is inspected they yield it, as
+                the peak caption does. The pointer is on the plot then, so
+                nothing clickable goes missing. */}
+            {prototype?.variant !== 'E' && !(twoControls && chartHover != null) && (
               <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
             )}
-            {(prototype?.variant === 'A' || prototype?.variant === 'F') && (
+            {twoControls && chartHover == null && (
               <PrototypeMetricToggle
                 value={prototype.metric}
                 onChange={prototype.onMetric}
