@@ -19,9 +19,15 @@ const VARIANTS = [
   { key: 'D', name: 'Both at once, no switch' },
 ];
 
+// The demo runs on a pinned clock: 21:30 on the day the page opens. The real
+// clock let the panel refresh into a new, empty day at midnight, and a Today
+// only minutes old has a single bucket to compare designs on.
+const DEMO_NOW = new Date();
+DEMO_NOW.setHours(21, 30, 0, 0);
+
 const p2 = (n: number) => String(n).padStart(2, '0');
 const iso = (back: number) => {
-  const d = new Date();
+  const d = new Date(DEMO_NOW);
   d.setDate(d.getDate() - back);
   return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
 };
@@ -44,7 +50,7 @@ const YESTERDAY: [number, string, number, number][] = [
   [16, 'claude', 9_000_000, 5.1], [19, 'claude', 11_800_000, 3.9], [20, 'claude', 16_900_000, 4.2],
   [21, 'claude', 6_400_000, 2.8], [22, 'codex', 900_000, 0.2],
 ];
-const nowHour = new Date().getHours();
+const nowHour = DEMO_NOW.getHours();
 const hourPoints = [
   ...TODAY.filter(([h]) => h <= nowHour).map(([h, source, totalTokens, cost]) =>
     seriesPoint({ bucket: `${iso(0)} ${p2(h)}:00`, source, totalTokens, cost }),
@@ -96,7 +102,7 @@ const PORTS = {
     summary,
     hourPoints,
     dayPoints,
-    lastScan: Math.floor(Date.now() / 1000) - 20,
+    lastScan: Math.floor(DEMO_NOW.getTime() / 1000) - 20,
     sourceRows: [
       row('claude', null, bySource('claude')),
       row('grok', null, bySource('grok')),
@@ -130,7 +136,11 @@ export default function PanelMetricPrototype() {
   };
   return (
     <>
-      <TrayPanel ports={PORTS} platform="windows" prototype={{ variant, metric, onMetric: setMetric }} />
+      <TrayPanel
+        ports={PORTS}
+        platform="windows"
+        prototype={{ variant, metric, onMetric: setMetric, now: DEMO_NOW }}
+      />
       <PrototypeSwitcher
         variants={VARIANTS}
         current={variant}

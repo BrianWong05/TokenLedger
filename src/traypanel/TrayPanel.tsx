@@ -173,6 +173,7 @@ export interface MetricPrototype {
   variant: 'A' | 'B' | 'C' | 'D';
   metric: ChartMetric;
   onMetric: (m: ChartMetric) => void;
+  now: Date; // a pinned demo clock, so the demo day never rolls over at midnight
 }
 
 // PROTOTYPE (variant A): the measure as a second pair beside Columns/Line.
@@ -368,7 +369,7 @@ export default function TrayPanel({
   const refresh = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
     loadLimits();
-    const w = periodWindows(periodRef.current, new Date());
+    const w = periodWindows(periodRef.current, prototype?.now ?? new Date()); // PROTOTYPE clock
     const current: Filters = { tools: [], models: [], project: null, startTs: w.start, endTs: w.end };
     const prev: Filters = { tools: [], models: [], project: null, startTs: w.prevStart, endTs: w.prevEnd };
     const [fetched] = await Promise.all([
@@ -394,7 +395,7 @@ export default function TrayPanel({
       setModel(
         panelModel(t, y, rows, s, lang, {
           period: periodRef.current,
-          now: new Date(),
+          now: prototype?.now ?? new Date(), // PROTOTYPE clock
           models,
           series,
           scannedAt,
