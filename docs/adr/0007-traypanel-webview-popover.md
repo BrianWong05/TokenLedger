@@ -132,3 +132,30 @@ reads "≥" in the peak caption and the hover read-out, and its Cost stays
 unmarked, since ADR-0017 marks token totals only. The control is now named
 "Tokens per bucket drawing". Its stored key keeps the name
 `tokenledger.panelCostDrawing`, so a saved choice survives the switch.
+
+## Amendment (2026-09-27)
+
+The chart draws tokens or Cost per bucket, the reader's choice, and it opens
+on tokens. A `tok` / `$` pair beside Columns/Line picks the measure. The
+choice lives in web storage under `tokenledger.panelChartMeasure`, next to
+the drawing. The Cost view keeps the rules the Cost chart had before the
+amendment above: the peak is the costliest bucket, marked Partial when that
+bucket holds Unpriced usage, and the hover read-out leads with Cost. A window
+with no Cost to shape (all-Unpriced, all-Unattributed, or every bucket at
+$0.00) has no Cost chart. Hiding the chart there would take the controls with
+it, so tokens draw instead, `$` is unavailable, and the stored choice waits for
+a window that has a Cost. The drawing control is renamed "Chart drawing",
+since it now draws either measure.
+
+While a bucket is inspected, both controls yield the caption row to the
+read-out, as the peak caption already did. This reverses the 2026-08-28 rule
+that the drawing toggle stays on the row. Beside two controls the read-out had
+187px of the 286px row and cut ordinary figures short. The pointer is on the
+plot while it inspects, so nothing clickable is lost.
+
+The placement came out of a prototype, kept on the unmerged branch
+`prototype/panel-chart-metric-switch`. The alternatives were a tab row heading
+the chart (about 20px taller), clickable headline figures (nothing says they
+are clickable), both measures drawn at once, and the words Tokens / Cost beside
+Columns/Line. The words crowded the idle row until realistic peak captions such
+as "peak 16:00 · 12.98M tok" pushed the controls off the card.

@@ -2,8 +2,8 @@
 // (TOKL-19 added the Limits, and the ADR's second amendment capped the panel):
 // period tabs top-left double as the window's label, the last-scan time and
 // Rescan sit top-right, and beneath the hero Cost sit the stacked source bar
-// with its legend, the tokens-per-bucket drawing (columns by default, a
-// line-and-peak sparkline behind a toggle on the caption row), the Model
+// with its legend, the per-bucket drawing (tokens by default or Cost, as
+// columns or a line-and-peak sparkline, picked on the caption row), the Model
 // rows (led by their Source's mark), one Limits card per live Source
 // (collapsed to its Session + Weekly meters, expandable to every window),
 // the stat tiles, and the three icon actions. The lists are capped and
@@ -117,6 +117,25 @@ function saveChartDrawing(drawing: ChartDrawing) {
   }
 }
 
+// Tokens or Cost per bucket: the measure the chart draws, tokens unless chosen
+// otherwise. Stored beside the drawing, for the same reason.
+type ChartMeasure = 'tokens' | 'cost';
+export const PANEL_CHART_MEASURE_KEY = 'tokenledger.panelChartMeasure';
+function loadChartMeasure(): ChartMeasure {
+  try {
+    return localStorage.getItem(PANEL_CHART_MEASURE_KEY) === 'cost' ? 'cost' : 'tokens';
+  } catch {
+    return 'tokens';
+  }
+}
+function saveChartMeasure(measure: ChartMeasure) {
+  try {
+    localStorage.setItem(PANEL_CHART_MEASURE_KEY, measure);
+  } catch {
+    /* storage disabled: the choice does not survive dismiss */
+  }
+}
+
 function ChartDrawingToggle({
   value,
   onChange,
@@ -125,7 +144,7 @@ function ChartDrawingToggle({
   onChange: (d: ChartDrawing) => void;
 }) {
   return (
-    <div className="tp-chart-styles" role="radiogroup" aria-label="Tokens per bucket drawing">
+    <div className="tp-chart-styles" role="radiogroup" aria-label="Chart drawing">
       <button
         type="button"
         role="radio"
@@ -160,6 +179,47 @@ function ChartDrawingToggle({
           />
           <circle cx="11" cy="2" r="1.3" fill="currentColor" />
         </svg>
+      </button>
+    </div>
+  );
+}
+
+// The measure beside Columns/Line, as text glyphs rather than icons. `value`
+// is the measure drawn, not the one stored: $ is unavailable while the window
+// has no Cost to chart, and tokens draw in its place.
+function ChartMeasureToggle({
+  value,
+  costAvailable,
+  onChange,
+}: {
+  value: ChartMeasure;
+  costAvailable: boolean;
+  onChange: (m: ChartMeasure) => void;
+}) {
+  return (
+    <div className="tp-chart-styles tp-chart-measure" role="radiogroup" aria-label="Chart measure">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === 'tokens'}
+        aria-label="Tokens"
+        title="Tokens"
+        className={value === 'tokens' ? 'tp-chart-style on' : 'tp-chart-style'}
+        onClick={() => onChange('tokens')}
+      >
+        tok
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={value === 'cost'}
+        aria-label="Cost"
+        title="Cost"
+        disabled={!costAvailable}
+        className={value === 'cost' ? 'tp-chart-style on' : 'tp-chart-style'}
+        onClick={() => onChange('cost')}
+      >
+        $
       </button>
     </div>
   );
@@ -279,6 +339,8 @@ export default function TrayPanel({
   // Columns vs line — loaded once; the panel is destroyed on dismiss, so a
   // later open re-reads storage. Invalid or missing values stay columns.
   const [drawing, setDrawing] = useState<ChartDrawing>(loadChartDrawing);
+  // Tokens vs Cost, loaded the same way; junk or missing stays tokens.
+  const [measure, setMeasure] = useState<ChartMeasure>(loadChartMeasure);
   // refresh() reads the ref so its identity doesn't churn on period change
   // (the mount effect re-registering listeners on every switch would be
   // wasteful); pickPeriod keeps ref and state in step.
@@ -287,6 +349,10 @@ export default function TrayPanel({
   // Count-up for the two headline figures; unpriced (null) doesn't animate.
   const animCost = useCountUp(model?.costValue ?? 0);
   const animTokens = useCountUp(model?.tokensValue ?? 0);
+  // The measure the chart draws: the chosen one, except that Cost chosen for a
+  // window with no Cost draws tokens, and the choice waits for a priced window.
+  const drawnMeasure: ChartMeasure = measure === 'cost' && model?.costChart ? 'cost' : 'tokens';
+  const chart = drawnMeasure === 'cost' ? (model?.costChart ?? null) : (model?.chart ?? null);
 
   // On panel open the skeleton stays up at least this long, so the load
   // reads as a deliberate beat instead of a flash. Zero under
@@ -488,7 +554,6 @@ export default function TrayPanel({
   // Hit-testing: the svg stretches (preserveAspectRatio none), so box x is
   // proportional to viewBox x, and each bucket owns an equal slot of it.
   const onChartMove = (e: ReactMouseEvent<SVGSVGElement>) => {
-    const chart = model?.chart;
     const rect = e.currentTarget.getBoundingClientRect();
     if (!chart || !rect.width) return;
     const vx = ((e.clientX - rect.left) / rect.width) * CHART_W;
@@ -509,17 +574,23 @@ export default function TrayPanel({
     saveChartDrawing(d);
   };
 
+  const pickChartMeasure = (m: ChartMeasure) => {
+    if (m === measure) return;
+    setMeasure(m);
+    saveChartMeasure(m);
+  };
+
   // The inspected bucket and the latest bucket's line positions; null while
   // that drawing is off or (for hover) the pointer is away. The sparkline
   // this restores marks "now" (the last bucket), not the peak — the peak
   // lives in the caption.
   const lineHoverXY =
-    drawing === 'line' && model?.chart && chartHover != null
-      ? sparkXY(model.chart.points, chartHover)
+    drawing === 'line' && chart && chartHover != null
+      ? sparkXY(chart.points, chartHover)
       : null;
   const lineNowXY =
-    drawing === 'line' && model?.chart
-      ? sparkXY(model.chart.points, model.chart.points.length - 1)
+    drawing === 'line' && chart
+      ? sparkXY(chart.points, chart.points.length - 1)
       : null;
 
   const barSlices = model?.rows.filter((r) => (r.share ?? 0) > 0) ?? [];
@@ -671,19 +742,31 @@ export default function TrayPanel({
         </div>
       )}
 
-      {!loading && !model?.empty && model?.chart && (
+      {!loading && !model?.empty && model && chart && (
         <div className="tp-chart">
           {/* The hover inspector's read-out row. Reserved so inspecting never
               shifts the layout (the window is sized to the content); the peak
               caption holds the row when idle and yields it to the inspected
               bucket while hovering — side by side they squeezed the read-out
-              into an ellipsis. The Columns/Line toggle stays on the right. */}
+              into an ellipsis. The Columns/Line and tok/$ controls sit on the
+              right when idle and yield too: beside them the read-out had 187px
+              of the 286px row. The pointer is on the plot while it inspects,
+              so nothing clickable goes missing. */}
           <div className="tp-chart-cap-row">
-            {chartHover == null && <span className="tp-chart-peak">{model.chart.peak}</span>}
+            {chartHover == null && <span className="tp-chart-peak">{chart.peak}</span>}
             <span className="tp-chart-read">
-              {chartHover != null ? model.chart.details[chartHover] : ''}
+              {chartHover != null ? chart.details[chartHover] : ''}
             </span>
-            <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
+            {chartHover == null && (
+              <>
+                <ChartDrawingToggle value={drawing} onChange={pickChartDrawing} />
+                <ChartMeasureToggle
+                  value={drawnMeasure}
+                  costAvailable={model.costChart !== null}
+                  onChange={pickChartMeasure}
+                />
+              </>
+            )}
           </div>
           <svg
             className="tp-chart-plot"
@@ -698,25 +781,25 @@ export default function TrayPanel({
             {drawing === 'columns' && (
               <>
                 {chartHover != null && (
-                  <path className="tp-chart-hover" d={slotRect(model.chart.points, chartHover)} />
+                  <path className="tp-chart-hover" d={slotRect(chart.points, chartHover)} />
                 )}
                 {/* The peak bucket wears the brighter fill — the same bucket the
                     model's peak caption names. */}
-                <path className="tp-bars" d={barsPath(model.chart.points, model.chart.peakIndex)} />
-                <path className="tp-bar-peak" d={barRect(model.chart.points, model.chart.peakIndex)} />
+                <path className="tp-bars" d={barsPath(chart.points, chart.peakIndex)} />
+                <path className="tp-bar-peak" d={barRect(chart.points, chart.peakIndex)} />
               </>
             )}
             {drawing === 'line' && (
               <>
-                {model.chart.points.length > 1 && (
+                {chart.points.length > 1 && (
                   <>
                     <path
                       className="tp-line-area"
-                      d={`${sparkPath(model.chart.points)} L${CHART_W - SPARK_PAD} ${CHART_H} L${SPARK_PAD} ${CHART_H} Z`}
+                      d={`${sparkPath(chart.points)} L${CHART_W - SPARK_PAD} ${CHART_H} L${SPARK_PAD} ${CHART_H} Z`}
                     />
                     <path
                       className="tp-line"
-                      d={sparkPath(model.chart.points)}
+                      d={sparkPath(chart.points)}
                       vectorEffect="non-scaling-stroke"
                     />
                   </>
@@ -748,7 +831,7 @@ export default function TrayPanel({
           {/* The axis: first tick sits at the left edge, last at the right,
               middle between them — space-between puts each where its bucket is. */}
           <div className="tp-chart-cap">
-            {model.chart.ticks.map((t) => (
+            {chart.ticks.map((t) => (
               <span key={t}>{t}</span>
             ))}
           </div>

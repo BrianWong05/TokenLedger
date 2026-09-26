@@ -56,9 +56,10 @@ an invoice.
 ## Menu Bar Extra
 
 Choose today, yesterday, or the trailing 30 days. The panel shows tokens, cost,
-change from the previous period, source and model breakdowns, tokens per bucket
-as columns or a line, cache hit, and requests. A control on the peak-caption
-row switches the drawing; the choice is remembered. Vendor limit cards show
+change from the previous period, source and model breakdowns, tokens or cost per
+bucket as columns or a line, cache hit, and requests. Controls on the
+peak-caption row switch the measure and the drawing; both choices are
+remembered. Vendor limit cards show
 remaining windows and reset times; Settings controls which cards and collapsed
 meters appear, and the order they stack.
 
