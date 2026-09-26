@@ -1,6 +1,6 @@
 [package]
 name = "tokenledger"
-version = "0.4.3"
+version = "0.4.4"
 description = "TokenLedger — AI usage tracker"
 authors = ["Brian Wong"]
 license = "MIT"
