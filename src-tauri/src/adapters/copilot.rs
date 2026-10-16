@@ -9,7 +9,9 @@ use crate::db::set_file_state;
 use crate::time::iso_to_epoch;
 use crate::types::{SourceScanResult, UsageEvent};
 
-const SCHEMA_VERSION: i64 = 6;
+// v7 and v8 only add columns this reader ignores (output_ttft_ms, copilot_usage_model).
+const MIN_SCHEMA_VERSION: i64 = 6;
+const MAX_SCHEMA_VERSION: i64 = 8;
 
 pub fn scan_copilot(conn: &mut Connection, database: &Path) -> SourceScanResult {
     let db_state = file_state_of(database);
@@ -36,7 +38,7 @@ pub fn scan_copilot(conn: &mut Connection, database: &Path) -> SourceScanResult 
         row.get::<_, i64>(0)
     });
     match version {
-        Ok(SCHEMA_VERSION) => {}
+        Ok(MIN_SCHEMA_VERSION..=MAX_SCHEMA_VERSION) => {}
         Ok(version) => return failed(format!("unsupported schema version {version}")),
         Err(error) => return failed(format!("schema check failed: {error}")),
     }
@@ -272,7 +274,7 @@ mod tests {
         Connection::open(&database)
             .unwrap()
             .execute_batch(
-                "UPDATE schema_version SET version = 7;
+                "UPDATE schema_version SET version = 9;
                  CREATE TABLE schema_drift (id INTEGER);",
             )
             .unwrap();
@@ -280,6 +282,79 @@ mod tests {
         assert!(unsupported
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("unsupported schema version 7")));
+            .is_some_and(|error| error.contains("unsupported schema version 9")));
+    }
+
+    #[test]
+    fn schema_v8_with_its_added_columns_is_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("session-store.db");
+        // Column order as Copilot CLI 1.0.88 leaves it after migrating a v6 store.
+        Connection::open(&database)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE schema_version (version INTEGER NOT NULL);
+                 INSERT INTO schema_version VALUES (8);
+                 CREATE TABLE assistant_usage_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    turn_index INTEGER,
+                    agent_id TEXT,
+                    parent_tool_call_id TEXT,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    cache_read_tokens INTEGER,
+                    cache_write_tokens INTEGER,
+                    reasoning_tokens INTEGER,
+                    total_nano_aiu INTEGER,
+                    request_multiplier REAL,
+                    duration_ms INTEGER,
+                    time_to_first_token_ms INTEGER,
+                    inter_token_latency_ms INTEGER,
+                    initiator TEXT,
+                    api_endpoint TEXT,
+                    reasoning_effort TEXT,
+                    finish_reason TEXT,
+                    content_filter_triggered INTEGER,
+                    token_details_json TEXT,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    output_ttft_ms REAL,
+                    copilot_usage_model TEXT
+                 );
+                 INSERT INTO assistant_usage_events
+                    (session_id, model, copilot_usage_model, input_tokens, output_tokens,
+                     cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                     token_details_json, created_at, output_ttft_ms)
+                 VALUES
+                    ('session-8', 'copilot-model', 'copilot-billing-model', 100, 20, 30, 10, 5,
+                     '[{\"tokenType\":\"input\",\"tokenCount\":60},{\"tokenType\":\"cache_read\",\"tokenCount\":30},{\"tokenType\":\"cache_write\",\"tokenCount\":10},{\"tokenType\":\"output\",\"tokenCount\":20}]',
+                     '2026-10-17T01:02:03.456Z', 812.5);",
+            )
+            .unwrap();
+
+        let mut ledger = open_db(&directory.path().join("ledger.db")).unwrap();
+        let scan = scan_copilot(&mut ledger, &database);
+        assert!(scan.error.is_none(), "{:?}", scan.error);
+        assert_eq!(scan.events_inserted, 1);
+        assert_eq!(
+            ledger
+                .query_row(
+                    "SELECT model, input_tokens, output_tokens, cache_read_tokens,
+                            cache_write_5m_tokens, reasoning_tokens
+                     FROM events WHERE dedup_key = 'copilot:session-8:1'",
+                    [],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?
+                    )),
+                )
+                .unwrap(),
+            ("copilot-model".to_string(), 60, 20, 30, 10, 5),
+        );
     }
 }

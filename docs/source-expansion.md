@@ -66,10 +66,12 @@ After the catalog, add these proven roots to existing Sources:
   scanned. The CLI transcripts share the Claude-Code shape and its usage rule;
   `~/.qoder-cli` carries no token usage today and is scanned quietly until it
   does.
-- GitHub Copilot CLI: schema version 6 of
+- GitHub Copilot CLI: schema versions 6–8 of
   `$COPILOT_HOME/session-store.db` (falling back to
-  `~/.copilot/session-store.db`), privately validated 2026-08-13. IDE and cloud
-  Artifacts remain independently evidence-gated under ADR-0025.
+  `~/.copilot/session-store.db`), privately validated 2026-08-13 (v6) and
+  2026-10-17 (v8, CLI 1.0.88, whose migrations only add columns the reader
+  ignores). IDE and cloud Artifacts remain independently evidence-gated under
+  ADR-0025.
 
 `~/.claude/transcripts` remains evidence-gated because other programs can write
 Claude-shaped records there; it must not be attributed to Claude until origin

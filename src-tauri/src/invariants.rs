@@ -902,7 +902,7 @@ fn hermetic_seventeen_source_partition_invariants() {
         .unwrap()
         .execute_batch(
             "CREATE TABLE schema_version (version INTEGER NOT NULL);
-             INSERT INTO schema_version VALUES (7);",
+             INSERT INTO schema_version VALUES (9);",
         )
         .unwrap();
     let malformed = run_scan(&mut conn, &roots);
@@ -914,7 +914,7 @@ fn hermetic_seventeen_source_partition_invariants() {
     assert!(copilot
         .error
         .as_deref()
-        .is_some_and(|error| error.contains("unsupported schema version 7")));
+        .is_some_and(|error| error.contains("unsupported schema version 9")));
     assert_eq!(totals_before, source_totals(&conn));
 
     std::fs::remove_file(&copilot_db).unwrap();
