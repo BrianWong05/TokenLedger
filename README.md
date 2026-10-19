@@ -49,7 +49,7 @@ an invoice.
 | Tab | What's on it |
 |---|---|
 | **Overview** | Everything above, over a date window and source selection you choose — plus **Export** (the whole selected window written to one sectioned CSV), **Trend** (enlarges into its own window, bucket size, and per-bucket CSV export), **Activity** (a 12-month heatmap that enlarges into a rotatable 3D landscape), and **Profile** (the window's models ranked across every source, top five with the rest one click away). Activity deliberately ignores the date window and source selection; Profile follows the window but never the source selection. |
-| **Limits** | Vendor usage windows as percentages used or left, with reset times. Live checks for Claude, Codex, Copilot, Grok, and Antigravity require a one-time opt-in, reuse each tool's saved sign-in, and run when you open the tab or press **Refresh**. |
+| **Limits** | Vendor usage windows as percentages used or left, with reset times. Live checks for Claude, Codex, Copilot, Grok, and Antigravity require a one-time opt-in, reuse each tool's saved sign-in, and run when you open the tab or press **Refresh**. Claude's card can also fill without one — see [Claude Limits without a live check](#claude-limits-without-a-live-check). |
 | **Pricing** | Every model seen in the ledger with its resolved list price, the catalog it came from, and any override you've set |
 | **Settings** | Theme (system / light / dark), language (English / 繁體中文), display currency at a fixed exchange rate, launch at login, window and Menu Bar Extra scan intervals, panel limit-card visibility/order and collapsed meters, daily update checks with in-app or OS notices plus download/restart controls, and **Custom range presets** — up to four of your own beside the four that ship, each a rolling *last N days* or a completed calendar period. Add one, reorder them by dragging (or with the arrows), retype a rolling one's day count, remove any; each row shows the dates it currently resolves to, and the picker lists them in the order you put them in. |
 
@@ -86,6 +86,39 @@ Two things worth knowing before you install:
 - **The Menu Bar Extra is how you get back to the app.** Closing the window
   leaves TokenLedger running so it keeps capturing; on a Linux desktop with no
   system tray at all, that resident presence has nowhere to live.
+
+## Claude Limits without a live check
+
+Claude's live check presents the sign-in the `claude` CLI stores, which the
+Claude desktop app never writes. Two more channels fill the Claude card with no
+opt-in, no credential, and no network request:
+
+- **The Claude desktop app's own history (macOS).** The desktop app logs each
+  usage poll to `~/Library/Application Support/Claude/plan-usage-history.json`,
+  and the ordinary scan reads it. The file carries percentages but no reset
+  times, so a figure TokenLedger can't place in a window it already knows shows
+  its reset as unknown. These figures are drawn but don't feed the token
+  estimate: the file can't prove which account it belongs to
+  ([ADR-0027](docs/adr/0027-claude-limits-may-be-read-from-the-desktop-apps-usage-history.md)).
+- **The statusline tap.** On every render, Claude Code hands your status line
+  its own view of the rate limits. `claude-statusline-tap` ships inside the app;
+  put it in front of your statusline command in `~/.claude/settings.json` and it
+  saves that snapshot for TokenLedger, then passes the input through untouched:
+
+  ```json
+  "statusLine": {
+    "type": "command",
+    "command": "/Applications/TokenLedger.app/Contents/MacOS/claude-statusline-tap bunx -y ccstatusline@latest"
+  }
+  ```
+
+  Everything after the tap's path is the statusline you already use (here,
+  ccstatusline); with nothing after it, the status line stays blank. On Windows
+  the tap sits beside `TokenLedger.exe` in its install folder. It fires only
+  when a terminal `claude` session draws a status line, so desktop-app sessions
+  never trigger it. Its first run keeps one copy of the full status document as
+  `~/.claude/claude-statusline-tap-payload.json`, for diagnosing the vendor's
+  window set; delete it any time.
 
 ## Privacy
 
@@ -133,7 +166,7 @@ asking Grok live, accepted deliberately
 
 | Tool | What it is | Logs read |
 |---|---|---|
-| [Claude Code](https://claude.com/claude-code) | Anthropic's CLI coding agent | `~/.claude/projects/**/*.jsonl` |
+| [Claude Code](https://claude.com/claude-code) | Anthropic's CLI coding agent | `~/.claude/projects/**/*.jsonl`, plus on macOS the Claude desktop app's `~/Library/Application Support/Claude/plan-usage-history.json` for Limits |
 | [Codex CLI](https://github.com/openai/codex) | OpenAI's CLI coding agent | `~/.codex/sessions/**/rollout-*.jsonl`, plus `$CODEX_HOME/sessions/**/rollout-*.jsonl` when visible |
 | GitHub Copilot | GitHub's AI coding assistant | `~/.copilot/session-store.db`, or `$COPILOT_HOME/session-store.db` when configured |
 | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google's CLI coding agent | `~/.gemini/tmp/*/chats/session-*.json` |
@@ -182,10 +215,14 @@ distort something in a way worth knowing before you trust a figure.
   you switched models books all of its turns, and all of their cost, to the
   last one. A turn the CLI finished without writing a usage rollup is invisible
   rather than estimated.
-- **Hermes lands on the day a session started.** It stores usage per session
-  rather than per call, timestamped at the session's start — so a session opened
-  Monday and worked through Wednesday books all of its tokens on Monday. That
-  bends Trend and Activity, not just the totals.
+- **Hermes lands on the day of a Model's last call.** It stores usage per
+  session, Model, and task rather than per call, stamped with the latest call —
+  so a session worked Monday through Wednesday on one Model books all of those
+  tokens on Wednesday. That bends Trend and Activity, not just the totals. Its
+  auxiliary calls (compression, title generation, background review) count
+  under their own task. A Hermes too old to keep per-Model usage (before its
+  schema v20) falls back to the session rollup: the session's first Model, and
+  the day the session started.
 - **Google Antigravity counts as one source, and sees only its SQLite
   Sessions.** Its IDE and CLI keep separate Session databases; both
   are read and reported under a single Antigravity source rather than split.
@@ -388,8 +425,9 @@ cargo test --manifest-path src-tauri/Cargo.toml \
   --ignored --nocapture
 ```
 
-Supported Source keys are `claude`, `codex`, `gemini`, `hermes`, `grok`,
-`antigravity`, `goose`, `opencode`, `cline`, `kilo`, `zed`, and `pi`.
+Any Source key in `src/source-catalog.json` works: `claude`, `codex`,
+`copilot`, `gemini`, `hermes`, `grok`, `antigravity`, `goose`, `opencode`,
+`kilo`, `zed`, `cline`, `pi`, `omp`, `workbuddy`, `codebuddy`, and `qoder`.
 Real-Artifact validation is ignored by default and
 is not required by CI; committed synthetic fixtures remain the deterministic
 evidence for normal test runs. A production support claim still requires the
