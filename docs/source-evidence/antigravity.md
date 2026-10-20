@@ -74,6 +74,22 @@ both accepted with the user's pricing request (2026-08-10).
 Only 1007 stays raw and Unpriced: 18 generations, never aliased, never
 explicit.
 
+The dotted-version lines resolve by shape, not by table (parser v6,
+2026-10-21, at the user's request that every Gemini price). Evidence: one CLI
+Session (2026-10-12) whose `cli.log` shows the pick `gemini-3.8-flash-low`,
+label "Gemini 3.8 Flash (Low)", and whose only generation carried wire alias
+`gemini-3.8-flash-n` with enum 1320. The shipped `agy` binary lists the
+current picker ids — `gemini-3.5-flash-extra-low`/`-low`,
+`gemini-3.6-flash-low`/`-medium`/`-high`, `gemini-3.7-flash-…` plus `-tiered`,
+`gemini-3.8-flash-low`/`-medium`/`-high`, `gemini-3.1-pro-low-thinking` — but
+the one-letter wire alias behind each is server-assigned and was seen only
+for 3.8 Flash (Low). So `gemini_variant_base` strips a picker tier (optionally
+`-thinking`) or a one-letter alias from any `gemini-<x.y>-…` id: unlike the
+`3-flash` line, these spell their real version. Real catalog ids with other
+suffixes (`-cyber`, `-tts`, `-lite`, `-preview`) are untouched, and none of
+the 82 catalog `gemini-*` ids matches the shape. The undotted `3-flash` line
+keeps its explicit table and its rename signal (`gemini-3-flash-z` stays raw).
+
 ## Blocked shape: `<uuid>.pb`
 
 Investigated 2026-08-08 and re-checked 2026-08-09 against one genuine macOS

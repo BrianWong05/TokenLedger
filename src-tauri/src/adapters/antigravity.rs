@@ -54,7 +54,9 @@ use crate::uri::file_uri_to_path;
 /// v4 = Model enums the server paired one-to-one with an alias resolved too
 /// (see `resolve_model_enum`), so alias-less generations of those enums price.
 /// v5 = enums identified by explicit single-enum Sessions (1008, 1012).
-const PARSER_VERSION: i64 = 5;
+/// v6 = dotted-version Gemini variants resolved by shape (see
+/// `gemini_variant_base`), so `gemini-3.8-flash-n` and its kin price.
+const PARSER_VERSION: i64 = 6;
 
 /// Antigravity records internal wire aliases and picker labels, not Model ids.
 /// `gemini-3-flash-a`/`-b` are the server's MODEL_PLACEHOLDER_M132/_M20 enum
@@ -66,12 +68,14 @@ const PARSER_VERSION: i64 = 5;
 /// a thinking-tier suffix, and the Claude thinking labels are the base Opus
 /// Models.
 /// `gemini-default` names whichever Gemini was the default when the row was
-/// written, so it resolves against the event's own timestamp. Anything
-/// unrecognized passes through untouched and simply lands in the unpriced
-/// list under its raw name — which is the signal that Antigravity has
-/// renamed a placeholder again.
+/// written, so it resolves against the event's own timestamp. The dotted-
+/// version lines resolve by shape instead (see `gemini_variant_base`).
+/// Anything else unrecognized passes through untouched and simply lands in
+/// the unpriced list under its raw name — which is the signal that
+/// Antigravity has renamed a placeholder again.
 fn resolve_model(raw: &str, ts: i64) -> String {
-    match raw.to_lowercase().as_str() {
+    let lower = raw.to_lowercase();
+    match lower.as_str() {
         "gemini-3-flash-a" | "gemini-3-flash-b" | "gemini-3-flash" | "gemini-3-flash-agent" => {
             "gemini-3.5-flash".to_string()
         }
@@ -86,8 +90,32 @@ fn resolve_model(raw: &str, ts: i64) -> String {
             _ if ts < 1779148800 => "gemini-2.5-flash".to_string(), // < 2026-05-19
             _ => "gemini-3.5-flash".to_string(),
         },
-        _ => raw.to_string(),
+        id => gemini_variant_base(id).map_or_else(|| raw.to_string(), str::to_string),
     }
+}
+
+/// The shipped client's picker tiers, longest first so `-extra-low` is not
+/// read as `-low`.
+const GEMINI_TIERS: &[&str] = &["-extra-low", "-medium", "-tiered", "-high", "-low"];
+
+/// The base Model of a dotted-version Gemini variant. Unlike the `3-flash`
+/// line above, these spell their real version (2026-10-12: the CLI's
+/// `gemini-3.8-flash-low` pick, "Gemini 3.8 Flash (Low)", came back as
+/// `gemini-3.8-flash-n`), so the id minus its variant IS the Model: a picker
+/// tier (optionally `-thinking`) or the server's one-letter wire alias for
+/// it. Only those two shapes strip — real catalog ids carry suffixes too,
+/// some at their own price (`-cyber`, `-tts`).
+fn gemini_variant_base(id: &str) -> Option<&str> {
+    let unthought = id.strip_suffix("-thinking").unwrap_or(id);
+    let base = GEMINI_TIERS
+        .iter()
+        .find_map(|tier| unthought.strip_suffix(tier))
+        .or_else(|| {
+            let (base, alias) = unthought.rsplit_once('-')?;
+            (alias.len() == 1).then_some(base)
+        })?;
+    let (version, _family) = base.strip_prefix("gemini-")?.split_once('-')?;
+    version.contains('.').then_some(base)
 }
 
 /// Model enums that real exports paired one-to-one with a wire alias
@@ -96,8 +124,9 @@ fn resolve_model(raw: &str, ts: i64) -> String {
 /// "default" enum — era-based, exactly like `gemini-default`. 1008 and 1012
 /// were never aliased but are identified by explicit single-enum Sessions
 /// (32 picker sessions on gemini-3-pro-high, 3 on claude-opus-4-5-thinking;
-/// the method cross-validates on every enum that has both signals). 1007
-/// returns None and stays raw: the server never said what it is.
+/// the method cross-validates on every enum that has both signals). 1320 is
+/// the CLI's 3.8 Flash (Low), paired with `gemini-3.8-flash-n` (2026-10-12).
+/// 1007 returns None and stays raw: the server never said what it is.
 /// Each identified enum delegates to the canonical alias it was paired
 /// with, so the alias table in `resolve_model` stays the single source of
 /// truth.
@@ -112,6 +141,7 @@ fn resolve_model_enum(model_enum: u64, ts: i64) -> Option<String> {
         1036 => "gemini-3.1-pro-low",
         1037 => "gemini-3.1-pro-high",
         1084 => "gemini-default",
+        1320 => "gemini-3.8-flash-n",
         _ => return None,
     };
     Some(resolve_model(alias, ts))
@@ -680,6 +710,38 @@ mod tests {
         assert_eq!(resolve_model("unknown", 100), "unknown");
     }
 
+    #[test]
+    fn dotted_gemini_variants_resolve_to_their_base_model() {
+        // The server's one-letter wire alias (seen: 3.8 Flash (Low) as `-n`)
+        // and every picker tier the shipped client lists.
+        for (raw, base) in [
+            ("gemini-3.8-flash-n", "gemini-3.8-flash"),
+            ("GEMINI-3.8-Flash-N", "gemini-3.8-flash"),
+            ("gemini-3.8-flash-low", "gemini-3.8-flash"),
+            ("gemini-3.8-flash-medium", "gemini-3.8-flash"),
+            ("gemini-3.8-flash-high", "gemini-3.8-flash"),
+            ("gemini-3.7-flash-tiered", "gemini-3.7-flash"),
+            ("gemini-3.6-flash-high", "gemini-3.6-flash"),
+            ("gemini-3.5-flash-extra-low", "gemini-3.5-flash"),
+            ("gemini-3.1-pro-low-thinking", "gemini-3.1-pro"),
+            ("gemini-3.5-flash-lite-n", "gemini-3.5-flash-lite"),
+        ] {
+            assert_eq!(resolve_model(raw, 100), base, "`{raw}`");
+        }
+        // Real catalog ids carry suffixes too, and some price differently from
+        // their base (`-cyber` doubles 3.8 Flash): only a letter or a tier strips.
+        for raw in [
+            "gemini-3.8-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.8-flash-cyber",
+            "gemini-3.8-flash-tts",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview-customtools",
+        ] {
+            assert_eq!(resolve_model(raw, 100), raw, "`{raw}` must not be rewritten");
+        }
+    }
+
     // Enums the server paired one-to-one with an alias resolve even for
     // generations that carry no alias of their own; the default enum follows
     // its era; unpaired enums stay raw (the rename signal).
@@ -694,6 +756,7 @@ mod tests {
         // Identified by explicit single-enum picker Sessions.
         assert_eq!(resolve_model_enum(1008, 0).as_deref(), Some("gemini-3-pro-preview"));
         assert_eq!(resolve_model_enum(1012, 0).as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(resolve_model_enum(1320, 0).as_deref(), Some("gemini-3.8-flash"));
         // The default enum is era-based, exactly like the gemini-default alias.
         assert_eq!(resolve_model_enum(1084, 1742860799).as_deref(), Some("gemini-2.0-flash"));
         assert_eq!(resolve_model_enum(1084, 1780300000).as_deref(), Some("gemini-3.5-flash"));
